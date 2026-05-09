@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Build output
+server/lib/
+server/bsb-plugin.json
+nodered/lib/
+kiosk/target/
+
+# BSB generated
+.bsb/
+
+# Runtime data
+*.db
+*.db-wal
+*.db-shm
+secret.key
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# Misc
+*.tgz
+*.tsbuildinfo
+/old-python/

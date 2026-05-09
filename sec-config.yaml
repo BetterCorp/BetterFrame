@@ -1,0 +1,92 @@
+# BSB runtime configuration for BetterFrame server.
+#
+# Profile: 'default' — single-host install where the server, node-red, and
+# (optionally) one kiosk all run on the same Pi. For multi-kiosk deployments
+# the server is the same; kiosks have their own runtime config.
+#
+# Override individual values via env: BSB_<plugin>_<key>=value (consult BSB
+# docs for the exact env-override semantics for v9).
+
+default:
+  observable:
+    observable-default:
+      plugin: observable-default
+      enabled: true
+      config: {}
+  events:
+    events-default:
+      plugin: events-default
+      enabled: true
+  services:
+    # ----- Foundations -----
+    service-store:
+      plugin: service-store
+      enabled: true
+      config:
+        sqlitePath: /var/lib/betterframe/betterframe.db
+
+    service-secrets:
+      plugin: service-secrets
+      enabled: true
+      config:
+        # In production, leave both unset and rely on systemd-creds.
+        # In dev, the plugin generates a key in dataDir/secret.key (0600) and warns.
+        dataDir: /var/lib/betterframe
+
+    service-auth:
+      plugin: service-auth
+      enabled: true
+      config:
+        sessionIdleSeconds: 43200    # 12h
+        sessionMaxSeconds: 2592000   # 30d
+        loginLockoutThreshold: 8
+        loginLockoutSeconds: 900     # 15m
+        argon2Memory: 65536          # KiB; tuned for Pi5 ~100ms
+        argon2TimeCost: 3
+        argon2Parallelism: 2
+
+    # ----- HTTP surfaces (each its own h3 listener; proxy fronts them) -----
+    service-admin-http:
+      plugin: service-admin-http
+      enabled: true
+      config:
+        host: 127.0.0.1
+        port: 18080
+
+    service-api-http:
+      plugin: service-api-http
+      enabled: true
+      config:
+        host: 127.0.0.1
+        port: 18081
+
+    service-coordinator-ws:
+      plugin: service-coordinator-ws
+      enabled: true
+      config:
+        host: 127.0.0.1
+        port: 18082
+
+    # ----- Domain orchestrators -----
+    service-pairing:
+      plugin: service-pairing
+      enabled: true
+      config:
+        codeTtlSeconds: 600          # 10m
+
+    service-bundle:
+      plugin: service-bundle
+      enabled: true
+      config: {}
+
+    # ----- Bridges -----
+    service-nodered-bridge:
+      plugin: service-nodered-bridge
+      enabled: true
+      config:
+        noderedUrl: http://127.0.0.1:1880
+
+    service-cec-relay:
+      plugin: service-cec-relay
+      enabled: true
+      config: {}

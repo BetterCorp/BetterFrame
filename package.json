@@ -1,0 +1,25 @@
+{
+  "name": "betterframe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BetterFrame — multi-camera display system, Pi-5-first.",
+  "license": "AGPL-3.0-only OR Commercial",
+  "type": "module",
+  "engines": {
+    "node": ">=23.0.0",
+    "npm": ">=11.0.0"
+  },
+  "workspaces": [
+    "server",
+    "nodered"
+  ],
+  "scripts": {
+    "build": "npm -w server run build",
+    "dev": "npm -w server run dev",
+    "start": "npm -w server start",
+    "test": "npm -w server test",
+    "schemas:export": "npm -w server run schemas:export",
+    "vendor:anyvali-js": "./scripts/vendor-anyvali-js.sh",
+    "vendor:htmx": "./scripts/vendor-htmx.sh"
+  }
+}

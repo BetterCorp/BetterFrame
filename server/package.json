@@ -12,10 +12,10 @@
     "bsb-tests.json"
   ],
   "scripts": {
-    "build": "bsb-plugin-cli build",
+    "build": "cross-env NODE_OPTIONS=\"--import tsx\" bsb-plugin-cli build",
     "clean": "bsb-plugin-cli clean",
     "start": "bsb-plugin-cli start",
-    "dev": "bsb-plugin-cli dev",
+    "dev": "cross-env NODE_OPTIONS=\"--import tsx\" bsb-plugin-cli dev",
     "test": "bsb-plugin-cli test",
     "schemas:export": "node --enable-source-maps lib/scripts/export-schemas.js"
   },
@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.0.0",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.3"
   },
   "peerDependencies": {

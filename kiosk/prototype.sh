@@ -170,11 +170,44 @@ launch_cameras() {
     echo "  [${name}] launching: ${rtsp_uri}"
 
     # Try hardware decode first (Pi5 V4L2), fall back to software
-    gst-launch-1.0 \
-      uridecodebin uri="$rtsp_uri" \
-        caps="video/x-raw" \
-      ! videoconvert ! waylandsink fullscreen=true \
-      2>&1 &
+    # Try H264 first (hw decode path), fall back to H265, then generic
+    local launched=false
+    for depay_chain in \
+      "rtph264depay ! h264parse ! avdec_h264" \
+      "rtph265depay ! h265parse ! avdec_h265" \
+      ; do
+      echo "    trying: ${depay_chain%% *}..."
+      timeout 5 gst-launch-1.0 \
+        rtspsrc location="$rtsp_uri" latency=300 protocols=tcp \
+        ! $depay_chain \
+        ! videoconvert ! waylandsink fullscreen=true \
+        2>&1 | head -5 &
+      local test_pid=$!
+      sleep 3
+      if kill -0 "$test_pid" 2>/dev/null; then
+        # Still running after 3s = success
+        echo "    codec: ${depay_chain%% *} works"
+        wait "$test_pid" 2>/dev/null || true
+        # Now launch for real
+        gst-launch-1.0 \
+          rtspsrc location="$rtsp_uri" latency=300 protocols=tcp \
+          ! $depay_chain \
+          ! videoconvert ! waylandsink fullscreen=true \
+          2>&1 &
+        pids+=($!)
+        launched=true
+        break
+      fi
+    done
+
+    if [[ "$launched" == "false" ]]; then
+      echo "    fallback: uridecodebin"
+      gst-launch-1.0 \
+        uridecodebin uri="$rtsp_uri" caps="video/x-raw" \
+        ! videoconvert ! waylandsink fullscreen=true \
+        2>&1 &
+      pids+=($!)
+    fi
     pids+=($!)
   done
 

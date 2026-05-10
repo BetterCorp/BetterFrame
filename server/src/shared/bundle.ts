@@ -1,8 +1,8 @@
 /**
- * Label-scoped bundle generation — shared module.
+ * Bundle generation — display-chain routing.
  *
- * Queries cameras/layouts/templates for a kiosk's label set,
- * encrypts ONVIF passwords with cluster key, returns versioned bundle.
+ * kiosk.display_id → layouts for display → cells → cameras
+ * No label filtering for v0.1.
  */
 import { createHash } from "node:crypto";
 import type { Repository } from "../plugins/service-store/repository.js";
@@ -17,6 +17,7 @@ export interface BundleCamera {
   onvif_port: number | null;
   onvif_username: string | null;
   onvif_password_encrypted: string | null;
+  stream_policy: string;
   streams: Array<{
     id: number;
     role: string;
@@ -29,40 +30,50 @@ export interface BundleCamera {
   }>;
 }
 
+export interface BundleCell {
+  region_name: string;
+  content_type: string;
+  camera_id: number | null;
+  stream_selector: string | null;
+  web_url: string | null;
+  html_content: string | null;
+  cooling_timeout_seconds: number | null;
+}
+
 export interface BundleLayout {
   id: number;
   name: string;
-  template_id: number | null;
-  display_id: number | null;
-  priority: string;
-  cooling_timeout_seconds: number | null;
-  preload_camera_ids: number[];
-  is_default: boolean;
-  resets_idle_timer: boolean;
-  cells: Array<{
-    region_name: string;
-    content_type: string;
-    camera_id: number | null;
-    stream_selector: string | null;
-    web_url: string | null;
-    html_content: string | null;
-  }>;
-}
-
-export interface KioskBundle {
-  kiosk_id: number;
-  kiosk_name: string;
-  labels: string[];
-  operate_labels: string[];
-  cameras: BundleCamera[];
-  layouts: BundleLayout[];
-  templates: Array<{
+  template: {
     id: number;
     name: string;
     regions: unknown;
     grid_cols: number;
     grid_rows: number;
-  }>;
+  } | null;
+  priority: string;
+  cooling_timeout_seconds: number | null;
+  preload_camera_ids: number[];
+  is_default: boolean;
+  resets_idle_timer: boolean;
+  cells: BundleCell[];
+}
+
+export interface BundleDisplay {
+  id: number;
+  name: string;
+  width_px: number;
+  height_px: number;
+  idle_timeout_seconds: number;
+  sleep_timeout_seconds: number;
+  default_layout_id: number | null;
+}
+
+export interface KioskBundle {
+  kiosk_id: number;
+  kiosk_name: string;
+  display: BundleDisplay;
+  layouts: BundleLayout[];
+  cameras: BundleCamera[];
   version: string;
 }
 
@@ -73,11 +84,46 @@ export function generateBundle(
   clusterKey: string | undefined,
 ): KioskBundle | null {
   const kiosk = repo.getKioskById(kioskId);
-  if (!kiosk) return null;
+  if (!kiosk || !kiosk.display_id) return null;
 
-  const scope = repo.bundleScope(kioskId);
-  const cameras = repo.camerasForLabelIds(scope.labelIds);
-  const layouts = repo.layoutsForLabelIds(scope.labelIds);
+  const display = repo.getDisplayById(kiosk.display_id);
+  if (!display) return null;
+
+  const layouts = repo.layoutsForDisplayId(display.id);
+  const layoutIds = layouts.map((l) => l.id);
+
+  // Collect all cameras referenced by cells in these layouts
+  const cameras = repo.camerasForLayoutIds(layoutIds);
+
+  const bundleLayouts: BundleLayout[] = layouts.map((l) => {
+    const cells = repo.layoutCells(l.id);
+    const template = l.template_id ? repo.getLayoutTemplateById(l.template_id) : null;
+    return {
+      id: l.id,
+      name: l.name,
+      template: template ? {
+        id: template.id,
+        name: template.name,
+        regions: template.regions,
+        grid_cols: template.grid_cols,
+        grid_rows: template.grid_rows,
+      } : null,
+      priority: l.priority,
+      cooling_timeout_seconds: l.cooling_timeout_seconds,
+      preload_camera_ids: l.preload_camera_ids,
+      is_default: l.is_default,
+      resets_idle_timer: l.resets_idle_timer,
+      cells: cells.map((c) => ({
+        region_name: c.region_name,
+        content_type: c.content_type,
+        camera_id: c.camera_id,
+        stream_selector: c.stream_selector,
+        web_url: c.web_url,
+        html_content: c.html_content,
+        cooling_timeout_seconds: c.cooling_timeout_seconds,
+      })),
+    };
+  });
 
   const bundleCameras: BundleCamera[] = cameras.map((cam) => {
     const streams = repo.listCameraStreams(cam.id);
@@ -94,6 +140,7 @@ export function generateBundle(
       onvif_port: cam.onvif_port,
       onvif_username: cam.onvif_username,
       onvif_password_encrypted: onvifPwEncrypted,
+      stream_policy: cam.stream_policy,
       streams: streams.map((s) => ({
         id: s.id,
         role: s.role,
@@ -107,46 +154,20 @@ export function generateBundle(
     };
   });
 
-  const templateIds = [...new Set(layouts.map((l) => l.template_id).filter((id): id is number => id !== null))];
-  const templates = templateIds.length > 0 ? repo.layoutTemplates(templateIds) : [];
-
-  const bundleLayouts: BundleLayout[] = layouts.map((l) => {
-    const cells = repo.layoutCells(l.id);
-    return {
-      id: l.id,
-      name: l.name,
-      template_id: l.template_id,
-      display_id: l.display_id,
-      priority: l.priority,
-      cooling_timeout_seconds: l.cooling_timeout_seconds,
-      preload_camera_ids: l.preload_camera_ids,
-      is_default: l.is_default,
-      resets_idle_timer: l.resets_idle_timer,
-      cells: cells.map((c) => ({
-        region_name: c.region_name,
-        content_type: c.content_type,
-        camera_id: c.camera_id,
-        stream_selector: c.stream_selector,
-        web_url: c.web_url,
-        html_content: c.html_content,
-      })),
-    };
-  });
-
   const bundle: KioskBundle = {
     kiosk_id: kioskId,
     kiosk_name: kiosk.name,
-    labels: scope.labelNames,
-    operate_labels: scope.operateLabelNames,
-    cameras: bundleCameras,
+    display: {
+      id: display.id,
+      name: display.name,
+      width_px: display.width_px,
+      height_px: display.height_px,
+      idle_timeout_seconds: display.idle_timeout_seconds,
+      sleep_timeout_seconds: display.sleep_timeout_seconds,
+      default_layout_id: display.default_layout_id,
+    },
     layouts: bundleLayouts,
-    templates: templates.map((t) => ({
-      id: t.id,
-      name: t.name,
-      regions: t.regions,
-      grid_cols: t.grid_cols,
-      grid_rows: t.grid_rows,
-    })),
+    cameras: bundleCameras,
     version: "",
   };
 

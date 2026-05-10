@@ -359,6 +359,238 @@ export class Repository {
     return d;
   }
 
+  updateDisplay(id: number, patch: Partial<Display>): void {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (k === "id") continue;
+      const col = k === "index" ? `"index"` : k;
+      sets.push(`${col} = ?`);
+      vals.push(v === undefined ? null : v);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    this.db.prepare(`UPDATE displays SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    void this.notify("displays", "update", id);
+  }
+
+  // ===========================================================================
+  // layout templates
+  // ===========================================================================
+
+  listLayoutTemplates(): LayoutTemplate[] {
+    const rs = this.prep("SELECT * FROM layout_templates ORDER BY name").all();
+    return rs.map((r) => rowToLayoutTemplate(r as Record<string, unknown>));
+  }
+
+  getLayoutTemplateById(id: number): LayoutTemplate | null {
+    const r = this.prep("SELECT * FROM layout_templates WHERE id = ?").get(id);
+    return r ? rowToLayoutTemplate(r as Record<string, unknown>) : null;
+  }
+
+  createLayoutTemplate(input: {
+    name: string;
+    description?: string | null;
+    regions: unknown;
+    grid_cols?: number;
+    grid_rows?: number;
+    is_builtin?: boolean;
+  }): LayoutTemplate {
+    const result = this.prep(
+      `INSERT INTO layout_templates (name, description, regions, grid_cols, grid_rows, is_builtin)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.name,
+      input.description ?? null,
+      J(input.regions),
+      input.grid_cols ?? 12,
+      input.grid_rows ?? 12,
+      B(input.is_builtin ?? false),
+    );
+    const id = Number(result.lastInsertRowid);
+    void this.notify("layout_templates", "create", id);
+    const r = this.getLayoutTemplateById(id);
+    if (!r) throw new Error("layout_template vanished after insert");
+    return r;
+  }
+
+  updateLayoutTemplate(id: number, patch: { name?: string; description?: string | null; regions?: unknown; grid_cols?: number; grid_rows?: number }): void {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (k === "id") continue;
+      sets.push(`${k} = ?`);
+      vals.push(k === "regions" ? J(v) : (v === undefined ? null : v));
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    this.db.prepare(`UPDATE layout_templates SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    void this.notify("layout_templates", "update", id);
+  }
+
+  deleteLayoutTemplate(id: number): void {
+    this.db.prepare(`DELETE FROM layout_templates WHERE id = ?`).run(id);
+    void this.notify("layout_templates", "delete", id);
+  }
+
+  // ===========================================================================
+  // layouts
+  // ===========================================================================
+
+  listLayouts(): Layout[] {
+    const rs = this.prep("SELECT * FROM layouts ORDER BY name").all();
+    return rs.map((r) => rowToLayout(r as Record<string, unknown>));
+  }
+
+  getLayoutById(id: number): Layout | null {
+    const r = this.prep("SELECT * FROM layouts WHERE id = ?").get(id);
+    return r ? rowToLayout(r as Record<string, unknown>) : null;
+  }
+
+  layoutsForDisplay(displayId: number): Layout[] {
+    const rs = this.prep(
+      "SELECT * FROM layouts WHERE display_id = ? ORDER BY name",
+    ).all(displayId);
+    return rs.map((r) => rowToLayout(r as Record<string, unknown>));
+  }
+
+  createLayout(input: {
+    name: string;
+    description?: string | null;
+    template_id: number;
+    display_id: number;
+    priority?: string;
+    cooling_timeout_seconds?: number | null;
+    preload_camera_ids?: number[];
+    is_default?: boolean;
+    resets_idle_timer?: boolean;
+  }): Layout {
+    const result = this.prep(
+      `INSERT INTO layouts (name, description, template_id, display_id, priority, cooling_timeout_seconds, preload_camera_ids, is_default, resets_idle_timer)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.name,
+      input.description ?? null,
+      input.template_id,
+      input.display_id,
+      input.priority ?? "normal",
+      input.cooling_timeout_seconds ?? null,
+      J(input.preload_camera_ids ?? []),
+      B(input.is_default ?? false),
+      B(input.resets_idle_timer ?? true),
+    );
+    const id = Number(result.lastInsertRowid);
+    void this.notify("layouts", "create", id);
+    const r = this.getLayoutById(id);
+    if (!r) throw new Error("layout vanished after insert");
+    return r;
+  }
+
+  updateLayout(id: number, patch: Partial<Layout>): void {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (k === "id") continue;
+      sets.push(`${k} = ?`);
+      if (k === "preload_camera_ids") vals.push(J(v));
+      else if (typeof v === "boolean") vals.push(B(v));
+      else vals.push(v === undefined ? null : v);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    this.db.prepare(`UPDATE layouts SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    void this.notify("layouts", "update", id);
+  }
+
+  deleteLayout(id: number): void {
+    this.db.prepare(`DELETE FROM layout_cells WHERE layout_id = ?`).run(id);
+    this.db.prepare(`DELETE FROM layout_labels WHERE layout_id = ?`).run(id);
+    this.db.prepare(`DELETE FROM layouts WHERE id = ?`).run(id);
+    void this.notify("layouts", "delete", id);
+  }
+
+  // ===========================================================================
+  // layout cells
+  // ===========================================================================
+
+  createLayoutCell(input: {
+    layout_id: number;
+    region_name: string;
+    content_type: string;
+    camera_id?: number | null;
+    stream_selector?: string | null;
+    web_url?: string | null;
+    html_content?: string | null;
+    cooling_timeout_seconds?: number | null;
+    options?: Record<string, unknown>;
+  }): LayoutCell {
+    const result = this.prep(
+      `INSERT INTO layout_cells (layout_id, region_name, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.layout_id,
+      input.region_name,
+      input.content_type,
+      input.camera_id ?? null,
+      input.stream_selector ?? null,
+      input.web_url ?? null,
+      input.html_content ?? null,
+      input.cooling_timeout_seconds ?? null,
+      J(input.options ?? {}),
+    );
+    const id = Number(result.lastInsertRowid);
+    void this.notify("layout_cells", "create", id);
+    const r = this.prep("SELECT * FROM layout_cells WHERE id = ?").get(id);
+    if (!r) throw new Error("layout_cell vanished after insert");
+    return rowToLayoutCell(r as Record<string, unknown>);
+  }
+
+  updateLayoutCell(id: number, patch: Partial<LayoutCell>): void {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (k === "id" || k === "layout_id") continue;
+      sets.push(`${k} = ?`);
+      if (k === "options") vals.push(J(v));
+      else vals.push(v === undefined ? null : v);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    this.db.prepare(`UPDATE layout_cells SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    void this.notify("layout_cells", "update", id);
+  }
+
+  deleteLayoutCell(id: number): void {
+    this.db.prepare(`DELETE FROM layout_cells WHERE id = ?`).run(id);
+    void this.notify("layout_cells", "delete", id);
+  }
+
+  // ===========================================================================
+  // display-chain bundle queries (kiosk → display → layouts → cells → cameras)
+  // ===========================================================================
+
+  layoutsForDisplayId(displayId: number): Layout[] {
+    const rs = this.prep(
+      "SELECT * FROM layouts WHERE display_id = ? ORDER BY is_default DESC, name",
+    ).all(displayId);
+    return rs.map((r) => rowToLayout(r as Record<string, unknown>));
+  }
+
+  camerasForLayoutIds(layoutIds: number[]): Camera[] {
+    if (layoutIds.length === 0) return [];
+    const placeholders = layoutIds.map(() => "?").join(",");
+    const rs = this.db
+      .prepare(
+        `SELECT DISTINCT c.* FROM cameras c
+           JOIN layout_cells lc ON lc.camera_id = c.id
+          WHERE lc.layout_id IN (${placeholders})
+            AND c.enabled = 1
+          ORDER BY c.name`,
+      )
+      .all(...(layoutIds as never[]));
+    return rs.map((r) => rowToCamera(r as Record<string, unknown>));
+  }
+
   // ===========================================================================
   // cameras
   // ===========================================================================
@@ -564,17 +796,19 @@ export class Repository {
     key_prefix: string;
     capabilities?: string[];
     hardware_model?: string | null;
+    display_id?: number | null;
   }): Kiosk {
     const result = this.prep(
       `INSERT INTO kiosks
-        (name, key_hash, key_prefix, capabilities, hardware_model, paired_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+        (name, key_hash, key_prefix, capabilities, hardware_model, display_id, paired_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.name,
       input.key_hash,
       input.key_prefix,
       J(input.capabilities ?? []),
       input.hardware_model ?? null,
+      input.display_id ?? null,
       isoNow(),
     );
     const id = Number(result.lastInsertRowid);

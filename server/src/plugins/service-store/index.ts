@@ -34,6 +34,7 @@ import {
 
 import { MIGRATIONS } from "./migrations.js";
 import { Repository } from "./repository.js";
+import { registerRepo } from "../../shared/plugin-registry.js";
 
 // ---- Config -----------------------------------------------------------------
 
@@ -135,6 +136,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       }
     });
 
+    registerRepo(this._repo);
     obs.log.info("store ready");
   }
 

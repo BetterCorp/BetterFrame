@@ -1,8 +1,8 @@
 /**
- * service-api-http — h3 listener for the kiosk-facing REST API.
+ * service-api-http — h3 listener for kiosk-facing REST API.
  *
- * Serves pairing, bundle, and kiosk management endpoints at /api/kiosk/*
- * and /api/pair/*. Port 18081 behind the Angie proxy.
+ * Serves pairing, bundle, and kiosk management endpoints.
+ * Port 18081 behind Angie proxy.
  */
 import * as av from "@anyvali/js";
 import {
@@ -13,12 +13,11 @@ import {
   type Observable,
 } from "@bsb/base";
 
-// ---- Config -----------------------------------------------------------------
-
 const ConfigSchema = av.object(
   {
     host: av.string().default("127.0.0.1"),
     port: av.int().min(1).max(65535).default(18081),
+    codeTtlSeconds: av.int().min(60).max(3600).default(600),
   },
   { unknownKeys: "strip" },
 );
@@ -41,14 +40,12 @@ export const EventSchemas = createEventSchemas({
   onBroadcast: {},
 });
 
-// ---- Plugin -----------------------------------------------------------------
-
 export class Plugin extends BSBService<InstanceType<typeof Config>, typeof EventSchemas> {
   static override Config = Config;
   static override EventSchemas = EventSchemas;
 
   initBeforePlugins?: string[];
-  initAfterPlugins?: string[] = ["service-store", "service-auth"];
+  initAfterPlugins?: string[] = ["service-store"];
   runBeforePlugins?: string[];
   runAfterPlugins?: string[];
 
@@ -57,12 +54,9 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   }
 
   async init(_obs: Observable): Promise<void> {
-    // TODO: create h3 app, mount kiosk + pairing routes, start listening
+    // TODO: create h3 app, mount kiosk + pairing routes
   }
 
   async run(_obs: Observable): Promise<void> {}
-
-  async dispose(): Promise<void> {
-    // TODO: close h3 listener
-  }
+  async dispose(): Promise<void> {}
 }

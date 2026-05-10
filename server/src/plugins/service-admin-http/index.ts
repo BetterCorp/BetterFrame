@@ -1,8 +1,8 @@
 /**
- * service-admin-http — h3 listener for the admin UI and admin API.
+ * service-admin-http — h3 listener for admin UI and admin API.
  *
- * Serves jsx-htmx rendered pages at /admin/* and JSON endpoints at
- * /api/admin/*. Port 18080 behind the Angie proxy.
+ * Port 18080 behind Angie proxy. Initializes secrets + auth as
+ * shared modules (not BSB plugins).
  */
 import * as av from "@anyvali/js";
 import {
@@ -15,9 +15,10 @@ import {
 import { H3, serve } from "h3";
 import type { Server } from "srvx";
 
-import type { Plugin as StorePlugin } from "../service-store/index.js";
-import type { Plugin as AuthPlugin } from "../service-auth/index.js";
-import type { Plugin as SecretsPlugin } from "../service-secrets/index.js";
+import { getRepo } from "../../shared/plugin-registry.js";
+import { initSecrets, type SecretsApi } from "../../shared/secrets.js";
+import { createAuth, type AuthApi } from "../../shared/auth.js";
+import type { Repository } from "../service-store/repository.js";
 
 import { registerMiddleware } from "./middleware.js";
 import { registerSetupRoutes } from "./routes-setup.js";
@@ -32,6 +33,19 @@ const ConfigSchema = av.object(
   {
     host: av.string().default("127.0.0.1"),
     port: av.int().min(1).max(65535).default(18080),
+    // Secrets config (was service-secrets)
+    dataDir: av.string().minLength(1).default("/var/lib/betterframe"),
+    systemdCredsName: av.string().default("betterframe-secret"),
+    // Auth config (was service-auth)
+    sessionIdleSeconds: av.int().min(60).default(43200),
+    sessionMaxSeconds: av.int().min(3600).default(2592000),
+    loginLockoutThreshold: av.int().min(1).default(8),
+    loginLockoutSeconds: av.int().min(1).default(900),
+    argon2Memory: av.int().min(8).default(65536),
+    argon2TimeCost: av.int().min(1).default(3),
+    argon2Parallelism: av.int().min(1).default(2),
+    totpIssuer: av.string().minLength(1).default("BetterFrame"),
+    cookieName: av.string().minLength(1).default("betterframe_session"),
   },
   { unknownKeys: "strip" },
 );
@@ -57,9 +71,9 @@ export const EventSchemas = createEventSchemas({
 // ---- Deps interface shared with route modules -------------------------------
 
 export interface AdminDeps {
-  store: StorePlugin;
-  auth: AuthPlugin;
-  secrets: SecretsPlugin;
+  repo: Repository;
+  auth: AuthApi;
+  secrets: SecretsApi;
   cookieName: string;
 }
 
@@ -70,51 +84,44 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   static override EventSchemas = EventSchemas;
 
   initBeforePlugins?: string[];
-  initAfterPlugins?: string[] = ["service-store", "service-secrets", "service-auth"];
+  initAfterPlugins?: string[] = ["service-store"];
   runBeforePlugins?: string[];
   runAfterPlugins?: string[];
 
-  private _store?: StorePlugin;
-  private _auth?: AuthPlugin;
-  private _secrets?: SecretsPlugin;
   private server?: Server;
 
   constructor(cfg: BSBServiceConstructor<InstanceType<typeof Config>, typeof EventSchemas>) {
     super(cfg);
   }
 
-  // TODO(handoff): replace with BSB plugin clients
-  setSiblings(store: StorePlugin, auth: AuthPlugin, secrets: SecretsPlugin): void {
-    this._store = store;
-    this._auth = auth;
-    this._secrets = secrets;
-  }
-
-  get store(): StorePlugin {
-    if (!this._store) throw new Error("service-admin-http: siblings not wired");
-    return this._store;
-  }
-
-  get auth(): AuthPlugin {
-    if (!this._auth) throw new Error("service-admin-http: siblings not wired");
-    return this._auth;
-  }
-
-  get secrets(): SecretsPlugin {
-    if (!this._secrets) throw new Error("service-admin-http: siblings not wired");
-    return this._secrets;
-  }
-
   async init(obs: Observable): Promise<void> {
-    const app = new H3();
+    // Init shared modules — no inter-plugin wiring needed
+    const repo = getRepo();
+    const secrets = initSecrets(
+      { dataDir: this.config.dataDir, systemdCredsName: this.config.systemdCredsName },
+      { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
+    );
+    const auth = createAuth(repo, secrets, {
+      sessionIdleSeconds: this.config.sessionIdleSeconds,
+      sessionMaxSeconds: this.config.sessionMaxSeconds,
+      loginLockoutThreshold: this.config.loginLockoutThreshold,
+      loginLockoutSeconds: this.config.loginLockoutSeconds,
+      argon2Memory: this.config.argon2Memory,
+      argon2TimeCost: this.config.argon2TimeCost,
+      argon2Parallelism: this.config.argon2Parallelism,
+      totpIssuer: this.config.totpIssuer,
+      cookieName: this.config.cookieName,
+    });
+
     const deps: AdminDeps = {
-      store: this.store,
-      auth: this.auth,
-      secrets: this.secrets,
-      cookieName: this.auth.config.cookieName,
+      repo,
+      auth,
+      secrets,
+      cookieName: this.config.cookieName,
     };
 
-    // Order matters: middleware first, then routes
+    const app = new H3();
+
     registerMiddleware(app, deps);
     registerStaticRoutes(app);
     registerSetupRoutes(app, deps);
@@ -122,11 +129,10 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     registerAdminRoutes(app, deps);
     registerAccountRoutes(app, deps);
 
-    // Health/readiness/version (no auth)
     app.get("/healthz", () => ({ status: "ok" }));
     app.get("/readyz", () => {
       try {
-        deps.store.repo.isSetupComplete(); // touches DB
+        deps.repo.isSetupComplete();
         return { status: "ready" };
       } catch {
         return { status: "not_ready" };
@@ -137,10 +143,8 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       version: "0.1.0",
       now: new Date().toISOString(),
     }));
-
-    // Root redirect
     app.get("/", () => {
-      if (!deps.store.repo.isSetupComplete()) {
+      if (!deps.repo.isSetupComplete()) {
         return new Response(null, { status: 302, headers: { location: "/setup" } });
       }
       return new Response(null, { status: 302, headers: { location: "/admin/" } });

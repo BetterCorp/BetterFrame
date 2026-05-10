@@ -47,10 +47,10 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
     }
 
     const hash = await deps.auth.hashPassword(newPw);
-    deps.store.repo.updateUser(user.id, { password_hash: hash });
+    deps.repo.updateUser(user.id, { password_hash: hash });
 
     // Revoke all sessions (force re-login)
-    deps.store.repo.revokeAllSessionsForUser(user.id);
+    deps.repo.revokeAllSessionsForUser(user.id);
 
     return new Response(null, {
       status: 302,
@@ -77,7 +77,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
 
     // Store unconfirmed secret + codes
     const encrypted = deps.auth.encryptTotpSecret(secret);
-    deps.store.repo.updateUser(user.id, {
+    deps.repo.updateUser(user.id, {
       totp_secret_encrypted: encrypted,
     });
 
@@ -127,7 +127,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
     const codes: string[] = JSON.parse(codesJson);
     const hashed = await deps.auth.hashRecoveryCodes(codes);
 
-    deps.store.repo.updateUser(user.id, {
+    deps.repo.updateUser(user.id, {
       totp_enabled: true,
       recovery_codes_hashed: hashed,
     });
@@ -154,7 +154,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
       }));
     }
 
-    deps.store.repo.updateUser(user.id, {
+    deps.repo.updateUser(user.id, {
       totp_enabled: false,
       totp_secret_encrypted: null,
       recovery_codes_hashed: [],

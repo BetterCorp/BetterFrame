@@ -1,8 +1,5 @@
 /**
  * First-run setup routes.
- *
- * GET  /setup — render setup form
- * POST /setup — create admin user, provision cluster key, create default display
  */
 import { type H3, readBody, html } from "h3";
 import type { AdminDeps } from "./index.js";
@@ -10,14 +7,14 @@ import { SetupPage } from "../../web-templates/auth-pages.js";
 
 export function registerSetupRoutes(app: H3, deps: AdminDeps): void {
   app.get("/setup", () => {
-    if (deps.store.repo.isSetupComplete()) {
+    if (deps.repo.isSetupComplete()) {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
     return html(SetupPage({}));
   });
 
   app.post("/setup", async (event) => {
-    if (deps.store.repo.isSetupComplete()) {
+    if (deps.repo.isSetupComplete()) {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
 
@@ -26,7 +23,6 @@ export function registerSetupRoutes(app: H3, deps: AdminDeps): void {
     const password = body?.password ?? "";
     const errors: string[] = [];
 
-    // Validate
     if (!username || username.length < 3 || username.length > 64) {
       errors.push("Username must be 3–64 characters.");
     } else if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
@@ -40,21 +36,16 @@ export function registerSetupRoutes(app: H3, deps: AdminDeps): void {
       return html(SetupPage({ error: errors.join(" "), username }));
     }
 
-    // Create admin user
     const hash = await deps.auth.hashPassword(password);
-    deps.store.repo.createUser({ username, password_hash: hash, role: "admin" });
+    deps.repo.createUser({ username, password_hash: hash, role: "admin" });
 
-    // Provision cluster key
     const clusterKey = deps.secrets.generateClusterKey();
     const encryptedCluster = deps.secrets.encryptString(clusterKey, "cluster");
-    deps.store.repo.setSetupExtra("cluster_key_encrypted", encryptedCluster);
-    deps.store.repo.markClusterKeyProvisioned();
+    deps.repo.setSetupExtra("cluster_key_encrypted", encryptedCluster);
+    deps.repo.markClusterKeyProvisioned();
 
-    // Create default display
-    deps.store.repo.createDefaultDisplay();
-
-    // Mark setup complete
-    deps.store.repo.markSetupComplete();
+    deps.repo.createDefaultDisplay();
+    deps.repo.markSetupComplete();
 
     return new Response(null, {
       status: 302,

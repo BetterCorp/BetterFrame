@@ -18,25 +18,23 @@ default:
       plugin: events-default
       enabled: true
   services:
-    # ----- Foundations -----
+    # ----- Data layer -----
     service-store:
       plugin: service-store
       enabled: true
       config:
         sqlitePath: /var/lib/betterframe/betterframe.db
 
-    service-secrets:
-      plugin: service-secrets
+    # ----- Admin UI + API (includes secrets + auth config) -----
+    service-admin-http:
+      plugin: service-admin-http
       enabled: true
       config:
-        # In production, leave both unset and rely on systemd-creds.
-        # In dev, the plugin generates a key in dataDir/secret.key (0600) and warns.
+        host: 127.0.0.1
+        port: 18080
+        # Secrets (was service-secrets)
         dataDir: /var/lib/betterframe
-
-    service-auth:
-      plugin: service-auth
-      enabled: true
-      config:
+        # Auth (was service-auth)
         sessionIdleSeconds: 43200    # 12h
         sessionMaxSeconds: 2592000   # 30d
         loginLockoutThreshold: 8
@@ -45,48 +43,20 @@ default:
         argon2TimeCost: 3
         argon2Parallelism: 2
 
-    # ----- HTTP surfaces (each its own h3 listener; proxy fronts them) -----
-    service-admin-http:
-      plugin: service-admin-http
-      enabled: true
-      config:
-        host: 127.0.0.1
-        port: 18080
-
+    # ----- Kiosk-facing REST API -----
     service-api-http:
       plugin: service-api-http
       enabled: true
       config:
         host: 127.0.0.1
         port: 18081
+        codeTtlSeconds: 600          # 10m pairing code TTL
 
+    # ----- Live kiosk WebSocket channel -----
     service-coordinator-ws:
       plugin: service-coordinator-ws
       enabled: true
       config:
         host: 127.0.0.1
         port: 18082
-
-    # ----- Domain orchestrators -----
-    service-pairing:
-      plugin: service-pairing
-      enabled: true
-      config:
-        codeTtlSeconds: 600          # 10m
-
-    service-bundle:
-      plugin: service-bundle
-      enabled: true
-      config: {}
-
-    # ----- Bridges -----
-    service-nodered-bridge:
-      plugin: service-nodered-bridge
-      enabled: true
-      config:
         noderedUrl: http://127.0.0.1:1880
-
-    service-cec-relay:
-      plugin: service-cec-relay
-      enabled: true
-      config: {}

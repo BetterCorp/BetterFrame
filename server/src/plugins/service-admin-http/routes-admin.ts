@@ -16,10 +16,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/", (event) => {
     const user = event.context.user!;
-    const cameras = deps.store.repo.listCameras();
-    const kiosks = deps.store.repo.listKiosks();
-    const layouts = deps.store.repo.listDisplays(); // for count
-    const events = deps.store.repo.recentEvents(10);
+    const cameras = deps.repo.listCameras();
+    const kiosks = deps.repo.listKiosks();
+    const layouts = deps.repo.listDisplays(); // for count
+    const events = deps.repo.recentEvents(10);
     const onlineKiosks = kiosks.filter((k) => {
       if (!k.last_seen_at) return false;
       return Date.now() - new Date(k.last_seen_at).getTime() < 5 * 60 * 1000;
@@ -44,10 +44,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/cameras", (event) => {
     const user = event.context.user!;
-    const cameras = deps.store.repo.listCameras();
+    const cameras = deps.repo.listCameras();
     const streamCounts = new Map<number, number>();
     for (const cam of cameras) {
-      streamCounts.set(cam.id, deps.store.repo.listCameraStreams(cam.id).length);
+      streamCounts.set(cam.id, deps.repo.listCameraStreams(cam.id).length);
     }
     return html(CamerasPage({ user: user.username, cameras, streamCounts }));
   });
@@ -66,7 +66,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
     if (!name || name.length > 128) {
       errors.push("Name required (max 128 chars).");
-    } else if (deps.store.repo.getCameraByName(name)) {
+    } else if (deps.repo.getCameraByName(name)) {
       errors.push("Camera name already in use.");
     }
 
@@ -99,7 +99,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       }));
     }
 
-    const cam = deps.store.repo.createCamera({
+    const cam = deps.repo.createCamera({
       name,
       type: type!,
       rtsp_url: rtspUrl ?? null,
@@ -111,7 +111,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
     // Create default main stream for RTSP cameras
     if (type === "rtsp" && rtspUrl) {
-      deps.store.repo.createCameraStream({
+      deps.repo.createCameraStream({
         camera_id: cam.id,
         role: "main",
         name: "Main",
@@ -129,8 +129,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/kiosks", (event) => {
     const user = event.context.user!;
-    const kiosks = deps.store.repo.listKiosks();
-    const pending = deps.store.repo.listPendingPairingCodes();
+    const kiosks = deps.repo.listKiosks();
+    const pending = deps.repo.listPendingPairingCodes();
     return html(KiosksPage({ user: user.username, kiosks, pendingCodes: pending }));
   });
 
@@ -160,7 +160,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/displays", (event) => {
     const user = event.context.user!;
-    const displays = deps.store.repo.listDisplays();
+    const displays = deps.repo.listDisplays();
     return html(SimpleListPage({
       user: user.username,
       pageTitle: "Displays",
@@ -175,7 +175,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/labels", (event) => {
     const user = event.context.user!;
-    const labels = deps.store.repo.listLabels();
+    const labels = deps.repo.listLabels();
     return html(SimpleListPage({
       user: user.username,
       pageTitle: "Labels",

@@ -30,12 +30,11 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       return html(LoginPage({ error: "Username and password required.", username }));
     }
 
-    const user = deps.store.repo.getUserByUsername(username);
+    const user = deps.repo.getUserByUsername(username);
     if (!user || !user.is_active) {
       return html(LoginPage({ error: "Invalid credentials.", username }));
     }
 
-    // Lockout check
     if (user.locked_until) {
       const lockEnd = new Date(user.locked_until);
       if (lockEnd > new Date()) {
@@ -45,24 +44,21 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
 
     const valid = await deps.auth.verifyPassword(password, user.password_hash);
     if (!valid) {
-      // Increment failed count
       const count = user.failed_login_count + 1;
       const patch: Record<string, unknown> = { failed_login_count: count };
-      if (count >= 8) {
-        patch["locked_until"] = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      if (count >= deps.auth.config.loginLockoutThreshold) {
+        patch["locked_until"] = new Date(Date.now() + deps.auth.config.loginLockoutSeconds * 1000).toISOString();
       }
-      deps.store.repo.updateUser(user.id, patch);
+      deps.repo.updateUser(user.id, patch);
       return html(LoginPage({ error: "Invalid credentials.", username }));
     }
 
-    // Reset failed login count
-    deps.store.repo.updateUser(user.id, {
+    deps.repo.updateUser(user.id, {
       failed_login_count: 0,
       locked_until: null,
       last_login_at: new Date().toISOString(),
     });
 
-    // Create session
     const totpPending = user.totp_enabled;
     const { cookieValue } = await deps.auth.createSession({
       user,
@@ -75,7 +71,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
 
     setCookie(event, deps.cookieName, cookieValue, {
       ...COOKIE_OPTS,
-      maxAge: 30 * 24 * 60 * 60, // 30d absolute max
+      maxAge: deps.auth.config.sessionMaxSeconds,
     });
 
     if (totpPending) {
@@ -126,8 +122,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       return html(TotpPage({ error: "Invalid code. Try again." }));
     }
 
-    // Clear totp_pending
-    deps.store.repo.setSessionTotpPending(session.id, false);
+    deps.repo.setSessionTotpPending(session.id, false);
     return new Response(null, { status: 302, headers: { location: "/admin/" } });
   });
 
@@ -170,13 +165,11 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       return html(RecoveryPage({ error: "Invalid recovery code." }));
     }
 
-    // Update remaining codes
-    deps.store.repo.updateUser(user.id, {
+    deps.repo.updateUser(user.id, {
       recovery_codes_hashed: result.remaining,
     });
 
-    // Clear totp_pending
-    deps.store.repo.setSessionTotpPending(session.id, false);
+    deps.repo.setSessionTotpPending(session.id, false);
     return new Response(null, { status: 302, headers: { location: "/admin/" } });
   });
 

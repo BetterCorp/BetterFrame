@@ -1,8 +1,8 @@
 /**
  * service-coordinator-ws — WebSocket hub for live kiosk channel.
  *
- * Kiosks connect here to receive real-time layout switches, power
- * commands, and status pings. Port 18082 behind the Angie proxy.
+ * Kiosks connect here for real-time layout switches, power commands,
+ * and status pings. Port 18082 behind Angie proxy.
  */
 import * as av from "@anyvali/js";
 import {
@@ -13,12 +13,11 @@ import {
   type Observable,
 } from "@bsb/base";
 
-// ---- Config -----------------------------------------------------------------
-
 const ConfigSchema = av.object(
   {
     host: av.string().default("127.0.0.1"),
     port: av.int().min(1).max(65535).default(18082),
+    noderedUrl: av.string().minLength(1).default("http://127.0.0.1:1880"),
   },
   { unknownKeys: "strip" },
 );
@@ -41,14 +40,12 @@ export const EventSchemas = createEventSchemas({
   onBroadcast: {},
 });
 
-// ---- Plugin -----------------------------------------------------------------
-
 export class Plugin extends BSBService<InstanceType<typeof Config>, typeof EventSchemas> {
   static override Config = Config;
   static override EventSchemas = EventSchemas;
 
   initBeforePlugins?: string[];
-  initAfterPlugins?: string[] = ["service-store", "service-auth"];
+  initAfterPlugins?: string[] = ["service-store"];
   runBeforePlugins?: string[];
   runAfterPlugins?: string[];
 
@@ -61,8 +58,5 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   }
 
   async run(_obs: Observable): Promise<void> {}
-
-  async dispose(): Promise<void> {
-    // TODO: close ws server
-  }
+  async dispose(): Promise<void> {}
 }

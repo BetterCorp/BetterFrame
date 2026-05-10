@@ -270,6 +270,15 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
 
   // ---- v0.2: flatten layout_templates into layouts, display→kiosk inversion ---
   (db: DatabaseSync) => {
+    // Skip entirely if v0.5 rebuild already dropped template_id (idempotent re-run)
+    const cols = db.prepare(`PRAGMA table_info("layouts")`).all() as Array<{ name: string }>;
+    const hasTemplateId = cols.some((c) => c.name === "template_id");
+    if (!hasTemplateId) {
+      // Just ensure displays.kiosk_id exists for fresh-but-post-v0.5 DBs
+      addColumnIfNotExists(db, "displays", "kiosk_id", "INTEGER REFERENCES kiosks(id) ON DELETE SET NULL");
+      return;
+    }
+
     addColumnIfNotExists(db, "layouts", "regions", "TEXT NOT NULL DEFAULT '[]'");
     addColumnIfNotExists(db, "layouts", "grid_cols", "INTEGER NOT NULL DEFAULT 1");
     addColumnIfNotExists(db, "layouts", "grid_rows", "INTEGER NOT NULL DEFAULT 1");

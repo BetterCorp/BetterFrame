@@ -120,13 +120,28 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     this.db.exec("PRAGMA foreign_keys = ON");
     this.db.exec("PRAGMA busy_timeout = 10000");
 
-    obs.log.info("running {n} migrations", { n: MIGRATIONS.length });
-    for (const entry of MIGRATIONS) {
-      if (typeof entry === "string") {
-        this.db.exec(entry);
-      } else {
-        entry(this.db);
+    // Track schema version via SQLite's built-in user_version PRAGMA.
+    // Each migration entry runs exactly once across all server boots.
+    const row = this.db.prepare("PRAGMA user_version").get() as { user_version: number };
+    const currentVersion = row.user_version;
+    const targetVersion = MIGRATIONS.length;
+
+    if (currentVersion < targetVersion) {
+      obs.log.info("running migrations from {from} to {to}", {
+        from: currentVersion,
+        to: targetVersion,
+      });
+      for (let i = currentVersion; i < targetVersion; i++) {
+        const entry = MIGRATIONS[i];
+        if (typeof entry === "string") {
+          this.db.exec(entry);
+        } else if (typeof entry === "function") {
+          entry(this.db);
+        }
       }
+      this.db.exec(`PRAGMA user_version = ${targetVersion}`);
+    } else {
+      obs.log.info("schema up to date (version {v})", { v: currentVersion });
     }
 
     this._repo = new Repository(this.db, async (table, op, id) => {

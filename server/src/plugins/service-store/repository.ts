@@ -532,7 +532,7 @@ export class Repository {
       input.region_name,
       input.content_type,
       input.camera_id ?? null,
-      input.stream_selector ?? null,
+      input.stream_selector ?? "auto",
       input.web_url ?? null,
       input.html_content ?? null,
       input.cooling_timeout_seconds ?? null,

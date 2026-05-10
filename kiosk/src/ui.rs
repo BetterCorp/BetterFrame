@@ -89,8 +89,8 @@ fn activate(app: &Application) {
                         let bundle = server::fetch_bundle(&server_for_reload, &key_for_reload);
                         let _ = tx_for_reload.send(WorkerMsg::RenderBundle(bundle));
                     }
-                    ServerMsg::Standby => { cec::standby(); }
-                    ServerMsg::Wake => { cec::wake(); }
+                    ServerMsg::Standby => cec::standby(),
+                    ServerMsg::Wake => cec::wake(),
                 }
             }
         });

@@ -38,12 +38,22 @@ pub fn create_camera_pipeline(name: &str, rtsp_uri: &str) -> Option<(Pipeline, E
     let decode_weak = decode.downgrade();
     let pn = pipeline_name.clone();
     src.connect_pad_added(move |_src, pad| {
-        info!("[{pn}] rtspsrc pad added: {}", pad.name());
+        let name = pad.name().to_string();
+        info!("[{pn}] rtspsrc pad added: {name}");
+
+        // Only link video pads — check caps for application/x-rtp with video media
+        let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+        let caps_str = caps.to_string();
+        if !caps_str.contains("media=(string)video") && !caps_str.contains("encoding-name=(string)H26") {
+            info!("[{pn}] skipping non-video pad: {caps_str}");
+            return;
+        }
+
         let Some(decode) = decode_weak.upgrade() else { return };
         let sink_pad = decode.static_pad("sink").unwrap();
         if !sink_pad.is_linked() {
             match pad.link(&sink_pad) {
-                Ok(_) => info!("[{pn}] rtspsrc→decodebin linked"),
+                Ok(_) => info!("[{pn}] rtspsrc→decodebin linked (video)"),
                 Err(e) => error!("[{pn}] rtspsrc→decodebin link failed: {e:?}"),
             }
         }
@@ -76,7 +86,7 @@ pub fn create_camera_pipeline(name: &str, rtsp_uri: &str) -> Option<(Pipeline, E
     // Watch bus for errors
     let pn3 = pipeline_name.clone();
     let bus = pipeline.bus().unwrap();
-    bus.add_watch_local(move |_bus, msg| {
+    let _guard = bus.add_watch_local(move |_bus, msg| {
         use gst::MessageView;
         match msg.view() {
             MessageView::Error(err) => {
@@ -95,6 +105,9 @@ pub fn create_camera_pipeline(name: &str, rtsp_uri: &str) -> Option<(Pipeline, E
         gst::glib::ControlFlow::Continue
     })
     .ok()?;
+
+    // Leak the guard so it lives as long as the pipeline
+    std::mem::forget(_guard);
 
     info!("[{pipeline_name}] pipeline created for {rtsp_uri}");
     Some((pipeline, sink))

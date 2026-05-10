@@ -89,6 +89,83 @@ function rtspWithCredentials(raw: string, username: string, password: string): s
   }
 }
 
+function rangesOverlap(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
+  return aStart < bEnd && bStart < aEnd;
+}
+
+function shiftCellsForExpansion(
+  deps: AdminDeps,
+  layoutId: number,
+  cellId: number,
+  direction: "left" | "right" | "above" | "bottom",
+): void {
+  const cell = deps.repo.getLayoutCellById(cellId);
+  if (!cell || cell.layout_id !== layoutId) return;
+
+  const cells = deps.repo.layoutCells(layoutId).filter((c) => c.id !== cellId);
+  const rowStart = cell.row;
+  const rowEnd = cell.row + cell.row_span;
+  const colStart = cell.col;
+  const colEnd = cell.col + cell.col_span;
+
+  if (direction === "right") {
+    for (const c of cells) {
+      if (c.col >= colEnd && rangesOverlap(c.row, c.row + c.row_span, rowStart, rowEnd)) {
+        deps.repo.updateLayoutCell(c.id, { col: c.col + 1 });
+      }
+    }
+    deps.repo.updateLayoutCell(cell.id, { col_span: cell.col_span + 1 });
+  } else if (direction === "bottom") {
+    for (const c of cells) {
+      if (c.row >= rowEnd && rangesOverlap(c.col, c.col + c.col_span, colStart, colEnd)) {
+        deps.repo.updateLayoutCell(c.id, { row: c.row + 1 });
+      }
+    }
+    deps.repo.updateLayoutCell(cell.id, { row_span: cell.row_span + 1 });
+  } else if (direction === "left") {
+    const insertCol = Math.max(0, cell.col - 1);
+    for (const c of cells) {
+      if (c.col >= insertCol && rangesOverlap(c.row, c.row + c.row_span, rowStart, rowEnd)) {
+        deps.repo.updateLayoutCell(c.id, { col: c.col + 1 });
+      }
+    }
+    deps.repo.updateLayoutCell(cell.id, {
+      col: insertCol,
+      col_span: cell.col_span + 1,
+    });
+  } else if (direction === "above") {
+    const insertRow = Math.max(0, cell.row - 1);
+    for (const c of cells) {
+      if (c.row >= insertRow && rangesOverlap(c.col, c.col + c.col_span, colStart, colEnd)) {
+        deps.repo.updateLayoutCell(c.id, { row: c.row + 1 });
+      }
+    }
+    deps.repo.updateLayoutCell(cell.id, {
+      row: insertRow,
+      row_span: cell.row_span + 1,
+    });
+  }
+}
+
+function shiftCellsForInsertion(
+  deps: AdminDeps,
+  layoutId: number,
+  axis: "row" | "col",
+  fromIndex: number,
+  crossStart: number,
+  crossEnd: number,
+): void {
+  for (const c of deps.repo.layoutCells(layoutId)) {
+    if (axis === "col") {
+      if (c.col >= fromIndex && rangesOverlap(c.row, c.row + c.row_span, crossStart, crossEnd)) {
+        deps.repo.updateLayoutCell(c.id, { col: c.col + 1 });
+      }
+    } else if (c.row >= fromIndex && rangesOverlap(c.col, c.col + c.col_span, crossStart, crossEnd)) {
+      deps.repo.updateLayoutCell(c.id, { row: c.row + 1 });
+    }
+  }
+}
+
 export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // ---- Overview -------------------------------------------------------------
 
@@ -547,25 +624,19 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       if (direction === "right") {
         row = ref.row;
         col = ref.col + ref.col_span;
+        shiftCellsForInsertion(deps, layoutId, "col", col, row, row + 1);
       } else if (direction === "bottom") {
         row = ref.row + ref.row_span;
         col = ref.col;
+        shiftCellsForInsertion(deps, layoutId, "row", row, col, col + 1);
       } else if (direction === "left") {
         row = ref.row;
-        if (ref.col === 0) {
-          deps.repo.shiftCellsForLayout(layoutId, "col", 0, 1);
-          col = 0;
-        } else {
-          col = ref.col - 1;
-        }
+        col = Math.max(0, ref.col - 1);
+        shiftCellsForInsertion(deps, layoutId, "col", col, row, row + 1);
       } else if (direction === "above") {
         col = ref.col;
-        if (ref.row === 0) {
-          deps.repo.shiftCellsForLayout(layoutId, "row", 0, 1);
-          row = 0;
-        } else {
-          row = ref.row - 1;
-        }
+        row = Math.max(0, ref.row - 1);
+        shiftCellsForInsertion(deps, layoutId, "row", row, col, col + 1);
       }
     } else {
       // Explicit position — accept top-level row/col or nested position.
@@ -672,9 +743,17 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const body = await readBody<Record<string, string | number>>(event);
     const dim = String(body?.["dim"] ?? "");
     const delta = Number(body?.["delta"] ?? 0) || 0;
+    const direction = String(body?.["direction"] ?? "");
 
     const cell = deps.repo.getLayoutCellById(cellId);
-    if (cell && cell.layout_id === layoutId && (dim === "row_span" || dim === "col_span") && delta !== 0) {
+    if (
+      cell
+      && cell.layout_id === layoutId
+      && (direction === "left" || direction === "right" || direction === "above" || direction === "bottom")
+    ) {
+      shiftCellsForExpansion(deps, layoutId, cellId, direction);
+      notifyKiosks();
+    } else if (cell && cell.layout_id === layoutId && (dim === "row_span" || dim === "col_span") && delta !== 0) {
       const current = dim === "row_span" ? cell.row_span : cell.col_span;
       const next = Math.max(1, current + delta);
       if (next !== current) {

@@ -1418,23 +1418,28 @@ interface LayoutEditPageProps {
 
 export const LAYOUT_BUILDER_CSS = `
 .layout-builder { display: grid; gap: 4px; aspect-ratio: 16/9; max-width: 100%; background: #ddd; padding: 4px; border-radius: 4px; }
-.layout-cell { background: #fff; border: 2px solid #2563eb; border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; position: relative; min-height: 60px; padding: 4px; text-align: center; font-size: 0.85rem; font-weight: 600; color: #1e40af; overflow: hidden; }
+.layout-cell { background: #fff; border: 2px solid #2563eb; border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; position: relative; min-height: 60px; padding: 4px; text-align: center; font-size: 0.85rem; font-weight: 600; color: #1e40af; overflow: visible; }
 .layout-cell:hover { background: #f0f7ff; }
 .layout-cell.editing { background: #f9fafb; border-color: #1e40af; box-shadow: 0 0 0 2px #1e40af33; cursor: default; align-items: stretch; justify-content: stretch; text-align: left; font-weight: 400; color: inherit; padding: 8px; overflow: auto; }
 .layout-cell-empty-text { color: #999; font-size: 0.75rem; font-weight: 400; }
-.layout-cell-add { position: absolute; background: #2563eb; color: #fff; border: none; width: 24px; height: 24px; border-radius: 50%; cursor: pointer; font-size: 16px; line-height: 1; opacity: 0; transition: opacity 0.2s; padding: 0; z-index: 2; }
-.layout-cell:hover .layout-cell-add { opacity: 1; }
-.layout-cell-add:hover { background: #1e40af; opacity: 1; }
-.layout-cell-add-top { top: -12px; left: 50%; transform: translateX(-50%); }
-.layout-cell-add-right { right: -12px; top: 50%; transform: translateY(-50%); }
-.layout-cell-add-bottom { bottom: -12px; left: 50%; transform: translateX(-50%); }
-.layout-cell-add-left { left: -12px; top: 50%; transform: translateY(-50%); }
+.layout-cell-side { position: absolute; opacity: 0; transition: opacity 0.2s; z-index: 3; }
+.layout-cell:hover .layout-cell-side, .layout-cell-side:hover { opacity: 1; }
+.layout-cell-side-top { top: -12px; left: 50%; transform: translateX(-50%); }
+.layout-cell-side-right { right: -12px; top: 50%; transform: translateY(-50%); }
+.layout-cell-side-bottom { bottom: -12px; left: 50%; transform: translateX(-50%); }
+.layout-cell-side-left { left: -12px; top: 50%; transform: translateY(-50%); }
+.layout-cell-side-trigger { background: #2563eb; color: #fff; border: none; width: 24px; height: 24px; border-radius: 50%; cursor: pointer; font-size: 16px; line-height: 1; padding: 0; }
+.layout-cell-side-trigger:hover { background: #1e40af; }
+.layout-cell-side-menu { display: none; position: absolute; gap: 4px; background: #111827; border-radius: 4px; padding: 4px; box-shadow: 0 8px 18px rgba(15, 23, 42, 0.25); }
+.layout-cell-side:hover .layout-cell-side-menu { display: flex; }
+.layout-cell-side-top .layout-cell-side-menu { bottom: 28px; left: 50%; transform: translateX(-50%); }
+.layout-cell-side-bottom .layout-cell-side-menu { top: 28px; left: 50%; transform: translateX(-50%); }
+.layout-cell-side-left .layout-cell-side-menu { right: 28px; top: 50%; transform: translateY(-50%); flex-direction: column; }
+.layout-cell-side-right .layout-cell-side-menu { left: 28px; top: 50%; transform: translateY(-50%); flex-direction: column; }
+.layout-cell-side-menu button { background: #fff; color: #111827; border: none; border-radius: 3px; cursor: pointer; font-size: 0.7rem; line-height: 1; padding: 5px 7px; white-space: nowrap; }
+.layout-cell-side-menu button:hover { background: #dbeafe; color: #1e40af; }
 .layout-cell-delete { position: absolute; top: 4px; right: 4px; background: rgba(220, 38, 38, 0.9); color: #fff; border: none; width: 20px; height: 20px; border-radius: 50%; cursor: pointer; font-size: 12px; line-height: 1; padding: 0; opacity: 0; transition: opacity 0.2s; z-index: 2; }
 .layout-cell:hover .layout-cell-delete { opacity: 1; }
-.layout-cell-resize { position: absolute; bottom: 4px; right: 4px; display: flex; gap: 2px; opacity: 0; transition: opacity 0.2s; z-index: 2; }
-.layout-cell:hover .layout-cell-resize { opacity: 1; }
-.layout-cell-resize button { background: rgba(37, 99, 235, 0.85); color: #fff; border: none; min-width: 24px; height: 18px; border-radius: 3px; cursor: pointer; font-size: 0.65rem; line-height: 1; padding: 0 4px; font-weight: 700; }
-.layout-cell-resize button:hover { background: #1e40af; }
 .layout-cell-edit-form { width: 100%; }
 .layout-cell-edit-form .form-group { margin-bottom: 0.5rem; }
 .layout-cell-edit-form label { font-size: 0.75rem; font-weight: 600; display: block; margin-bottom: 0.15rem; }
@@ -1585,54 +1590,29 @@ export function renderCell(
       {(["top", "right", "bottom", "left"] as const).map((dir) => {
         const directionParam = dir === "top" ? "above" : dir;
         return (
-          <button
-            type="button"
-            class={`layout-cell-add layout-cell-add-${dir}`}
-            title={`Add cell ${dir}`}
-            hx-post={addUrl}
-            hx-vals={JSON.stringify({ after_cell_id: c.id, direction: directionParam })}
-            hx-target="#layout-grid"
-            hx-swap="innerHTML"
-            {...{ "onclick": "event.stopPropagation()" }}
-          >+</button>
+          <div class={`layout-cell-side layout-cell-side-${dir}`} {...{ "onclick": "event.stopPropagation()" }}>
+            <button type="button" class="layout-cell-side-trigger" title={`Actions ${dir}`}>+</button>
+            <div class="layout-cell-side-menu">
+              <button
+                type="button"
+                title={`Expand ${dir}`}
+                hx-post={resizeUrl}
+                hx-vals={JSON.stringify({ direction: directionParam })}
+                hx-target="#layout-grid"
+                hx-swap="innerHTML"
+              >Expand</button>
+              <button
+                type="button"
+                title={`Add cell ${dir}`}
+                hx-post={addUrl}
+                hx-vals={JSON.stringify({ after_cell_id: c.id, direction: directionParam })}
+                hx-target="#layout-grid"
+                hx-swap="innerHTML"
+              >Add</button>
+            </div>
+          </div>
         );
       })}
-
-      {/* resize buttons */}
-      <div class="layout-cell-resize" {...{ "onclick": "event.stopPropagation()" }}>
-        <button
-          type="button"
-          title="Increase width"
-          hx-post={resizeUrl}
-          hx-vals={JSON.stringify({ dim: "col_span", delta: 1 })}
-          hx-target="#layout-grid"
-          hx-swap="innerHTML"
-        >+W</button>
-        <button
-          type="button"
-          title="Decrease width"
-          hx-post={resizeUrl}
-          hx-vals={JSON.stringify({ dim: "col_span", delta: -1 })}
-          hx-target="#layout-grid"
-          hx-swap="innerHTML"
-        >-W</button>
-        <button
-          type="button"
-          title="Increase height"
-          hx-post={resizeUrl}
-          hx-vals={JSON.stringify({ dim: "row_span", delta: 1 })}
-          hx-target="#layout-grid"
-          hx-swap="innerHTML"
-        >+H</button>
-        <button
-          type="button"
-          title="Decrease height"
-          hx-post={resizeUrl}
-          hx-vals={JSON.stringify({ dim: "row_span", delta: -1 })}
-          hx-target="#layout-grid"
-          hx-swap="innerHTML"
-        >-H</button>
-      </div>
 
       {/* delete button */}
       <button
@@ -1781,9 +1761,9 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Layout Builder</h2>
           <p style="color:#666; font-size:0.85rem; margin-bottom:1rem">
-            Hover a cell for <strong>+</strong> (add neighbour), resize handles
-            (<strong>+W -W +H -H</strong>) and <strong>×</strong> (delete).
-            Click a cell to edit content in-place.
+            Hover a side <strong>+</strong> to add a neighbour or expand the cell.
+            Expanding pushes cells in that direction out of the way. Click a cell
+            to edit content in-place.
           </p>
           <div id="layout-grid">
             {renderGrid(l.id, cells, props.entities, props.cameras)}

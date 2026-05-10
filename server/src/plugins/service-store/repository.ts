@@ -800,4 +800,87 @@ export class Repository {
     ).all(cameraId);
     return rs.map((r) => String((r as Record<string, unknown>)["name"]));
   }
+
+  cameraLabelIds(cameraId: number): Array<{ label_id: number; name: string }> {
+    const rs = this.prep(
+      `SELECT cl.label_id, l.name FROM camera_labels cl
+         JOIN labels l ON l.id = cl.label_id
+        WHERE cl.camera_id = ?`,
+    ).all(cameraId);
+    return rs.map((r) => {
+      const row = r as Record<string, unknown>;
+      return { label_id: Number(row["label_id"]), name: String(row["name"]) };
+    });
+  }
+
+  updateCamera(id: number, patch: Partial<Camera>): void {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (k === "id" || k === "created_at") continue;
+      sets.push(`${k} = ?`);
+      vals.push(v === undefined ? null : v);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    this.db.prepare(`UPDATE cameras SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    void this.notify("cameras", "update", id);
+  }
+
+  deleteCamera(id: number): void {
+    this.db.prepare(`DELETE FROM camera_labels WHERE camera_id = ?`).run(id);
+    this.db.prepare(`DELETE FROM camera_streams WHERE camera_id = ?`).run(id);
+    this.db.prepare(`DELETE FROM layout_cells WHERE camera_id = ?`).run(id);
+    this.db.prepare(`DELETE FROM cameras WHERE id = ?`).run(id);
+    void this.notify("cameras", "delete", id);
+  }
+
+  updateKiosk(id: number, patch: Partial<Kiosk>): void {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (k === "id" || k === "created_at" || k === "paired_at") continue;
+      sets.push(`${k} = ?`);
+      vals.push(v === undefined ? null : v);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    this.db.prepare(`UPDATE kiosks SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    void this.notify("kiosks", "update", id);
+  }
+
+  deleteKiosk(id: number): void {
+    this.db.prepare(`DELETE FROM kiosk_labels WHERE kiosk_id = ?`).run(id);
+    this.db.prepare(`DELETE FROM kiosks WHERE id = ?`).run(id);
+    void this.notify("kiosks", "delete", id);
+  }
+
+  detachCameraLabel(cameraId: number, labelId: number): void {
+    this.db.prepare(`DELETE FROM camera_labels WHERE camera_id = ? AND label_id = ?`).run(cameraId, labelId);
+  }
+
+  detachKioskLabel(kioskId: number, labelId: number): void {
+    this.db.prepare(`DELETE FROM kiosk_labels WHERE kiosk_id = ? AND label_id = ?`).run(kioskId, labelId);
+  }
+
+  deleteLabel(id: number): void {
+    this.db.prepare(`DELETE FROM camera_labels WHERE label_id = ?`).run(id);
+    this.db.prepare(`DELETE FROM kiosk_labels WHERE label_id = ?`).run(id);
+    this.db.prepare(`DELETE FROM layout_labels WHERE label_id = ?`).run(id);
+    this.db.prepare(`DELETE FROM labels WHERE id = ?`).run(id);
+    void this.notify("labels", "delete", id);
+  }
+
+  updateLabel(id: number, patch: { name?: string; description?: string | null; color?: string | null }): void {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      sets.push(`${k} = ?`);
+      vals.push(v === undefined ? null : v);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    this.db.prepare(`UPDATE labels SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    void this.notify("labels", "update", id);
+  }
 }

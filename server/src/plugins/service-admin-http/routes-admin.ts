@@ -1,7 +1,7 @@
 /**
  * Admin page routes — overview, cameras, kiosks, labels, etc.
  */
-import { type H3, readBody } from "h3";
+import { type H3, readBody, getRouterParam } from "h3";
 import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { confirmPairing } from "../../shared/pairing.js";
@@ -9,7 +9,10 @@ import {
   OverviewPage,
   CamerasPage,
   CameraNewPage,
+  CameraEditPage,
   KiosksPage,
+  KioskEditPage,
+  LabelsPage,
   SimpleListPage,
 } from "../../web-templates/admin-pages.js";
 
@@ -205,17 +208,149 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/labels", (event) => {
     const user = event.context.user!;
-    const labels = deps.repo.listLabels();
-    return htmlPage(SimpleListPage({
+    return htmlPage(LabelsPage({ user: user.username, labels: deps.repo.listLabels() }));
+  });
+
+  app.post("/admin/labels/new", async (event) => {
+    const body = await readBody<Record<string, string>>(event);
+    const name = (body?.["name"] ?? "").trim().toLowerCase();
+    const color = body?.["color"] ?? null;
+    if (!name || !/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
+      return htmlPage(LabelsPage({
+        user: event.context.user!.username,
+        labels: deps.repo.listLabels(),
+        error: "Label name must start with letter/digit and contain only lowercase, digits, hyphens, underscores.",
+      }));
+    }
+    deps.repo.createLabel({ name, color });
+    return new Response(null, { status: 302, headers: { location: "/admin/labels" } });
+  });
+
+  app.post("/admin/labels/:id/delete", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    deps.repo.deleteLabel(id);
+    return new Response(null, { status: 302, headers: { location: "/admin/labels" } });
+  });
+
+  // ---- Camera edit/delete/labels --------------------------------------------
+
+  app.get("/admin/cameras/:id", (event) => {
+    const user = event.context.user!;
+    const id = Number(getRouterParam(event, "id"));
+    const camera = deps.repo.getCameraById(id);
+    if (!camera) return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
+    return htmlPage(CameraEditPage({
       user: user.username,
-      pageTitle: "Labels",
-      description: "Labels route cameras, layouts, and kiosks to each other across sites.",
-      activeNav: "labels",
-      items: labels.map((l) => ({
-        name: l.name,
-        detail: l.description ?? "",
-        badge: l.color ?? undefined,
-      })),
+      camera,
+      labels: deps.repo.cameraLabelIds(id),
+      allLabels: deps.repo.listLabels(),
+      streams: deps.repo.listCameraStreams(id),
     }));
+  });
+
+  app.post("/admin/cameras/:id", async (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const body = await readBody<Record<string, string>>(event);
+    deps.repo.updateCamera(id, {
+      name: body?.["name"],
+      rtsp_url: body?.["rtsp_url"] || null,
+      onvif_host: body?.["onvif_host"] || null,
+      onvif_port: body?.["onvif_port"] ? Number(body["onvif_port"]) : null,
+      onvif_username: body?.["onvif_username"] || null,
+      onvif_password: body?.["onvif_password"] || undefined,
+      enabled: body?.["enabled"] === "1",
+    } as any);
+    return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
+  });
+
+  app.post("/admin/cameras/:id/labels", async (event) => {
+    const camId = Number(getRouterParam(event, "id"));
+    const body = await readBody<Record<string, string>>(event);
+    const newLabel = (body?.["new_label"] ?? "").trim().toLowerCase();
+    let labelId = body?.["label_id"] ? Number(body["label_id"]) : null;
+
+    if (newLabel) {
+      const label = deps.repo.ensureLabel(newLabel);
+      labelId = label.id;
+    }
+    if (labelId) {
+      deps.repo.attachCameraLabel(camId, labelId);
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/cameras/${camId}` } });
+  });
+
+  app.post("/admin/cameras/:id/labels/remove", async (event) => {
+    const camId = Number(getRouterParam(event, "id"));
+    const body = await readBody<Record<string, string>>(event);
+    const labelId = Number(body?.["label_id"]);
+    deps.repo.detachCameraLabel(camId, labelId);
+    return new Response(null, { status: 302, headers: { location: `/admin/cameras/${camId}` } });
+  });
+
+  app.post("/admin/cameras/:id/delete", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    deps.repo.deleteCamera(id);
+    return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
+  });
+
+  // ---- Kiosk edit/delete/labels ---------------------------------------------
+
+  app.get("/admin/kiosks/:id", (event) => {
+    const user = event.context.user!;
+    const id = Number(getRouterParam(event, "id"));
+    const kiosk = deps.repo.getKioskById(id);
+    if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
+    const kioskLabels = deps.repo.listKioskLabels(id).map((kl) => ({
+      label_id: kl.label_id,
+      name: kl.name,
+      role: kl.role,
+    }));
+    return htmlPage(KioskEditPage({
+      user: user.username,
+      kiosk,
+      labels: kioskLabels,
+      allLabels: deps.repo.listLabels(),
+    }));
+  });
+
+  app.post("/admin/kiosks/:id", async (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const body = await readBody<Record<string, string>>(event);
+    deps.repo.updateKiosk(id, {
+      name: body?.["name"],
+      enabled: body?.["enabled"] === "1",
+    } as any);
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+  });
+
+  app.post("/admin/kiosks/:id/labels", async (event) => {
+    const kioskId = Number(getRouterParam(event, "id"));
+    const body = await readBody<Record<string, string>>(event);
+    const newLabel = (body?.["new_label"] ?? "").trim().toLowerCase();
+    const role = (body?.["role"] ?? "consume") as "consume" | "operate";
+    let labelId = body?.["label_id"] ? Number(body["label_id"]) : null;
+
+    if (newLabel) {
+      const label = deps.repo.ensureLabel(newLabel);
+      labelId = label.id;
+    }
+    if (labelId) {
+      deps.repo.attachKioskLabel(kioskId, labelId, role);
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${kioskId}` } });
+  });
+
+  app.post("/admin/kiosks/:id/labels/remove", async (event) => {
+    const kioskId = Number(getRouterParam(event, "id"));
+    const body = await readBody<Record<string, string>>(event);
+    const labelId = Number(body?.["label_id"]);
+    deps.repo.detachKioskLabel(kioskId, labelId);
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${kioskId}` } });
+  });
+
+  app.post("/admin/kiosks/:id/delete", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    deps.repo.deleteKiosk(id);
+    return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
   });
 }

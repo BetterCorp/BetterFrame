@@ -3,7 +3,7 @@
  */
 import { js } from "jsx-htmx";
 import { Layout } from "./layout.js";
-import type { Camera, Kiosk, PairingCode, EventLog } from "../shared/types.js";
+import type { Camera, Kiosk, Label, PairingCode, EventLog } from "../shared/types.js";
 
 // ---- Overview ---------------------------------------------------------------
 
@@ -122,7 +122,7 @@ export function CamerasPage(props: CamerasProps) {
             ) : (
               props.cameras.map((cam) => (
                 <tr>
-                  <td><strong>{cam.name}</strong></td>
+                  <td><a href={`/admin/cameras/${cam.id}`}><strong>{cam.name}</strong></a></td>
                   <td><span class="badge badge-blue">{cam.type.toUpperCase()}</span></td>
                   <td>{String(props.streamCounts.get(cam.id) ?? 0)}</td>
                   <td>
@@ -273,7 +273,7 @@ export function KiosksPage(props: KiosksProps) {
                 ) : (
                   props.kiosks.map((k) => (
                     <tr>
-                      <td><strong>{k.name}</strong></td>
+                      <td><a href={`/admin/kiosks/${k.id}`}><strong>{k.name}</strong></a></td>
                       <td style="font-size:0.85rem">{k.hardware_model ?? "—"}</td>
                       <td style="font-size:0.85rem; white-space:nowrap">{k.last_seen_at ? formatTime(k.last_seen_at) : "Never"}</td>
                       <td>
@@ -514,6 +514,282 @@ export function SimpleListPage(props: SimpleListProps) {
                     )}
                   </td>
                   <td style="color:#666">{item.detail ?? ""}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Layout>
+  );
+}
+
+// ---- Camera Edit ------------------------------------------------------------
+
+interface CameraEditProps {
+  user: string;
+  camera: Camera;
+  labels: Array<{ label_id: number; name: string }>;
+  allLabels: Label[];
+  streams: Array<{ id: number; role: string; name: string; rtsp_uri: string }>;
+  error?: string;
+  success?: string;
+}
+
+export function CameraEditPage(props: CameraEditProps) {
+  const cam = props.camera;
+  return (
+    <Layout
+      title={`Camera: ${cam.name}`}
+      user={props.user}
+      activeNav="cameras"
+      flash={
+        props.error ? { type: "error", message: props.error }
+        : props.success ? { type: "success", message: props.success }
+        : undefined
+      }
+    >
+      <div style="max-width:700px">
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Edit Camera</h2>
+          <form method="post" action={`/admin/cameras/${cam.id}`}>
+            <div class="form-group">
+              <label for="name">Name</label>
+              <input id="name" name="name" type="text" class="form-input" value={cam.name} required maxlength="128" />
+            </div>
+            {cam.type === "rtsp" && (
+              <div class="form-group">
+                <label for="rtsp_url">RTSP URL</label>
+                <input id="rtsp_url" name="rtsp_url" type="text" class="form-input" value={cam.rtsp_url ?? ""} />
+              </div>
+            )}
+            {cam.type === "onvif" && (
+              <div>
+                <div class="form-group">
+                  <label for="onvif_host">ONVIF Host</label>
+                  <input id="onvif_host" name="onvif_host" type="text" class="form-input" value={cam.onvif_host ?? ""} />
+                </div>
+                <div class="form-group">
+                  <label for="onvif_port">Port</label>
+                  <input id="onvif_port" name="onvif_port" type="number" class="form-input" value={String(cam.onvif_port ?? 80)} />
+                </div>
+                <div class="form-group">
+                  <label for="onvif_username">Username</label>
+                  <input id="onvif_username" name="onvif_username" type="text" class="form-input" value={cam.onvif_username ?? ""} />
+                </div>
+                <div class="form-group">
+                  <label for="onvif_password">Password (leave blank to keep)</label>
+                  <input id="onvif_password" name="onvif_password" type="password" class="form-input" />
+                </div>
+              </div>
+            )}
+            <div class="form-group">
+              <label>
+                <input type="checkbox" name="enabled" value="1" checked={cam.enabled} />
+                {" "}Enabled
+              </label>
+            </div>
+            <button type="submit" class="btn btn-primary">Save</button>
+            <a href="/admin/cameras" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
+          </form>
+        </div>
+
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Labels</h2>
+          {props.labels.length > 0 ? (
+            <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:1rem">
+              {props.labels.map((l) => (
+                <form method="post" action={`/admin/cameras/${cam.id}/labels/remove`} style="display:inline">
+                  <input type="hidden" name="label_id" value={String(l.label_id)} />
+                  <button type="submit" class="badge badge-blue" style="cursor:pointer; border:none" title="Click to remove">
+                    {l.name} ×
+                  </button>
+                </form>
+              ))}
+            </div>
+          ) : (
+            <p style="color:#999; margin-bottom:1rem">No labels attached</p>
+          )}
+          <form method="post" action={`/admin/cameras/${cam.id}/labels`} style="display:flex; gap:0.5rem">
+            <select name="label_id" class="form-input" style="flex:1">
+              {props.allLabels
+                .filter((al) => !props.labels.some((l) => l.label_id === al.id))
+                .map((al) => <option value={String(al.id)}>{al.name}</option>)}
+            </select>
+            <button type="submit" class="btn btn-primary">Add</button>
+          </form>
+          <form method="post" action={`/admin/cameras/${cam.id}/labels`} style="display:flex; gap:0.5rem; margin-top:0.5rem">
+            <input name="new_label" type="text" class="form-input" placeholder="Or create new label..." style="flex:1" />
+            <button type="submit" class="btn btn-ghost">Create &amp; Add</button>
+          </form>
+        </div>
+
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Streams</h2>
+          {props.streams.length > 0 ? (
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Role</th><th>Name</th><th>URI</th></tr></thead>
+                <tbody>
+                  {props.streams.map((s) => (
+                    <tr>
+                      <td><span class="badge badge-gray">{s.role}</span></td>
+                      <td>{s.name}</td>
+                      <td style="font-size:0.8rem; word-break:break-all">{s.rtsp_uri}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p style="color:#999">No streams configured</p>
+          )}
+        </div>
+
+        <form method="post" action={`/admin/cameras/${cam.id}/delete`} style="margin-top:1rem">
+          <button type="submit" class="btn btn-danger" {...{"onclick": "return confirm('Delete this camera?')"}}>Delete Camera</button>
+        </form>
+      </div>
+    </Layout>
+  );
+}
+
+// ---- Kiosk Edit -------------------------------------------------------------
+
+interface KioskEditProps {
+  user: string;
+  kiosk: Kiosk;
+  labels: Array<{ label_id: number; name: string; role: string }>;
+  allLabels: Label[];
+  error?: string;
+  success?: string;
+}
+
+export function KioskEditPage(props: KioskEditProps) {
+  const k = props.kiosk;
+  return (
+    <Layout
+      title={`Kiosk: ${k.name}`}
+      user={props.user}
+      activeNav="kiosks"
+      flash={
+        props.error ? { type: "error", message: props.error }
+        : props.success ? { type: "success", message: props.success }
+        : undefined
+      }
+    >
+      <div style="max-width:700px">
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Edit Kiosk</h2>
+          <form method="post" action={`/admin/kiosks/${k.id}`}>
+            <div class="form-group">
+              <label for="name">Name</label>
+              <input id="name" name="name" type="text" class="form-input" value={k.name} required />
+            </div>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" name="enabled" value="1" checked={k.enabled} />
+                {" "}Enabled
+              </label>
+            </div>
+            <button type="submit" class="btn btn-primary">Save</button>
+            <a href="/admin/kiosks" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
+          </form>
+          <div style="margin-top:1rem; color:#666; font-size:0.85rem">
+            <div>Hardware: {k.hardware_model ?? "—"}</div>
+            <div>Paired: {k.paired_at ? formatTime(k.paired_at) : "—"}</div>
+            <div>Last seen: {k.last_seen_at ? formatTime(k.last_seen_at) : "Never"}</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Labels</h2>
+          {props.labels.length > 0 ? (
+            <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:1rem">
+              {props.labels.map((l) => (
+                <form method="post" action={`/admin/kiosks/${k.id}/labels/remove`} style="display:inline">
+                  <input type="hidden" name="label_id" value={String(l.label_id)} />
+                  <button type="submit" class="badge badge-blue" style="cursor:pointer; border:none" title="Click to remove">
+                    {l.name} ({l.role}) ×
+                  </button>
+                </form>
+              ))}
+            </div>
+          ) : (
+            <p style="color:#999; margin-bottom:1rem">No labels attached</p>
+          )}
+          <form method="post" action={`/admin/kiosks/${k.id}/labels`} style="display:flex; gap:0.5rem">
+            <select name="label_id" class="form-input" style="flex:1">
+              {props.allLabels
+                .filter((al) => !props.labels.some((l) => l.label_id === al.id))
+                .map((al) => <option value={String(al.id)}>{al.name}</option>)}
+            </select>
+            <select name="role" class="form-input" style="width:120px">
+              <option value="consume">consume</option>
+              <option value="operate">operate</option>
+            </select>
+            <button type="submit" class="btn btn-primary">Add</button>
+          </form>
+          <form method="post" action={`/admin/kiosks/${k.id}/labels`} style="display:flex; gap:0.5rem; margin-top:0.5rem">
+            <input name="new_label" type="text" class="form-input" placeholder="Or create new label..." style="flex:1" />
+            <select name="role" class="form-input" style="width:120px">
+              <option value="consume">consume</option>
+              <option value="operate">operate</option>
+            </select>
+            <button type="submit" class="btn btn-ghost">Create &amp; Add</button>
+          </form>
+        </div>
+
+        <form method="post" action={`/admin/kiosks/${k.id}/delete`} style="margin-top:1rem">
+          <button type="submit" class="btn btn-danger" {...{"onclick": "return confirm('Delete this kiosk?')"}}>Delete Kiosk</button>
+        </form>
+      </div>
+    </Layout>
+  );
+}
+
+// ---- Labels Management ------------------------------------------------------
+
+interface LabelsPageProps {
+  user: string;
+  labels: Label[];
+  error?: string;
+}
+
+export function LabelsPage(props: LabelsPageProps) {
+  return (
+    <Layout
+      title="Labels"
+      user={props.user}
+      activeNav="labels"
+      flash={props.error ? { type: "error", message: props.error } : undefined}
+    >
+      <div class="section-header">
+        <h2 class="section-title">All Labels</h2>
+      </div>
+      <div style="max-width:500px; margin-bottom:1.5rem">
+        <form method="post" action="/admin/labels/new" style="display:flex; gap:0.5rem">
+          <input name="name" type="text" class="form-input" placeholder="New label name" required pattern="[a-z0-9][a-z0-9_-]*" style="flex:1" />
+          <input name="color" type="color" value="#2563eb" style="width:40px; height:38px; border:1px solid #d0d0d0; border-radius:4px" />
+          <button type="submit" class="btn btn-primary">Create</button>
+        </form>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Color</th><th>Actions</th></tr></thead>
+          <tbody>
+            {props.labels.length === 0 ? (
+              <tr><td colspan="3" style="text-align:center; color:#999; padding:2rem">No labels</td></tr>
+            ) : (
+              props.labels.map((l) => (
+                <tr>
+                  <td><strong>{l.name}</strong></td>
+                  <td>{l.color ? <span class="badge" style={`background-color:${l.color}; color:#fff`}>{l.color}</span> : "—"}</td>
+                  <td>
+                    <form method="post" action={`/admin/labels/${l.id}/delete`} style="display:inline">
+                      <button type="submit" class="btn btn-sm btn-danger" {...{"onclick": "return confirm('Delete label?')"}}>Delete</button>
+                    </form>
+                  </td>
                 </tr>
               ))
             )}

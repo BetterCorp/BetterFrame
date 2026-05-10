@@ -174,7 +174,7 @@ launch_cameras() {
     local launched=false
     for depay_chain in \
       "rtph264depay ! h264parse ! avdec_h264" \
-      "rtph265depay ! h265parse ! avdec_h265" \
+      "rtph265depay ! h265parse ! avdec_h265 max-threads=4" \
       ; do
       echo "    trying: ${depay_chain%% *}..."
       timeout 5 gst-launch-1.0 \
@@ -201,7 +201,8 @@ launch_cameras() {
     done
 
     if [[ "$launched" == "false" ]]; then
-      echo "    fallback: uridecodebin"
+      echo "    fallback: uridecodebin (sw decode)"
+      GST_PLUGIN_FEATURE_RANK=v4l2slh265dec:0,v4l2slh264dec:0 \
       gst-launch-1.0 \
         uridecodebin uri="$rtsp_uri" caps="video/x-raw" \
         ! videoconvert ! waylandsink fullscreen=true \

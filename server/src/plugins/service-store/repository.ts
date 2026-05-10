@@ -556,7 +556,7 @@ export class Repository {
     ).run(
       input.name,
       input.description ?? null,
-      null,
+      0,
       J([]),
       1,
       1,

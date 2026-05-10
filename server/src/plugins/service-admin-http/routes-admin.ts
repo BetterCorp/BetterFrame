@@ -1,7 +1,7 @@
 /**
  * Admin page routes — overview, cameras, kiosks, labels, etc.
  */
-import { type H3, readBody, getRouterParam, getQuery } from "h3";
+import { type H3, readBody, getRouterParam, getRequestHeader } from "h3";
 import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { confirmPairing } from "../../shared/pairing.js";
@@ -19,7 +19,19 @@ import {
   LayoutEditPage,
   DisplaysPage,
   DisplayEditPage,
+  renderCell,
+  renderGrid,
 } from "../../web-templates/admin-pages.js";
+
+function htmlFragment(markup: unknown): Response {
+  return new Response(String(markup), {
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
+function isHtmxRequest(event: Parameters<typeof getRequestHeader>[0]): boolean {
+  return getRequestHeader(event, "hx-request") === "true";
+}
 
 function notifyKiosks(): void {
   try { getCoordinator().notifyBundleChanged(); } catch { /* ignore */ }
@@ -255,16 +267,12 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const cells = deps.repo.layoutCells(id);
     const cameras = deps.repo.listCameras();
     const displays = deps.repo.listDisplaysForLayout(id);
-    const q = getQuery(event) as Record<string, string | undefined>;
-    const selectedRaw = q["cell"];
-    const selectedCellId = selectedRaw ? Number(selectedRaw) : null;
     return htmlPage(LayoutEditPage({
       user: user.username,
       layout,
       displays,
       cells,
       cameras,
-      selectedCellId: selectedCellId && cells.some((c) => c.id === selectedCellId) ? selectedCellId : null,
     }));
   });
 
@@ -287,7 +295,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // Create a new 1x1 cell. Two body shapes:
   //   { position: { row, col } }  — explicit position, may shift others.
   //   { after_cell_id, direction } — relative to existing cell (right/below/left/above).
-  // Returns 302 redirect to the layout edit page (htmx will swap on hx-target).
+  // For htmx requests (hx-request header), returns the grid fragment; otherwise
+  // returns a 302 to the layout edit page.
   app.post("/admin/layouts/:id/cells", async (event) => {
     const layoutId = Number(getRouterParam(event, "id"));
     const body = await readBody<Record<string, string | number | { row: number; col: number }>>(event);
@@ -303,6 +312,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       const cells = deps.repo.layoutCells(layoutId);
       const ref = cells.find((c) => c.id === afterId);
       if (!ref) {
+        if (isHtmxRequest(event)) {
+          const cameras = deps.repo.listCameras();
+          return htmlFragment(renderGrid(layoutId, cells, cameras));
+        }
         return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
       }
       if (direction === "right") {
@@ -351,17 +364,48 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     });
     notifyKiosks();
 
+    if (isHtmxRequest(event)) {
+      const cells = deps.repo.layoutCells(layoutId);
+      const cameras = deps.repo.listCameras();
+      return htmlFragment(renderGrid(layoutId, cells, cameras));
+    }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
 
-  // Update a cell's content assignment.
+  // GET a single cell in read mode (used by htmx Cancel button in inline edit).
+  app.get("/admin/layouts/:id/cells/:cellId", (event) => {
+    const layoutId = Number(getRouterParam(event, "id"));
+    const cellId = Number(getRouterParam(event, "cellId"));
+    const cell = deps.repo.getLayoutCellById(cellId);
+    if (!cell || cell.layout_id !== layoutId) {
+      return new Response("Not Found", { status: 404 });
+    }
+    const cameras = deps.repo.listCameras();
+    return htmlFragment(renderCell(layoutId, cell, cameras, "read"));
+  });
+
+  // GET a single cell in edit mode (htmx swap target for cell click).
+  app.get("/admin/layouts/:id/cells/:cellId/edit", (event) => {
+    const layoutId = Number(getRouterParam(event, "id"));
+    const cellId = Number(getRouterParam(event, "cellId"));
+    const cell = deps.repo.getLayoutCellById(cellId);
+    if (!cell || cell.layout_id !== layoutId) {
+      return new Response("Not Found", { status: 404 });
+    }
+    const cameras = deps.repo.listCameras();
+    return htmlFragment(renderCell(layoutId, cell, cameras, "edit"));
+  });
+
+  // Update a cell's content assignment + dimensions.
+  // For htmx requests, returns the updated cell HTML (read mode) for outerHTML
+  // swap onto the cell element. For normal POSTs, returns 302.
   app.post("/admin/layouts/:id/cells/:cellId", async (event) => {
     const layoutId = Number(getRouterParam(event, "id"));
     const cellId = Number(getRouterParam(event, "cellId"));
     const body = await readBody<Record<string, string>>(event);
     const contentType = (body?.["content_type"] ?? "html") as "camera" | "web" | "html";
 
-    deps.repo.updateLayoutCell(cellId, {
+    const patch: Record<string, unknown> = {
       content_type: contentType,
       camera_id: contentType === "camera" && body?.["camera_id"] ? Number(body["camera_id"]) : null,
       stream_selector: contentType === "camera"
@@ -369,9 +413,54 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         : "auto",
       web_url: contentType === "web" ? (body?.["web_url"] ?? null) : null,
       html_content: contentType === "html" ? (body?.["html_content"] ?? null) : null,
-    });
+    };
+
+    const colSpanRaw = body?.["col_span"];
+    const rowSpanRaw = body?.["row_span"];
+    if (colSpanRaw != null && String(colSpanRaw).trim() !== "") {
+      const v = Math.max(1, Number(colSpanRaw) || 1);
+      patch["col_span"] = v;
+    }
+    if (rowSpanRaw != null && String(rowSpanRaw).trim() !== "") {
+      const v = Math.max(1, Number(rowSpanRaw) || 1);
+      patch["row_span"] = v;
+    }
+
+    deps.repo.updateLayoutCell(cellId, patch as any);
     notifyKiosks();
 
+    if (isHtmxRequest(event)) {
+      const cell = deps.repo.getLayoutCellById(cellId);
+      if (!cell) return new Response("", { headers: { "content-type": "text/html; charset=utf-8" } });
+      const cameras = deps.repo.listCameras();
+      return htmlFragment(renderCell(layoutId, cell, cameras, "read"));
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
+  });
+
+  // Resize a cell by ±1 on row_span or col_span. Returns the grid fragment.
+  app.post("/admin/layouts/:id/cells/:cellId/resize", async (event) => {
+    const layoutId = Number(getRouterParam(event, "id"));
+    const cellId = Number(getRouterParam(event, "cellId"));
+    const body = await readBody<Record<string, string | number>>(event);
+    const dim = String(body?.["dim"] ?? "");
+    const delta = Number(body?.["delta"] ?? 0) || 0;
+
+    const cell = deps.repo.getLayoutCellById(cellId);
+    if (cell && cell.layout_id === layoutId && (dim === "row_span" || dim === "col_span") && delta !== 0) {
+      const current = dim === "row_span" ? cell.row_span : cell.col_span;
+      const next = Math.max(1, current + delta);
+      if (next !== current) {
+        deps.repo.updateLayoutCell(cellId, { [dim]: next } as any);
+        notifyKiosks();
+      }
+    }
+
+    const cells = deps.repo.layoutCells(layoutId);
+    const cameras = deps.repo.listCameras();
+    if (isHtmxRequest(event)) {
+      return htmlFragment(renderGrid(layoutId, cells, cameras));
+    }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
 
@@ -380,6 +469,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const cellId = Number(getRouterParam(event, "cellId"));
     deps.repo.deleteLayoutCell(cellId);
     notifyKiosks();
+    if (isHtmxRequest(event)) {
+      const cells = deps.repo.layoutCells(layoutId);
+      const cameras = deps.repo.listCameras();
+      return htmlFragment(renderGrid(layoutId, cells, cameras));
+    }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
 

@@ -630,6 +630,11 @@ export class Repository {
     return rs.map((r) => rowToLayoutCell(r as Record<string, unknown>));
   }
 
+  getLayoutCellById(id: number): LayoutCell | null {
+    const r = this.prep("SELECT * FROM layout_cells WHERE id = ?").get(id);
+    return r ? rowToLayoutCell(r as Record<string, unknown>) : null;
+  }
+
   // ===========================================================================
   // display-chain bundle queries (kiosk → display → layouts → cells → cameras)
   // ===========================================================================

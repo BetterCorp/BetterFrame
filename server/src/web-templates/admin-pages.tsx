@@ -1010,11 +1010,11 @@ interface LayoutEditPageProps {
   success?: string;
 }
 
-const LAYOUT_BUILDER_CSS = `
+export const LAYOUT_BUILDER_CSS = `
 .layout-builder { display: grid; gap: 4px; aspect-ratio: 16/9; max-width: 100%; background: #ddd; padding: 4px; border-radius: 4px; }
 .layout-cell { background: #fff; border: 2px solid #2563eb; border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; position: relative; min-height: 60px; padding: 4px; text-align: center; font-size: 0.85rem; font-weight: 600; color: #1e40af; overflow: hidden; }
 .layout-cell:hover { background: #f0f7ff; }
-.layout-cell.selected { background: #dbeafe; border-color: #1e40af; box-shadow: 0 0 0 2px #1e40af33; }
+.layout-cell.editing { background: #f9fafb; border-color: #1e40af; box-shadow: 0 0 0 2px #1e40af33; cursor: default; align-items: stretch; justify-content: stretch; text-align: left; font-weight: 400; color: inherit; padding: 8px; overflow: auto; }
 .layout-cell-empty-text { color: #999; font-size: 0.75rem; font-weight: 400; }
 .layout-cell-add { position: absolute; background: #2563eb; color: #fff; border: none; width: 24px; height: 24px; border-radius: 50%; cursor: pointer; font-size: 16px; line-height: 1; opacity: 0; transition: opacity 0.2s; padding: 0; z-index: 2; }
 .layout-cell:hover .layout-cell-add { opacity: 1; }
@@ -1025,20 +1025,271 @@ const LAYOUT_BUILDER_CSS = `
 .layout-cell-add-left { left: -12px; top: 50%; transform: translateY(-50%); }
 .layout-cell-delete { position: absolute; top: 4px; right: 4px; background: rgba(220, 38, 38, 0.9); color: #fff; border: none; width: 20px; height: 20px; border-radius: 50%; cursor: pointer; font-size: 12px; line-height: 1; padding: 0; opacity: 0; transition: opacity 0.2s; z-index: 2; }
 .layout-cell:hover .layout-cell-delete { opacity: 1; }
+.layout-cell-resize { position: absolute; bottom: 4px; right: 4px; display: flex; gap: 2px; opacity: 0; transition: opacity 0.2s; z-index: 2; }
+.layout-cell:hover .layout-cell-resize { opacity: 1; }
+.layout-cell-resize button { background: rgba(37, 99, 235, 0.85); color: #fff; border: none; min-width: 24px; height: 18px; border-radius: 3px; cursor: pointer; font-size: 0.65rem; line-height: 1; padding: 0 4px; font-weight: 700; }
+.layout-cell-resize button:hover { background: #1e40af; }
+.layout-cell-edit-form { width: 100%; }
+.layout-cell-edit-form .form-group { margin-bottom: 0.5rem; }
+.layout-cell-edit-form label { font-size: 0.75rem; font-weight: 600; display: block; margin-bottom: 0.15rem; }
+.layout-cell-edit-form .form-input, .layout-cell-edit-form input, .layout-cell-edit-form select, .layout-cell-edit-form textarea { font-size: 0.8rem; padding: 0.25rem 0.4rem; width: 100%; box-sizing: border-box; }
+.layout-cell-edit-form .btn { font-size: 0.75rem; padding: 0.25rem 0.6rem; }
+.layout-cell-edit-form-actions { display: flex; gap: 0.35rem; margin-top: 0.5rem; flex-wrap: wrap; }
+.layout-cell-edit-form .span-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; }
 .layout-empty { display: flex; align-items: center; justify-content: center; aspect-ratio: 16/9; background: #f3f4f6; border-radius: 4px; }
 .layout-empty-add { background: #2563eb; color: #fff; border: none; width: 80px; height: 80px; border-radius: 50%; cursor: pointer; font-size: 36px; line-height: 1; padding: 0; }
 .layout-empty-add:hover { background: #1e40af; }
 `;
 
-export function LayoutEditPage(props: LayoutEditPageProps) {
-  const l = props.layout;
-  const cells = props.cells;
+function cellLabel(c: LayoutCell, cameraById: Map<number, Camera>): string {
+  if (c.content_type === "camera" && c.camera_id) {
+    return cameraById.get(c.camera_id)?.name ?? `cam #${String(c.camera_id)}`;
+  }
+  if (c.content_type === "web") return c.web_url ? `Web: ${c.web_url}` : "Web";
+  if (c.content_type === "html") return c.html_content ? "HTML" : "HTML (empty)";
+  return "Empty";
+}
+
+function cellGridStyle(c: LayoutCell): string {
+  return `grid-column:${String(c.col + 1)} / span ${String(c.col_span)}; grid-row:${String(c.row + 1)} / span ${String(c.row_span)};`;
+}
+
+/**
+ * Render a single cell, either in read-only display mode or edit mode (form
+ * inline inside the cell). Returns a `<div class="layout-cell" ...>` element
+ * suitable for hx-swap="outerHTML" against itself.
+ */
+export function renderCell(
+  layoutId: number,
+  c: LayoutCell,
+  cameras: Camera[],
+  mode: "read" | "edit",
+): string {
   const cameraById = new Map<number, Camera>();
-  for (const cam of props.cameras) {
-    cameraById.set(cam.id, cam);
+  for (const cam of cameras) cameraById.set(cam.id, cam);
+  const style = cellGridStyle(c);
+  const cellGetUrl = `/admin/layouts/${String(layoutId)}/cells/${String(c.id)}`;
+  const cellEditUrl = `${cellGetUrl}/edit`;
+  const addUrl = `/admin/layouts/${String(layoutId)}/cells`;
+  const deleteUrl = `${cellGetUrl}/delete`;
+  const resizeUrl = `${cellGetUrl}/resize`;
+
+  if (mode === "edit") {
+    return (
+      <div class="layout-cell editing" style={style} id={`cell-${String(c.id)}`}>
+        <form
+          class="layout-cell-edit-form"
+          hx-post={cellGetUrl}
+          hx-target={`#cell-${String(c.id)}`}
+          hx-swap="outerHTML"
+        >
+          <div class="form-group">
+            <label>Content Type</label>
+            <div class="radio-group" style="display:flex; gap:0.5rem; flex-wrap:wrap; font-size:0.75rem">
+              <label><input type="radio" name="content_type" value="camera" checked={c.content_type === "camera"} /> Camera</label>
+              <label><input type="radio" name="content_type" value="web" checked={c.content_type === "web"} /> Web</label>
+              <label><input type="radio" name="content_type" value="html" checked={c.content_type === "html"} /> HTML</label>
+            </div>
+          </div>
+
+          <div id={`cell-camera-fields-${String(c.id)}`} class="cell-fields-camera" style={c.content_type === "camera" ? "" : "display:none"}>
+            <div class="form-group">
+              <label>Camera</label>
+              <select name="camera_id" class="form-input">
+                <option value="">-- Select --</option>
+                {cameras.map((cam) => (
+                  <option value={String(cam.id)} selected={c.camera_id === cam.id}>{cam.name}</option>
+                ))}
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Stream</label>
+              <select name="stream_selector" class="form-input">
+                <option value="auto" selected={c.stream_selector === "auto"}>Auto</option>
+                <option value="main" selected={c.stream_selector === "main"}>Main</option>
+                <option value="sub" selected={c.stream_selector === "sub"}>Sub</option>
+              </select>
+            </div>
+          </div>
+
+          <div id={`cell-web-fields-${String(c.id)}`} class="cell-fields-web" style={c.content_type === "web" ? "" : "display:none"}>
+            <div class="form-group">
+              <label>URL</label>
+              <input name="web_url" type="url" class="form-input" placeholder="https://example.com" value={c.web_url ?? ""} />
+            </div>
+          </div>
+
+          <div id={`cell-html-fields-${String(c.id)}`} class="cell-fields-html" style={c.content_type === "html" ? "" : "display:none"}>
+            <div class="form-group">
+              <label>HTML</label>
+              <textarea name="html_content" class="form-input" rows="3" placeholder="<div>...</div>">{c.html_content ?? ""}</textarea>
+            </div>
+          </div>
+
+          <div class="form-group span-grid">
+            <div>
+              <label>Width</label>
+              <input name="col_span" type="number" class="form-input" min="1" value={String(c.col_span)} />
+            </div>
+            <div>
+              <label>Height</label>
+              <input name="row_span" type="number" class="form-input" min="1" value={String(c.row_span)} />
+            </div>
+          </div>
+
+          <div class="layout-cell-edit-form-actions">
+            <button type="submit" class="btn btn-primary">Save</button>
+            <button
+              type="button"
+              class="btn btn-ghost"
+              hx-get={cellGetUrl}
+              hx-target={`#cell-${String(c.id)}`}
+              hx-swap="outerHTML"
+            >Cancel</button>
+            <button
+              type="button"
+              class="btn btn-danger"
+              hx-post={deleteUrl}
+              hx-target="#layout-grid"
+              hx-swap="innerHTML"
+              hx-confirm="Delete this cell?"
+            >Delete</button>
+          </div>
+        </form>
+        <script>{js(
+          `(function(){` +
+          `var root=document.getElementById('cell-${String(c.id)}');` +
+          `if(!root)return;` +
+          `var rs=root.querySelectorAll('input[name="content_type"]');` +
+          `var cf=root.querySelector('.cell-fields-camera');` +
+          `var wf=root.querySelector('.cell-fields-web');` +
+          `var hf=root.querySelector('.cell-fields-html');` +
+          `function t(){var el=root.querySelector('input[name="content_type"]:checked');` +
+          `var v=el?el.value:"html";` +
+          `if(cf)cf.style.display=v==="camera"?"block":"none";` +
+          `if(wf)wf.style.display=v==="web"?"block":"none";` +
+          `if(hf)hf.style.display=v==="html"?"block":"none";}` +
+          `rs.forEach(function(r){r.addEventListener("change",t)});t();})()`
+        )}</script>
+      </div>
+    );
   }
 
-  // Compute grid dimensions from cells.
+  // Read mode.
+  const isEmpty = (c.content_type === "html" && !c.html_content)
+    || (c.content_type === "camera" && !c.camera_id)
+    || (c.content_type === "web" && !c.web_url);
+  const label = cellLabel(c, cameraById);
+
+  return (
+    <div
+      class="layout-cell"
+      id={`cell-${String(c.id)}`}
+      style={style}
+      hx-get={cellEditUrl}
+      hx-target="this"
+      hx-swap="outerHTML"
+      hx-trigger="click"
+    >
+      {isEmpty
+        ? <span class="layout-cell-empty-text">{label}</span>
+        : <span>{label}</span>}
+
+      {/* + buttons (4 sides) — htmx posts to add endpoint, swaps grid */}
+      {(["top", "right", "bottom", "left"] as const).map((dir) => {
+        const directionParam = dir === "top" ? "above" : dir;
+        return (
+          <button
+            type="button"
+            class={`layout-cell-add layout-cell-add-${dir}`}
+            title={`Add cell ${dir}`}
+            hx-post={addUrl}
+            hx-vals={JSON.stringify({ after_cell_id: c.id, direction: directionParam })}
+            hx-target="#layout-grid"
+            hx-swap="innerHTML"
+            {...{ "onclick": "event.stopPropagation()" }}
+          >+</button>
+        );
+      })}
+
+      {/* resize buttons */}
+      <div class="layout-cell-resize" {...{ "onclick": "event.stopPropagation()" }}>
+        <button
+          type="button"
+          title="Increase width"
+          hx-post={resizeUrl}
+          hx-vals={JSON.stringify({ dim: "col_span", delta: 1 })}
+          hx-target="#layout-grid"
+          hx-swap="innerHTML"
+        >+W</button>
+        <button
+          type="button"
+          title="Decrease width"
+          hx-post={resizeUrl}
+          hx-vals={JSON.stringify({ dim: "col_span", delta: -1 })}
+          hx-target="#layout-grid"
+          hx-swap="innerHTML"
+        >-W</button>
+        <button
+          type="button"
+          title="Increase height"
+          hx-post={resizeUrl}
+          hx-vals={JSON.stringify({ dim: "row_span", delta: 1 })}
+          hx-target="#layout-grid"
+          hx-swap="innerHTML"
+        >+H</button>
+        <button
+          type="button"
+          title="Decrease height"
+          hx-post={resizeUrl}
+          hx-vals={JSON.stringify({ dim: "row_span", delta: -1 })}
+          hx-target="#layout-grid"
+          hx-swap="innerHTML"
+        >-H</button>
+      </div>
+
+      {/* delete button */}
+      <button
+        type="button"
+        class="layout-cell-delete"
+        title="Delete cell"
+        hx-post={deleteUrl}
+        hx-target="#layout-grid"
+        hx-swap="innerHTML"
+        hx-confirm="Delete this cell?"
+        {...{ "onclick": "event.stopPropagation()" }}
+      >×</button>
+    </div>
+  );
+}
+
+/**
+ * Render the inner content of the `#layout-grid` container — either the empty
+ * placeholder or the full builder grid with all cells. This is what htmx swaps
+ * in via `hx-target="#layout-grid" hx-swap="innerHTML"` after add/delete/resize.
+ */
+export function renderGrid(
+  layoutId: number,
+  cells: LayoutCell[],
+  cameras: Camera[],
+): string {
+  if (cells.length === 0) {
+    return (
+      <div class="layout-empty">
+        <button
+          type="button"
+          class="layout-empty-add"
+          title="Add first cell"
+          hx-post={`/admin/layouts/${String(layoutId)}/cells`}
+          hx-vals={JSON.stringify({ row: 0, col: 0 })}
+          hx-target="#layout-grid"
+          hx-swap="innerHTML"
+        >+</button>
+      </div>
+    );
+  }
+
+  // Compute grid dimensions.
   let gridCols = 1;
   let gridRows = 1;
   for (const c of cells) {
@@ -1048,17 +1299,28 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
     if (bottom > gridRows) gridRows = bottom;
   }
 
-  const selectedCell = props.selectedCellId
-    ? cells.find((c) => c.id === props.selectedCellId) ?? null
-    : null;
+  return (
+    <div
+      class="layout-builder"
+      style={`grid-template-columns:repeat(${String(gridCols)}, 1fr); grid-template-rows:repeat(${String(gridRows)}, 1fr)`}
+    >
+      {cells.map((c) => renderCell(layoutId, c, cameras, "read"))}
+    </div>
+  );
+}
 
-  function cellLabel(c: LayoutCell): string {
-    if (c.content_type === "camera" && c.camera_id) {
-      return cameraById.get(c.camera_id)?.name ?? `cam #${String(c.camera_id)}`;
-    }
-    if (c.content_type === "web") return c.web_url ? `Web: ${c.web_url}` : "Web";
-    if (c.content_type === "html") return c.html_content ? "HTML" : "HTML (empty)";
-    return "Empty";
+export function LayoutEditPage(props: LayoutEditPageProps) {
+  const l = props.layout;
+  const cells = props.cells;
+
+  // Compute grid dimensions from cells (for summary text).
+  let gridCols = 1;
+  let gridRows = 1;
+  for (const c of cells) {
+    const right = c.col + c.col_span;
+    const bottom = c.row + c.row_span;
+    if (right > gridCols) gridCols = right;
+    if (bottom > gridRows) gridRows = bottom;
   }
 
   return (
@@ -1132,157 +1394,14 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Layout Builder</h2>
           <p style="color:#666; font-size:0.85rem; margin-bottom:1rem">
-            Hover a cell to see <strong>+</strong> buttons (add a neighbour) and the <strong>×</strong> delete button.
-            Click a cell to assign content.
+            Hover a cell for <strong>+</strong> (add neighbour), resize handles
+            (<strong>+W -W +H -H</strong>) and <strong>×</strong> (delete).
+            Click a cell to edit content in-place.
           </p>
-          {cells.length === 0 ? (
-            <div class="layout-empty">
-              <form method="post" action={`/admin/layouts/${l.id}/cells`} style="margin:0">
-                <input type="hidden" name="row" value="0" />
-                <input type="hidden" name="col" value="0" />
-                <button type="submit" class="layout-empty-add" title="Add first cell">+</button>
-              </form>
-            </div>
-          ) : (
-            <div class="layout-builder" style={`grid-template-columns:repeat(${String(gridCols)}, 1fr); grid-template-rows:repeat(${String(gridRows)}, 1fr)`}>
-              {cells.map((c) => {
-                const isSelected = selectedCell?.id === c.id;
-                const cellStyle = `grid-column:${String(c.col + 1)} / span ${String(c.col_span)}; grid-row:${String(c.row + 1)} / span ${String(c.row_span)};`;
-                const isEmpty = c.content_type === "html" && !c.html_content
-                  || c.content_type === "camera" && !c.camera_id
-                  || c.content_type === "web" && !c.web_url;
-                return (
-                  <a
-                    href={`/admin/layouts/${l.id}?cell=${String(c.id)}`}
-                    class={`layout-cell${isSelected ? " selected" : ""}`}
-                    style={cellStyle}
-                  >
-                    {isEmpty
-                      ? <span class="layout-cell-empty-text">{cellLabel(c)}</span>
-                      : <span>{cellLabel(c)}</span>
-                    }
-                    {/* + buttons (4 sides) */}
-                    {(["top", "right", "bottom", "left"] as const).map((dir) => {
-                      const directionParam = dir === "top" ? "above" : dir;
-                      return (
-                        <form
-                          method="post"
-                          action={`/admin/layouts/${l.id}/cells`}
-                          {...{"onclick": "event.stopPropagation()"}}
-                          style="display:contents"
-                        >
-                          <input type="hidden" name="after_cell_id" value={String(c.id)} />
-                          <input type="hidden" name="direction" value={directionParam} />
-                          <button
-                            type="submit"
-                            class={`layout-cell-add layout-cell-add-${dir}`}
-                            title={`Add cell ${dir}`}
-                          >+</button>
-                        </form>
-                      );
-                    })}
-                    {/* delete button */}
-                    <form
-                      method="post"
-                      action={`/admin/layouts/${l.id}/cells/${String(c.id)}/delete`}
-                      {...{"onclick": "event.stopPropagation()"}}
-                      style="display:contents"
-                    >
-                      <button
-                        type="submit"
-                        class="layout-cell-delete"
-                        title="Delete cell"
-                        {...{"onclick": "event.stopPropagation(); return confirm('Delete this cell?')"}}
-                      >×</button>
-                    </form>
-                  </a>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Selected-cell content form */}
-        {selectedCell && (
-          <div class="card" style="margin-bottom:1.5rem">
-            <h2 style="margin:0 0 1rem; font-size:1.1rem">
-              Cell at row {String(selectedCell.row)}, col {String(selectedCell.col)}
-              {" "}<span style="font-weight:400; color:#666; font-size:0.85rem">({String(selectedCell.row_span)}x{String(selectedCell.col_span)})</span>
-            </h2>
-            <form method="post" action={`/admin/layouts/${l.id}/cells/${String(selectedCell.id)}`}>
-              <div class="form-group">
-                <label>Content Type</label>
-                <div class="radio-group">
-                  <label>
-                    <input type="radio" name="content_type" value="camera" checked={selectedCell.content_type === "camera"} />
-                    {" "}Camera
-                  </label>
-                  <label>
-                    <input type="radio" name="content_type" value="web" checked={selectedCell.content_type === "web"} />
-                    {" "}Web URL
-                  </label>
-                  <label>
-                    <input type="radio" name="content_type" value="html" checked={selectedCell.content_type === "html"} />
-                    {" "}HTML
-                  </label>
-                </div>
-              </div>
-
-              <div id="cell-camera-fields" style={selectedCell.content_type === "camera" ? "" : "display:none"}>
-                <div class="form-group">
-                  <label for="camera_id">Camera</label>
-                  <select id="camera_id" name="camera_id" class="form-input">
-                    <option value="">-- Select Camera --</option>
-                    {props.cameras.map((cam) => (
-                      <option value={String(cam.id)} selected={selectedCell.camera_id === cam.id}>{cam.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div class="form-group">
-                  <label for="stream_selector">Stream</label>
-                  <select id="stream_selector" name="stream_selector" class="form-input">
-                    <option value="auto" selected={selectedCell.stream_selector === "auto"}>Auto</option>
-                    <option value="main" selected={selectedCell.stream_selector === "main"}>Main</option>
-                    <option value="sub" selected={selectedCell.stream_selector === "sub"}>Sub</option>
-                  </select>
-                </div>
-              </div>
-
-              <div id="cell-web-fields" style={selectedCell.content_type === "web" ? "" : "display:none"}>
-                <div class="form-group">
-                  <label for="web_url">URL</label>
-                  <input id="web_url" name="web_url" type="url" class="form-input" placeholder="https://example.com" value={selectedCell.web_url ?? ""} />
-                </div>
-              </div>
-
-              <div id="cell-html-fields" style={selectedCell.content_type === "html" ? "" : "display:none"}>
-                <div class="form-group">
-                  <label for="html_content">HTML Content</label>
-                  <textarea id="html_content" name="html_content" class="form-input" rows="4" placeholder="<div>...</div>">{selectedCell.html_content ?? ""}</textarea>
-                </div>
-              </div>
-
-              <button type="submit" class="btn btn-primary">Save Cell</button>
-              <a href={`/admin/layouts/${l.id}`} class="btn btn-ghost" style="margin-left:0.5rem">Cancel</a>
-              <form method="post" action={`/admin/layouts/${l.id}/cells/${String(selectedCell.id)}/delete`} style="display:inline; margin-left:0.5rem">
-                <button type="submit" class="btn btn-danger" {...{"onclick": "return confirm('Delete this cell?')"}}>Delete Cell</button>
-              </form>
-            </form>
-            <script>{js(
-              `(function(){` +
-              `var rs=document.querySelectorAll('input[name="content_type"]');` +
-              `var cf=document.getElementById("cell-camera-fields");` +
-              `var wf=document.getElementById("cell-web-fields");` +
-              `var hf=document.getElementById("cell-html-fields");` +
-              `function t(){var el=document.querySelector('input[name="content_type"]:checked');` +
-              `var v=el?el.value:"html";` +
-              `if(cf)cf.style.display=v==="camera"?"block":"none";` +
-              `if(wf)wf.style.display=v==="web"?"block":"none";` +
-              `if(hf)hf.style.display=v==="html"?"block":"none";}` +
-              `rs.forEach(function(r){r.addEventListener("change",t)});t();})()`
-            )}</script>
+          <div id="layout-grid">
+            {renderGrid(l.id, cells, props.cameras)}
           </div>
-        )}
+        </div>
 
         <form method="post" action={`/admin/layouts/${l.id}/delete`} style="margin-top:1rem">
           <button type="submit" class="btn btn-danger" {...{"onclick": "return confirm('Delete this layout and all its cells?')"}}>Delete Layout</button>

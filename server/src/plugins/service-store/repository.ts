@@ -415,61 +415,6 @@ export class Repository {
   // layout templates
   // ===========================================================================
 
-  listLayoutTemplates(): LayoutTemplate[] {
-    const rs = this.prep("SELECT * FROM layout_templates ORDER BY name").all();
-    return rs.map((r) => rowToLayoutTemplate(r as Record<string, unknown>));
-  }
-
-  getLayoutTemplateById(id: number): LayoutTemplate | null {
-    const r = this.prep("SELECT * FROM layout_templates WHERE id = ?").get(id);
-    return r ? rowToLayoutTemplate(r as Record<string, unknown>) : null;
-  }
-
-  createLayoutTemplate(input: {
-    name: string;
-    description?: string | null;
-    regions: unknown;
-    grid_cols?: number;
-    grid_rows?: number;
-    is_builtin?: boolean;
-  }): LayoutTemplate {
-    const result = this.prep(
-      `INSERT INTO layout_templates (name, description, regions, grid_cols, grid_rows, is_builtin)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(
-      input.name,
-      input.description ?? null,
-      J(input.regions),
-      input.grid_cols ?? 12,
-      input.grid_rows ?? 12,
-      B(input.is_builtin ?? false),
-    );
-    const id = Number(result.lastInsertRowid);
-    void this.notify("layout_templates", "create", id);
-    const r = this.getLayoutTemplateById(id);
-    if (!r) throw new Error("layout_template vanished after insert");
-    return r;
-  }
-
-  updateLayoutTemplate(id: number, patch: { name?: string; description?: string | null; regions?: unknown; grid_cols?: number; grid_rows?: number }): void {
-    const sets: string[] = [];
-    const vals: unknown[] = [];
-    for (const [k, v] of Object.entries(patch)) {
-      if (k === "id") continue;
-      sets.push(`${k} = ?`);
-      vals.push(k === "regions" ? J(v) : (v === undefined ? null : v));
-    }
-    if (sets.length === 0) return;
-    vals.push(id);
-    this.db.prepare(`UPDATE layout_templates SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
-    void this.notify("layout_templates", "update", id);
-  }
-
-  deleteLayoutTemplate(id: number): void {
-    this.db.prepare(`DELETE FROM layout_templates WHERE id = ?`).run(id);
-    void this.notify("layout_templates", "delete", id);
-  }
-
   // ===========================================================================
   // layouts
   // ===========================================================================
@@ -546,25 +491,15 @@ export class Repository {
     preload_camera_ids?: number[];
     resets_idle_timer?: boolean;
   }): Layout {
-    // Legacy NOT NULL columns (template_id, display_id, regions, grid_*) are
-    // populated with sentinel values: cells own their position now and the
-    // grid is computed at read time. The columns will be dropped by a future
-    // migration — until then they're inert.
     const result = this.prep(
-      `INSERT INTO layouts (name, description, template_id, regions, grid_cols, grid_rows, display_id, priority, cooling_timeout_seconds, preload_camera_ids, is_default, resets_idle_timer)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO layouts (name, description, priority, cooling_timeout_seconds, preload_camera_ids, resets_idle_timer)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(
       input.name,
       input.description ?? null,
-      0,
-      J([]),
-      1,
-      1,
-      0,
       input.priority ?? "normal",
       input.cooling_timeout_seconds ?? null,
       J(input.preload_camera_ids ?? []),
-      B(false),
       B(input.resets_idle_timer ?? true),
     );
     const id = Number(result.lastInsertRowid);
@@ -618,15 +553,11 @@ export class Repository {
     cooling_timeout_seconds?: number | null;
     options?: Record<string, unknown>;
   }): LayoutCell {
-    // region_name column is legacy NOT NULL — synthesize a unique placeholder
-    // until the column is dropped by a future migration. Nothing reads it.
-    const placeholder = `cell_${input.layout_id}_${input.row}_${input.col}_${Date.now()}`;
     const result = this.prep(
-      `INSERT INTO layout_cells (layout_id, region_name, "row", col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO layout_cells (layout_id, "row", col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.layout_id,
-      placeholder,
       input.row,
       input.col,
       input.row_span ?? 1,
@@ -1156,15 +1087,9 @@ export class Repository {
     return this.listLayoutCells(layoutId);
   }
 
-  layoutTemplates(ids: number[]): LayoutTemplate[] {
-    if (ids.length === 0) return [];
-    const placeholders = ids.map(() => "?").join(",");
-    const rs = this.db
-      .prepare(
-        `SELECT * FROM layout_templates WHERE id IN (${placeholders})`,
-      )
-      .all(...(ids as never[]));
-    return rs.map((r) => rowToLayoutTemplate(r as Record<string, unknown>));
+  // Deprecated — layout_templates dropped in v0.5
+  layoutTemplates(_ids: number[]): LayoutTemplate[] {
+    return [];
   }
 
   cameraLabelNames(cameraId: number): string[] {

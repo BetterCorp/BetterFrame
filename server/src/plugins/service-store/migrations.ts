@@ -366,4 +366,70 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
       }
     }
   },
+
+  // ---- v0.5: rebuild layouts table to drop legacy columns
+  // SQLite can't drop columns, so rebuild: create new schema → copy data →
+  // drop old → rename. Removes template_id, display_id, regions, grid_cols,
+  // grid_rows, is_default — cells own position now, displays attach via join.
+  (db: DatabaseSync) => {
+    const cols = db.prepare(`PRAGMA table_info("layouts")`).all() as Array<{ name: string }>;
+    const hasTemplateId = cols.some((c) => c.name === "template_id");
+    if (!hasTemplateId) return; // already migrated
+
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec(`
+      CREATE TABLE layouts_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        description TEXT,
+        priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('hot', 'normal', 'cold')),
+        cooling_timeout_seconds INTEGER,
+        preload_camera_ids TEXT NOT NULL DEFAULT '[]',
+        resets_idle_timer INTEGER NOT NULL DEFAULT 1
+      ) STRICT;
+
+      INSERT INTO layouts_new (id, name, description, priority, cooling_timeout_seconds, preload_camera_ids, resets_idle_timer)
+      SELECT id, name, description, priority, cooling_timeout_seconds, preload_camera_ids, resets_idle_timer FROM layouts;
+
+      DROP TABLE layouts;
+      ALTER TABLE layouts_new RENAME TO layouts;
+    `);
+    db.exec("PRAGMA foreign_keys = ON");
+  },
+
+  // Same cleanup for layout_cells — drop region_name, layout_id FK stays
+  (db: DatabaseSync) => {
+    const cols = db.prepare(`PRAGMA table_info("layout_cells")`).all() as Array<{ name: string }>;
+    const hasRegionName = cols.some((c) => c.name === "region_name");
+    if (!hasRegionName) return;
+
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec(`
+      CREATE TABLE layout_cells_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        layout_id INTEGER NOT NULL REFERENCES layouts(id) ON DELETE CASCADE,
+        row INTEGER NOT NULL DEFAULT 0,
+        col INTEGER NOT NULL DEFAULT 0,
+        row_span INTEGER NOT NULL DEFAULT 1,
+        col_span INTEGER NOT NULL DEFAULT 1,
+        content_type TEXT NOT NULL CHECK(content_type IN ('camera', 'web', 'html')),
+        camera_id INTEGER REFERENCES cameras(id) ON DELETE SET NULL,
+        stream_selector TEXT,
+        web_url TEXT,
+        html_content TEXT,
+        cooling_timeout_seconds INTEGER,
+        options TEXT NOT NULL DEFAULT '{}'
+      ) STRICT;
+
+      INSERT INTO layout_cells_new (id, layout_id, row, col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options)
+      SELECT id, layout_id, row, col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options FROM layout_cells;
+
+      DROP TABLE layout_cells;
+      ALTER TABLE layout_cells_new RENAME TO layout_cells;
+    `);
+    db.exec("PRAGMA foreign_keys = ON");
+  },
+
+  // Drop layout_templates entirely — concept removed
+  `DROP TABLE IF EXISTS layout_templates`,
 ];

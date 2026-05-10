@@ -171,8 +171,8 @@ launch_cameras() {
 
     # Try hardware decode first (Pi5 V4L2), fall back to software
     gst-launch-1.0 \
-      rtspsrc location="$rtsp_uri" latency=300 protocols=tcp \
-      ! rtph264depay ! h264parse ! decodebin \
+      uridecodebin uri="$rtsp_uri" \
+        caps="video/x-raw" \
       ! videoconvert ! waylandsink fullscreen=true \
       2>&1 &
     pids+=($!)

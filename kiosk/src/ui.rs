@@ -3,7 +3,6 @@ use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::{self as gtk, Application, ApplicationWindow, Box as GtkBox, Grid, Label, Orientation, Picture};
-use gstreamer::prelude::*;
 use tracing::{info, warn};
 
 use crate::bundle::KioskBundle;
@@ -25,7 +24,6 @@ fn activate(app: &Application) {
         .fullscreened(true)
         .build();
 
-    // Dark background
     let provider = gtk::CssProvider::new();
     provider.load_from_string("window { background-color: #1a1a2e; }");
     gtk::style_context_add_provider_for_display(
@@ -34,17 +32,15 @@ fn activate(app: &Application) {
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
 
-    let container = GtkBox::new(Orientation::Vertical, 0);
-    container.set_vexpand(true);
-    container.set_hexpand(true);
-    window.set_child(Some(&container));
+    // Start with logo
+    show_logo(&window);
+    window.present();
 
-    // Show pairing or camera display
+    // Channel to send results from worker thread to UI
+    let (tx, rx) = gtk::glib::MainContext::channel::<WorkerMsg>(gtk::glib::Priority::DEFAULT);
+
+    // Worker thread — blocking HTTP calls
     let server_url = std::env::args().nth(1);
-    let container_clone = container.clone();
-    let window_clone = window.clone();
-
-    // Run server interaction in a thread, update UI via idle_add
     std::thread::spawn(move || {
         let server = server::discover_server(server_url.as_deref());
         info!("server: {server}");
@@ -55,90 +51,65 @@ fn activate(app: &Application) {
         } else {
             let (code, expires) = server::initiate_pairing(&server);
             info!("pairing code: {code} (expires {expires})");
-
-            // Show pairing code on UI
-            let code_clone = code.clone();
-            gtk::glib::idle_add_once(move || {
-                show_pairing_code(&container_clone, &code_clone);
-            });
+            let _ = tx.send(WorkerMsg::ShowPairingCode(code.clone()));
 
             let (name, key) = server::poll_claim(&server, &code);
             info!("paired as: {name}");
             key
         };
 
-        // Fetch bundle
         let bundle = server::fetch_bundle(&server, &key);
         info!("bundle: {} cameras, {} layouts", bundle.cameras.len(), bundle.layouts.len());
-
-        // Render layout on UI thread
-        let server_clone = server.clone();
-        let key_clone = key.clone();
-        gtk::glib::idle_add_once(move || {
-            render_bundle(&window_clone, bundle);
-        });
+        let _ = tx.send(WorkerMsg::RenderBundle(bundle));
 
         // Heartbeat loop
         loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
-            server::heartbeat(&server_clone, &key_clone);
+            server::heartbeat(&server, &key);
         }
     });
 
-    window.present();
+    // Receive messages on UI thread
+    let window_clone = window.clone();
+    rx.attach(None, move |msg| {
+        match msg {
+            WorkerMsg::ShowPairingCode(code) => show_pairing_code(&window_clone, &code),
+            WorkerMsg::RenderBundle(bundle) => render_bundle(&window_clone, bundle),
+        }
+        gtk::glib::ControlFlow::Continue
+    });
 }
 
-fn show_pairing_code(container: &GtkBox, code: &str) {
-    // Clear existing children
-    while let Some(child) = container.first_child() {
-        container.remove(&child);
-    }
+enum WorkerMsg {
+    ShowPairingCode(String),
+    RenderBundle(KioskBundle),
+}
 
+fn show_pairing_code(window: &ApplicationWindow, code: &str) {
     let vbox = GtkBox::new(Orientation::Vertical, 20);
     vbox.set_valign(gtk::Align::Center);
     vbox.set_halign(gtk::Align::Center);
     vbox.set_vexpand(true);
 
     let title = Label::new(Some("BetterFrame"));
+    add_css(&title, ".title { font-size: 24px; color: #888; font-weight: 300; }");
     title.add_css_class("title");
-    let title_provider = gtk::CssProvider::new();
-    title_provider.load_from_string(".title { font-size: 24px; color: #888; font-weight: 300; }");
-    gtk::style_context_add_provider_for_display(
-        &title.display(),
-        &title_provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
 
     let code_label = Label::new(Some(code));
-    code_label.add_css_class("pairing-code");
-    let code_provider = gtk::CssProvider::new();
-    code_provider.load_from_string(
-        ".pairing-code { font-size: 72px; color: #fff; font-weight: 700; letter-spacing: 12px; font-family: monospace; }",
-    );
-    gtk::style_context_add_provider_for_display(
-        &code_label.display(),
-        &code_provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
+    add_css(&code_label, ".code { font-size: 72px; color: #fff; font-weight: 700; letter-spacing: 12px; font-family: monospace; }");
+    code_label.add_css_class("code");
 
     let hint = Label::new(Some("Enter this code in BetterFrame admin to pair"));
+    add_css(&hint, ".hint { font-size: 14px; color: #666; }");
     hint.add_css_class("hint");
-    let hint_provider = gtk::CssProvider::new();
-    hint_provider.load_from_string(".hint { font-size: 14px; color: #666; }");
-    gtk::style_context_add_provider_for_display(
-        &hint.display(),
-        &hint_provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
 
     vbox.append(&title);
     vbox.append(&code_label);
     vbox.append(&hint);
-    container.append(&vbox);
+    window.set_child(Some(&vbox));
 }
 
 fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
-    // Find default layout
     let layout = bundle.layouts.iter()
         .find(|l| l.is_default)
         .or_else(|| bundle.layouts.first());
@@ -164,14 +135,12 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
     grid.set_vexpand(true);
     grid.set_hexpand(true);
 
-    // Map cameras by ID for quick lookup
     let cam_map: std::collections::HashMap<u32, &crate::bundle::BundleCamera> =
         bundle.cameras.iter().map(|c| (c.id, c)).collect();
 
     let pipelines: Rc<RefCell<Vec<gstreamer::Pipeline>>> = Rc::new(RefCell::new(Vec::new()));
 
     for cell in &layout.cells {
-        // Find region in template
         let region = template.regions.iter().find(|r| r.name == cell.region_name);
         let Some(region) = region else {
             warn!("region '{}' not found in template", cell.region_name);
@@ -194,33 +163,31 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
                                     pipelines.borrow_mut().push(pipe);
                                     picture.upcast()
                                 }
-                                None => placeholder_label(&format!("{} (pipeline error)", cam.name)),
+                                None => placeholder(&format!("{} (pipeline error)", cam.name)),
                             }
                         } else {
-                            placeholder_label(&format!("{} (no stream)", cam.name))
+                            placeholder(&format!("{} (no stream)", cam.name))
                         }
                     } else {
-                        placeholder_label("Unknown camera")
+                        placeholder("Unknown camera")
                     }
                 } else {
-                    placeholder_label("No camera assigned")
+                    placeholder("No camera assigned")
                 }
             }
             "html" => {
-                let html = cell.html_content.as_deref().unwrap_or("");
-                // For HTML cells, show a label placeholder (WebKit integration later)
-                let label = Label::new(Some("HTML Content"));
-                label.set_markup(&format!("<span color='#888'>{}</span>",
-                    gtk::glib::markup_escape_text(html).chars().take(100).collect::<String>()));
+                let html = cell.html_content.as_deref().unwrap_or("HTML");
+                let label = Label::new(Some(&html.chars().take(100).collect::<String>()));
+                add_css(&label, "label { color: #888; background-color: #111; }");
                 label.set_vexpand(true);
                 label.set_hexpand(true);
                 label.upcast()
             }
             "web" => {
                 let url = cell.web_url.as_deref().unwrap_or("about:blank");
-                placeholder_label(&format!("Web: {url}"))
+                placeholder(&format!("Web: {url}"))
             }
-            _ => placeholder_label("Unknown content"),
+            _ => placeholder("Unknown content"),
         };
 
         grid.attach(
@@ -232,17 +199,11 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
         );
     }
 
-    // Fill empty regions with dark placeholders
+    // Fill empty regions
     for region in &template.regions {
         if !layout.cells.iter().any(|c| c.region_name == region.name) {
             let empty = GtkBox::new(Orientation::Vertical, 0);
-            let empty_provider = gtk::CssProvider::new();
-            empty_provider.load_from_string("box { background-color: #111; }");
-            gtk::style_context_add_provider_for_display(
-                &empty.display(),
-                &empty_provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
+            add_css(&empty, "box { background-color: #111; }");
             empty.set_vexpand(true);
             empty.set_hexpand(true);
             grid.attach(
@@ -257,9 +218,9 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
 
     window.set_child(Some(&grid));
 
-    // Store pipelines so they don't get dropped
+    let pipelines_ref = pipelines.clone();
     window.connect_destroy(move |_| {
-        for pipe in pipelines.borrow().iter() {
+        for pipe in pipelines_ref.borrow().iter() {
             pipeline::stop(pipe);
         }
     });
@@ -267,29 +228,27 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
 
 fn show_logo(window: &ApplicationWindow) {
     let label = Label::new(Some("BetterFrame"));
-    let provider = gtk::CssProvider::new();
-    provider.load_from_string("label { font-size: 48px; color: #fff; font-weight: 300; }");
-    gtk::style_context_add_provider_for_display(
-        &label.display(),
-        &provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
+    add_css(&label, "label { font-size: 48px; color: #fff; font-weight: 300; }");
     label.set_valign(gtk::Align::Center);
     label.set_halign(gtk::Align::Center);
     label.set_vexpand(true);
     window.set_child(Some(&label));
 }
 
-fn placeholder_label(text: &str) -> gtk::Widget {
+fn placeholder(text: &str) -> gtk::Widget {
     let label = Label::new(Some(text));
+    add_css(&label, "label { color: #666; font-size: 14px; background-color: #111; }");
     label.set_vexpand(true);
     label.set_hexpand(true);
+    label.upcast()
+}
+
+fn add_css(widget: &impl IsA<gtk::Widget>, css: &str) {
     let provider = gtk::CssProvider::new();
-    provider.load_from_string("label { color: #666; font-size: 14px; background-color: #111; }");
+    provider.load_from_string(css);
     gtk::style_context_add_provider_for_display(
-        &label.display(),
+        &widget.display(),
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
-    label.upcast()
 }

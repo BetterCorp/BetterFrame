@@ -1,9 +1,11 @@
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::mpsc;
 
 thread_local! {
-    static ACTIVE_PIPELINES: RefCell<Vec<gstreamer::Pipeline>> = RefCell::new(Vec::new());
+    /// camera_id → (pipeline, paintable). Pipelines stay warm across layout
+    /// swaps for cameras still referenced or in preload_camera_ids.
+    static WARM_CAMERAS: RefCell<std::collections::HashMap<u32, (gstreamer::Pipeline, gtk::gdk::Paintable)>>
+        = RefCell::new(std::collections::HashMap::new());
 }
 
 use gtk4::prelude::*;
@@ -173,22 +175,16 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
 }
 
 fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
-    // Stop and clear any existing pipelines BEFORE building the new layout
-    ACTIVE_PIPELINES.with(|p| {
-        let mut pipes = p.borrow_mut();
-        info!("stopping {} active pipelines before re-render", pipes.len());
-        for pipe in pipes.iter() {
-            pipeline::stop(pipe);
-        }
-        pipes.clear();
-    });
-
     let layout = bundle.layouts.iter()
         .find(|l| l.is_default)
         .or_else(|| bundle.layouts.first());
 
     let Some(layout) = layout else {
         warn!("no layouts in bundle");
+        WARM_CAMERAS.with(|w| {
+            for (_, (pipe, _)) in w.borrow().iter() { pipeline::stop(pipe); }
+            w.borrow_mut().clear();
+        });
         show_logo(window);
         return;
     };
@@ -202,6 +198,27 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
     info!("rendering layout '{}' with {}x{} grid, {} cells",
         layout.name, layout.grid_cols, layout.grid_rows, layout.cells.len());
 
+    // Compute which cameras are needed: cells with content_type=camera + preload_camera_ids
+    let mut needed: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for cell in &layout.cells {
+        if cell.content_type == "camera" {
+            if let Some(id) = cell.camera_id { needed.insert(id); }
+        }
+    }
+    for id in &layout.preload_camera_ids { needed.insert(*id); }
+
+    // Stop pipelines for cameras no longer needed
+    WARM_CAMERAS.with(|w| {
+        let mut warm = w.borrow_mut();
+        let stale: Vec<u32> = warm.keys().filter(|id| !needed.contains(id)).copied().collect();
+        for id in stale {
+            if let Some((pipe, _)) = warm.remove(&id) {
+                info!("stopping pipeline for camera {id} (no longer needed)");
+                pipeline::stop(&pipe);
+            }
+        }
+    });
+
     let grid = Grid::new();
     grid.set_row_homogeneous(true);
     grid.set_column_homogeneous(true);
@@ -211,27 +228,24 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
     let cam_map: std::collections::HashMap<u32, &crate::bundle::BundleCamera> =
         bundle.cameras.iter().map(|c| (c.id, c)).collect();
 
-    let pipelines: Rc<RefCell<Vec<gstreamer::Pipeline>>> = Rc::new(RefCell::new(Vec::new()));
+    // Ensure preloaded cameras have pipelines even if not visible
+    for cam_id in &layout.preload_camera_ids {
+        if let Some(cam) = cam_map.get(cam_id) {
+            ensure_warm(*cam_id, cam, None);
+        }
+    }
 
     for cell in &layout.cells {
         let widget: gtk::Widget = match cell.content_type.as_str() {
             "camera" => {
                 if let Some(cam_id) = cell.camera_id {
                     if let Some(cam) = cam_map.get(&cam_id) {
-                        if let Some(uri) = cam.stream_uri(cell.stream_selector.as_deref()) {
-                            match pipeline::create_camera_pipeline(&cam.name, uri) {
-                                Some((pipe, sink)) => {
-                                    let paintable = sink.property::<gtk::gdk::Paintable>("paintable");
-                                    let picture = Picture::for_paintable(&paintable);
-                                    picture.set_content_fit(gtk::ContentFit::Cover);
-                                    picture.set_vexpand(true);
-                                    picture.set_hexpand(true);
-                                    pipeline::play(&pipe);
-                                    pipelines.borrow_mut().push(pipe);
-                                    picture.upcast()
-                                }
-                                None => placeholder(&format!("{} (pipeline error)", cam.name)),
-                            }
+                        if let Some(paintable) = ensure_warm(cam_id, cam, cell.stream_selector.as_deref()) {
+                            let picture = Picture::for_paintable(&paintable);
+                            picture.set_content_fit(gtk::ContentFit::Cover);
+                            picture.set_vexpand(true);
+                            picture.set_hexpand(true);
+                            picture.upcast()
                         } else {
                             placeholder(&format!("{} (no stream)", cam.name))
                         }
@@ -271,15 +285,27 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
     }
 
     window.set_child(Some(&grid));
+}
 
-    // Move newly-created pipelines into the global registry so we can stop
-    // them on the next reload-bundle
-    ACTIVE_PIPELINES.with(|p| {
-        let mut global = p.borrow_mut();
-        for pipe in pipelines.borrow().iter() {
-            global.push(pipe.clone());
-        }
+/// Returns the paintable for a camera, creating a warm pipeline if missing.
+fn ensure_warm(
+    cam_id: u32,
+    cam: &crate::bundle::BundleCamera,
+    selector: Option<&str>,
+) -> Option<gtk::gdk::Paintable> {
+    let existing = WARM_CAMERAS.with(|w| w.borrow().get(&cam_id).map(|(_, p)| p.clone()));
+    if let Some(p) = existing {
+        return Some(p);
+    }
+    let uri = cam.stream_uri(selector)?;
+    let (pipe, sink) = pipeline::create_camera_pipeline(&cam.name, uri)?;
+    let paintable = sink.property::<gtk::gdk::Paintable>("paintable");
+    pipeline::play(&pipe);
+    WARM_CAMERAS.with(|w| {
+        w.borrow_mut().insert(cam_id, (pipe, paintable.clone()));
     });
+    info!("warmed pipeline for camera {cam_id}");
+    Some(paintable)
 }
 
 fn show_logo(window: &ApplicationWindow) {

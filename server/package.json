@@ -23,10 +23,12 @@
   "dependencies": {
     "@anyvali/js": "^0.2.0",
     "@bsb/base": "^9.1.11",
+    "@types/ws": "^8.18.1",
     "argon2": "^0.44.0",
     "h3": "^2.0.1-rc.22",
     "jsx-htmx": "^2.0.2",
-    "otpauth": "^9.5.1"
+    "otpauth": "^9.5.1",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/node": "^25.0.0",

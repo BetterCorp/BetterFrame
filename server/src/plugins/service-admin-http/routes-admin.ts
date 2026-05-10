@@ -5,6 +5,7 @@ import { type H3, readBody, getRouterParam, getQuery } from "h3";
 import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { confirmPairing } from "../../shared/pairing.js";
+import { getCoordinator } from "../../shared/coordinator-registry.js";
 import {
   OverviewPage,
   CamerasPage,
@@ -19,6 +20,10 @@ import {
   DisplaysPage,
   DisplayEditPage,
 } from "../../web-templates/admin-pages.js";
+
+function notifyKiosks(): void {
+  try { getCoordinator().notifyBundleChanged(); } catch { /* ignore */ }
+}
 
 function sanitizeRtspUrl(raw: string): string {
   const match = raw.match(/^(rtsp:\/\/)([^@]+)@(.+)$/);
@@ -275,6 +280,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       cooling_timeout_seconds: coolingTimeout,
       resets_idle_timer: body?.["resets_idle_timer"] === "1",
     });
+    notifyKiosks();
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${id}` } });
   });
 
@@ -343,6 +349,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       content_type: "html",
       html_content: null,
     });
+    notifyKiosks();
 
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
@@ -363,6 +370,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       web_url: contentType === "web" ? (body?.["web_url"] ?? null) : null,
       html_content: contentType === "html" ? (body?.["html_content"] ?? null) : null,
     });
+    notifyKiosks();
 
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
@@ -371,12 +379,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const layoutId = Number(getRouterParam(event, "id"));
     const cellId = Number(getRouterParam(event, "cellId"));
     deps.repo.deleteLayoutCell(cellId);
+    notifyKiosks();
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
 
   app.post("/admin/layouts/:id/delete", (event) => {
     const id = Number(getRouterParam(event, "id"));
     deps.repo.deleteLayout(id);
+    notifyKiosks();
     return new Response(null, { status: 302, headers: { location: "/admin/layouts" } });
   });
 
@@ -429,6 +439,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       idle_timeout_seconds: parseInt(body?.["idle_timeout_seconds"] ?? "0", 10),
       sleep_timeout_seconds: parseInt(body?.["sleep_timeout_seconds"] ?? "0", 10),
     } as any);
+    notifyKiosks();
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${id}` } });
   });
 
@@ -439,6 +450,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const layoutId = body?.["layout_id"] ? Number(body["layout_id"]) : null;
     if (layoutId && Number.isFinite(layoutId)) {
       deps.repo.attachLayoutToDisplay(displayId, layoutId);
+      notifyKiosks();
     }
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${displayId}` } });
   });
@@ -448,6 +460,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const displayId = Number(getRouterParam(event, "id"));
     const layoutId = Number(getRouterParam(event, "layoutId"));
     deps.repo.detachLayoutFromDisplay(displayId, layoutId);
+    notifyKiosks();
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${displayId}` } });
   });
 
@@ -543,6 +556,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         deps.repo.updateCameraStream(mainStream.id, { rtsp_uri: rtspUrl });
       }
     }
+    notifyKiosks();
 
     return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
   });
@@ -574,6 +588,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/cameras/:id/delete", (event) => {
     const id = Number(getRouterParam(event, "id"));
     deps.repo.deleteCamera(id);
+    notifyKiosks();
     return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
   });
 

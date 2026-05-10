@@ -118,7 +118,16 @@ export async function confirmPairing(
   if (pc.consumed_at) throw new Error("pairing code already used");
   if (new Date(pc.expires_at) < new Date()) throw new Error("pairing code expired");
 
-  const kioskName = input.nameOverride || pc.kiosk_proposed_name || `kiosk-${input.code.toLowerCase()}`;
+  const baseName = input.nameOverride || pc.kiosk_proposed_name || `kiosk-${input.code.toLowerCase()}`;
+  // Auto-suffix if name collides (kiosks.name is UNIQUE)
+  let kioskName = baseName;
+  let suffix = 2;
+  while (repo.getKioskByName(kioskName)) {
+    kioskName = `${baseName}-${suffix}`;
+    suffix++;
+    if (suffix > 100) throw new Error("could not generate unique kiosk name");
+  }
+
   const kioskKeyPlaintext = `bf-${randomBytes(24).toString("base64url")}`;
   const kioskKeyHash = await auth.hashPassword(kioskKeyPlaintext);
   const kioskKeyPrefix = kioskKeyPlaintext.slice(0, 8);

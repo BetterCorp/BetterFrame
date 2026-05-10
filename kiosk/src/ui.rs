@@ -9,6 +9,8 @@ use tracing::{info, warn};
 use crate::bundle::KioskBundle;
 use crate::pipeline;
 use crate::server;
+use crate::ws_client;
+use crate::ServerMsg;
 
 const APP_ID: &str = "dev.betterframe.kiosk";
 
@@ -61,6 +63,32 @@ fn activate(app: &Application) {
         info!("bundle: {} cameras, {} layouts", bundle.cameras.len(), bundle.layouts.len());
         let _ = tx.send(WorkerMsg::RenderBundle(bundle));
 
+        // Spawn WS client in a separate thread for live updates
+        let server_ws = server.clone();
+        let key_ws = key.clone();
+        let (ws_tx, ws_rx) = mpsc::channel::<ServerMsg>();
+        let tx_for_reload = tx.clone();
+        let server_for_reload = server.clone();
+        let key_for_reload = key.clone();
+
+        std::thread::spawn(move || {
+            ws_client::run(&server_ws, &key_ws, ws_tx);
+        });
+
+        // Listen for WS messages and re-fetch bundle on reload
+        std::thread::spawn(move || {
+            for msg in ws_rx {
+                match msg {
+                    ServerMsg::ReloadBundle => {
+                        info!("reloading bundle");
+                        let bundle = server::fetch_bundle(&server_for_reload, &key_for_reload);
+                        let _ = tx_for_reload.send(WorkerMsg::RenderBundle(bundle));
+                    }
+                }
+            }
+        });
+
+        // Heartbeat loop
         loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
             server::heartbeat(&server, &key);

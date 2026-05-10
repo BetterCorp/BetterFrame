@@ -13,7 +13,25 @@
  * SQLAlchemy's DateTime adapter — we avoid the whole class of issue here.)
  */
 
-export const MIGRATIONS: readonly string[] = [
+/**
+ * A migration entry: either a plain SQL string or a function receiving the DB.
+ * Functions are used for ALTER TABLE which lacks IF NOT EXISTS in SQLite.
+ */
+import type { DatabaseSync } from "node:sqlite";
+export type MigrationEntry = string | ((db: DatabaseSync) => void);
+
+function addColumnIfNotExists(
+  db: DatabaseSync,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  const cols = db.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE "${table}" ADD COLUMN ${column} ${definition}`);
+}
+
+export const MIGRATIONS: readonly MigrationEntry[] = [
   // ---- users ---------------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -249,4 +267,21 @@ export const MIGRATIONS: readonly string[] = [
 
   `CREATE INDEX IF NOT EXISTS idx_event_log_received ON event_log(received_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_event_log_topic ON event_log(topic, received_at DESC)`,
+
+  // ---- v0.2: flatten layout_templates into layouts, display→kiosk inversion ---
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "layouts", "regions", "TEXT NOT NULL DEFAULT '[]'");
+    addColumnIfNotExists(db, "layouts", "grid_cols", "INTEGER NOT NULL DEFAULT 1");
+    addColumnIfNotExists(db, "layouts", "grid_rows", "INTEGER NOT NULL DEFAULT 1");
+
+    // Copy template data into layouts (idempotent — only updates rows where regions is still '[]')
+    db.exec(`UPDATE layouts SET
+       regions = COALESCE((SELECT lt.regions FROM layout_templates lt WHERE lt.id = layouts.template_id), '[]'),
+       grid_cols = COALESCE((SELECT lt.grid_cols FROM layout_templates lt WHERE lt.id = layouts.template_id), 1),
+       grid_rows = COALESCE((SELECT lt.grid_rows FROM layout_templates lt WHERE lt.id = layouts.template_id), 1)
+     WHERE regions = '[]' AND template_id IS NOT NULL`);
+
+    addColumnIfNotExists(db, "displays", "kiosk_id", "INTEGER REFERENCES kiosks(id) ON DELETE SET NULL");
+  },
+  `CREATE INDEX IF NOT EXISTS idx_displays_kiosk ON displays(kiosk_id)`,
 ];

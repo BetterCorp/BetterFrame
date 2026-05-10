@@ -13,16 +13,13 @@ import {
   KiosksPage,
   KioskEditPage,
   LabelsPage,
-  TemplatesPage,
-  TemplateNewPage,
-  TemplateEditPage,
   LayoutsPage,
   LayoutNewPage,
   LayoutEditPage,
   DisplaysPage,
   DisplayEditPage,
 } from "../../web-templates/admin-pages.js";
-import type { LayoutTemplate, Display } from "../../shared/types.js";
+import type { Display } from "../../shared/types.js";
 
 function sanitizeRtspUrl(raw: string): string {
   const match = raw.match(/^(rtsp:\/\/)([^@]+)@(.+)$/);
@@ -196,33 +193,47 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
   });
 
-  // ---- Templates (Layout Templates) ------------------------------------------
+  // ---- Layouts ---------------------------------------------------------------
 
-  app.get("/admin/templates", (event) => {
+  app.get("/admin/layouts", (event) => {
     const user = event.context.user!;
-    const templates = deps.repo.listLayoutTemplates();
-    return htmlPage(TemplatesPage({ user: user.username, templates }));
+    const layouts = deps.repo.listLayouts();
+    const displayIds = [...new Set(layouts.map((l) => l.display_id))];
+    const displays = new Map<number, Display>();
+    for (const did of displayIds) {
+      const d = deps.repo.getDisplayById(did);
+      if (d) displays.set(did, d);
+    }
+    return htmlPage(LayoutsPage({ user: user.username, layouts, displays }));
   });
 
-  app.get("/admin/templates/new", (event) => {
+  app.get("/admin/layouts/new", (event) => {
     const user = event.context.user!;
-    return htmlPage(TemplateNewPage({ user: user.username }));
+    return htmlPage(LayoutNewPage({
+      user: user.username,
+      displays: deps.repo.listDisplays(),
+    }));
   });
 
-  app.post("/admin/templates/new", async (event) => {
+  app.post("/admin/layouts/new", async (event) => {
     const user = event.context.user!;
     const body = await readBody<Record<string, string>>(event);
+    const name = (body?.["name"] ?? "").trim();
     const preset = body?.["preset"] ?? "custom";
-    let name = (body?.["name"] ?? "").trim();
+    const displayId = parseInt(body?.["display_id"] ?? "", 10);
+    const priority = body?.["priority"] ?? "normal";
+    const description = (body?.["description"] ?? "").trim() || null;
+    const isDefault = body?.["is_default"] === "1";
+    const resetsIdleTimer = body?.["resets_idle_timer"] === "1";
     const errors: string[] = [];
 
-    if (!name || name.length > 128) {
-      errors.push("Name required (max 128 chars).");
-    }
+    if (!name || name.length > 128) errors.push("Name required (max 128 chars).");
+    if (isNaN(displayId)) errors.push("Select a display.");
 
-    let regions: Array<{ name: string; row: number; col: number; rowSpan: number; colSpan: number }> = [];
-    let gridCols = 12;
-    let gridRows = 12;
+    type Region = { name: string; row: number; col: number; rowSpan: number; colSpan: number };
+    let regions: Region[] = [];
+    let gridCols = 1;
+    let gridRows = 1;
 
     if (preset === "fullscreen") {
       gridCols = 1;
@@ -262,14 +273,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       ];
     } else {
       // Custom
-      gridCols = parseInt(body?.["grid_cols"] ?? "12", 10);
-      gridRows = parseInt(body?.["grid_rows"] ?? "12", 10);
+      gridCols = parseInt(body?.["grid_cols"] ?? "1", 10);
+      gridRows = parseInt(body?.["grid_rows"] ?? "1", 10);
       if (isNaN(gridCols) || gridCols < 1 || gridCols > 12) errors.push("Grid columns must be 1-12.");
       if (isNaN(gridRows) || gridRows < 1 || gridRows > 12) errors.push("Grid rows must be 1-12.");
 
       const regionsStr = (body?.["regions"] ?? "").trim();
       if (!regionsStr) {
-        errors.push("Regions JSON is required for custom templates.");
+        errors.push("Regions JSON is required for custom layout.");
       } else {
         try {
           regions = JSON.parse(regionsStr);
@@ -283,96 +294,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
 
     if (errors.length > 0) {
-      return htmlPage(TemplateNewPage({
-        user: user.username,
-        error: errors.join(" "),
-        values: body,
-      }));
-    }
-
-    deps.repo.createLayoutTemplate({
-      name,
-      regions,
-      grid_cols: gridCols,
-      grid_rows: gridRows,
-    });
-
-    return new Response(null, { status: 302, headers: { location: "/admin/templates" } });
-  });
-
-  app.get("/admin/templates/:id", (event) => {
-    const user = event.context.user!;
-    const id = Number(getRouterParam(event, "id"));
-    const template = deps.repo.getLayoutTemplateById(id);
-    if (!template) return new Response(null, { status: 302, headers: { location: "/admin/templates" } });
-    return htmlPage(TemplateEditPage({ user: user.username, template }));
-  });
-
-  app.post("/admin/templates/:id", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
-    const body = await readBody<Record<string, string>>(event);
-    deps.repo.updateLayoutTemplate(id, {
-      name: body?.["name"],
-      description: body?.["description"] || null,
-    });
-    return new Response(null, { status: 302, headers: { location: `/admin/templates/${id}` } });
-  });
-
-  app.post("/admin/templates/:id/delete", (event) => {
-    const id = Number(getRouterParam(event, "id"));
-    deps.repo.deleteLayoutTemplate(id);
-    return new Response(null, { status: 302, headers: { location: "/admin/templates" } });
-  });
-
-  // ---- Layouts ---------------------------------------------------------------
-
-  app.get("/admin/layouts", (event) => {
-    const user = event.context.user!;
-    const layouts = deps.repo.listLayouts();
-    const templateIds = [...new Set(layouts.map((l) => l.template_id))];
-    const displayIds = [...new Set(layouts.map((l) => l.display_id))];
-    const templates = new Map<number, LayoutTemplate>();
-    for (const tid of templateIds) {
-      const t = deps.repo.getLayoutTemplateById(tid);
-      if (t) templates.set(tid, t);
-    }
-    const displays = new Map<number, Display>();
-    for (const did of displayIds) {
-      const d = deps.repo.getDisplayById(did);
-      if (d) displays.set(did, d);
-    }
-    return htmlPage(LayoutsPage({ user: user.username, layouts, templates, displays }));
-  });
-
-  app.get("/admin/layouts/new", (event) => {
-    const user = event.context.user!;
-    return htmlPage(LayoutNewPage({
-      user: user.username,
-      templates: deps.repo.listLayoutTemplates(),
-      displays: deps.repo.listDisplays(),
-    }));
-  });
-
-  app.post("/admin/layouts/new", async (event) => {
-    const user = event.context.user!;
-    const body = await readBody<Record<string, string>>(event);
-    const name = (body?.["name"] ?? "").trim();
-    const templateId = parseInt(body?.["template_id"] ?? "", 10);
-    const displayId = parseInt(body?.["display_id"] ?? "", 10);
-    const priority = body?.["priority"] ?? "normal";
-    const description = (body?.["description"] ?? "").trim() || null;
-    const isDefault = body?.["is_default"] === "1";
-    const resetsIdleTimer = body?.["resets_idle_timer"] === "1";
-    const errors: string[] = [];
-
-    if (!name || name.length > 128) errors.push("Name required (max 128 chars).");
-    if (isNaN(templateId)) errors.push("Select a template.");
-    if (isNaN(displayId)) errors.push("Select a display.");
-
-    if (errors.length > 0) {
       return htmlPage(LayoutNewPage({
         user: user.username,
-        templates: deps.repo.listLayoutTemplates(),
         displays: deps.repo.listDisplays(),
         error: errors.join(" "),
         values: body,
@@ -382,7 +305,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const layout = deps.repo.createLayout({
       name,
       description,
-      template_id: templateId,
+      regions,
+      grid_cols: gridCols,
+      grid_rows: gridRows,
       display_id: displayId,
       priority,
       is_default: isDefault,
@@ -397,8 +322,6 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = Number(getRouterParam(event, "id"));
     const layout = deps.repo.getLayoutById(id);
     if (!layout) return new Response(null, { status: 302, headers: { location: "/admin/layouts" } });
-    const template = deps.repo.getLayoutTemplateById(layout.template_id);
-    if (!template) return new Response(null, { status: 302, headers: { location: "/admin/layouts" } });
     const display = deps.repo.getDisplayById(layout.display_id);
     if (!display) return new Response(null, { status: 302, headers: { location: "/admin/layouts" } });
     const cells = deps.repo.layoutCells(id);
@@ -406,7 +329,6 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return htmlPage(LayoutEditPage({
       user: user.username,
       layout,
-      template,
       display,
       cells,
       cameras,
@@ -479,7 +401,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const display = deps.repo.getDisplayById(id);
     if (!display) return new Response(null, { status: 302, headers: { location: "/admin/displays" } });
     const layouts = deps.repo.layoutsForDisplay(id);
-    return htmlPage(DisplayEditPage({ user: user.username, display, layouts }));
+    const kiosk = display.kiosk_id ? deps.repo.getKioskById(display.kiosk_id) : null;
+    return htmlPage(DisplayEditPage({ user: user.username, display, layouts, kioskName: kiosk?.name ?? null }));
   });
 
   app.post("/admin/displays/:id", async (event) => {
@@ -635,11 +558,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       name: kl.name,
       role: kl.role,
     }));
+    const displays = deps.repo.listDisplaysForKiosk(id);
     return htmlPage(KioskEditPage({
       user: user.username,
       kiosk,
       labels: kioskLabels,
       allLabels: deps.repo.listLabels(),
+      displays,
     }));
   });
 

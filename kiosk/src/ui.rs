@@ -120,14 +120,14 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
         return;
     };
 
-    let Some(ref template) = layout.template else {
-        warn!("layout has no template");
+    if layout.regions.is_empty() {
+        warn!("layout has no regions");
         show_logo(window);
         return;
-    };
+    }
 
     info!("rendering layout '{}' with {}x{} grid, {} cells",
-        layout.name, template.grid_cols, template.grid_rows, layout.cells.len());
+        layout.name, layout.grid_cols, layout.grid_rows, layout.cells.len());
 
     let grid = Grid::new();
     grid.set_row_homogeneous(true);
@@ -141,9 +141,9 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
     let pipelines: Rc<RefCell<Vec<gstreamer::Pipeline>>> = Rc::new(RefCell::new(Vec::new()));
 
     for cell in &layout.cells {
-        let region = template.regions.iter().find(|r| r.name == cell.region_name);
+        let region = layout.regions.iter().find(|r| r.name == cell.region_name);
         let Some(region) = region else {
-            warn!("region '{}' not found in template", cell.region_name);
+            warn!("region '{}' not found in layout", cell.region_name);
             continue;
         };
 
@@ -200,7 +200,7 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
     }
 
     // Fill empty regions
-    for region in &template.regions {
+    for region in &layout.regions {
         if !layout.cells.iter().any(|c| c.region_name == region.name) {
             let empty = GtkBox::new(Orientation::Vertical, 0);
             add_css(&empty, "box { background-color: #111; }");

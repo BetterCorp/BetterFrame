@@ -25,22 +25,15 @@ pub struct BundleDisplay {
 pub struct BundleLayout {
     pub id: u32,
     pub name: String,
-    pub template: Option<BundleTemplate>,
+    pub regions: Vec<BundleRegion>,
+    pub grid_cols: u32,
+    pub grid_rows: u32,
     pub priority: String,
     pub cooling_timeout_seconds: Option<u32>,
     pub preload_camera_ids: Vec<u32>,
     pub is_default: bool,
     pub resets_idle_timer: bool,
     pub cells: Vec<BundleCell>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct BundleTemplate {
-    pub id: u32,
-    pub name: String,
-    pub regions: Vec<BundleRegion>,
-    pub grid_cols: u32,
-    pub grid_rows: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

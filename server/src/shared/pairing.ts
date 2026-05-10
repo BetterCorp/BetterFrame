@@ -123,17 +123,17 @@ export async function confirmPairing(
   const kioskKeyHash = await auth.hashPassword(kioskKeyPlaintext);
   const kioskKeyPrefix = kioskKeyPlaintext.slice(0, 8);
 
-  // Auto-assign to primary display
-  const displays = repo.listDisplays();
-  const primaryDisplay = displays.find((d) => d.is_primary) ?? displays[0];
-
   const kiosk = repo.createKiosk({
     name: kioskName,
     key_hash: kioskKeyHash,
     key_prefix: kioskKeyPrefix,
     capabilities: pc.kiosk_capabilities,
     hardware_model: pc.kiosk_hardware_model,
-    display_id: primaryDisplay?.id ?? null,
+  });
+
+  // Create a default display for this kiosk (HDMI-0)
+  repo.createDisplayForKiosk(kiosk.id, {
+    name: `${kioskName} HDMI-0`,
   });
 
   // Attach initial labels

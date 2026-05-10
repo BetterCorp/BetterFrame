@@ -350,13 +350,50 @@ export class Repository {
   createDefaultDisplay(): Display {
     const result = this.prep(
       `INSERT INTO displays (name, "index", is_primary)
-       VALUES ('primary', 0, 1)`,
+       VALUES ('primary', 0, 0)`,
     ).run();
     const id = Number(result.lastInsertRowid);
     void this.notify("displays", "create", id);
     const d = this.getDisplayById(id);
     if (!d) throw new Error("display vanished after insert");
     return d;
+  }
+
+  createDisplayForKiosk(kioskId: number, input: {
+    name: string;
+    index?: number;
+    width_px?: number;
+    height_px?: number;
+  }): Display {
+    // Find next available index
+    const idx = input.index ?? this.nextDisplayIndex();
+    const result = this.prep(
+      `INSERT INTO displays (name, "index", is_primary, kiosk_id, width_px, height_px)
+       VALUES (?, ?, 0, ?, ?, ?)`,
+    ).run(
+      input.name,
+      idx,
+      kioskId,
+      input.width_px ?? 1920,
+      input.height_px ?? 1080,
+    );
+    const id = Number(result.lastInsertRowid);
+    void this.notify("displays", "create", id);
+    const d = this.getDisplayById(id);
+    if (!d) throw new Error("display vanished after insert");
+    return d;
+  }
+
+  listDisplaysForKiosk(kioskId: number): Display[] {
+    const rs = this.prep(
+      'SELECT * FROM displays WHERE kiosk_id = ? ORDER BY "index"',
+    ).all(kioskId);
+    return rs.map((r) => rowToDisplay(r as Record<string, unknown>));
+  }
+
+  private nextDisplayIndex(): number {
+    const r = this.prep('SELECT MAX("index") AS m FROM displays').get() as { m: number | null } | undefined;
+    return (r?.m ?? -1) + 1;
   }
 
   updateDisplay(id: number, patch: Partial<Display>): void {
@@ -457,7 +494,10 @@ export class Repository {
   createLayout(input: {
     name: string;
     description?: string | null;
-    template_id: number;
+    template_id?: number | null;
+    regions: unknown;
+    grid_cols: number;
+    grid_rows: number;
     display_id: number;
     priority?: string;
     cooling_timeout_seconds?: number | null;
@@ -466,12 +506,15 @@ export class Repository {
     resets_idle_timer?: boolean;
   }): Layout {
     const result = this.prep(
-      `INSERT INTO layouts (name, description, template_id, display_id, priority, cooling_timeout_seconds, preload_camera_ids, is_default, resets_idle_timer)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO layouts (name, description, template_id, regions, grid_cols, grid_rows, display_id, priority, cooling_timeout_seconds, preload_camera_ids, is_default, resets_idle_timer)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.name,
       input.description ?? null,
-      input.template_id,
+      input.template_id ?? null,
+      J(input.regions),
+      input.grid_cols,
+      input.grid_rows,
       input.display_id,
       input.priority ?? "normal",
       input.cooling_timeout_seconds ?? null,
@@ -492,7 +535,7 @@ export class Repository {
     for (const [k, v] of Object.entries(patch)) {
       if (k === "id") continue;
       sets.push(`${k} = ?`);
-      if (k === "preload_camera_ids") vals.push(J(v));
+      if (k === "preload_camera_ids" || k === "regions") vals.push(J(v));
       else if (typeof v === "boolean") vals.push(B(v));
       else vals.push(v === undefined ? null : v);
     }
@@ -810,19 +853,17 @@ export class Repository {
     key_prefix: string;
     capabilities?: string[];
     hardware_model?: string | null;
-    display_id?: number | null;
   }): Kiosk {
     const result = this.prep(
       `INSERT INTO kiosks
-        (name, key_hash, key_prefix, capabilities, hardware_model, display_id, paired_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        (name, key_hash, key_prefix, capabilities, hardware_model, paired_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(
       input.name,
       input.key_hash,
       input.key_prefix,
       J(input.capabilities ?? []),
       input.hardware_model ?? null,
-      input.display_id ?? null,
       isoNow(),
     );
     const id = Number(result.lastInsertRowid);

@@ -43,13 +43,9 @@ export interface BundleCell {
 export interface BundleLayout {
   id: number;
   name: string;
-  template: {
-    id: number;
-    name: string;
-    regions: unknown;
-    grid_cols: number;
-    grid_rows: number;
-  } | null;
+  regions: unknown;
+  grid_cols: number;
+  grid_rows: number;
   priority: string;
   cooling_timeout_seconds: number | null;
   preload_camera_ids: number[];
@@ -84,9 +80,15 @@ export function generateBundle(
   clusterKey: string | undefined,
 ): KioskBundle | null {
   const kiosk = repo.getKioskById(kioskId);
-  if (!kiosk || !kiosk.display_id) return null;
+  if (!kiosk) return null;
 
-  const display = repo.getDisplayById(kiosk.display_id);
+  // Find display for this kiosk (displays now point to kiosks via kiosk_id)
+  const kioskDisplays = repo.listDisplaysForKiosk(kioskId);
+  // Fall back to legacy kiosk.display_id if no displays point to this kiosk yet
+  let display = kioskDisplays[0] ?? null;
+  if (!display && kiosk.display_id) {
+    display = repo.getDisplayById(kiosk.display_id);
+  }
   if (!display) return null;
 
   const layouts = repo.layoutsForDisplayId(display.id);
@@ -97,17 +99,12 @@ export function generateBundle(
 
   const bundleLayouts: BundleLayout[] = layouts.map((l) => {
     const cells = repo.layoutCells(l.id);
-    const template = l.template_id ? repo.getLayoutTemplateById(l.template_id) : null;
     return {
       id: l.id,
       name: l.name,
-      template: template ? {
-        id: template.id,
-        name: template.name,
-        regions: template.regions,
-        grid_cols: template.grid_cols,
-        grid_rows: template.grid_rows,
-      } : null,
+      regions: l.regions,
+      grid_cols: l.grid_cols,
+      grid_rows: l.grid_rows,
       priority: l.priority,
       cooling_timeout_seconds: l.cooling_timeout_seconds,
       preload_camera_ids: l.preload_camera_ids,

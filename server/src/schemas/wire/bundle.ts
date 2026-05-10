@@ -58,24 +58,13 @@ const camera = av.object(
   { unknownKeys: "reject" },
 );
 
-const layoutTemplate = av.object(
+const layoutRegion = av.object(
   {
-    id: av.int().min(1),
-    name: av.string().minLength(1).maxLength(128),
-    regions: av.array(
-      av.object(
-        {
-          name: av.string().minLength(1).maxLength(64),
-          row: av.int().min(0).max(11),
-          col: av.int().min(0).max(11),
-          rowSpan: av.int().min(1).max(12),
-          colSpan: av.int().min(1).max(12),
-        },
-        { unknownKeys: "reject" },
-      ),
-    ),
-    grid_cols: av.int().min(1).max(64),
-    grid_rows: av.int().min(1).max(64),
+    name: av.string().minLength(1).maxLength(64),
+    row: av.int().min(0).max(11),
+    col: av.int().min(0).max(11),
+    rowSpan: av.int().min(1).max(12),
+    colSpan: av.int().min(1).max(12),
   },
   { unknownKeys: "reject" },
 );
@@ -98,8 +87,9 @@ const layout = av.object(
   {
     id: av.int().min(1),
     name: av.string().minLength(1).maxLength(128),
-    template_id: av.int().min(1),
-    display_id: av.int().min(1),
+    regions: av.array(layoutRegion),
+    grid_cols: av.int().min(1).max(64),
+    grid_rows: av.int().min(1).max(64),
     priority: layoutPriority,
     cooling_timeout_seconds: av.nullable(av.int().min(0)),
     preload_camera_ids: av.array(av.int().min(1)),
@@ -117,7 +107,6 @@ export const kioskBundle = av.object(
     labels: av.array(av.string()),
     operate_labels: av.array(av.string()),
     cameras: av.array(camera),
-    templates: av.array(layoutTemplate),
     layouts: av.array(layout),
     version: av.string().minLength(1).maxLength(64),
   },

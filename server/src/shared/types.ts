@@ -72,7 +72,8 @@ export interface Display {
   id: number;
   name: string;
   index: number; // unique
-  is_primary: boolean;
+  is_primary: boolean; // deprecated — kept for backward compat, not used
+  kiosk_id: number | null; // FK → kiosks; displays belong to kiosks
   width_px: number;
   height_px: number;
   default_layout_id: number | null;
@@ -139,7 +140,10 @@ export interface Layout {
   id: number;
   name: string;
   description: string | null;
-  template_id: number;
+  template_id: number | null; // deprecated — kept nullable for backward compat
+  regions: LayoutRegion[];
+  grid_cols: number;
+  grid_rows: number;
   display_id: number;
   priority: LayoutPriority;
   cooling_timeout_seconds: number | null;
@@ -175,7 +179,7 @@ export interface Kiosk {
   paired_at: string | null;
   last_seen_at: string | null;
   last_bundle_version: string | null;
-  display_id: number | null;
+  display_id: number | null; // deprecated — displays now point to kiosks via kiosk_id
   created_at: string;
 }
 

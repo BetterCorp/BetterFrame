@@ -11,7 +11,6 @@ import type {
   Layout as LayoutType,
   LayoutCell,
   LayoutRegion,
-  LayoutTemplate,
   PairingCode,
   EventLog,
 } from "../shared/types.js";
@@ -712,6 +711,7 @@ interface KioskEditProps {
   kiosk: Kiosk;
   labels: Array<{ label_id: number; name: string; role: string }>;
   allLabels: Label[];
+  displays?: Display[];
   error?: string;
   success?: string;
 }
@@ -751,6 +751,29 @@ export function KioskEditPage(props: KioskEditProps) {
             <div>Paired: {k.paired_at ? formatTime(k.paired_at) : "—"}</div>
             <div>Last seen: {k.last_seen_at ? formatTime(k.last_seen_at) : "Never"}</div>
           </div>
+        </div>
+
+        {/* Associated displays */}
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Displays</h2>
+          {props.displays && props.displays.length > 0 ? (
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Name</th><th>Resolution</th><th>Index</th></tr></thead>
+                <tbody>
+                  {props.displays.map((d) => (
+                    <tr>
+                      <td><a href={`/admin/displays/${d.id}`}><strong>{d.name}</strong></a></td>
+                      <td>{String(d.width_px)}x{String(d.height_px)}</td>
+                      <td>{String(d.index)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p style="color:#999">No displays associated with this kiosk</p>
+          )}
         </div>
 
         <div class="card" style="margin-bottom:1.5rem">
@@ -851,252 +874,11 @@ export function LabelsPage(props: LabelsPageProps) {
   );
 }
 
-// ---- Templates (Layout Templates) -------------------------------------------
-
-interface TemplatesPageProps {
-  user: string;
-  templates: LayoutTemplate[];
-}
-
-export function TemplatesPage(props: TemplatesPageProps) {
-  return (
-    <Layout title="Layout Templates" user={props.user} activeNav="templates">
-      <div class="section-header">
-        <h2 class="section-title">All Templates</h2>
-        <a href="/admin/templates/new" class="btn btn-primary">New Template</a>
-      </div>
-      <p style="color:#666; margin-bottom:1.25rem">
-        Templates define named regions on a grid. Layouts bind content into these regions.
-      </p>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Grid</th>
-              <th>Regions</th>
-              <th>Type</th>
-            </tr>
-          </thead>
-          <tbody>
-            {props.templates.length === 0 ? (
-              <tr><td colspan="4" style="text-align:center; color:#999; padding:2rem">No templates created yet</td></tr>
-            ) : (
-              props.templates.map((t) => (
-                <tr>
-                  <td><a href={`/admin/templates/${t.id}`}><strong>{t.name}</strong></a></td>
-                  <td>{String(t.grid_cols)}x{String(t.grid_rows)}</td>
-                  <td>{String(t.regions.length)} region{t.regions.length !== 1 ? "s" : ""}</td>
-                  <td>
-                    {t.is_builtin
-                      ? <span class="badge badge-gray">Built-in</span>
-                      : <span class="badge badge-blue">Custom</span>
-                    }
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    </Layout>
-  );
-}
-
-// ---- Template New -----------------------------------------------------------
-
-interface TemplateNewPageProps {
-  user: string;
-  error?: string;
-  values?: Record<string, string>;
-}
-
-export function TemplateNewPage(props: TemplateNewPageProps) {
-  const v = props.values ?? {};
-  return (
-    <Layout
-      title="New Template"
-      user={props.user}
-      activeNav="templates"
-      flash={props.error ? { type: "error", message: props.error } : undefined}
-    >
-      <div style="max-width:700px">
-        <div class="card" style="margin-bottom:1.5rem">
-          <h2 style="margin:0 0 1rem; font-size:1.1rem">Choose a Preset</h2>
-          <p style="color:#666; margin-bottom:1rem; font-size:0.85rem">
-            Pick a preset to get started quickly, or choose Custom to define your own regions.
-          </p>
-          <div class="stats-grid" style="margin-bottom:0">
-            <form method="post" action="/admin/templates/new" style="margin:0">
-              <input type="hidden" name="preset" value="fullscreen" />
-              <input type="hidden" name="name" value="Fullscreen" />
-              <button type="submit" class="card" style="width:100%; text-align:left; cursor:pointer; border:1px solid #d0d0d0; background:#fff">
-                <strong>Fullscreen</strong>
-                <div style="color:#666; font-size:0.8rem">1x1 grid, single region</div>
-              </button>
-            </form>
-            <form method="post" action="/admin/templates/new" style="margin:0">
-              <input type="hidden" name="preset" value="2x2" />
-              <input type="hidden" name="name" value="2x2 Grid" />
-              <button type="submit" class="card" style="width:100%; text-align:left; cursor:pointer; border:1px solid #d0d0d0; background:#fff">
-                <strong>2x2 Grid</strong>
-                <div style="color:#666; font-size:0.8rem">4 equal regions</div>
-              </button>
-            </form>
-            <form method="post" action="/admin/templates/new" style="margin:0">
-              <input type="hidden" name="preset" value="1plus3" />
-              <input type="hidden" name="name" value="1+3" />
-              <button type="submit" class="card" style="width:100%; text-align:left; cursor:pointer; border:1px solid #d0d0d0; background:#fff">
-                <strong>1+3</strong>
-                <div style="color:#666; font-size:0.8rem">Large left, 3 stacked right</div>
-              </button>
-            </form>
-            <form method="post" action="/admin/templates/new" style="margin:0">
-              <input type="hidden" name="preset" value="3x3" />
-              <input type="hidden" name="name" value="3x3 Grid" />
-              <button type="submit" class="card" style="width:100%; text-align:left; cursor:pointer; border:1px solid #d0d0d0; background:#fff">
-                <strong>3x3 Grid</strong>
-                <div style="color:#666; font-size:0.8rem">9 equal regions</div>
-              </button>
-            </form>
-          </div>
-        </div>
-
-        <div class="card">
-          <h2 style="margin:0 0 1rem; font-size:1.1rem">Custom Template</h2>
-          <form method="post" action="/admin/templates/new">
-            <input type="hidden" name="preset" value="custom" />
-            <div class="form-group">
-              <label for="name">Name</label>
-              <input id="name" name="name" type="text" class="form-input" required maxlength="128" value={v["name"] ?? ""} />
-            </div>
-            <div class="form-group">
-              <label for="grid_cols">Grid Columns</label>
-              <input id="grid_cols" name="grid_cols" type="number" class="form-input" min="1" max="12" value={v["grid_cols"] ?? "12"} />
-            </div>
-            <div class="form-group">
-              <label for="grid_rows">Grid Rows</label>
-              <input id="grid_rows" name="grid_rows" type="number" class="form-input" min="1" max="12" value={v["grid_rows"] ?? "12"} />
-            </div>
-            <div class="form-group">
-              <label for="regions">Regions (JSON)</label>
-              <textarea
-                id="regions"
-                name="regions"
-                class="form-input"
-                rows="6"
-                placeholder={'[\n  { "name": "main", "row": 0, "col": 0, "rowSpan": 12, "colSpan": 12 }\n]'}
-              >{v["regions"] ?? ""}</textarea>
-              <div class="form-hint">
-                Array of regions: name, row, col, rowSpan, colSpan. Grid is zero-indexed.
-              </div>
-            </div>
-            <button type="submit" class="btn btn-primary">Create Template</button>
-            <a href="/admin/templates" class="btn btn-ghost" style="margin-left:0.5rem">Cancel</a>
-          </form>
-        </div>
-      </div>
-    </Layout>
-  );
-}
-
-// ---- Template Edit ----------------------------------------------------------
-
-interface TemplateEditPageProps {
-  user: string;
-  template: LayoutTemplate;
-  error?: string;
-  success?: string;
-}
-
-export function TemplateEditPage(props: TemplateEditPageProps) {
-  const t = props.template;
-  return (
-    <Layout
-      title={`Template: ${t.name}`}
-      user={props.user}
-      activeNav="templates"
-      flash={
-        props.error ? { type: "error", message: props.error }
-        : props.success ? { type: "success", message: props.success }
-        : undefined
-      }
-    >
-      <div style="max-width:700px">
-        <div class="card" style="margin-bottom:1.5rem">
-          <h2 style="margin:0 0 1rem; font-size:1.1rem">Edit Template</h2>
-          <form method="post" action={`/admin/templates/${t.id}`}>
-            <div class="form-group">
-              <label for="name">Name</label>
-              <input id="name" name="name" type="text" class="form-input" value={t.name} required maxlength="128" />
-            </div>
-            <div class="form-group">
-              <label for="description">Description</label>
-              <input id="description" name="description" type="text" class="form-input" value={t.description ?? ""} />
-            </div>
-            <button type="submit" class="btn btn-primary">Save</button>
-            <a href="/admin/templates" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
-          </form>
-        </div>
-
-        <div class="card" style="margin-bottom:1.5rem">
-          <h2 style="margin:0 0 1rem; font-size:1.1rem">Grid: {String(t.grid_cols)}x{String(t.grid_rows)}</h2>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Region</th>
-                  <th>Position</th>
-                  <th>Size</th>
-                </tr>
-              </thead>
-              <tbody>
-                {t.regions.length === 0 ? (
-                  <tr><td colspan="3" style="text-align:center; color:#999; padding:1rem">No regions defined</td></tr>
-                ) : (
-                  t.regions.map((r) => (
-                    <tr>
-                      <td><strong>{r.name}</strong></td>
-                      <td>row {String(r.row)}, col {String(r.col)}</td>
-                      <td>{String(r.rowSpan)}x{String(r.colSpan)}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Visual grid preview */}
-        {t.regions.length > 0 && (
-          <div class="card" style="margin-bottom:1.5rem">
-            <h2 style="margin:0 0 1rem; font-size:1.1rem">Preview</h2>
-            <div style={`display:grid; grid-template-columns:repeat(${String(t.grid_cols)}, 1fr); grid-template-rows:repeat(${String(t.grid_rows)}, 30px); gap:2px; background:#e5e7eb; padding:2px; border-radius:4px`}>
-              {t.regions.map((r) => (
-                <div style={`grid-column:${String(r.col + 1)} / span ${String(r.colSpan)}; grid-row:${String(r.row + 1)} / span ${String(r.rowSpan)}; background:#dbeafe; display:flex; align-items:center; justify-content:center; font-size:0.75rem; font-weight:600; color:#1e40af; border-radius:2px`}>
-                  {r.name}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {!t.is_builtin && (
-          <form method="post" action={`/admin/templates/${t.id}/delete`} style="margin-top:1rem">
-            <button type="submit" class="btn btn-danger" {...{"onclick": "return confirm('Delete this template? Layouts using it will break.')"}}>Delete Template</button>
-          </form>
-        )}
-      </div>
-    </Layout>
-  );
-}
-
 // ---- Layouts ----------------------------------------------------------------
 
 interface LayoutsPageProps {
   user: string;
   layouts: LayoutType[];
-  templates: Map<number, LayoutTemplate>;
   displays: Map<number, Display>;
 }
 
@@ -1108,14 +890,14 @@ export function LayoutsPage(props: LayoutsPageProps) {
         <a href="/admin/layouts/new" class="btn btn-primary">New Layout</a>
       </div>
       <p style="color:#666; margin-bottom:1.25rem">
-        A layout binds cameras and other content into a template's regions for one display.
+        A layout defines a grid of regions and binds cameras or other content into them for a display.
       </p>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>Name</th>
-              <th>Template</th>
+              <th>Grid</th>
               <th>Display</th>
               <th>Priority</th>
               <th>Default</th>
@@ -1126,12 +908,11 @@ export function LayoutsPage(props: LayoutsPageProps) {
               <tr><td colspan="5" style="text-align:center; color:#999; padding:2rem">No layouts created yet</td></tr>
             ) : (
               props.layouts.map((l) => {
-                const tmpl = props.templates.get(l.template_id);
                 const disp = props.displays.get(l.display_id);
                 return (
                   <tr>
                     <td><a href={`/admin/layouts/${l.id}`}><strong>{l.name}</strong></a></td>
-                    <td>{tmpl ? tmpl.name : `#${String(l.template_id)}`}</td>
+                    <td>{String(l.grid_cols)}x{String(l.grid_rows)} ({String(l.regions.length)} regions)</td>
                     <td>{disp ? disp.name : `#${String(l.display_id)}`}</td>
                     <td>
                       {l.priority === "hot"
@@ -1159,7 +940,6 @@ export function LayoutsPage(props: LayoutsPageProps) {
 
 interface LayoutNewPageProps {
   user: string;
-  templates: LayoutTemplate[];
   displays: Display[];
   error?: string;
   values?: Record<string, string>;
@@ -1174,73 +954,119 @@ export function LayoutNewPage(props: LayoutNewPageProps) {
       activeNav="layouts"
       flash={props.error ? { type: "error", message: props.error } : undefined}
     >
-      <div style="max-width:600px">
-        <form method="post" action="/admin/layouts/new">
-          <div class="form-group">
-            <label for="name">Layout Name</label>
-            <input id="name" name="name" type="text" class="form-input" required maxlength="128" value={v["name"] ?? ""} />
+      <div style="max-width:700px">
+        {/* Quick presets */}
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Quick Create from Preset</h2>
+          <p style="color:#666; margin-bottom:1rem; font-size:0.85rem">
+            Pick a preset grid layout. You can also define a custom grid below.
+          </p>
+          <div class="stats-grid" style="margin-bottom:0">
+            {[
+              { preset: "fullscreen", label: "Fullscreen", desc: "1x1 grid, single region" },
+              { preset: "2x2", label: "2x2 Grid", desc: "4 equal regions" },
+              { preset: "1plus3", label: "1+3", desc: "Large left, 3 stacked right" },
+              { preset: "3x3", label: "3x3 Grid", desc: "9 equal regions" },
+            ].map((p) => (
+              <form method="post" action="/admin/layouts/new" style="margin:0">
+                <input type="hidden" name="preset" value={p.preset} />
+                <input type="hidden" name="name" value={v["name"] || p.label} />
+                <input type="hidden" name="display_id" value={v["display_id"] ?? String(props.displays[0]?.id ?? "")} />
+                <input type="hidden" name="is_default" value={v["is_default"] ?? "0"} />
+                <input type="hidden" name="resets_idle_timer" value={v["resets_idle_timer"] ?? "1"} />
+                <button type="submit" class="card" style="width:100%; text-align:left; cursor:pointer; border:1px solid #d0d0d0; background:#fff">
+                  <strong>{p.label}</strong>
+                  <div style="color:#666; font-size:0.8rem">{p.desc}</div>
+                </button>
+              </form>
+            ))}
           </div>
+        </div>
 
-          <div class="form-group">
-            <label for="template_id">Template</label>
-            <select id="template_id" name="template_id" class="form-input" required>
-              <option value="">-- Select Template --</option>
-              {props.templates.map((t) => (
-                <option value={String(t.id)} selected={v["template_id"] === String(t.id)}>
-                  {t.name} ({String(t.grid_cols)}x{String(t.grid_rows)}, {String(t.regions.length)} regions)
-                </option>
-              ))}
-            </select>
-            {props.templates.length === 0 && (
-              <div class="form-hint">
-                No templates exist. <a href="/admin/templates/new">Create one first</a>.
+        {/* Full form */}
+        <div class="card">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Custom Layout</h2>
+          <form method="post" action="/admin/layouts/new">
+            <input type="hidden" name="preset" value="custom" />
+            <div class="form-group">
+              <label for="name">Layout Name</label>
+              <input id="name" name="name" type="text" class="form-input" required maxlength="128" value={v["name"] ?? ""} />
+            </div>
+
+            <div class="form-group">
+              <label for="display_id">Display</label>
+              <select id="display_id" name="display_id" class="form-input" required>
+                <option value="">-- Select Display --</option>
+                {props.displays.map((d) => (
+                  <option value={String(d.id)} selected={v["display_id"] === String(d.id)}>
+                    {d.name} ({String(d.width_px)}x{String(d.height_px)})
+                  </option>
+                ))}
+              </select>
+              {props.displays.length === 0 && (
+                <div class="form-hint">
+                  No displays exist yet. Pair a kiosk first to create a display.
+                </div>
+              )}
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem">
+              <div class="form-group">
+                <label for="grid_cols">Grid Columns</label>
+                <input id="grid_cols" name="grid_cols" type="number" class="form-input" min="1" max="12" value={v["grid_cols"] ?? "1"} />
               </div>
-            )}
-          </div>
+              <div class="form-group">
+                <label for="grid_rows">Grid Rows</label>
+                <input id="grid_rows" name="grid_rows" type="number" class="form-input" min="1" max="12" value={v["grid_rows"] ?? "1"} />
+              </div>
+            </div>
 
-          <div class="form-group">
-            <label for="display_id">Display</label>
-            <select id="display_id" name="display_id" class="form-input" required>
-              <option value="">-- Select Display --</option>
-              {props.displays.map((d) => (
-                <option value={String(d.id)} selected={v["display_id"] === String(d.id)}>
-                  {d.name} ({String(d.width_px)}x{String(d.height_px)})
-                </option>
-              ))}
-            </select>
-          </div>
+            <div class="form-group">
+              <label for="regions">Regions (JSON)</label>
+              <textarea
+                id="regions"
+                name="regions"
+                class="form-input"
+                rows="6"
+                placeholder={'[\n  { "name": "main", "row": 0, "col": 0, "rowSpan": 1, "colSpan": 1 }\n]'}
+              >{v["regions"] ?? ""}</textarea>
+              <div class="form-hint">
+                Array of regions: name, row, col, rowSpan, colSpan. Grid is zero-indexed.
+              </div>
+            </div>
 
-          <div class="form-group">
-            <label for="priority">Priority</label>
-            <select id="priority" name="priority" class="form-input">
-              <option value="normal" selected={v["priority"] !== "hot" && v["priority"] !== "cold"}>Normal</option>
-              <option value="hot" selected={v["priority"] === "hot"}>Hot (always warm)</option>
-              <option value="cold" selected={v["priority"] === "cold"}>Cold</option>
-            </select>
-          </div>
+            <div class="form-group">
+              <label for="priority">Priority</label>
+              <select id="priority" name="priority" class="form-input">
+                <option value="normal" selected={v["priority"] !== "hot" && v["priority"] !== "cold"}>Normal</option>
+                <option value="hot" selected={v["priority"] === "hot"}>Hot (always warm)</option>
+                <option value="cold" selected={v["priority"] === "cold"}>Cold</option>
+              </select>
+            </div>
 
-          <div class="form-group">
-            <label for="description">Description (optional)</label>
-            <input id="description" name="description" type="text" class="form-input" value={v["description"] ?? ""} />
-          </div>
+            <div class="form-group">
+              <label for="description">Description (optional)</label>
+              <input id="description" name="description" type="text" class="form-input" value={v["description"] ?? ""} />
+            </div>
 
-          <div class="form-group">
-            <label>
-              <input type="checkbox" name="is_default" value="1" checked={v["is_default"] === "1"} />
-              {" "}Set as default layout for this display
-            </label>
-          </div>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" name="is_default" value="1" checked={v["is_default"] === "1"} />
+                {" "}Set as default layout for this display
+              </label>
+            </div>
 
-          <div class="form-group">
-            <label>
-              <input type="checkbox" name="resets_idle_timer" value="1" checked={v["resets_idle_timer"] !== "0"} />
-              {" "}Resets idle timer when activated
-            </label>
-          </div>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" name="resets_idle_timer" value="1" checked={v["resets_idle_timer"] !== "0"} />
+                {" "}Resets idle timer when activated
+              </label>
+            </div>
 
-          <button type="submit" class="btn btn-primary">Create Layout</button>
-          <a href="/admin/layouts" class="btn btn-ghost" style="margin-left:0.5rem">Cancel</a>
-        </form>
+            <button type="submit" class="btn btn-primary">Create Layout</button>
+            <a href="/admin/layouts" class="btn btn-ghost" style="margin-left:0.5rem">Cancel</a>
+          </form>
+        </div>
       </div>
     </Layout>
   );
@@ -1251,7 +1077,6 @@ export function LayoutNewPage(props: LayoutNewPageProps) {
 interface LayoutEditPageProps {
   user: string;
   layout: LayoutType;
-  template: LayoutTemplate;
   display: Display;
   cells: LayoutCell[];
   cameras: Camera[];
@@ -1261,7 +1086,6 @@ interface LayoutEditPageProps {
 
 export function LayoutEditPage(props: LayoutEditPageProps) {
   const l = props.layout;
-  const t = props.template;
   // Build a map from region_name → cell for easy lookup
   const cellByRegion = new Map<string, LayoutCell>();
   for (const c of props.cells) {
@@ -1326,17 +1150,17 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
             <a href="/admin/layouts" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
           </form>
           <div style="margin-top:1rem; color:#666; font-size:0.85rem">
-            <div>Template: <a href={`/admin/templates/${t.id}`}>{t.name}</a> ({String(t.grid_cols)}x{String(t.grid_rows)})</div>
+            <div>Grid: {String(l.grid_cols)}x{String(l.grid_rows)}, {String(l.regions.length)} region{l.regions.length !== 1 ? "s" : ""}</div>
             <div>Display: <a href={`/admin/displays/${props.display.id}`}>{props.display.name}</a></div>
           </div>
         </div>
 
-        {/* Template preview with cell assignments */}
-        {t.regions.length > 0 && (
+        {/* Grid preview with cell assignments */}
+        {l.regions.length > 0 && (
           <div class="card" style="margin-bottom:1.5rem">
             <h2 style="margin:0 0 1rem; font-size:1.1rem">Grid Preview</h2>
-            <div style={`display:grid; grid-template-columns:repeat(${String(t.grid_cols)}, 1fr); grid-template-rows:repeat(${String(t.grid_rows)}, 40px); gap:2px; background:#e5e7eb; padding:2px; border-radius:4px`}>
-              {t.regions.map((r) => {
+            <div style={`display:grid; grid-template-columns:repeat(${String(l.grid_cols)}, 1fr); grid-template-rows:repeat(${String(l.grid_rows)}, 40px); gap:2px; background:#e5e7eb; padding:2px; border-radius:4px`}>
+              {l.regions.map((r) => {
                 const cell = cellByRegion.get(r.name);
                 let label = r.name;
                 let bgColor = "#f9fafb";
@@ -1363,6 +1187,35 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
           </div>
         )}
 
+        {/* Regions table */}
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Regions</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Region</th>
+                  <th>Position</th>
+                  <th>Size</th>
+                </tr>
+              </thead>
+              <tbody>
+                {l.regions.length === 0 ? (
+                  <tr><td colspan="3" style="text-align:center; color:#999; padding:1rem">No regions defined</td></tr>
+                ) : (
+                  l.regions.map((r) => (
+                    <tr>
+                      <td><strong>{r.name}</strong></td>
+                      <td>row {String(r.row)}, col {String(r.col)}</td>
+                      <td>{String(r.rowSpan)}x{String(r.colSpan)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         {/* Cell assignments table */}
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Cell Assignments</h2>
@@ -1376,7 +1229,7 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
                 </tr>
               </thead>
               <tbody>
-                {t.regions.map((r) => {
+                {l.regions.map((r) => {
                   const cell = cellByRegion.get(r.name);
                   return (
                     <tr>
@@ -1422,7 +1275,7 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
               <label for="region_name">Region</label>
               <select id="region_name" name="region_name" class="form-input" required>
                 <option value="">-- Select Region --</option>
-                {t.regions.map((r) => {
+                {l.regions.map((r) => {
                   const taken = cellByRegion.has(r.name);
                   return (
                     <option value={r.name} disabled={taken}>
@@ -1507,6 +1360,7 @@ interface DisplayEditPageProps {
   user: string;
   display: Display;
   layouts: LayoutType[];
+  kioskName?: string | null;
   error?: string;
   success?: string;
 }
@@ -1530,7 +1384,9 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
           <div style="color:#666; font-size:0.85rem; margin-bottom:1rem">
             <div>Index: {String(d.index)}</div>
             <div>Resolution: {String(d.width_px)}x{String(d.height_px)}</div>
-            <div>Primary: {d.is_primary ? "Yes" : "No"}</div>
+            {d.kiosk_id && (
+              <div>Kiosk: <a href={`/admin/kiosks/${d.kiosk_id}`}>{props.kioskName ?? `#${String(d.kiosk_id)}`}</a></div>
+            )}
           </div>
           <form method="post" action={`/admin/displays/${d.id}`}>
             <div class="form-group">
@@ -1618,7 +1474,7 @@ interface DisplaysPageProps {
 export function DisplaysPage(props: DisplaysPageProps) {
   return (
     <Layout title="Displays" user={props.user} activeNav="displays">
-      <p style="color:#666; margin-bottom:1.25rem">Physical HDMI displays. Primary display created during setup.</p>
+      <p style="color:#666; margin-bottom:1.25rem">Physical HDMI displays. Created automatically when kiosks are paired.</p>
       <div class="table-wrap">
         <table>
           <thead>

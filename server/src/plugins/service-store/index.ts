@@ -121,8 +121,12 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     this.db.exec("PRAGMA busy_timeout = 10000");
 
     obs.log.info("running {n} migrations", { n: MIGRATIONS.length });
-    for (const stmt of MIGRATIONS) {
-      this.db.exec(stmt);
+    for (const entry of MIGRATIONS) {
+      if (typeof entry === "string") {
+        this.db.exec(entry);
+      } else {
+        entry(this.db);
+      }
     }
 
     this._repo = new Repository(this.db, async (table, op, id) => {

@@ -1,0 +1,65 @@
+# BetterFrame stack — server + Angie proxy + Node-RED.
+# Kiosk runs on the Pi natively (not in Docker, needs Wayland/HDMI).
+#
+# Usage:
+#   docker compose -f deploy/docker/docker-compose.yml up -d
+#
+# Volumes:
+#   betterframe-data — sqlite DB + secret.key
+#   nodered-data — Node-RED flows
+#
+# Bind 0.0.0.0:80 on the host (Angie). Backend services only reachable
+# from within the Docker network.
+version: "3.8"
+
+services:
+  server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.server
+    container_name: betterframe-server
+    restart: unless-stopped
+    volumes:
+      - betterframe-data:/var/lib/betterframe
+      - ../../sec-config.yaml:/app/sec-config.yaml:ro
+    expose:
+      - "18080"
+      - "18081"
+      - "18082"
+    networks:
+      - betterframe
+
+  angie:
+    image: nginx:alpine
+    container_name: betterframe-angie
+    restart: unless-stopped
+    depends_on:
+      - server
+      - nodered
+    ports:
+      - "80:80"
+    volumes:
+      - ../angie/betterframe.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - betterframe
+
+  nodered:
+    image: nodered/node-red:latest
+    container_name: betterframe-nodered
+    restart: unless-stopped
+    environment:
+      - TZ=UTC
+    volumes:
+      - nodered-data:/data
+    expose:
+      - "1880"
+    networks:
+      - betterframe
+
+volumes:
+  betterframe-data:
+  nodered-data:
+
+networks:
+  betterframe:
+    driver: bridge

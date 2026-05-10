@@ -11,6 +11,7 @@ use gtk4::{self as gtk, Application, ApplicationWindow, Box as GtkBox, Grid, Lab
 use tracing::{info, warn};
 
 use crate::bundle::KioskBundle;
+use crate::cec;
 use crate::pipeline;
 use crate::server;
 use crate::ws_client;
@@ -79,7 +80,7 @@ fn activate(app: &Application) {
             ws_client::run(&server_ws, &key_ws, ws_tx);
         });
 
-        // Listen for WS messages and re-fetch bundle on reload
+        // Listen for WS messages and dispatch
         std::thread::spawn(move || {
             for msg in ws_rx {
                 match msg {
@@ -88,6 +89,8 @@ fn activate(app: &Application) {
                         let bundle = server::fetch_bundle(&server_for_reload, &key_for_reload);
                         let _ = tx_for_reload.send(WorkerMsg::RenderBundle(bundle));
                     }
+                    ServerMsg::Standby => { cec::standby(); }
+                    ServerMsg::Wake => { cec::wake(); }
                 }
             }
         });

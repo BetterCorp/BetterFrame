@@ -40,6 +40,12 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
                                 } else if text.contains("\"type\":\"reload-bundle\"") {
                                     info!("ws: reload-bundle received");
                                     let _ = tx.send(ServerMsg::ReloadBundle);
+                                } else if text.contains("\"type\":\"standby\"") {
+                                    info!("ws: standby received");
+                                    let _ = tx.send(ServerMsg::Standby);
+                                } else if text.contains("\"type\":\"wake\"") {
+                                    info!("ws: wake received");
+                                    let _ = tx.send(ServerMsg::Wake);
                                 } else {
                                     info!("ws: msg: {text}");
                                 }

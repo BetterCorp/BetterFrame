@@ -1,0 +1,21 @@
+[Unit]
+Description=BetterFrame Kiosk
+Documentation=https://github.com/BetterCorp/BetterFrame
+After=graphical-session.target network-online.target
+Wants=network-online.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.betterframe-kiosk
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=GST_DEBUG=1
+ExecStart=/opt/betterframe/kiosk/betterframe-kiosk
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical-session.target

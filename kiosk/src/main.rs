@@ -1,11 +1,14 @@
 mod server;
 mod bundle;
+mod cec;
 mod pipeline;
 mod ui;
 mod ws_client;
 
 pub enum ServerMsg {
     ReloadBundle,
+    Standby,
+    Wake,
 }
 
 use gtk4::prelude::{ApplicationExt, ApplicationExtManual};

@@ -748,4 +748,17 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     deps.repo.deleteKiosk(id);
     return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
   });
+
+  // ---- CEC power commands -----------------------------------------------
+  app.post("/admin/kiosks/:id/power/standby", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    getCoordinator().sendToKiosk(id, { type: "standby" });
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+  });
+
+  app.post("/admin/kiosks/:id/power/wake", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    getCoordinator().sendToKiosk(id, { type: "wake" });
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+  });
 }

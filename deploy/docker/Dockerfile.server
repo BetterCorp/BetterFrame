@@ -1,0 +1,45 @@
+# BetterFrame server image — Node 23 + native deps for argon2/sqlite
+FROM node:23-bookworm-slim AS builder
+
+WORKDIR /app
+
+# Install build deps for argon2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json ./
+COPY server/package.json ./server/
+COPY tsconfig.base.json ./
+RUN npm ci --ignore-scripts && npm rebuild argon2
+
+COPY server ./server
+
+# ---- Runtime image ----
+FROM node:23-bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -d /var/lib/betterframe -s /bin/false betterframe
+
+WORKDIR /app
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/server ./server
+COPY --from=builder /app/tsconfig.base.json ./
+COPY --from=builder /app/package.json ./
+
+# Default data dir
+RUN mkdir -p /var/lib/betterframe && chown betterframe:betterframe /var/lib/betterframe
+VOLUME /var/lib/betterframe
+
+EXPOSE 18080 18081 18082
+
+USER betterframe
+WORKDIR /app/server
+
+ENV NODE_OPTIONS=--import=tsx
+
+CMD ["node", "--import", "tsx", "/app/node_modules/@bsb/base/lib/scripts/bsb-plugin-cli.js", "start"]

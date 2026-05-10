@@ -129,6 +129,25 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     registerAdminRoutes(app, deps);
     registerAccountRoutes(app, deps);
 
+    // Auth-check endpoint for Angie auth_request subrequest.
+    // Returns 200 if session cookie is valid + admin role, 401 otherwise.
+    app.get("/api/admin/_check", (event) => {
+      const cookie = event.req.headers.get("cookie") ?? "";
+      const match = cookie.match(new RegExp(`${deps.cookieName}=([^;]+)`));
+      if (!match) return new Response(null, { status: 401 });
+      const resolved = deps.auth.resolveSession(match[1]!);
+      if (!resolved || resolved.session.totp_pending) {
+        return new Response(null, { status: 401 });
+      }
+      if (resolved.user.role !== "admin") {
+        return new Response(null, { status: 403 });
+      }
+      return new Response(null, {
+        status: 200,
+        headers: { "x-betterframe-user": resolved.user.username },
+      });
+    });
+
     app.get("/healthz", () => ({ status: "ok" }));
     app.get("/readyz", () => {
       try {

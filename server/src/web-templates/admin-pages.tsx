@@ -750,6 +750,15 @@ export function KioskEditPage(props: KioskEditProps) {
             <div>Paired: {k.paired_at ? formatTime(k.paired_at) : "—"}</div>
             <div>Last seen: {k.last_seen_at ? formatTime(k.last_seen_at) : "Never"}</div>
           </div>
+          <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
+            <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Display Power (CEC)</div>
+            <form method="post" action={`/admin/kiosks/${k.id}/power/wake`} style="display:inline">
+              <button type="submit" class="btn btn-sm">Wake</button>
+            </form>
+            <form method="post" action={`/admin/kiosks/${k.id}/power/standby`} style="display:inline; margin-left:0.5rem">
+              <button type="submit" class="btn btn-sm btn-ghost">Standby</button>
+            </form>
+          </div>
         </div>
 
         {/* Associated displays */}

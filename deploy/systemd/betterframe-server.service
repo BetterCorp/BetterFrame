@@ -1,0 +1,29 @@
+[Unit]
+Description=BetterFrame Server (BSB)
+Documentation=https://github.com/BetterCorp/BetterFrame
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=betterframe
+Group=betterframe
+WorkingDirectory=/opt/betterframe/server
+Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--import tsx
+ExecStart=/usr/bin/node --import tsx /opt/betterframe/node_modules/@bsb/base/lib/scripts/bsb-plugin-cli.js start
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/betterframe /var/log/betterframe
+LoadCredential=betterframe-secret:/etc/betterframe/secret.key
+
+[Install]
+WantedBy=multi-user.target

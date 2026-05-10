@@ -68,7 +68,7 @@ export function Layout(props: PageProps) {
         <link rel="stylesheet" href="/static/app.css" />
         <style>{css(baseStyles as Parameters<typeof css>[0])}</style>
       </head>
-      <body class={props.minimal ? "minimal" : "has-sidebar"} {...{ "hx-boost": "true" }}>
+      <body class={props.minimal ? "minimal" : "has-sidebar"}>
         {!props.minimal && <Sidebar activeNav={props.activeNav} />}
         <div class="main-wrap">
           {!props.minimal && props.user && (
@@ -121,8 +121,6 @@ const baseStyles = {
   },
   "a": { color: "#2563eb", textDecoration: "none" },
   "a:hover": { textDecoration: "underline" },
-
-  /* Sidebar */
   ".has-sidebar": { display: "grid", gridTemplateColumns: "220px 1fr", minHeight: "100vh" },
   ".sidebar": {
     backgroundColor: "#1a1a2e",
@@ -150,8 +148,6 @@ const baseStyles = {
   ".nav-item.active": { backgroundColor: "#2563eb", color: "#fff" },
   ".nav-icon": { fontSize: "0.75rem", width: "1.25rem", textAlign: "center" as const },
   ".sidebar hr": { border: "none", borderTop: "1px solid #2a2a4e", margin: "0.5rem 0" },
-
-  /* Topbar */
   ".topbar": {
     display: "flex",
     justifyContent: "space-between",
@@ -163,16 +159,10 @@ const baseStyles = {
   ".topbar-title": { fontWeight: "600", fontSize: "1rem" },
   ".topbar-right": { display: "flex", alignItems: "center", gap: "0.75rem" },
   ".topbar-user": { color: "#666", fontSize: "0.85rem" },
-
-  /* Content */
   ".main-wrap": { display: "flex", flexDirection: "column", minHeight: "100vh" },
   ".content": { flex: "1", padding: "1.5rem" },
-
-  /* Minimal / center-card */
   ".minimal .content": { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh" },
   ".center-card": { width: "100%", maxWidth: "420px" },
-
-  /* Card */
   ".card": {
     backgroundColor: "#fff",
     borderRadius: "8px",
@@ -180,8 +170,6 @@ const baseStyles = {
     padding: "1.5rem",
   },
   ".card-title": { margin: "0 0 1.25rem", fontSize: "1.25rem", fontWeight: "600" },
-
-  /* Forms */
   ".form-group": { marginBottom: "1rem" },
   ".form-group label": { display: "block", marginBottom: "0.25rem", fontWeight: "500", fontSize: "0.85rem" },
   ".form-input": {
@@ -195,8 +183,6 @@ const baseStyles = {
   ".form-input:focus": { outline: "none", borderColor: "#2563eb", boxShadow: "0 0 0 2px rgba(37,99,235,0.15)" },
   ".form-hint": { fontSize: "0.8rem", color: "#666", marginTop: "0.25rem" },
   ".form-error": { fontSize: "0.8rem", color: "#dc2626", marginTop: "0.25rem" },
-
-  /* Buttons */
   ".btn": {
     display: "inline-flex",
     alignItems: "center",
@@ -218,46 +204,30 @@ const baseStyles = {
   ".btn-ghost:hover": { backgroundColor: "#f0f0f0" },
   ".btn-sm": { padding: "0.25rem 0.5rem", fontSize: "0.8rem" },
   ".btn-block": { width: "100%", justifyContent: "center" },
-
-  /* Flash */
   ".flash": { padding: "0.75rem 1rem", borderRadius: "4px", marginBottom: "1rem", fontSize: "0.9rem" },
   ".flash-success": { backgroundColor: "#d1fae5", color: "#065f46", border: "1px solid #6ee7b7" },
   ".flash-error": { backgroundColor: "#fee2e2", color: "#991b1b", border: "1px solid #fca5a5" },
   ".flash-info": { backgroundColor: "#dbeafe", color: "#1e40af", border: "1px solid #93c5fd" },
-
-  /* Stats */
   ".stats-grid": { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "1rem", marginBottom: "1.5rem" },
   ".stat-card": { backgroundColor: "#fff", borderRadius: "8px", padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.08)" },
   ".stat-label": { fontSize: "0.8rem", color: "#666", textTransform: "uppercase" as const, letterSpacing: "0.05em" },
   ".stat-value": { fontSize: "1.75rem", fontWeight: "700", marginTop: "0.25rem" },
-
-  /* Table */
   ".table-wrap": { backgroundColor: "#fff", borderRadius: "8px", overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.08)" },
   table: { width: "100%", borderCollapse: "collapse" as const },
   "th, td": { textAlign: "left" as const, padding: "0.75rem 1rem", borderBottom: "1px solid #eee" },
   th: { backgroundColor: "#f9fafb", fontWeight: "600", fontSize: "0.8rem", textTransform: "uppercase" as const, letterSpacing: "0.05em", color: "#666" },
   "tr:hover td": { backgroundColor: "#f9fafb" },
-
-  /* Badge */
   ".badge": { display: "inline-block", padding: "0.15rem 0.5rem", borderRadius: "12px", fontSize: "0.75rem", fontWeight: "500" },
   ".badge-green": { backgroundColor: "#d1fae5", color: "#065f46" },
   ".badge-gray": { backgroundColor: "#e5e7eb", color: "#374151" },
   ".badge-blue": { backgroundColor: "#dbeafe", color: "#1e40af" },
   ".badge-red": { backgroundColor: "#fee2e2", color: "#991b1b" },
-
-  /* Section */
   ".section-header": { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" },
   ".section-title": { fontSize: "1rem", fontWeight: "600", margin: "0" },
-
-  /* Radio group (for camera type toggle) */
   ".radio-group": { display: "flex", gap: "1rem", marginBottom: "0.5rem" },
   ".radio-group label": { display: "flex", alignItems: "center", gap: "0.35rem", fontWeight: "400", cursor: "pointer" },
-
-  /* Two-column layout */
   ".two-col": { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem" },
   "@media (max-width: 768px)": { ".two-col": { gridTemplateColumns: "1fr" } },
-
-  /* Recovery codes */
   ".code-grid": { display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0.5rem", fontFamily: "monospace", fontSize: "1rem" },
   ".code-item": { padding: "0.5rem", backgroundColor: "#f9fafb", borderRadius: "4px", textAlign: "center" as const },
 };

@@ -24,6 +24,17 @@ import {
 } from "../../web-templates/admin-pages.js";
 import type { LayoutTemplate, Display } from "../../shared/types.js";
 
+function sanitizeRtspUrl(raw: string): string {
+  const match = raw.match(/^(rtsp:\/\/)([^@]+)@(.+)$/);
+  if (!match) return raw;
+  const [, scheme, userinfo, rest] = match;
+  const colonIdx = userinfo!.indexOf(":");
+  if (colonIdx < 0) return raw;
+  const user = encodeURIComponent(userinfo!.slice(0, colonIdx));
+  const pass = encodeURIComponent(userinfo!.slice(colonIdx + 1));
+  return `${scheme}${user}:${pass}@${rest}`;
+}
+
 export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // ---- Overview -------------------------------------------------------------
 
@@ -94,7 +105,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     let onvifPass: string | undefined;
 
     if (type === "rtsp") {
-      rtspUrl = (body?.["rtsp_url"] ?? "").trim();
+      rtspUrl = sanitizeRtspUrl((body?.["rtsp_url"] ?? "").trim());
       if (!rtspUrl) errors.push("RTSP URL required.");
     } else if (type === "onvif") {
       onvifHost = (body?.["onvif_host"] ?? "").trim();
@@ -523,7 +534,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const body = await readBody<Record<string, string>>(event);
     deps.repo.updateCamera(id, {
       name: body?.["name"],
-      rtsp_url: body?.["rtsp_url"] || null,
+      rtsp_url: body?.["rtsp_url"] ? sanitizeRtspUrl(body["rtsp_url"]) : null,
       onvif_host: body?.["onvif_host"] || null,
       onvif_port: body?.["onvif_port"] ? Number(body["onvif_port"]) : null,
       onvif_username: body?.["onvif_username"] || null,

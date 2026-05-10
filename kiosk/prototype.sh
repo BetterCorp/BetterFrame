@@ -85,25 +85,23 @@ pair_with_server() {
 
   # Poll until admin confirms
   echo "Waiting for admin to confirm..."
+  local tmpfile
+  tmpfile=$(mktemp)
   while true; do
-    local claim
-    claim=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${server}/api/pair/claim" \
+    local http_code
+    http_code=$(curl -s -w "%{http_code}" -o "$tmpfile" -X POST "${server}/api/pair/claim" \
       -H "Content-Type: application/json" \
       -d "{\"code\":\"${code}\"}" 2>/dev/null || echo "000")
 
-    if [[ "$claim" == "200" ]]; then
-      local claim_resp
-      claim_resp=$(curl -sf -X POST "${server}/api/pair/claim" \
-        -H "Content-Type: application/json" \
-        -d "{\"code\":\"${code}\"}")
-
+    if [[ "$http_code" == "200" ]]; then
       local kiosk_key
-      kiosk_key=$(echo "$claim_resp" | jq -r '.kiosk_key')
+      kiosk_key=$(jq -r '.kiosk_key' "$tmpfile")
       local kiosk_name
-      kiosk_name=$(echo "$claim_resp" | jq -r '.kiosk_name')
+      kiosk_name=$(jq -r '.kiosk_name' "$tmpfile")
 
       echo "$kiosk_key" > "$KEY_FILE"
       chmod 600 "$KEY_FILE"
+      rm -f "$tmpfile"
 
       echo "Paired as: ${kiosk_name}"
       return
@@ -111,6 +109,7 @@ pair_with_server() {
 
     sleep 2
   done
+  rm -f "$tmpfile"
 }
 
 # ---- Bundle ------------------------------------------------------------------

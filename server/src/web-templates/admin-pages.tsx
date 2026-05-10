@@ -1430,12 +1430,8 @@ export const LAYOUT_BUILDER_CSS = `
 .layout-cell-side-left { left: -12px; top: 50%; transform: translateY(-50%); }
 .layout-cell-side-trigger { background: #2563eb; color: #fff; border: none; width: 24px; height: 24px; border-radius: 50%; cursor: pointer; font-size: 16px; line-height: 1; padding: 0; }
 .layout-cell-side-trigger:hover { background: #1e40af; }
-.layout-cell-side-menu { display: none; position: absolute; gap: 4px; background: #111827; border-radius: 4px; padding: 4px; box-shadow: 0 8px 18px rgba(15, 23, 42, 0.25); }
+.layout-cell-side-menu { display: none; position: absolute; gap: 4px; background: #111827; border-radius: 4px; padding: 4px; box-shadow: 0 8px 18px rgba(15, 23, 42, 0.25); left: 50%; top: 50%; transform: translate(-50%, -50%); }
 .layout-cell-side:hover .layout-cell-side-menu { display: flex; }
-.layout-cell-side-top .layout-cell-side-menu { bottom: 28px; left: 50%; transform: translateX(-50%); }
-.layout-cell-side-bottom .layout-cell-side-menu { top: 28px; left: 50%; transform: translateX(-50%); }
-.layout-cell-side-left .layout-cell-side-menu { right: 28px; top: 50%; transform: translateY(-50%); flex-direction: column; }
-.layout-cell-side-right .layout-cell-side-menu { left: 28px; top: 50%; transform: translateY(-50%); flex-direction: column; }
 .layout-cell-side-menu button { background: #fff; color: #111827; border: none; border-radius: 3px; cursor: pointer; font-size: 0.7rem; line-height: 1; padding: 5px 7px; white-space: nowrap; }
 .layout-cell-side-menu button:hover { background: #dbeafe; color: #1e40af; }
 .layout-cell-delete { position: absolute; top: 4px; right: 4px; background: rgba(220, 38, 38, 0.9); color: #fff; border: none; width: 20px; height: 20px; border-radius: 50%; cursor: pointer; font-size: 12px; line-height: 1; padding: 0; opacity: 0; transition: opacity 0.2s; z-index: 2; }

@@ -27,7 +27,7 @@ pub fn create_camera_pipeline(name: &str, rtsp_uri: &str) -> Option<(Pipeline, E
 
     let queue = gst::ElementFactory::make("queue")
         .property("max-size-buffers", 1u32)
-        .property("leaky", 2u32)
+        .property_from_str("leaky", "downstream")
         .build()
         .ok()?;
 

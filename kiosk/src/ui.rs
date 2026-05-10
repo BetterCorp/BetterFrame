@@ -2,6 +2,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc;
 
+thread_local! {
+    static ACTIVE_PIPELINES: RefCell<Vec<gstreamer::Pipeline>> = RefCell::new(Vec::new());
+}
+
 use gtk4::prelude::*;
 use gtk4::{self as gtk, Application, ApplicationWindow, Box as GtkBox, Grid, Label, Orientation, Picture};
 use tracing::{info, warn};
@@ -138,6 +142,16 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
 }
 
 fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
+    // Stop and clear any existing pipelines BEFORE building the new layout
+    ACTIVE_PIPELINES.with(|p| {
+        let mut pipes = p.borrow_mut();
+        info!("stopping {} active pipelines before re-render", pipes.len());
+        for pipe in pipes.iter() {
+            pipeline::stop(pipe);
+        }
+        pipes.clear();
+    });
+
     let layout = bundle.layouts.iter()
         .find(|l| l.is_default)
         .or_else(|| bundle.layouts.first());
@@ -223,10 +237,12 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
 
     window.set_child(Some(&grid));
 
-    let pipelines_ref = pipelines.clone();
-    window.connect_destroy(move |_| {
-        for pipe in pipelines_ref.borrow().iter() {
-            pipeline::stop(pipe);
+    // Move newly-created pipelines into the global registry so we can stop
+    // them on the next reload-bundle
+    ACTIVE_PIPELINES.with(|p| {
+        let mut global = p.borrow_mut();
+        for pipe in pipelines.borrow().iter() {
+            global.push(pipe.clone());
         }
     });
 }

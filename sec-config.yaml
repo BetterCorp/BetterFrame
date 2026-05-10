@@ -42,6 +42,8 @@ default:
         argon2Memory: 65536          # KiB; tuned for Pi5 ~100ms
         argon2TimeCost: 3
         argon2Parallelism: 2
+        cookieName: betterframe_session
+        totpIssuer: BetterFrame
 
     # ----- Kiosk-facing REST API -----
     service-api-http:

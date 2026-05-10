@@ -1,7 +1,8 @@
 /**
  * Authentication routes: login, TOTP, recovery, logout.
  */
-import { type H3, readBody, html, getCookie, setCookie, deleteCookie, getQuery, getRequestHeader } from "h3";
+import { type H3, readBody, getCookie, setCookie, deleteCookie, getQuery, getRequestHeader } from "h3";
+import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { LoginPage, TotpPage, RecoveryPage } from "../../web-templates/auth-pages.js";
 
@@ -18,7 +19,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
   app.get("/auth/login", (event) => {
     const q = getQuery(event) as Record<string, string | undefined>;
     const welcome = q["welcome"] === "1";
-    return html(LoginPage({ welcome }));
+    return htmlPage(LoginPage({ welcome }));
   });
 
   app.post("/auth/login", async (event) => {
@@ -27,18 +28,18 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
     const password = body?.password ?? "";
 
     if (!username || !password) {
-      return html(LoginPage({ error: "Username and password required.", username }));
+      return htmlPage(LoginPage({ error: "Username and password required.", username }));
     }
 
     const user = deps.repo.getUserByUsername(username);
     if (!user || !user.is_active) {
-      return html(LoginPage({ error: "Invalid credentials.", username }));
+      return htmlPage(LoginPage({ error: "Invalid credentials.", username }));
     }
 
     if (user.locked_until) {
       const lockEnd = new Date(user.locked_until);
       if (lockEnd > new Date()) {
-        return html(LoginPage({ error: "Account locked. Try again later.", username }));
+        return htmlPage(LoginPage({ error: "Account locked. Try again later.", username }));
       }
     }
 
@@ -50,7 +51,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
         patch["locked_until"] = new Date(Date.now() + deps.auth.config.loginLockoutSeconds * 1000).toISOString();
       }
       deps.repo.updateUser(user.id, patch);
-      return html(LoginPage({ error: "Invalid credentials.", username }));
+      return htmlPage(LoginPage({ error: "Invalid credentials.", username }));
     }
 
     deps.repo.updateUser(user.id, {
@@ -91,7 +92,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
     if (!resolved || !resolved.session.totp_pending) {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
-    return html(TotpPage({}));
+    return htmlPage(TotpPage({}));
   });
 
   app.post("/auth/totp", async (event) => {
@@ -108,18 +109,18 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
     const code = (body?.code ?? "").trim().replace(/\s/g, "");
 
     if (!code || code.length !== 6) {
-      return html(TotpPage({ error: "Enter a 6-digit code." }));
+      return htmlPage(TotpPage({ error: "Enter a 6-digit code." }));
     }
 
     const { user, session } = resolved;
     if (!user.totp_secret_encrypted) {
-      return html(TotpPage({ error: "TOTP not configured for this account." }));
+      return htmlPage(TotpPage({ error: "TOTP not configured for this account." }));
     }
 
     const secret = deps.auth.decryptTotpSecret(user.totp_secret_encrypted);
     const valid = deps.auth.verifyTotpCode(secret, code);
     if (!valid) {
-      return html(TotpPage({ error: "Invalid code. Try again." }));
+      return htmlPage(TotpPage({ error: "Invalid code. Try again." }));
     }
 
     deps.repo.setSessionTotpPending(session.id, false);
@@ -137,7 +138,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
     if (!resolved || !resolved.session.totp_pending) {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
-    return html(RecoveryPage({}));
+    return htmlPage(RecoveryPage({}));
   });
 
   app.post("/auth/recovery", async (event) => {
@@ -154,7 +155,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
     const code = (body?.code ?? "").trim().toUpperCase().replace(/\s/g, "");
 
     if (!code) {
-      return html(RecoveryPage({ error: "Enter a recovery code." }));
+      return htmlPage(RecoveryPage({ error: "Enter a recovery code." }));
     }
 
     const { user, session } = resolved;
@@ -162,7 +163,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
 
     const result = await deps.auth.consumeRecoveryCode(code, hashedCodes);
     if (!result.ok) {
-      return html(RecoveryPage({ error: "Invalid recovery code." }));
+      return htmlPage(RecoveryPage({ error: "Invalid recovery code." }));
     }
 
     deps.repo.updateUser(user.id, {

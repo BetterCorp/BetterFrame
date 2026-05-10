@@ -1,7 +1,8 @@
 /**
  * Admin page routes — overview, cameras, kiosks, labels, etc.
  */
-import { type H3, html, readBody } from "h3";
+import { type H3, readBody } from "h3";
+import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import {
   OverviewPage,
@@ -25,7 +26,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       return Date.now() - new Date(k.last_seen_at).getTime() < 5 * 60 * 1000;
     });
 
-    return html(OverviewPage({
+    return htmlPage(OverviewPage({
       user: user.username,
       cameraCount: cameras.length,
       kioskCount: kiosks.length,
@@ -49,12 +50,12 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     for (const cam of cameras) {
       streamCounts.set(cam.id, deps.repo.listCameraStreams(cam.id).length);
     }
-    return html(CamerasPage({ user: user.username, cameras, streamCounts }));
+    return htmlPage(CamerasPage({ user: user.username, cameras, streamCounts }));
   });
 
   app.get("/admin/cameras/new", (event) => {
     const user = event.context.user!;
-    return html(CameraNewPage({ user: user.username }));
+    return htmlPage(CameraNewPage({ user: user.username }));
   });
 
   app.post("/admin/cameras/new", async (event) => {
@@ -92,7 +93,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
 
     if (errors.length > 0) {
-      return html(CameraNewPage({
+      return htmlPage(CameraNewPage({
         user: user.username,
         error: errors.join(" "),
         values: body,
@@ -131,14 +132,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const user = event.context.user!;
     const kiosks = deps.repo.listKiosks();
     const pending = deps.repo.listPendingPairingCodes();
-    return html(KiosksPage({ user: user.username, kiosks, pendingCodes: pending }));
+    return htmlPage(KiosksPage({ user: user.username, kiosks, pendingCodes: pending }));
   });
 
   // ---- Simple list pages (templates, layouts, displays, labels) -------------
 
   app.get("/admin/templates", (event) => {
     const user = event.context.user!;
-    return html(SimpleListPage({
+    return htmlPage(SimpleListPage({
       user: user.username,
       pageTitle: "Layout Templates",
       description: "Templates define named regions on a 12x12 grid. A visual template designer is coming.",
@@ -149,7 +150,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/layouts", (event) => {
     const user = event.context.user!;
-    return html(SimpleListPage({
+    return htmlPage(SimpleListPage({
       user: user.username,
       pageTitle: "Layouts",
       description: "A layout binds cameras and other content into a template's regions for one display.",
@@ -161,7 +162,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.get("/admin/displays", (event) => {
     const user = event.context.user!;
     const displays = deps.repo.listDisplays();
-    return html(SimpleListPage({
+    return htmlPage(SimpleListPage({
       user: user.username,
       pageTitle: "Displays",
       description: "Physical HDMI displays. Primary display created during setup.",
@@ -176,7 +177,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.get("/admin/labels", (event) => {
     const user = event.context.user!;
     const labels = deps.repo.listLabels();
-    return html(SimpleListPage({
+    return htmlPage(SimpleListPage({
       user: user.username,
       pageTitle: "Labels",
       description: "Labels route cameras, layouts, and kiosks to each other across sites.",

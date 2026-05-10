@@ -1,7 +1,8 @@
 /**
  * First-run setup routes.
  */
-import { type H3, readBody, html } from "h3";
+import { type H3, readBody } from "h3";
+import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { SetupPage } from "../../web-templates/auth-pages.js";
 
@@ -10,7 +11,7 @@ export function registerSetupRoutes(app: H3, deps: AdminDeps): void {
     if (deps.repo.isSetupComplete()) {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
-    return html(SetupPage({}));
+    return htmlPage(SetupPage({}));
   });
 
   app.post("/setup", async (event) => {
@@ -33,7 +34,7 @@ export function registerSetupRoutes(app: H3, deps: AdminDeps): void {
     }
 
     if (errors.length > 0) {
-      return html(SetupPage({ error: errors.join(" "), username }));
+      return htmlPage(SetupPage({ error: errors.join(" "), username }));
     }
 
     const hash = await deps.auth.hashPassword(password);

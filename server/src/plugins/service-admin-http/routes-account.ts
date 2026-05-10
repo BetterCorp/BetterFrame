@@ -1,7 +1,8 @@
 /**
  * Account management routes — password change, TOTP enrollment.
  */
-import { type H3, html, readBody } from "h3";
+import { type H3, readBody } from "h3";
+import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { AccountPage, TotpEnrollPage } from "../../web-templates/admin-pages.js";
 
@@ -10,7 +11,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/account", (event) => {
     const user = event.context.user!;
-    return html(AccountPage({ user: user.username, totpEnabled: user.totp_enabled }));
+    return htmlPage(AccountPage({ user: user.username, totpEnabled: user.totp_enabled }));
   });
 
   // ---- Change password ------------------------------------------------------
@@ -22,7 +23,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
     const newPw = body?.new_password ?? "";
 
     if (!current || !newPw) {
-      return html(AccountPage({
+      return htmlPage(AccountPage({
         user: user.username,
         totpEnabled: user.totp_enabled,
         error: "Both current and new password required.",
@@ -30,7 +31,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
     }
 
     if (newPw.length < 12) {
-      return html(AccountPage({
+      return htmlPage(AccountPage({
         user: user.username,
         totpEnabled: user.totp_enabled,
         error: "New password must be at least 12 characters.",
@@ -39,7 +40,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
 
     const valid = await deps.auth.verifyPassword(current, user.password_hash);
     if (!valid) {
-      return html(AccountPage({
+      return htmlPage(AccountPage({
         user: user.username,
         totpEnabled: user.totp_enabled,
         error: "Current password incorrect.",
@@ -64,7 +65,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
     const user = event.context.user!;
 
     if (user.totp_enabled) {
-      return html(AccountPage({
+      return htmlPage(AccountPage({
         user: user.username,
         totpEnabled: true,
         error: "TOTP already enabled.",
@@ -81,7 +82,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
       totp_secret_encrypted: encrypted,
     });
 
-    return html(TotpEnrollPage({
+    return htmlPage(TotpEnrollPage({
       user: user.username,
       secret,
       provisioningUri: uri,
@@ -97,7 +98,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
     const code = (body?.code ?? "").trim().replace(/\s/g, "");
 
     if (!code || code.length !== 6) {
-      return html(AccountPage({
+      return htmlPage(AccountPage({
         user: user.username,
         totpEnabled: false,
         error: "Enter a valid 6-digit code.",
@@ -105,7 +106,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
     }
 
     if (!user.totp_secret_encrypted) {
-      return html(AccountPage({
+      return htmlPage(AccountPage({
         user: user.username,
         totpEnabled: false,
         error: "No TOTP enrollment in progress. Start again.",
@@ -115,7 +116,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
     const secret = deps.auth.decryptTotpSecret(user.totp_secret_encrypted);
     const valid = deps.auth.verifyTotpCode(secret, code);
     if (!valid) {
-      return html(AccountPage({
+      return htmlPage(AccountPage({
         user: user.username,
         totpEnabled: false,
         error: "Invalid code. Scan the QR code again and enter the current code.",
@@ -147,7 +148,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
 
     const valid = await deps.auth.verifyPassword(password, user.password_hash);
     if (!valid) {
-      return html(AccountPage({
+      return htmlPage(AccountPage({
         user: user.username,
         totpEnabled: true,
         error: "Password incorrect.",

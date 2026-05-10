@@ -4,6 +4,7 @@
 import { type H3, readBody } from "h3";
 import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
+import { confirmPairing } from "../../shared/pairing.js";
 import {
   OverviewPage,
   CamerasPage,
@@ -133,6 +134,34 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const kiosks = deps.repo.listKiosks();
     const pending = deps.repo.listPendingPairingCodes();
     return htmlPage(KiosksPage({ user: user.username, kiosks, pendingCodes: pending }));
+  });
+
+  app.post("/admin/kiosks/pair", async (event) => {
+    const body = await readBody<Record<string, string>>(event);
+    const code = (body?.["code"] ?? "").trim().toUpperCase();
+    const nameOverride = (body?.["name_override"] ?? "").trim() || undefined;
+    const labelsStr = (body?.["initial_labels"] ?? "").trim();
+    const initialLabels = labelsStr ? labelsStr.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+
+    try {
+      await confirmPairing(deps.repo, deps.auth, deps.secrets, {
+        code,
+        nameOverride,
+        initialLabels,
+      });
+    } catch (err) {
+      const user = event.context.user!;
+      const kiosks = deps.repo.listKiosks();
+      const pending = deps.repo.listPendingPairingCodes();
+      return htmlPage(KiosksPage({
+        user: user.username,
+        kiosks,
+        pendingCodes: pending,
+        error: (err as Error).message,
+      }));
+    }
+
+    return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
   });
 
   // ---- Simple list pages (templates, layouts, displays, labels) -------------

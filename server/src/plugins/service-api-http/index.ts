@@ -1,8 +1,8 @@
 /**
  * service-api-http — h3 listener for kiosk-facing REST API.
  *
- * Serves pairing, bundle, and kiosk management endpoints.
- * Port 18081 behind Angie proxy.
+ * Port 18081 behind Angie proxy. Handles pairing, bundle delivery,
+ * heartbeat, and event forwarding.
  */
 import * as av from "@anyvali/js";
 import {
@@ -12,12 +12,36 @@ import {
   createEventSchemas,
   type Observable,
 } from "@bsb/base";
+import { H3, serve, readBody, getRequestHeader, createError } from "h3";
+import type { Server } from "srvx";
+
+import { getRepo } from "../../shared/plugin-registry.js";
+import { initSecrets } from "../../shared/secrets.js";
+import { createAuth } from "../../shared/auth.js";
+import { initiatePairing, claimPairing } from "../../shared/pairing.js";
+import { generateBundle } from "../../shared/bundle.js";
+import type { Repository } from "../service-store/repository.js";
+import type { AuthApi } from "../../shared/auth.js";
+import type { SecretsApi } from "../../shared/secrets.js";
+
+// ---- Config -----------------------------------------------------------------
 
 const ConfigSchema = av.object(
   {
-    host: av.string().default("127.0.0.1"),
+    host: av.string().default("0.0.0.0"),
     port: av.int().min(1).max(65535).default(18081),
     codeTtlSeconds: av.int().min(60).max(3600).default(600),
+    // Secrets + auth config (shared with admin-http for now)
+    dataDir: av.string().minLength(1).default("/var/lib/betterframe"),
+    argon2Memory: av.int().min(8).default(65536),
+    argon2TimeCost: av.int().min(1).default(3),
+    argon2Parallelism: av.int().min(1).default(2),
+    cookieName: av.string().minLength(1).default("betterframe_session"),
+    sessionIdleSeconds: av.int().min(60).default(43200),
+    sessionMaxSeconds: av.int().min(3600).default(2592000),
+    loginLockoutThreshold: av.int().min(1).default(8),
+    loginLockoutSeconds: av.int().min(1).default(900),
+    totpIssuer: av.string().minLength(1).default("BetterFrame"),
   },
   { unknownKeys: "strip" },
 );
@@ -40,6 +64,8 @@ export const EventSchemas = createEventSchemas({
   onBroadcast: {},
 });
 
+// ---- Plugin -----------------------------------------------------------------
+
 export class Plugin extends BSBService<InstanceType<typeof Config>, typeof EventSchemas> {
   static override Config = Config;
   static override EventSchemas = EventSchemas;
@@ -49,14 +75,196 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   runBeforePlugins?: string[];
   runAfterPlugins?: string[];
 
+  private server?: Server;
+
   constructor(cfg: BSBServiceConstructor<InstanceType<typeof Config>, typeof EventSchemas>) {
     super(cfg);
   }
 
-  async init(_obs: Observable): Promise<void> {
-    // TODO: create h3 app, mount kiosk + pairing routes
+  async init(obs: Observable): Promise<void> {
+    const repo = getRepo();
+    const secrets = initSecrets(
+      { dataDir: this.config.dataDir },
+      { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
+    );
+    const auth = createAuth(repo, secrets, {
+      sessionIdleSeconds: this.config.sessionIdleSeconds,
+      sessionMaxSeconds: this.config.sessionMaxSeconds,
+      loginLockoutThreshold: this.config.loginLockoutThreshold,
+      loginLockoutSeconds: this.config.loginLockoutSeconds,
+      argon2Memory: this.config.argon2Memory,
+      argon2TimeCost: this.config.argon2TimeCost,
+      argon2Parallelism: this.config.argon2Parallelism,
+      totpIssuer: this.config.totpIssuer,
+      cookieName: this.config.cookieName,
+    });
+    const codeTtl = this.config.codeTtlSeconds;
+
+    const app = new H3();
+
+    registerPairingRoutes(app, repo, auth, secrets, codeTtl);
+    registerKioskRoutes(app, repo, auth, secrets);
+
+    this.server = serve(app, {
+      port: this.config.port,
+      hostname: this.config.host,
+    });
+
+    obs.log.info("api-http listening on {host}:{port}", {
+      host: this.config.host,
+      port: this.config.port,
+    });
   }
 
   async run(_obs: Observable): Promise<void> {}
-  async dispose(): Promise<void> {}
+
+  async dispose(): Promise<void> {
+    if (this.server) {
+      await this.server.close();
+    }
+  }
+}
+
+// ---- Helpers ----------------------------------------------------------------
+
+function extractBearerToken(event: any): string | null {
+  const hdr = getRequestHeader(event, "authorization");
+  if (!hdr?.startsWith("Bearer ")) return null;
+  return hdr.slice(7);
+}
+
+function getClusterKey(repo: Repository, secrets: SecretsApi): string | undefined {
+  const enc = repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
+  if (!enc) return undefined;
+  return secrets.decryptString(enc, "cluster");
+}
+
+// ---- Pairing routes ---------------------------------------------------------
+
+function registerPairingRoutes(
+  app: H3,
+  repo: Repository,
+  auth: AuthApi,
+  secrets: SecretsApi,
+  codeTtl: number,
+): void {
+  // Kiosk initiates pairing — no auth required
+  app.post("/api/pair/initiate", async (event) => {
+    const body = await readBody<{
+      proposed_name?: string;
+      hardware_model?: string;
+      capabilities?: string[];
+    }>(event);
+
+    const result = initiatePairing(repo, {
+      proposedName: body?.proposed_name ?? null,
+      hardwareModel: body?.hardware_model ?? null,
+      capabilities: body?.capabilities ?? [],
+      codeTtlSeconds: codeTtl,
+    });
+
+    return { code: result.code, expires_at: result.expiresAt };
+  });
+
+  // Kiosk polls for claim result — no auth required
+  app.post("/api/pair/claim", async (event) => {
+    const body = await readBody<{ code?: string }>(event);
+    const code = (body?.code ?? "").trim().toUpperCase();
+    if (!code) throw createError({ statusCode: 400, statusMessage: "code required" });
+
+    const result = claimPairing(repo, code);
+    if (result.status === "pending") {
+      return new Response(JSON.stringify({ status: "pending" }), {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    return {
+      status: "claimed",
+      kiosk_id: result.kioskId,
+      kiosk_name: result.kioskName,
+      kiosk_key: result.kioskKey,
+      cluster_key: result.clusterKey,
+      bundle_url: result.bundleUrl,
+    };
+  });
+}
+
+// ---- Kiosk routes (require Bearer kiosk key) --------------------------------
+
+function registerKioskRoutes(
+  app: H3,
+  repo: Repository,
+  auth: AuthApi,
+  secrets: SecretsApi,
+): void {
+  // Bundle delivery
+  app.get("/api/kiosk/bundle", async (event) => {
+    const token = extractBearerToken(event);
+    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
+
+    const kiosk = await auth.verifyKioskKey(token);
+    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+
+    const clusterKey = getClusterKey(repo, secrets);
+    const bundle = generateBundle(repo, secrets, kiosk.id, clusterKey);
+    if (!bundle) throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
+
+    return bundle;
+  });
+
+  // Heartbeat
+  app.post("/api/kiosk/heartbeat", async (event) => {
+    const token = extractBearerToken(event);
+    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
+
+    const kiosk = await auth.verifyKioskKey(token);
+    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+
+    const body = await readBody<{
+      bundle_version?: string;
+      kiosk_app_version?: string;
+      os_version?: string;
+    }>(event);
+
+    repo.touchKiosk(kiosk.id, {
+      bundle_version: body?.bundle_version ?? null,
+      kiosk_app_version: body?.kiosk_app_version ?? null,
+      os_version: body?.os_version ?? null,
+    });
+
+    return { ok: true, now: new Date().toISOString() };
+  });
+
+  // Event forwarding
+  app.post("/api/kiosk/event", async (event) => {
+    const token = extractBearerToken(event);
+    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
+
+    const kiosk = await auth.verifyKioskKey(token);
+    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+
+    const body = await readBody<{
+      topic: string;
+      source_type?: string;
+      camera_id?: number;
+      property_op?: string;
+      payload?: Record<string, unknown>;
+    }>(event);
+
+    if (!body?.topic) throw createError({ statusCode: 400, statusMessage: "topic required" });
+
+    const eventId = repo.insertEvent({
+      source_kiosk_id: kiosk.id,
+      source_camera_id: body.camera_id ?? null,
+      source_type: (body.source_type as any) ?? "system",
+      topic: body.topic,
+      property_op: body.property_op ?? null,
+      payload: body.payload ?? {},
+      forwarded_to_nodered: false,
+    });
+
+    return { ok: true, event_id: eventId };
+  });
 }

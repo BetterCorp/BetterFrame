@@ -50,9 +50,13 @@ default:
       plugin: service-api-http
       enabled: true
       config:
-        host: 127.0.0.1
+        host: 0.0.0.0
         port: 18081
         codeTtlSeconds: 600          # 10m pairing code TTL
+        dataDir: /var/lib/betterframe
+        argon2Memory: 65536
+        argon2TimeCost: 3
+        argon2Parallelism: 2
 
     # ----- Live kiosk WebSocket channel -----
     service-coordinator-ws:

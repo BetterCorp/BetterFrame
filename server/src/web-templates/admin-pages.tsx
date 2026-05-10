@@ -246,11 +246,12 @@ interface KiosksProps {
   user: string;
   kiosks: Kiosk[];
   pendingCodes: PairingCode[];
+  error?: string;
 }
 
 export function KiosksPage(props: KiosksProps) {
   return (
-    <Layout title="Kiosks" user={props.user} activeNav="kiosks">
+    <Layout title="Kiosks" user={props.user} activeNav="kiosks" flash={props.error ? { type: "error", message: props.error } : undefined}>
       <div class="two-col">
         <div>
           <div class="section-header">

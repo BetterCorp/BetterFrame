@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::mpsc;
 
 use gtk4::prelude::*;
 use gtk4::{self as gtk, Application, ApplicationWindow, Box as GtkBox, Grid, Label, Orientation, Picture};
@@ -32,14 +33,11 @@ fn activate(app: &Application) {
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
 
-    // Start with logo
     show_logo(&window);
     window.present();
 
-    // Channel to send results from worker thread to UI
-    let (tx, rx) = gtk::glib::MainContext::channel::<WorkerMsg>(gtk::glib::Priority::DEFAULT);
+    let (tx, rx) = mpsc::channel::<WorkerMsg>();
 
-    // Worker thread — blocking HTTP calls
     let server_url = std::env::args().nth(1);
     std::thread::spawn(move || {
         let server = server::discover_server(server_url.as_deref());
@@ -62,19 +60,20 @@ fn activate(app: &Application) {
         info!("bundle: {} cameras, {} layouts", bundle.cameras.len(), bundle.layouts.len());
         let _ = tx.send(WorkerMsg::RenderBundle(bundle));
 
-        // Heartbeat loop
         loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
             server::heartbeat(&server, &key);
         }
     });
 
-    // Receive messages on UI thread
+    // Poll channel from UI thread via timeout
     let window_clone = window.clone();
-    rx.attach(None, move |msg| {
-        match msg {
-            WorkerMsg::ShowPairingCode(code) => show_pairing_code(&window_clone, &code),
-            WorkerMsg::RenderBundle(bundle) => render_bundle(&window_clone, bundle),
+    gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                WorkerMsg::ShowPairingCode(code) => show_pairing_code(&window_clone, &code),
+                WorkerMsg::RenderBundle(bundle) => render_bundle(&window_clone, bundle),
+            }
         }
         gtk::glib::ControlFlow::Continue
     });

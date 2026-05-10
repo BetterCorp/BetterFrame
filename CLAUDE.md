@@ -245,6 +245,7 @@ Everything else is a shared module (plain TS, no BSB lifecycle).
 - **BSB config doesn't apply schema defaults** for keys missing from sec-config.yaml. Always declare config values explicitly
 - **Cookie signing uses HKDF-derived key** (deterministic). NOT encryptString (random IV = non-deterministic = broken)
 - **RTSP URLs with special chars** in password: URL-encode user/pass components. Camera form splits into host/port/path/user/pass fields, builds URL server-side
+- **ONVIF discovery import**: ONVIF profiles are streams, not cameras. Group profiles by VideoSourceConfiguration/SourceToken (fallback to channel-ish URI/name), assign largest stream `main`, next `sub`, rest `other`, and import one camera with multiple `camera_streams`. If RTSP URIs omit userinfo, inject the ONVIF username/password before storing so kiosk playback avoids RTSP 401.
 - **GStreamer on Pi5**: hw H265 decoder rejects non-standard resolutions (960x1080). Use avdec_h265 (sw) as fallback
 - **Log message strings MUST be string literals** (BSB SmartLogMeta extracts placeholders from literal type)
 - **Datetimes are ISO-8601 strings** stored as TEXT

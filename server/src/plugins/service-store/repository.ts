@@ -1191,7 +1191,9 @@ export class Repository {
     for (const [k, v] of Object.entries(patch)) {
       if (k === "id" || k === "created_at") continue;
       sets.push(`${k} = ?`);
-      vals.push(v === undefined ? null : v);
+      if (k === "capabilities") vals.push(J(v));
+      else if (typeof v === "boolean") vals.push(B(v));
+      else vals.push(v === undefined ? null : v);
     }
     if (sets.length === 0) return;
     vals.push(id);

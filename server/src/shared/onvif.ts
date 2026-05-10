@@ -14,11 +14,19 @@ import { createHash, randomBytes } from "node:crypto";
 export interface DiscoveredProfile {
   profile_name: string;
   profile_token: string;
+  source_token: string | null;
   encoding: string | null;
   width: number | null;
   height: number | null;
   framerate: number | null;
   stream_uri: string;
+  role: "main" | "sub" | "other";
+}
+
+export interface DiscoveredCamera {
+  name: string;
+  source_token: string | null;
+  profiles: DiscoveredProfile[];
 }
 
 interface DiscoverInput {
@@ -30,6 +38,12 @@ interface DiscoverInput {
   mediaPath?: string;
   /** Optional timeout in ms (default 8s). */
   timeoutMs?: number;
+}
+
+interface EndpointParts {
+  origin: string;
+  deviceUrl: string;
+  explicitMediaUrl: string | null;
 }
 
 function wsseHeader(username: string, password: string): string {
@@ -52,6 +66,10 @@ function wsseHeader(username: string, password: string): string {
         </UsernameToken>
       </Security>
     </s:Header>`;
+}
+
+function optionalWsseHeader(username: string, password: string): string {
+  return username ? wsseHeader(username, password) : "";
 }
 
 function escapeXml(s: string): string {
@@ -83,6 +101,14 @@ async function soap(url: string, action: string, body: string, timeoutMs: number
     return text;
   } finally {
     clearTimeout(t);
+  }
+}
+
+async function trySoap(url: string, action: string, body: string, timeoutMs: number): Promise<string | null> {
+  try {
+    return await soap(url, action, body, timeoutMs);
+  } catch {
+    return null;
   }
 }
 
@@ -119,6 +145,68 @@ function pickAttr(xml: string, tagLocalName: string, attr: string): string[] {
   return out;
 }
 
+function pickFirstXAddr(parentXml: string, tagLocalName: string): string | null {
+  const block = pickNested(parentXml, tagLocalName);
+  if (!block) return null;
+  return pickNested(block, "XAddr");
+}
+
+function normalizeEndpoint(input: DiscoverInput): EndpointParts {
+  const raw = input.host.trim();
+  const port = input.port || 80;
+
+  if (/^https?:\/\//i.test(raw)) {
+    const u = new URL(raw);
+    const resolvedPort = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : port;
+    const origin = `${u.protocol}//${u.hostname}:${String(resolvedPort)}`;
+    const path = u.pathname && u.pathname !== "/" ? u.pathname : "";
+    return {
+      origin,
+      deviceUrl: path ? `${origin}${path}` : `${origin}/onvif/device_service`,
+      explicitMediaUrl: path ? `${origin}${path}` : null,
+    };
+  }
+
+  const origin = `http://${raw}:${String(port)}`;
+  return {
+    origin,
+    deviceUrl: `${origin}/onvif/device_service`,
+    explicitMediaUrl: null,
+  };
+}
+
+async function discoverMediaUrl(input: DiscoverInput, endpoint: EndpointParts, timeoutMs: number): Promise<string> {
+  if (input.mediaPath) {
+    return `${endpoint.origin}${input.mediaPath.startsWith("/") ? input.mediaPath : `/${input.mediaPath}`}`;
+  }
+
+  if (endpoint.explicitMediaUrl) {
+    return endpoint.explicitMediaUrl;
+  }
+
+  const capabilitiesEnv = buildEnvelope(
+    optionalWsseHeader(input.username, input.password),
+    `<tds:GetCapabilities><tds:Category>All</tds:Category></tds:GetCapabilities>`,
+  ).replace(
+    'xmlns:tt="http://www.onvif.org/ver10/schema">',
+    'xmlns:tt="http://www.onvif.org/ver10/schema" xmlns:tds="http://www.onvif.org/ver10/device/wsdl">',
+  );
+  const capabilitiesXml = await trySoap(
+    endpoint.deviceUrl,
+    "http://www.onvif.org/ver10/device/wsdl/GetCapabilities",
+    capabilitiesEnv,
+    timeoutMs,
+  );
+  if (capabilitiesXml) {
+    const mediaXAddr = pickFirstXAddr(capabilitiesXml, "Media");
+    if (mediaXAddr) return mediaXAddr;
+  }
+
+  // Common vendor endpoints. Prefer lower-case media_service because many NVRs
+  // advertise that path and return 404 for /onvif/Media.
+  return `${endpoint.origin}/onvif/media_service`;
+}
+
 // Pull a single nested value from a parent element block.
 function pickNested(parentXml: string, tagLocalName: string): string | null {
   const m = parentXml.match(new RegExp(`<(?:[\\w-]+:)?${tagLocalName}\\b[^>]*>([\\s\\S]*?)</(?:[\\w-]+:)?${tagLocalName}>`));
@@ -136,6 +224,50 @@ function splitProfiles(xml: string): string[] {
   return out;
 }
 
+function streamArea(p: DiscoveredProfile): number {
+  return (p.width ?? 0) * (p.height ?? 0);
+}
+
+function roleProfiles(profiles: DiscoveredProfile[]): DiscoveredProfile[] {
+  const ordered = [...profiles].sort((a, b) => streamArea(b) - streamArea(a));
+  const roles = new Map<DiscoveredProfile, "main" | "sub" | "other">();
+  for (let i = 0; i < ordered.length; i += 1) {
+    roles.set(ordered[i]!, i === 0 ? "main" : i === 1 ? "sub" : "other");
+  }
+  return profiles.map((p) => ({ ...p, role: roles.get(p) ?? "other" }));
+}
+
+function profileGroupKey(profileName: string, sourceToken: string | null, streamUri: string): string {
+  if (sourceToken) return `source:${sourceToken}`;
+  const match = streamUri.match(/(?:channel|channels|video|cam|camera)[/_-]?(\d+)/i)
+    ?? profileName.match(/(?:channel|channels|video|cam|camera|profile)[/_ -]?(\d+)/i);
+  return match?.[1] ? `channel:${match[1]}` : "source:default";
+}
+
+function groupProfiles(host: string, profiles: DiscoveredProfile[]): DiscoveredCamera[] {
+  const groups = new Map<string, DiscoveredProfile[]>();
+  for (const profile of profiles) {
+    const key = profileGroupKey(profile.profile_name, profile.source_token, profile.stream_uri);
+    groups.set(key, [...(groups.get(key) ?? []), profile]);
+  }
+
+  const out: DiscoveredCamera[] = [];
+  let i = 1;
+  for (const [key, group] of groups) {
+    const sourceToken = group.find((p) => p.source_token)?.source_token ?? null;
+    const name = groups.size === 1
+      ? host
+      : sourceToken ? `${host} ${sourceToken}` : `${host} camera ${String(i)}`;
+    out.push({
+      name,
+      source_token: sourceToken ?? (key.startsWith("channel:") ? key.slice("channel:".length) : null),
+      profiles: roleProfiles(group),
+    });
+    i += 1;
+  }
+  return out;
+}
+
 /**
  * Connect to an ONVIF camera and list its media profiles with their
  * resolutions, encodings, and RTSP stream URIs.
@@ -143,12 +275,10 @@ function splitProfiles(xml: string): string[] {
  * Throws on transport error. Profile fields default to null if the camera
  * omits them.
  */
-export async function discover(input: DiscoverInput): Promise<DiscoveredProfile[]> {
-  const host = input.host;
-  const port = input.port || 80;
-  const mediaPath = input.mediaPath ?? "/onvif/Media";
-  const mediaUrl = `http://${host}:${String(port)}${mediaPath}`;
+export async function discover(input: DiscoverInput): Promise<DiscoveredCamera[]> {
   const timeoutMs = input.timeoutMs ?? 8000;
+  const endpoint = normalizeEndpoint(input);
+  const mediaUrl = await discoverMediaUrl(input, endpoint, timeoutMs);
 
   const header = wsseHeader(input.username, input.password);
 
@@ -169,6 +299,10 @@ export async function discover(input: DiscoverInput): Promise<DiscoveredProfile[
     const block = profileBlocks[i] ?? "";
     const token = tokenAttrs[i] ?? "";
     const profileName = pickNested(block, "Name") ?? token ?? `profile_${String(i)}`;
+    const vsrc = pickNested(block, "VideoSourceConfiguration") ?? "";
+    const sourceToken = vsrc
+      ? pickNested(vsrc, "SourceToken") ?? pickAttr(vsrc, "VideoSourceConfiguration", "token")[0] ?? null
+      : null;
 
     // VideoEncoderConfiguration → Encoding, Resolution{Width,Height}, RateControl.FrameRateLimit
     const venc = pickNested(block, "VideoEncoderConfiguration") ?? "";
@@ -205,13 +339,15 @@ export async function discover(input: DiscoverInput): Promise<DiscoveredProfile[
     out.push({
       profile_name: profileName,
       profile_token: token,
+      source_token: sourceToken,
       encoding,
       width,
       height,
       framerate,
       stream_uri: uri,
+      role: "other",
     });
   }
 
-  return out;
+  return groupProfiles(input.host, out);
 }

@@ -239,8 +239,8 @@ export function CameraDiscoverPage(props: CameraDiscoverProps) {
     >
       <div style="max-width:600px">
         <p style="color:#666; margin-bottom:1rem">
-          Connect to an ONVIF camera or NVR by host and credentials. Each profile
-          returned can be saved as a separate RTSP camera.
+          Connect to an ONVIF camera or NVR by host and credentials. Profiles
+          from the same video source are imported as streams on one camera.
         </p>
         <form method="post" action="/admin/cameras/discover" class="card">
           <div class="form-group">
@@ -272,25 +272,41 @@ export function CameraDiscoverPage(props: CameraDiscoverProps) {
 interface DiscoveredProfileRow {
   profile_name: string;
   profile_token: string;
+  source_token: string | null;
   encoding: string | null;
   width: number | null;
   height: number | null;
   framerate: number | null;
   stream_uri: string;
+  role: "main" | "sub" | "other";
+}
+
+interface DiscoveredCameraRow {
+  name: string;
+  source_token: string | null;
+  profiles: DiscoveredProfileRow[];
 }
 
 interface CameraDiscoverResultsProps {
   user: string;
   host: string;
-  profiles: DiscoveredProfileRow[];
+  username: string;
+  password: string;
+  cameras: DiscoveredCameraRow[];
   error?: string;
   success?: string;
 }
 
-export function CameraDiscoverResultsPage(props: CameraDiscoverResultsProps) {
+function CameraDiscoverResultsPageLegacy(props: {
+  user: string;
+  host: string;
+  profiles: DiscoveredProfileRow[];
+  error?: string;
+  success?: string;
+}) {
   return (
     <Layout
-      title="ONVIF Profiles"
+      title="ONVIF Cameras"
       user={props.user}
       activeNav="cameras"
       flash={
@@ -300,8 +316,8 @@ export function CameraDiscoverResultsPage(props: CameraDiscoverResultsProps) {
       }
     >
       <p style="color:#666; margin-bottom:1rem">
-        Profiles reported by <strong>{props.host}</strong>. Click <em>Add</em> on
-        any row to import it as a camera.
+        Video sources reported by <strong>{props.host}</strong>. Each source imports
+        as one camera with its profiles saved as streams.
       </p>
       <div class="table-wrap">
         <table>
@@ -344,6 +360,75 @@ export function CameraDiscoverResultsPage(props: CameraDiscoverResultsProps) {
           </tbody>
         </table>
       </div>
+      <div style="margin-top:1rem">
+        <a href="/admin/cameras/discover" class="btn btn-ghost">Discover Another</a>
+        <a href="/admin/cameras" class="btn btn-ghost" style="margin-left:0.5rem">Back to Cameras</a>
+      </div>
+    </Layout>
+  );
+}
+
+export function CameraDiscoverResultsPage(props: CameraDiscoverResultsProps) {
+  return (
+    <Layout
+      title="ONVIF Cameras"
+      user={props.user}
+      activeNav="cameras"
+      flash={
+        props.error ? { type: "error", message: props.error }
+        : props.success ? { type: "success", message: props.success }
+        : undefined
+      }
+    >
+      <p style="color:#666; margin-bottom:1rem">
+        Video sources reported by <strong>{props.host}</strong>. Each source imports
+        as one camera with its profiles saved as streams.
+      </p>
+      {props.cameras.length === 0 ? (
+        <div class="card" style="text-align:center; color:#999; padding:2rem">No profiles returned</div>
+      ) : props.cameras.map((cam) => (
+        <div class="card" style="margin-bottom:1rem">
+          <div class="section-header" style="margin-bottom:0.75rem">
+            <div>
+              <h2 class="section-title" style="font-size:1rem">{cam.name}</h2>
+              {cam.source_token ? <div style="color:#666; font-size:0.8rem">Source: {cam.source_token}</div> : ""}
+            </div>
+            <form method="post" action="/admin/cameras/discover/add" style="display:inline">
+              <input type="hidden" name="name" value={cam.name} />
+              <input type="hidden" name="username" value={props.username} />
+              <input type="hidden" name="password" value={props.password} />
+              <input type="hidden" name="streams_json" value={JSON.stringify(cam.profiles)} />
+              <button type="submit" class="btn btn-sm btn-primary">Add Camera</button>
+            </form>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Role</th>
+                  <th>Profile</th>
+                  <th>Encoding</th>
+                  <th>Resolution</th>
+                  <th>FPS</th>
+                  <th>Stream URI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cam.profiles.map((p) => (
+                  <tr>
+                    <td><span class="badge badge-gray">{p.role}</span></td>
+                    <td><strong>{p.profile_name}</strong></td>
+                    <td>{p.encoding ? <span class="badge badge-blue">{p.encoding}</span> : "-"}</td>
+                    <td>{p.width && p.height ? `${String(p.width)}x${String(p.height)}` : "-"}</td>
+                    <td>{p.framerate != null ? String(p.framerate) : "-"}</td>
+                    <td style="font-size:0.75rem; word-break:break-all; max-width:300px">{p.stream_uri}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )).join("")}
       <div style="margin-top:1rem">
         <a href="/admin/cameras/discover" class="btn btn-ghost">Discover Another</a>
         <a href="/admin/cameras" class="btn btn-ghost" style="margin-left:0.5rem">Back to Cameras</a>

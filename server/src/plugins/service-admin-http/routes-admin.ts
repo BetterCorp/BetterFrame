@@ -29,6 +29,18 @@ import {
 } from "../../web-templates/admin-pages.js";
 import { discover as onvifDiscover } from "../../shared/onvif.js";
 
+interface DiscoverAddStream {
+  profile_name: string;
+  profile_token: string;
+  source_token: string | null;
+  encoding: string | null;
+  width: number | null;
+  height: number | null;
+  framerate: number | null;
+  stream_uri: string;
+  role: "main" | "sub" | "other";
+}
+
 function htmlFragment(markup: unknown): Response {
   return new Response(String(markup), {
     headers: { "content-type": "text/html; charset=utf-8" },
@@ -52,6 +64,29 @@ function sanitizeRtspUrl(raw: string): string {
   const user = encodeURIComponent(userinfo!.slice(0, colonIdx));
   const pass = encodeURIComponent(userinfo!.slice(colonIdx + 1));
   return `${scheme}${user}:${pass}@${rest}`;
+}
+
+function uniqueCameraName(deps: AdminDeps, rawName: string): string {
+  let name = rawName;
+  if (deps.repo.getCameraByName(name)) {
+    let i = 2;
+    while (deps.repo.getCameraByName(`${rawName} (${String(i)})`)) i += 1;
+    name = `${rawName} (${String(i)})`;
+  }
+  return name;
+}
+
+function rtspWithCredentials(raw: string, username: string, password: string): string {
+  if (!username) return raw;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "rtsp:" || url.username) return raw;
+    url.username = username;
+    url.password = password;
+    return url.toString();
+  } catch {
+    return raw;
+  }
 }
 
 export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
@@ -180,11 +215,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
 
     try {
-      const profiles = await onvifDiscover({ host, port, username, password });
+      const cameras = await onvifDiscover({ host, port, username, password });
       return htmlPage(CameraDiscoverResultsPage({
         user: user.username,
         host,
-        profiles,
+        username,
+        password,
+        cameras,
       }));
     } catch (err) {
       return htmlPage(CameraDiscoverPage({
@@ -198,42 +235,46 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/cameras/discover/add", async (event) => {
     const body = await readBody<Record<string, string>>(event);
     const rawName = (body?.["name"] ?? "").trim() || "ONVIF camera";
-    const rtspUrl = (body?.["rtsp_url"] ?? "").trim();
-    const encoding = (body?.["encoding"] ?? "").trim() || null;
-    const profileToken = (body?.["profile_token"] ?? "").trim() || null;
-    const width = body?.["width"] ? Number(body["width"]) : null;
-    const height = body?.["height"] ? Number(body["height"]) : null;
-    const framerate = body?.["framerate"] ? Number(body["framerate"]) : null;
+    const username = (body?.["username"] ?? "").trim();
+    const password = body?.["password"] ?? "";
+    let streams: DiscoverAddStream[] = [];
+    try {
+      const parsed = JSON.parse(body?.["streams_json"] ?? "[]") as DiscoverAddStream[];
+      streams = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      streams = [];
+    }
 
-    if (!rtspUrl) {
+    if (streams.length === 0) {
       return new Response(null, { status: 302, headers: { location: "/admin/cameras/discover" } });
     }
 
-    // Resolve a unique camera name
-    let name = rawName;
-    if (deps.repo.getCameraByName(name)) {
-      let i = 2;
-      while (deps.repo.getCameraByName(`${rawName} (${String(i)})`)) i += 1;
-      name = `${rawName} (${String(i)})`;
-    }
+    const main = streams.find((s) => s.role === "main") ?? streams[0]!;
+    const mainRtspUrl = rtspWithCredentials(main.stream_uri, username, password);
+    const name = uniqueCameraName(deps, rawName);
 
     const cam = deps.repo.createCamera({
       name,
       type: "rtsp",
-      rtsp_url: rtspUrl,
+      rtsp_url: mainRtspUrl,
     });
-    deps.repo.createCameraStream({
-      camera_id: cam.id,
-      role: "main",
-      name: "Main",
-      rtsp_uri: rtspUrl,
-      profile_token: profileToken,
-      width: Number.isFinite(width) ? width : null,
-      height: Number.isFinite(height) ? height : null,
-      encoding,
-      framerate: Number.isFinite(framerate) ? framerate : null,
-      is_discovered: true,
-    });
+    for (const stream of streams) {
+      const width = stream.width == null ? null : Number(stream.width);
+      const height = stream.height == null ? null : Number(stream.height);
+      const framerate = stream.framerate == null ? null : Number(stream.framerate);
+      deps.repo.createCameraStream({
+        camera_id: cam.id,
+        role: stream.role === "main" || stream.role === "sub" ? stream.role : "other",
+        name: stream.profile_name || stream.role,
+        rtsp_uri: rtspWithCredentials(stream.stream_uri, username, password),
+        profile_token: stream.profile_token || null,
+        width: Number.isFinite(width) ? width : null,
+        height: Number.isFinite(height) ? height : null,
+        encoding: stream.encoding || null,
+        framerate: Number.isFinite(framerate) ? framerate : null,
+        is_discovered: true,
+      });
+    }
     notifyKiosks();
 
     return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });

@@ -11,6 +11,11 @@ import {
   CamerasPage,
   CameraNewPage,
   CameraEditPage,
+  CameraDiscoverPage,
+  CameraDiscoverResultsPage,
+  EntitiesPage,
+  EntityNewPage,
+  EntityEditPage,
   KiosksPage,
   KioskEditPage,
   LabelsPage,
@@ -22,6 +27,7 @@ import {
   renderCell,
   renderGrid,
 } from "../../web-templates/admin-pages.js";
+import { discover as onvifDiscover } from "../../shared/onvif.js";
 
 function htmlFragment(markup: unknown): Response {
   return new Response(String(markup), {
@@ -98,7 +104,6 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const user = event.context.user!;
     const body = await readBody<Record<string, string>>(event);
     const name = (body?.["name"] ?? "").trim();
-    const type = body?.["type"] as "rtsp" | "onvif" | undefined;
     const errors: string[] = [];
 
     if (!name || name.length > 128) {
@@ -107,35 +112,18 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       errors.push("Camera name already in use.");
     }
 
-    if (type !== "rtsp" && type !== "onvif") {
-      errors.push("Select camera type.");
-    }
-
+    const host = (body?.["rtsp_host"] ?? "").trim();
+    const port = (body?.["rtsp_port"] ?? "554").trim();
+    const path = (body?.["rtsp_path"] ?? "").trim();
+    const username = (body?.["rtsp_username"] ?? "").trim();
+    const pass = body?.["rtsp_password"] ?? "";
     let rtspUrl: string | undefined;
-    let onvifHost: string | undefined;
-    let onvifPort: number | undefined;
-    let onvifUser: string | undefined;
-    let onvifPass: string | undefined;
-
-    if (type === "rtsp") {
-      const host = (body?.["rtsp_host"] ?? "").trim();
-      const port = (body?.["rtsp_port"] ?? "554").trim();
-      const path = (body?.["rtsp_path"] ?? "").trim();
-      const user = (body?.["rtsp_username"] ?? "").trim();
-      const pass = body?.["rtsp_password"] ?? "";
-      if (!host) {
-        errors.push("RTSP host required.");
-      } else {
-        const userPart = user ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : "";
-        const pathPart = path.startsWith("/") ? path : `/${path}`;
-        rtspUrl = `rtsp://${userPart}${host}:${port}${pathPart}`;
-      }
-    } else if (type === "onvif") {
-      onvifHost = (body?.["onvif_host"] ?? "").trim();
-      onvifPort = parseInt(body?.["onvif_port"] ?? "80", 10);
-      onvifUser = (body?.["onvif_username"] ?? "").trim();
-      onvifPass = body?.["onvif_password"] ?? "";
-      if (!onvifHost) errors.push("ONVIF host required.");
+    if (!host) {
+      errors.push("RTSP host required.");
+    } else {
+      const userPart = username ? `${encodeURIComponent(username)}:${encodeURIComponent(pass)}@` : "";
+      const pathPart = path.startsWith("/") ? path : `/${path}`;
+      rtspUrl = `rtsp://${userPart}${host}:${port}${pathPart}`;
     }
 
     if (errors.length > 0) {
@@ -148,16 +136,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
     const cam = deps.repo.createCamera({
       name,
-      type: type!,
+      type: "rtsp",
       rtsp_url: rtspUrl ?? null,
-      onvif_host: onvifHost ?? null,
-      onvif_port: onvifPort ?? null,
-      onvif_username: onvifUser ?? null,
-      onvif_password: onvifPass ?? null,
     });
 
-    // Create default main stream for RTSP cameras
-    if (type === "rtsp" && rtspUrl) {
+    if (rtspUrl) {
       deps.repo.createCameraStream({
         camera_id: cam.id,
         role: "main",
@@ -165,11 +148,210 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         rtsp_uri: rtspUrl,
       });
     }
+    notifyKiosks();
 
     return new Response(null, {
       status: 302,
       headers: { location: "/admin/cameras" },
     });
+  });
+
+  // ---- Camera ONVIF discovery ------------------------------------------------
+
+  app.get("/admin/cameras/discover", (event) => {
+    const user = event.context.user!;
+    return htmlPage(CameraDiscoverPage({ user: user.username }));
+  });
+
+  app.post("/admin/cameras/discover", async (event) => {
+    const user = event.context.user!;
+    const body = await readBody<Record<string, string>>(event);
+    const host = (body?.["host"] ?? "").trim();
+    const port = parseInt(body?.["port"] ?? "80", 10) || 80;
+    const username = (body?.["username"] ?? "").trim();
+    const password = body?.["password"] ?? "";
+
+    if (!host) {
+      return htmlPage(CameraDiscoverPage({
+        user: user.username,
+        error: "Host required.",
+        values: body,
+      }));
+    }
+
+    try {
+      const profiles = await onvifDiscover({ host, port, username, password });
+      return htmlPage(CameraDiscoverResultsPage({
+        user: user.username,
+        host,
+        profiles,
+      }));
+    } catch (err) {
+      return htmlPage(CameraDiscoverPage({
+        user: user.username,
+        error: `Discovery failed: ${(err as Error).message}`,
+        values: body,
+      }));
+    }
+  });
+
+  app.post("/admin/cameras/discover/add", async (event) => {
+    const body = await readBody<Record<string, string>>(event);
+    const rawName = (body?.["name"] ?? "").trim() || "ONVIF camera";
+    const rtspUrl = (body?.["rtsp_url"] ?? "").trim();
+    const encoding = (body?.["encoding"] ?? "").trim() || null;
+    const profileToken = (body?.["profile_token"] ?? "").trim() || null;
+    const width = body?.["width"] ? Number(body["width"]) : null;
+    const height = body?.["height"] ? Number(body["height"]) : null;
+    const framerate = body?.["framerate"] ? Number(body["framerate"]) : null;
+
+    if (!rtspUrl) {
+      return new Response(null, { status: 302, headers: { location: "/admin/cameras/discover" } });
+    }
+
+    // Resolve a unique camera name
+    let name = rawName;
+    if (deps.repo.getCameraByName(name)) {
+      let i = 2;
+      while (deps.repo.getCameraByName(`${rawName} (${String(i)})`)) i += 1;
+      name = `${rawName} (${String(i)})`;
+    }
+
+    const cam = deps.repo.createCamera({
+      name,
+      type: "rtsp",
+      rtsp_url: rtspUrl,
+    });
+    deps.repo.createCameraStream({
+      camera_id: cam.id,
+      role: "main",
+      name: "Main",
+      rtsp_uri: rtspUrl,
+      profile_token: profileToken,
+      width: Number.isFinite(width) ? width : null,
+      height: Number.isFinite(height) ? height : null,
+      encoding,
+      framerate: Number.isFinite(framerate) ? framerate : null,
+      is_discovered: true,
+    });
+    notifyKiosks();
+
+    return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
+  });
+
+  // ---- Entities --------------------------------------------------------------
+
+  app.get("/admin/entities", (event) => {
+    const user = event.context.user!;
+    return htmlPage(EntitiesPage({
+      user: user.username,
+      entities: deps.repo.listEntities(),
+    }));
+  });
+
+  app.get("/admin/entities/new", (event) => {
+    const user = event.context.user!;
+    return htmlPage(EntityNewPage({
+      user: user.username,
+      cameras: deps.repo.listCameras(),
+    }));
+  });
+
+  app.post("/admin/entities/new", async (event) => {
+    const user = event.context.user!;
+    const body = await readBody<Record<string, string>>(event);
+    const name = (body?.["name"] ?? "").trim();
+    const type = body?.["type"] as "camera" | "html" | "web" | undefined;
+    const description = (body?.["description"] ?? "").trim() || null;
+    const errors: string[] = [];
+
+    if (!name || name.length > 128) {
+      errors.push("Name required (max 128 chars).");
+    } else if (deps.repo.getEntityByName(name)) {
+      errors.push("Entity name already in use.");
+    }
+    if (type !== "camera" && type !== "html" && type !== "web") {
+      errors.push("Select an entity type.");
+    }
+
+    let cameraId: number | null = null;
+    let htmlContent: string | null = null;
+    let webUrl: string | null = null;
+    if (type === "camera") {
+      cameraId = body?.["camera_id"] ? Number(body["camera_id"]) : null;
+      if (!cameraId) errors.push("Pick a camera.");
+    } else if (type === "html") {
+      htmlContent = body?.["html_content"] ?? null;
+    } else if (type === "web") {
+      webUrl = (body?.["web_url"] ?? "").trim() || null;
+      if (!webUrl) errors.push("URL required.");
+    }
+
+    if (errors.length > 0) {
+      return htmlPage(EntityNewPage({
+        user: user.username,
+        cameras: deps.repo.listCameras(),
+        error: errors.join(" "),
+        values: body,
+      }));
+    }
+
+    deps.repo.createEntity({
+      name,
+      type: type!,
+      description,
+      camera_id: cameraId,
+      html_content: htmlContent,
+      web_url: webUrl,
+    });
+    notifyKiosks();
+    return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
+  });
+
+  app.get("/admin/entities/:id", (event) => {
+    const user = event.context.user!;
+    const id = Number(getRouterParam(event, "id"));
+    const ent = deps.repo.getEntityById(id);
+    if (!ent) return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
+    return htmlPage(EntityEditPage({
+      user: user.username,
+      entity: ent,
+      cameras: deps.repo.listCameras(),
+    }));
+  });
+
+  app.post("/admin/entities/:id", async (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const ent = deps.repo.getEntityById(id);
+    if (!ent) return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
+    const body = await readBody<Record<string, string>>(event);
+    const patch: {
+      name?: string;
+      description?: string | null;
+      camera_id?: number | null;
+      html_content?: string | null;
+      web_url?: string | null;
+    } = {
+      name: (body?.["name"] ?? ent.name).trim(),
+      description: (body?.["description"] ?? "").trim() || null,
+    };
+    if (ent.type === "camera") {
+      patch.camera_id = body?.["camera_id"] ? Number(body["camera_id"]) : null;
+    } else if (ent.type === "html") {
+      patch.html_content = body?.["html_content"] ?? null;
+    } else if (ent.type === "web") {
+      patch.web_url = (body?.["web_url"] ?? "").trim() || null;
+    }
+    deps.repo.updateEntity(id, patch);
+    notifyKiosks();
+    return new Response(null, { status: 302, headers: { location: `/admin/entities/${String(id)}` } });
+  });
+
+  app.post("/admin/entities/:id/delete", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    deps.repo.deleteEntity(id);
+    notifyKiosks();
+    return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
   });
 
   // ---- Kiosks ---------------------------------------------------------------
@@ -266,6 +448,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (!layout) return new Response(null, { status: 302, headers: { location: "/admin/layouts" } });
     const cells = deps.repo.layoutCells(id);
     const cameras = deps.repo.listCameras();
+    const entities = deps.repo.listEntities();
     const displays = deps.repo.listDisplaysForLayout(id);
     return htmlPage(LayoutEditPage({
       user: user.username,
@@ -273,6 +456,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       displays,
       cells,
       cameras,
+      entities,
     }));
   });
 
@@ -314,7 +498,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       if (!ref) {
         if (isHtmxRequest(event)) {
           const cameras = deps.repo.listCameras();
-          return htmlFragment(renderGrid(layoutId, cells, cameras));
+          const entities = deps.repo.listEntities();
+          return htmlFragment(renderGrid(layoutId, cells, entities, cameras));
         }
         return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
       }
@@ -359,15 +544,15 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       col,
       row_span: 1,
       col_span: 1,
-      content_type: "html",
-      html_content: null,
+      entity_id: null,
     });
     notifyKiosks();
 
     if (isHtmxRequest(event)) {
       const cells = deps.repo.layoutCells(layoutId);
       const cameras = deps.repo.listCameras();
-      return htmlFragment(renderGrid(layoutId, cells, cameras));
+      const entities = deps.repo.listEntities();
+      return htmlFragment(renderGrid(layoutId, cells, entities, cameras));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
@@ -381,7 +566,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       return new Response("Not Found", { status: 404 });
     }
     const cameras = deps.repo.listCameras();
-    return htmlFragment(renderCell(layoutId, cell, cameras, "read"));
+    const entities = deps.repo.listEntities();
+    return htmlFragment(renderCell(layoutId, cell, entities, cameras, "read"));
   });
 
   // GET a single cell in edit mode (htmx swap target for cell click).
@@ -393,47 +579,47 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       return new Response("Not Found", { status: 404 });
     }
     const cameras = deps.repo.listCameras();
-    return htmlFragment(renderCell(layoutId, cell, cameras, "edit"));
+    const entities = deps.repo.listEntities();
+    return htmlFragment(renderCell(layoutId, cell, entities, cameras, "edit"));
   });
 
-  // Update a cell's content assignment + dimensions.
-  // For htmx requests, returns the updated cell HTML (read mode) for outerHTML
-  // swap onto the cell element. For normal POSTs, returns 302.
+  // Update a cell's entity binding + dimensions. Legacy content_type/web/html
+  // columns are managed by assignCellEntity for bundle compatibility.
   app.post("/admin/layouts/:id/cells/:cellId", async (event) => {
     const layoutId = Number(getRouterParam(event, "id"));
     const cellId = Number(getRouterParam(event, "cellId"));
     const body = await readBody<Record<string, string>>(event);
-    const contentType = (body?.["content_type"] ?? "html") as "camera" | "web" | "html";
 
-    const patch: Record<string, unknown> = {
-      content_type: contentType,
-      camera_id: contentType === "camera" && body?.["camera_id"] ? Number(body["camera_id"]) : null,
-      stream_selector: contentType === "camera"
-        ? ((body?.["stream_selector"] as "auto" | "main" | "sub") ?? "auto")
-        : "auto",
-      web_url: contentType === "web" ? (body?.["web_url"] ?? null) : null,
-      html_content: contentType === "html" ? (body?.["html_content"] ?? null) : null,
-    };
+    const entityIdRaw = body?.["entity_id"];
+    const entityId =
+      entityIdRaw && String(entityIdRaw).trim() !== "" ? Number(entityIdRaw) : null;
+    deps.repo.assignCellEntity(cellId, Number.isFinite(entityId) ? entityId : null);
 
+    // stream_selector + spans are still settable on the cell.
+    const dimsPatch: Record<string, unknown> = {};
+    const streamSelector = body?.["stream_selector"];
+    if (streamSelector === "auto" || streamSelector === "main" || streamSelector === "sub") {
+      dimsPatch["stream_selector"] = streamSelector;
+    }
     const colSpanRaw = body?.["col_span"];
     const rowSpanRaw = body?.["row_span"];
     if (colSpanRaw != null && String(colSpanRaw).trim() !== "") {
-      const v = Math.max(1, Number(colSpanRaw) || 1);
-      patch["col_span"] = v;
+      dimsPatch["col_span"] = Math.max(1, Number(colSpanRaw) || 1);
     }
     if (rowSpanRaw != null && String(rowSpanRaw).trim() !== "") {
-      const v = Math.max(1, Number(rowSpanRaw) || 1);
-      patch["row_span"] = v;
+      dimsPatch["row_span"] = Math.max(1, Number(rowSpanRaw) || 1);
     }
-
-    deps.repo.updateLayoutCell(cellId, patch as any);
+    if (Object.keys(dimsPatch).length > 0) {
+      deps.repo.updateLayoutCell(cellId, dimsPatch as any);
+    }
     notifyKiosks();
 
     if (isHtmxRequest(event)) {
       const cell = deps.repo.getLayoutCellById(cellId);
       if (!cell) return new Response("", { headers: { "content-type": "text/html; charset=utf-8" } });
       const cameras = deps.repo.listCameras();
-      return htmlFragment(renderCell(layoutId, cell, cameras, "read"));
+      const entities = deps.repo.listEntities();
+      return htmlFragment(renderCell(layoutId, cell, entities, cameras, "read"));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
@@ -458,8 +644,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
     const cells = deps.repo.layoutCells(layoutId);
     const cameras = deps.repo.listCameras();
+    const entities = deps.repo.listEntities();
     if (isHtmxRequest(event)) {
-      return htmlFragment(renderGrid(layoutId, cells, cameras));
+      return htmlFragment(renderGrid(layoutId, cells, entities, cameras));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
@@ -472,7 +659,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (isHtmxRequest(event)) {
       const cells = deps.repo.layoutCells(layoutId);
       const cameras = deps.repo.listCameras();
-      return htmlFragment(renderGrid(layoutId, cells, cameras));
+      const entities = deps.repo.listEntities();
+      return htmlFragment(renderGrid(layoutId, cells, entities, cameras));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });

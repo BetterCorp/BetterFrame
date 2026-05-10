@@ -123,18 +123,37 @@ export function generateBundle(
       preload_camera_ids: l.preload_camera_ids,
       resets_idle_timer: l.resets_idle_timer,
       is_default: defaultLayoutId === l.id,
-      cells: cells.map((c) => ({
-        row: c.row,
-        col: c.col,
-        row_span: c.row_span,
-        col_span: c.col_span,
-        content_type: c.content_type,
-        camera_id: c.camera_id,
-        stream_selector: c.stream_selector,
-        web_url: c.web_url,
-        html_content: c.html_content,
-        cooling_timeout_seconds: c.cooling_timeout_seconds,
-      })),
+      cells: cells.map((c) => {
+        // If the cell has an entity, prefer its current content so admin
+        // edits to the entity propagate without forcing a cell-touch. The
+        // bundle still ships the legacy camera_id/web_url/html_content shape
+        // so the existing Rust kiosk consumes it unchanged.
+        let contentType = c.content_type;
+        let cameraId = c.camera_id;
+        let webUrl = c.web_url;
+        let htmlContent = c.html_content;
+        if (c.entity_id != null) {
+          const ent = repo.getEntityById(c.entity_id);
+          if (ent) {
+            contentType = ent.type;
+            cameraId = ent.type === "camera" ? ent.camera_id : null;
+            webUrl = ent.type === "web" ? ent.web_url : null;
+            htmlContent = ent.type === "html" ? ent.html_content : null;
+          }
+        }
+        return {
+          row: c.row,
+          col: c.col,
+          row_span: c.row_span,
+          col_span: c.col_span,
+          content_type: contentType,
+          camera_id: cameraId,
+          stream_selector: c.stream_selector,
+          web_url: webUrl,
+          html_content: htmlContent,
+          cooling_timeout_seconds: c.cooling_timeout_seconds,
+        };
+      }),
     };
   });
 

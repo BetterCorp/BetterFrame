@@ -14,6 +14,8 @@ import type {
   CellContentType,
   DesiredPowerState,
   Display,
+  Entity,
+  EntityType,
   EventLog,
   EventSourceType,
   Kiosk,
@@ -205,6 +207,20 @@ export function rowToLayoutCell(r: Row): LayoutCell {
     html_content: sn(r["html_content"]),
     cooling_timeout_seconds: nn(r["cooling_timeout_seconds"]),
     options: j<Record<string, unknown>>(r["options"], {}),
+    entity_id: nn(r["entity_id"]),
+  };
+}
+
+export function rowToEntity(r: Row): Entity {
+  return {
+    id: n(r["id"]),
+    name: s(r["name"]),
+    type: s(r["type"]) as EntityType,
+    description: sn(r["description"]),
+    camera_id: nn(r["camera_id"]),
+    html_content: sn(r["html_content"]),
+    web_url: sn(r["web_url"]),
+    created_at: s(r["created_at"]),
   };
 }
 

@@ -6,6 +6,7 @@ import { Layout } from "./layout.js";
 import type {
   Camera,
   Display,
+  Entity,
   Kiosk,
   Label,
   Layout as LayoutType,
@@ -168,7 +169,11 @@ export function CameraNewPage(props: CameraNewProps) {
       flash={props.error ? { type: "error", message: props.error } : undefined}
     >
       <div style="max-width:600px">
+        <div style="margin-bottom:1rem">
+          <a href="/admin/cameras/discover" class="btn btn-ghost">Discover via ONVIF &rarr;</a>
+        </div>
         <form method="post" action="/admin/cameras/new">
+          <input type="hidden" name="type" value="rtsp" />
           <div class="form-group">
             <label for="name">Camera Name</label>
             <input
@@ -183,64 +188,27 @@ export function CameraNewPage(props: CameraNewProps) {
           </div>
 
           <div class="form-group">
-            <label>Type</label>
-            <div class="radio-group">
-              <label>
-                <input type="radio" name="type" value="rtsp" checked={v["type"] !== "onvif"} />
-                RTSP
-              </label>
-              <label>
-                <input type="radio" name="type" value="onvif" checked={v["type"] === "onvif"} />
-                ONVIF
-              </label>
+            <label for="rtsp_host">Host</label>
+            <input id="rtsp_host" name="rtsp_host" type="text" class="form-input" placeholder="192.168.1.100" value={v["rtsp_host"] ?? ""} />
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 2fr; gap:0.75rem">
+            <div class="form-group">
+              <label for="rtsp_port">Port</label>
+              <input id="rtsp_port" name="rtsp_port" type="number" class="form-input" value={v["rtsp_port"] ?? "554"} />
+            </div>
+            <div class="form-group">
+              <label for="rtsp_path">Path</label>
+              <input id="rtsp_path" name="rtsp_path" type="text" class="form-input" placeholder="/Streaming/Channels/101" value={v["rtsp_path"] ?? ""} />
             </div>
           </div>
-
-          <div id="rtsp-fields">
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem">
             <div class="form-group">
-              <label for="rtsp_host">Host</label>
-              <input id="rtsp_host" name="rtsp_host" type="text" class="form-input" placeholder="192.168.1.100" value={v["rtsp_host"] ?? ""} />
-            </div>
-            <div style="display:grid; grid-template-columns:1fr 2fr; gap:0.75rem">
-              <div class="form-group">
-                <label for="rtsp_port">Port</label>
-                <input id="rtsp_port" name="rtsp_port" type="number" class="form-input" value={v["rtsp_port"] ?? "554"} />
-              </div>
-              <div class="form-group">
-                <label for="rtsp_path">Path</label>
-                <input id="rtsp_path" name="rtsp_path" type="text" class="form-input" placeholder="/Streaming/Channels/101" value={v["rtsp_path"] ?? ""} />
-              </div>
-            </div>
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem">
-              <div class="form-group">
-                <label for="rtsp_username">Username</label>
-                <input id="rtsp_username" name="rtsp_username" type="text" class="form-input" value={v["rtsp_username"] ?? ""} />
-              </div>
-              <div class="form-group">
-                <label for="rtsp_password">Password</label>
-                <input id="rtsp_password" name="rtsp_password" type="password" class="form-input" value={v["rtsp_password"] ?? ""} />
-              </div>
-            </div>
-          </div>
-
-          <div id="onvif-fields" style="display:none">
-            <div class="form-group">
-              <label for="onvif_host">Host</label>
-              <input id="onvif_host" name="onvif_host" type="text" class="form-input" value={v["onvif_host"] ?? ""} />
+              <label for="rtsp_username">Username</label>
+              <input id="rtsp_username" name="rtsp_username" type="text" class="form-input" value={v["rtsp_username"] ?? ""} />
             </div>
             <div class="form-group">
-              <label for="onvif_port">Port</label>
-              <input id="onvif_port" name="onvif_port" type="number" class="form-input" value={v["onvif_port"] ?? "80"} />
-            </div>
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem">
-              <div class="form-group">
-                <label for="onvif_username">Username</label>
-                <input id="onvif_username" name="onvif_username" type="text" class="form-input" value={v["onvif_username"] ?? ""} />
-              </div>
-              <div class="form-group">
-                <label for="onvif_password">Password</label>
-                <input id="onvif_password" name="onvif_password" type="password" class="form-input" />
-              </div>
+              <label for="rtsp_password">Password</label>
+              <input id="rtsp_password" name="rtsp_password" type="password" class="form-input" value={v["rtsp_password"] ?? ""} />
             </div>
           </div>
 
@@ -248,18 +216,361 @@ export function CameraNewPage(props: CameraNewProps) {
           <a href="/admin/cameras" class="btn btn-ghost" style="margin-left:0.5rem">Cancel</a>
         </form>
       </div>
+    </Layout>
+  );
+}
 
-      <script>{js(
-        `(function(){` +
-        `var radios=document.querySelectorAll('input[name="type"]');` +
-        `var rd=document.getElementById("rtsp-fields");` +
-        `var od=document.getElementById("onvif-fields");` +
-        `function t(){var el=document.querySelector('input[name="type"]:checked');` +
-        `var v=el?el.value:"rtsp";` +
-        `if(rd)rd.style.display=v==="rtsp"?"block":"none";` +
-        `if(od)od.style.display=v==="onvif"?"block":"none";}` +
-        `radios.forEach(function(r){r.addEventListener("change",t)});t();})()`
-      )}</script>
+// ---- Camera ONVIF Discovery ------------------------------------------------
+
+interface CameraDiscoverProps {
+  user: string;
+  error?: string;
+  values?: Record<string, string>;
+}
+
+export function CameraDiscoverPage(props: CameraDiscoverProps) {
+  const v = props.values ?? {};
+  return (
+    <Layout
+      title="Discover ONVIF Cameras"
+      user={props.user}
+      activeNav="cameras"
+      flash={props.error ? { type: "error", message: props.error } : undefined}
+    >
+      <div style="max-width:600px">
+        <p style="color:#666; margin-bottom:1rem">
+          Connect to an ONVIF camera or NVR by host and credentials. Each profile
+          returned can be saved as a separate RTSP camera.
+        </p>
+        <form method="post" action="/admin/cameras/discover" class="card">
+          <div class="form-group">
+            <label for="host">Host</label>
+            <input id="host" name="host" type="text" class="form-input" placeholder="192.168.1.100" required value={v["host"] ?? ""} />
+          </div>
+          <div class="form-group">
+            <label for="port">Port</label>
+            <input id="port" name="port" type="number" class="form-input" value={v["port"] ?? "80"} />
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem">
+            <div class="form-group">
+              <label for="username">Username</label>
+              <input id="username" name="username" type="text" class="form-input" value={v["username"] ?? ""} />
+            </div>
+            <div class="form-group">
+              <label for="password">Password</label>
+              <input id="password" name="password" type="password" class="form-input" value={v["password"] ?? ""} />
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary">Discover</button>
+          <a href="/admin/cameras/new" class="btn btn-ghost" style="margin-left:0.5rem">Cancel</a>
+        </form>
+      </div>
+    </Layout>
+  );
+}
+
+interface DiscoveredProfileRow {
+  profile_name: string;
+  profile_token: string;
+  encoding: string | null;
+  width: number | null;
+  height: number | null;
+  framerate: number | null;
+  stream_uri: string;
+}
+
+interface CameraDiscoverResultsProps {
+  user: string;
+  host: string;
+  profiles: DiscoveredProfileRow[];
+  error?: string;
+  success?: string;
+}
+
+export function CameraDiscoverResultsPage(props: CameraDiscoverResultsProps) {
+  return (
+    <Layout
+      title="ONVIF Profiles"
+      user={props.user}
+      activeNav="cameras"
+      flash={
+        props.error ? { type: "error", message: props.error }
+        : props.success ? { type: "success", message: props.success }
+        : undefined
+      }
+    >
+      <p style="color:#666; margin-bottom:1rem">
+        Profiles reported by <strong>{props.host}</strong>. Click <em>Add</em> on
+        any row to import it as a camera.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Profile</th>
+              <th>Encoding</th>
+              <th>Resolution</th>
+              <th>FPS</th>
+              <th>Stream URI</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {props.profiles.length === 0 ? (
+              <tr><td colspan="6" style="text-align:center; color:#999; padding:2rem">No profiles returned</td></tr>
+            ) : (
+              props.profiles.map((p) => (
+                <tr>
+                  <td><strong>{p.profile_name}</strong></td>
+                  <td>{p.encoding ? <span class="badge badge-blue">{p.encoding}</span> : "—"}</td>
+                  <td>{p.width && p.height ? `${String(p.width)}x${String(p.height)}` : "—"}</td>
+                  <td>{p.framerate != null ? String(p.framerate) : "—"}</td>
+                  <td style="font-size:0.75rem; word-break:break-all; max-width:300px">{p.stream_uri}</td>
+                  <td>
+                    <form method="post" action="/admin/cameras/discover/add" style="display:inline">
+                      <input type="hidden" name="name" value={`${props.host}: ${p.profile_name}`} />
+                      <input type="hidden" name="rtsp_url" value={p.stream_uri} />
+                      <input type="hidden" name="encoding" value={p.encoding ?? ""} />
+                      <input type="hidden" name="width" value={String(p.width ?? "")} />
+                      <input type="hidden" name="height" value={String(p.height ?? "")} />
+                      <input type="hidden" name="framerate" value={String(p.framerate ?? "")} />
+                      <input type="hidden" name="profile_token" value={p.profile_token} />
+                      <button type="submit" class="btn btn-sm btn-primary">Add</button>
+                    </form>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top:1rem">
+        <a href="/admin/cameras/discover" class="btn btn-ghost">Discover Another</a>
+        <a href="/admin/cameras" class="btn btn-ghost" style="margin-left:0.5rem">Back to Cameras</a>
+      </div>
+    </Layout>
+  );
+}
+
+// ---- Entities ---------------------------------------------------------------
+
+interface EntitiesPageProps {
+  user: string;
+  entities: Entity[];
+}
+
+function entityBadge(type: string) {
+  const cls = type === "camera" ? "badge-blue" : type === "web" ? "badge-green" : "badge-gray";
+  return <span class={`badge ${cls}`}>{type}</span>;
+}
+
+function entityDetail(e: Entity): string {
+  if (e.type === "camera") return e.camera_id ? `cam #${String(e.camera_id)}` : "—";
+  if (e.type === "web") return e.web_url ?? "—";
+  if (e.type === "html") return e.html_content ? `${e.html_content.slice(0, 80)}…` : "—";
+  return "—";
+}
+
+export function EntitiesPage(props: EntitiesPageProps) {
+  return (
+    <Layout title="Entities" user={props.user} activeNav="entities">
+      <div class="section-header">
+        <h2 class="section-title">All Entities</h2>
+        <a href="/admin/entities/new" class="btn btn-primary">New Entity</a>
+      </div>
+      <p style="color:#666; margin-bottom:1.25rem">
+        Entities are reusable content blocks (a camera reference, an HTML
+        snippet, or a web page). Bind one entity to any number of layout cells —
+        edit the entity once and every cell updates.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            {props.entities.length === 0 ? (
+              <tr><td colspan="3" style="text-align:center; color:#999; padding:2rem">No entities yet</td></tr>
+            ) : (
+              props.entities.map((e) => (
+                <tr>
+                  <td><a href={`/admin/entities/${e.id}`}><strong>{e.name}</strong></a></td>
+                  <td>{entityBadge(e.type)}</td>
+                  <td style="color:#666; font-size:0.85rem">{entityDetail(e)}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Layout>
+  );
+}
+
+interface EntityNewPageProps {
+  user: string;
+  cameras: Camera[];
+  error?: string;
+  values?: Record<string, string>;
+}
+
+function entityFormScript(rootId: string): string {
+  // Show/hide type-specific fieldsets when the type select changes.
+  return (
+    `(function(){` +
+    `var root=document.getElementById('${rootId}');` +
+    `if(!root)return;` +
+    `var sel=root.querySelector('select[name="type"]');` +
+    `var cf=root.querySelector('.ent-fields-camera');` +
+    `var wf=root.querySelector('.ent-fields-web');` +
+    `var hf=root.querySelector('.ent-fields-html');` +
+    `function t(){var v=sel?sel.value:"html";` +
+    `if(cf)cf.style.display=v==='camera'?'block':'none';` +
+    `if(wf)wf.style.display=v==='web'?'block':'none';` +
+    `if(hf)hf.style.display=v==='html'?'block':'none';}` +
+    `if(sel)sel.addEventListener('change',t);t();})()`
+  );
+}
+
+export function EntityNewPage(props: EntityNewPageProps) {
+  const v = props.values ?? {};
+  const selType = v["type"] ?? "html";
+  return (
+    <Layout
+      title="New Entity"
+      user={props.user}
+      activeNav="entities"
+      flash={props.error ? { type: "error", message: props.error } : undefined}
+    >
+      <div id="entity-new-root" style="max-width:600px">
+        <form method="post" action="/admin/entities/new" class="card">
+          <div class="form-group">
+            <label for="name">Name</label>
+            <input id="name" name="name" type="text" class="form-input" required maxlength="128" value={v["name"] ?? ""} />
+          </div>
+
+          <div class="form-group">
+            <label for="type">Type</label>
+            <select id="type" name="type" class="form-input">
+              <option value="html" selected={selType === "html"}>HTML snippet</option>
+              <option value="web" selected={selType === "web"}>Web URL</option>
+              <option value="camera" selected={selType === "camera"}>Camera reference</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="description">Description (optional)</label>
+            <input id="description" name="description" type="text" class="form-input" value={v["description"] ?? ""} />
+          </div>
+
+          <div class="ent-fields-camera" style={selType === "camera" ? "" : "display:none"}>
+            <div class="form-group">
+              <label for="camera_id">Camera</label>
+              <select id="camera_id" name="camera_id" class="form-input">
+                <option value="">-- Select --</option>
+                {props.cameras.map((cam) => (
+                  <option value={String(cam.id)} selected={v["camera_id"] === String(cam.id)}>{cam.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div class="ent-fields-web" style={selType === "web" ? "" : "display:none"}>
+            <div class="form-group">
+              <label for="web_url">URL</label>
+              <input id="web_url" name="web_url" type="url" class="form-input" placeholder="https://example.com" value={v["web_url"] ?? ""} />
+            </div>
+          </div>
+
+          <div class="ent-fields-html" style={selType === "html" ? "" : "display:none"}>
+            <div class="form-group">
+              <label for="html_content">HTML</label>
+              <textarea id="html_content" name="html_content" class="form-input" rows="6">{v["html_content"] ?? ""}</textarea>
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary">Create Entity</button>
+          <a href="/admin/entities" class="btn btn-ghost" style="margin-left:0.5rem">Cancel</a>
+        </form>
+      </div>
+      <script>{js(entityFormScript("entity-new-root"))}</script>
+    </Layout>
+  );
+}
+
+interface EntityEditPageProps {
+  user: string;
+  entity: Entity;
+  cameras: Camera[];
+  error?: string;
+  success?: string;
+}
+
+export function EntityEditPage(props: EntityEditPageProps) {
+  const e = props.entity;
+  return (
+    <Layout
+      title={`Entity: ${e.name}`}
+      user={props.user}
+      activeNav="entities"
+      flash={
+        props.error ? { type: "error", message: props.error }
+        : props.success ? { type: "success", message: props.success }
+        : undefined
+      }
+    >
+      <div id="entity-edit-root" style="max-width:600px">
+        <div class="card" style="margin-bottom:1rem">
+          <div style="margin-bottom:0.75rem">Type: {entityBadge(e.type)}</div>
+          <form method="post" action={`/admin/entities/${e.id}`}>
+            {/* Type is fixed after creation — switching type would break attached cells. */}
+            <input type="hidden" name="type" value={e.type} />
+            <div class="form-group">
+              <label for="name">Name</label>
+              <input id="name" name="name" type="text" class="form-input" required value={e.name} maxlength="128" />
+            </div>
+            <div class="form-group">
+              <label for="description">Description</label>
+              <input id="description" name="description" type="text" class="form-input" value={e.description ?? ""} />
+            </div>
+
+            {e.type === "camera" && (
+              <div class="form-group">
+                <label for="camera_id">Camera</label>
+                <select id="camera_id" name="camera_id" class="form-input">
+                  <option value="">-- Select --</option>
+                  {props.cameras.map((cam) => (
+                    <option value={String(cam.id)} selected={e.camera_id === cam.id}>{cam.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {e.type === "web" && (
+              <div class="form-group">
+                <label for="web_url">URL</label>
+                <input id="web_url" name="web_url" type="url" class="form-input" value={e.web_url ?? ""} />
+              </div>
+            )}
+            {e.type === "html" && (
+              <div class="form-group">
+                <label for="html_content">HTML</label>
+                <textarea id="html_content" name="html_content" class="form-input" rows="8">{e.html_content ?? ""}</textarea>
+              </div>
+            )}
+
+            <button type="submit" class="btn btn-primary">Save</button>
+            <a href="/admin/entities" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
+          </form>
+        </div>
+
+        <form method="post" action={`/admin/entities/${e.id}/delete`}>
+          <button type="submit" class="btn btn-danger" {...{"onclick": "return confirm('Delete this entity? Cells using it will be left empty.')"}}>Delete Entity</button>
+        </form>
+      </div>
     </Layout>
   );
 }
@@ -1013,6 +1324,7 @@ interface LayoutEditPageProps {
   displays: Display[];
   cells: LayoutCell[];
   cameras: Camera[];
+  entities: Entity[];
   /** If set, render the content-assignment form for this cell beneath the grid. */
   selectedCellId?: number | null;
   error?: string;
@@ -1050,7 +1362,15 @@ export const LAYOUT_BUILDER_CSS = `
 .layout-empty-add:hover { background: #1e40af; }
 `;
 
-function cellLabel(c: LayoutCell, cameraById: Map<number, Camera>): string {
+function cellLabel(
+  c: LayoutCell,
+  entityById: Map<number, Entity>,
+  cameraById: Map<number, Camera>,
+): string {
+  if (c.entity_id != null) {
+    const ent = entityById.get(c.entity_id);
+    if (ent) return ent.name;
+  }
   if (c.content_type === "camera" && c.camera_id) {
     return cameraById.get(c.camera_id)?.name ?? `cam #${String(c.camera_id)}`;
   }
@@ -1071,11 +1391,14 @@ function cellGridStyle(c: LayoutCell): string {
 export function renderCell(
   layoutId: number,
   c: LayoutCell,
+  entities: Entity[],
   cameras: Camera[],
   mode: "read" | "edit",
 ): string {
   const cameraById = new Map<number, Camera>();
   for (const cam of cameras) cameraById.set(cam.id, cam);
+  const entityById = new Map<number, Entity>();
+  for (const e of entities) entityById.set(e.id, e);
   const style = cellGridStyle(c);
   const cellGetUrl = `/admin/layouts/${String(layoutId)}/cells/${String(c.id)}`;
   const cellEditUrl = `${cellGetUrl}/edit`;
@@ -1093,46 +1416,27 @@ export function renderCell(
           hx-swap="outerHTML"
         >
           <div class="form-group">
-            <label>Content Type</label>
-            <div class="radio-group" style="display:flex; gap:0.5rem; flex-wrap:wrap; font-size:0.75rem">
-              <label><input type="radio" name="content_type" value="camera" checked={c.content_type === "camera"} /> Camera</label>
-              <label><input type="radio" name="content_type" value="web" checked={c.content_type === "web"} /> Web</label>
-              <label><input type="radio" name="content_type" value="html" checked={c.content_type === "html"} /> HTML</label>
+            <label>Entity</label>
+            <select name="entity_id" class="form-input">
+              <option value="">-- Empty --</option>
+              {entities.map((e) => (
+                <option value={String(e.id)} selected={c.entity_id === e.id}>
+                  [{e.type}] {e.name}
+                </option>
+              ))}
+            </select>
+            <div class="form-hint" style="font-size:0.7rem">
+              <a href="/admin/entities/new" target="_blank">+ New entity</a>
             </div>
           </div>
 
-          <div id={`cell-camera-fields-${String(c.id)}`} class="cell-fields-camera" style={c.content_type === "camera" ? "" : "display:none"}>
-            <div class="form-group">
-              <label>Camera</label>
-              <select name="camera_id" class="form-input">
-                <option value="">-- Select --</option>
-                {cameras.map((cam) => (
-                  <option value={String(cam.id)} selected={c.camera_id === cam.id}>{cam.name}</option>
-                ))}
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Stream</label>
-              <select name="stream_selector" class="form-input">
-                <option value="auto" selected={c.stream_selector === "auto"}>Auto</option>
-                <option value="main" selected={c.stream_selector === "main"}>Main</option>
-                <option value="sub" selected={c.stream_selector === "sub"}>Sub</option>
-              </select>
-            </div>
-          </div>
-
-          <div id={`cell-web-fields-${String(c.id)}`} class="cell-fields-web" style={c.content_type === "web" ? "" : "display:none"}>
-            <div class="form-group">
-              <label>URL</label>
-              <input name="web_url" type="url" class="form-input" placeholder="https://example.com" value={c.web_url ?? ""} />
-            </div>
-          </div>
-
-          <div id={`cell-html-fields-${String(c.id)}`} class="cell-fields-html" style={c.content_type === "html" ? "" : "display:none"}>
-            <div class="form-group">
-              <label>HTML</label>
-              <textarea name="html_content" class="form-input" rows="3" placeholder="<div>...</div>">{c.html_content ?? ""}</textarea>
-            </div>
+          <div class="form-group" style={(c.entity_id != null && entityById.get(c.entity_id)?.type === "camera") ? "" : "display:none"}>
+            <label>Stream</label>
+            <select name="stream_selector" class="form-input">
+              <option value="auto" selected={c.stream_selector === "auto"}>Auto</option>
+              <option value="main" selected={c.stream_selector === "main"}>Main</option>
+              <option value="sub" selected={c.stream_selector === "sub"}>Sub</option>
+            </select>
           </div>
 
           <div class="form-group span-grid">
@@ -1165,30 +1469,18 @@ export function renderCell(
             >Delete</button>
           </div>
         </form>
-        <script>{js(
-          `(function(){` +
-          `var root=document.getElementById('cell-${String(c.id)}');` +
-          `if(!root)return;` +
-          `var rs=root.querySelectorAll('input[name="content_type"]');` +
-          `var cf=root.querySelector('.cell-fields-camera');` +
-          `var wf=root.querySelector('.cell-fields-web');` +
-          `var hf=root.querySelector('.cell-fields-html');` +
-          `function t(){var el=root.querySelector('input[name="content_type"]:checked');` +
-          `var v=el?el.value:"html";` +
-          `if(cf)cf.style.display=v==="camera"?"block":"none";` +
-          `if(wf)wf.style.display=v==="web"?"block":"none";` +
-          `if(hf)hf.style.display=v==="html"?"block":"none";}` +
-          `rs.forEach(function(r){r.addEventListener("change",t)});t();})()`
-        )}</script>
       </div>
     );
   }
 
-  // Read mode.
-  const isEmpty = (c.content_type === "html" && !c.html_content)
+  // Read mode. Empty when no entity is bound.
+  const ent = c.entity_id != null ? entityById.get(c.entity_id) ?? null : null;
+  const isEmpty = !ent && (
+    (c.content_type === "html" && !c.html_content)
     || (c.content_type === "camera" && !c.camera_id)
-    || (c.content_type === "web" && !c.web_url);
-  const label = cellLabel(c, cameraById);
+    || (c.content_type === "web" && !c.web_url)
+  );
+  const label = cellLabel(c, entityById, cameraById);
 
   return (
     <div
@@ -1280,6 +1572,7 @@ export function renderCell(
 export function renderGrid(
   layoutId: number,
   cells: LayoutCell[],
+  entities: Entity[],
   cameras: Camera[],
 ): string {
   if (cells.length === 0) {
@@ -1313,7 +1606,7 @@ export function renderGrid(
       class="layout-builder"
       style={`grid-template-columns:repeat(${String(gridCols)}, 1fr); grid-template-rows:repeat(${String(gridRows)}, 1fr)`}
     >
-      {cells.map((c) => renderCell(layoutId, c, cameras, "read"))}
+      {cells.map((c) => renderCell(layoutId, c, entities, cameras, "read"))}
     </div>
   );
 }
@@ -1408,7 +1701,7 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
             Click a cell to edit content in-place.
           </p>
           <div id="layout-grid">
-            {renderGrid(l.id, cells, props.cameras)}
+            {renderGrid(l.id, cells, props.entities, props.cameras)}
           </div>
         </div>
 

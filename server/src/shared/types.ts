@@ -13,6 +13,18 @@ export type StreamSelector = "auto" | "main" | "sub";
 export type StreamPolicy = "auto" | "always_main" | "always_sub";
 export type LayoutPriority = "hot" | "normal" | "cold";
 export type CellContentType = "camera" | "web" | "html";
+export type EntityType = "camera" | "html" | "web";
+
+export interface Entity {
+  id: number;
+  name: string;
+  type: EntityType;
+  description: string | null;
+  camera_id: number | null;
+  html_content: string | null;
+  web_url: string | null;
+  created_at: string;
+}
 export type DesiredPowerState = "follow_layout" | "on" | "standby";
 export type LabelRole = "consume" | "operate";
 export type EventSourceType = "onvif" | "gpio" | "synthetic" | "system";
@@ -174,6 +186,7 @@ export interface LayoutCell {
   html_content: string | null;
   cooling_timeout_seconds: number | null;
   options: Record<string, unknown>;
+  entity_id: number | null;
 }
 
 export interface Kiosk {

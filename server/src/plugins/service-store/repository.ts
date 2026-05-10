@@ -18,6 +18,8 @@ import type {
   CameraStream,
   CameraType,
   Display,
+  Entity,
+  EntityType,
   EventLog,
   EventSourceType,
   Kiosk,
@@ -40,6 +42,7 @@ import {
   rowToCamera,
   rowToCameraStream,
   rowToDisplay,
+  rowToEntity,
   rowToEventLog,
   rowToKiosk,
   rowToLabel,
@@ -545,36 +548,98 @@ export class Repository {
     col: number;
     row_span?: number;
     col_span?: number;
-    content_type: string;
+    content_type?: string;
     camera_id?: number | null;
     stream_selector?: string | null;
     web_url?: string | null;
     html_content?: string | null;
     cooling_timeout_seconds?: number | null;
     options?: Record<string, unknown>;
+    entity_id?: number | null;
   }): LayoutCell {
+    // Resolve content fields from the entity (if given). The legacy columns
+    // remain populated for backward-compatible bundle generation.
+    let contentType = input.content_type ?? "html";
+    let cameraId: number | null = input.camera_id ?? null;
+    let webUrl: string | null = input.web_url ?? null;
+    let htmlContent: string | null = input.html_content ?? null;
+    if (input.entity_id != null) {
+      const ent = this.getEntityById(input.entity_id);
+      if (ent) {
+        contentType = ent.type;
+        cameraId = ent.type === "camera" ? ent.camera_id : null;
+        webUrl = ent.type === "web" ? ent.web_url : null;
+        htmlContent = ent.type === "html" ? ent.html_content : null;
+      }
+    }
+
     const result = this.prep(
-      `INSERT INTO layout_cells (layout_id, "row", col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO layout_cells (layout_id, "row", col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options, entity_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.layout_id,
       input.row,
       input.col,
       input.row_span ?? 1,
       input.col_span ?? 1,
-      input.content_type,
-      input.camera_id ?? null,
+      contentType,
+      cameraId,
       input.stream_selector ?? "auto",
-      input.web_url ?? null,
-      input.html_content ?? null,
+      webUrl,
+      htmlContent,
       input.cooling_timeout_seconds ?? null,
       J(input.options ?? {}),
+      input.entity_id ?? null,
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("layout_cells", "create", id);
     const r = this.prep("SELECT * FROM layout_cells WHERE id = ?").get(id);
     if (!r) throw new Error("layout_cell vanished after insert");
     return rowToLayoutCell(r as Record<string, unknown>);
+  }
+
+  /**
+   * Assign (or clear) the entity for a cell. Also mirrors the resolved entity's
+   * type/camera/url/html into the legacy cell columns so bundle generation stays
+   * compatible with the existing kiosk.
+   */
+  assignCellEntity(cellId: number, entityId: number | null): void {
+    if (entityId == null) {
+      this.db
+        .prepare(
+          `UPDATE layout_cells
+              SET entity_id = NULL,
+                  content_type = 'html',
+                  camera_id = NULL,
+                  web_url = NULL,
+                  html_content = NULL
+            WHERE id = ?`,
+        )
+        .run(cellId);
+      void this.notify("layout_cells", "update", cellId);
+      return;
+    }
+    const ent = this.getEntityById(entityId);
+    if (!ent) return;
+    this.db
+      .prepare(
+        `UPDATE layout_cells
+            SET entity_id = ?,
+                content_type = ?,
+                camera_id = ?,
+                web_url = ?,
+                html_content = ?
+          WHERE id = ?`,
+      )
+      .run(
+        ent.id,
+        ent.type,
+        ent.type === "camera" ? ent.camera_id : null,
+        ent.type === "web" ? ent.web_url : null,
+        ent.type === "html" ? ent.html_content : null,
+        cellId,
+      );
+    void this.notify("layout_cells", "update", cellId);
   }
 
   updateLayoutCell(id: number, patch: Partial<LayoutCell>): void {
@@ -709,6 +774,8 @@ export class Repository {
     void this.notify("cameras", "create", id);
     const c = this.getCameraById(id);
     if (!c) throw new Error("camera vanished after insert");
+    // Mirror this camera as a reusable entity so it's pickable in cell editors.
+    this.ensureCameraEntity(c);
     return c;
   }
 
@@ -1135,9 +1202,130 @@ export class Repository {
   deleteCamera(id: number): void {
     this.db.prepare(`DELETE FROM camera_labels WHERE camera_id = ?`).run(id);
     this.db.prepare(`DELETE FROM camera_streams WHERE camera_id = ?`).run(id);
+    // Clear cells that referenced this camera (legacy column).
     this.db.prepare(`DELETE FROM layout_cells WHERE camera_id = ?`).run(id);
+    // entities row has ON DELETE CASCADE → camera-mirror entity goes away with
+    // the camera, which in turn sets layout_cells.entity_id NULL via the FK.
     this.db.prepare(`DELETE FROM cameras WHERE id = ?`).run(id);
     void this.notify("cameras", "delete", id);
+  }
+
+  // ===========================================================================
+  // entities — reusable content pool (camera/html/web) bound to layout cells
+  // ===========================================================================
+
+  listEntities(): Entity[] {
+    const rs = this.prep("SELECT * FROM entities ORDER BY name").all();
+    return rs.map((r) => rowToEntity(r as Record<string, unknown>));
+  }
+
+  getEntityById(id: number): Entity | null {
+    const r = this.prep("SELECT * FROM entities WHERE id = ?").get(id);
+    return r ? rowToEntity(r as Record<string, unknown>) : null;
+  }
+
+  getEntityByName(name: string): Entity | null {
+    const r = this.prep("SELECT * FROM entities WHERE name = ?").get(name);
+    return r ? rowToEntity(r as Record<string, unknown>) : null;
+  }
+
+  getEntityForCamera(cameraId: number): Entity | null {
+    const r = this.prep(
+      `SELECT * FROM entities WHERE type = 'camera' AND camera_id = ? LIMIT 1`,
+    ).get(cameraId);
+    return r ? rowToEntity(r as Record<string, unknown>) : null;
+  }
+
+  createEntity(input: {
+    name: string;
+    type: EntityType;
+    description?: string | null;
+    camera_id?: number | null;
+    html_content?: string | null;
+    web_url?: string | null;
+  }): Entity {
+    const result = this.prep(
+      `INSERT INTO entities (name, type, description, camera_id, html_content, web_url)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.name,
+      input.type,
+      input.description ?? null,
+      input.type === "camera" ? (input.camera_id ?? null) : null,
+      input.type === "html" ? (input.html_content ?? null) : null,
+      input.type === "web" ? (input.web_url ?? null) : null,
+    );
+    const id = Number(result.lastInsertRowid);
+    void this.notify("entities", "create", id);
+    const e = this.getEntityById(id);
+    if (!e) throw new Error("entity vanished after insert");
+    return e;
+  }
+
+  updateEntity(
+    id: number,
+    patch: {
+      name?: string;
+      description?: string | null;
+      camera_id?: number | null;
+      html_content?: string | null;
+      web_url?: string | null;
+    },
+  ): void {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      sets.push(`${k} = ?`);
+      vals.push(v === undefined ? null : v);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    this.db
+      .prepare(`UPDATE entities SET ${sets.join(", ")} WHERE id = ?`)
+      .run(...(vals as any[]));
+    void this.notify("entities", "update", id);
+
+    // Propagate content fields into any cell that uses this entity, so the
+    // legacy cell columns stay aligned for bundle generation.
+    const ent = this.getEntityById(id);
+    if (!ent) return;
+    this.db
+      .prepare(
+        `UPDATE layout_cells
+            SET content_type = ?,
+                camera_id = ?,
+                web_url = ?,
+                html_content = ?
+          WHERE entity_id = ?`,
+      )
+      .run(
+        ent.type,
+        ent.type === "camera" ? ent.camera_id : null,
+        ent.type === "web" ? ent.web_url : null,
+        ent.type === "html" ? ent.html_content : null,
+        id,
+      );
+  }
+
+  deleteEntity(id: number): void {
+    // FK ON DELETE SET NULL clears layout_cells.entity_id.
+    this.db.prepare(`DELETE FROM entities WHERE id = ?`).run(id);
+    void this.notify("entities", "delete", id);
+  }
+
+  /**
+   * Idempotent: ensure a camera-type entity exists for the given camera. If
+   * the camera's name is already taken by another entity, append the camera
+   * id to keep the name unique.
+   */
+  ensureCameraEntity(camera: Camera): Entity {
+    const existing = this.getEntityForCamera(camera.id);
+    if (existing) return existing;
+    let name = camera.name;
+    if (this.getEntityByName(name)) {
+      name = `${camera.name} (cam #${String(camera.id)})`;
+    }
+    return this.createEntity({ name, type: "camera", camera_id: camera.id });
   }
 
   updateKiosk(id: number, patch: Partial<Kiosk>): void {

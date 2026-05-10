@@ -43,6 +43,7 @@ function Sidebar(props: { activeNav?: string }) {
       <nav class="sidebar-nav">
         <NavItem href="/admin/" label="Overview" icon="&#9632;" active={a === "overview"} />
         <NavItem href="/admin/cameras" label="Cameras" icon="&#9899;" active={a === "cameras"} />
+        <NavItem href="/admin/entities" label="Entities" icon="&#9863;" active={a === "entities"} />
         <NavItem href="/admin/layouts" label="Layouts" icon="&#9638;" active={a === "layouts"} />
         <NavItem href="/admin/displays" label="Displays" icon="&#9642;" active={a === "displays"} />
         <NavItem href="/admin/kiosks" label="Kiosks" icon="&#9672;" active={a === "kiosks"} />

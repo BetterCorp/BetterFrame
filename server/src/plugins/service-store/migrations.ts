@@ -441,4 +441,100 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
 
   // Drop layout_templates entirely — concept removed
   `DROP TABLE IF EXISTS layout_templates`,
+
+  // ---- v0.8: entities — unified content pool for layout cells -----------------
+  // Admin creates a reusable "entity" (camera reference, html snippet, web page)
+  // once and binds it to one or more layout cells. Cameras get an automatic
+  // mirror entity so existing layouts keep working.
+  `CREATE TABLE IF NOT EXISTS entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL CHECK(type IN ('camera', 'html', 'web')),
+    description TEXT,
+    camera_id INTEGER REFERENCES cameras(id) ON DELETE CASCADE,
+    html_content TEXT,
+    web_url TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_entities_camera ON entities(camera_id)`,
+
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "layout_cells", "entity_id", "INTEGER REFERENCES entities(id) ON DELETE SET NULL");
+  },
+  `CREATE INDEX IF NOT EXISTS idx_layout_cells_entity ON layout_cells(entity_id)`,
+
+  // Backfill 1: ensure every camera has a mirror entity (name = camera.name)
+  (db: DatabaseSync) => {
+    const cams = db.prepare(`SELECT id, name FROM cameras`).all() as Array<{ id: number; name: string }>;
+    const has = db.prepare(`SELECT id FROM entities WHERE type = 'camera' AND camera_id = ?`);
+    const ins = db.prepare(
+      `INSERT OR IGNORE INTO entities (name, type, camera_id) VALUES (?, 'camera', ?)`,
+    );
+    for (const c of cams) {
+      const existing = has.get(c.id);
+      if (existing) continue;
+      // Resolve name collision by appending the camera id
+      const taken = db.prepare(`SELECT id FROM entities WHERE name = ?`).get(c.name);
+      const useName = taken ? `${c.name} (cam #${String(c.id)})` : c.name;
+      ins.run(useName, c.id);
+    }
+  },
+
+  // Backfill 2: for each cell, set entity_id based on legacy content_type fields
+  (db: DatabaseSync) => {
+    const cells = db
+      .prepare(
+        `SELECT id, content_type, camera_id, html_content, web_url, entity_id
+           FROM layout_cells
+          WHERE entity_id IS NULL`,
+      )
+      .all() as Array<{
+      id: number;
+      content_type: string;
+      camera_id: number | null;
+      html_content: string | null;
+      web_url: string | null;
+      entity_id: number | null;
+    }>;
+
+    const findCameraEntity = db.prepare(`SELECT id FROM entities WHERE type = 'camera' AND camera_id = ?`);
+    const insertEntity = db.prepare(
+      `INSERT INTO entities (name, type, html_content, web_url) VALUES (?, ?, ?, ?)`,
+    );
+    const setCellEntity = db.prepare(`UPDATE layout_cells SET entity_id = ? WHERE id = ?`);
+    const nameExists = db.prepare(`SELECT 1 FROM entities WHERE name = ?`);
+
+    let autoCounter = 1;
+    function uniqueName(base: string): string {
+      // Find a unique entity name for the auto-created snippet
+      let candidate = base;
+      while (nameExists.get(candidate)) {
+        candidate = `${base} ${String(autoCounter)}`;
+        autoCounter += 1;
+      }
+      autoCounter += 1;
+      return candidate;
+    }
+
+    for (const cell of cells) {
+      if (cell.content_type === "camera" && cell.camera_id != null) {
+        const ent = findCameraEntity.get(cell.camera_id) as { id: number } | undefined;
+        if (ent) setCellEntity.run(ent.id, cell.id);
+        continue;
+      }
+      if (cell.content_type === "html" && cell.html_content) {
+        const name = uniqueName(`Cell ${String(cell.id)} HTML`);
+        const r = insertEntity.run(name, "html", cell.html_content, null);
+        setCellEntity.run(Number(r.lastInsertRowid), cell.id);
+        continue;
+      }
+      if (cell.content_type === "web" && cell.web_url) {
+        const name = uniqueName(`Cell ${String(cell.id)} Web`);
+        const r = insertEntity.run(name, "web", null, cell.web_url);
+        setCellEntity.run(Number(r.lastInsertRowid), cell.id);
+        continue;
+      }
+      // empty cell — leave entity_id null
+    }
+  },
 ];

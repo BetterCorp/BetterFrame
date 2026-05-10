@@ -25,7 +25,7 @@ export function redirectWithCookie(
   if (cookie) {
     headers.set(
       "set-cookie",
-      `${cookie.name}=${cookie.value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${cookie.maxAge}`,
+      `${cookie.name}=${cookie.value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${cookie.maxAge}`,
     );
   }
   return new Response(null, { status, headers });
@@ -37,7 +37,7 @@ export function redirectClearCookie(location: string, cookieName: string): Respo
     status: 302,
     headers: {
       location,
-      "set-cookie": `${cookieName}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+      "set-cookie": `${cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`,
     },
   });
 }

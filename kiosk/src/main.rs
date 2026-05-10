@@ -4,6 +4,7 @@ mod pipeline;
 mod ui;
 
 use gtk4::prelude::{ApplicationExt, ApplicationExtManual};
+use gstreamer::prelude::PluginFeatureExtManual;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 

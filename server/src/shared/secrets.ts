@@ -33,6 +33,7 @@ export interface SecretsLog {
 export interface SecretsApi {
   encryptString(plaintext: string, info?: string): string;
   decryptString(ciphertext: string, info?: string): string;
+  deriveKey(info: string): Buffer;
   generateClusterKey(): string;
   encryptForCluster(plaintext: string, clusterKeyB64u: string): string;
 }
@@ -54,6 +55,10 @@ export function initSecrets(config: SecretsConfig, log: SecretsLog): SecretsApi 
   }
 
   return {
+    deriveKey(info: string): Buffer {
+      return deriveSubkey(info);
+    },
+
     encryptString(plaintext: string, info: string = "field"): string {
       const subkey = deriveSubkey(info);
       const iv = randomBytes(12);

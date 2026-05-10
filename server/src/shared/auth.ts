@@ -170,9 +170,10 @@ export function createAuth(
 
   // ---- Sessions -------------------------------------------------------------
 
+  const cookieKey = secrets.deriveKey("cookie");
+
   function cookieMac(sid: string): string {
-    const subkeyMaterial = secrets.encryptString("cookie-subkey", "cookie-derivation");
-    return createHmac("sha256", subkeyMaterial).update(sid).digest("hex");
+    return createHmac("sha256", cookieKey).update(sid).digest("hex");
   }
 
   function signCookie(sid: string): string {

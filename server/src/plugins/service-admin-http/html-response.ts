@@ -10,3 +10,34 @@ export function htmlPage(markup: unknown): Response {
     headers: { "content-type": "text/html; charset=utf-8" },
   });
 }
+
+/**
+ * Build a redirect Response with optional Set-Cookie header.
+ * Avoids h3's setCookie which doesn't play well with returning
+ * a raw Response object.
+ */
+export function redirectWithCookie(
+  location: string,
+  cookie?: { name: string; value: string; maxAge: number },
+  status = 302,
+): Response {
+  const headers = new Headers({ location });
+  if (cookie) {
+    headers.set(
+      "set-cookie",
+      `${cookie.name}=${cookie.value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${cookie.maxAge}`,
+    );
+  }
+  return new Response(null, { status, headers });
+}
+
+/** Build a redirect that clears a cookie. */
+export function redirectClearCookie(location: string, cookieName: string): Response {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location,
+      "set-cookie": `${cookieName}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+    },
+  });
+}

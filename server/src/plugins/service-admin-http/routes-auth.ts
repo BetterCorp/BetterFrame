@@ -1,17 +1,11 @@
 /**
  * Authentication routes: login, TOTP, recovery, logout.
  */
-import { type H3, readBody, getCookie, setCookie, deleteCookie, getQuery, getRequestHeader } from "h3";
-import { htmlPage } from "./html-response.js";
+import { type H3, readBody, getCookie, getQuery, getRequestHeader } from "h3";
+import { htmlPage, redirectWithCookie, redirectClearCookie } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { LoginPage, TotpPage, RecoveryPage } from "../../web-templates/auth-pages.js";
 
-const COOKIE_OPTS = {
-  httpOnly: true,
-  secure: true,
-  sameSite: "lax" as const,
-  path: "/",
-};
 
 export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
   // ---- Login ----------------------------------------------------------------
@@ -70,15 +64,11 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       totpPending,
     });
 
-    setCookie(event, deps.cookieName, cookieValue, {
-      ...COOKIE_OPTS,
-      maxAge: deps.auth.config.sessionMaxSeconds,
-    });
-
+    const cookie = { name: deps.cookieName, value: cookieValue, maxAge: deps.auth.config.sessionMaxSeconds };
     if (totpPending) {
-      return new Response(null, { status: 302, headers: { location: "/auth/totp" } });
+      return redirectWithCookie("/auth/totp", cookie);
     }
-    return new Response(null, { status: 302, headers: { location: "/admin/" } });
+    return redirectWithCookie("/admin/", cookie);
   });
 
   // ---- TOTP -----------------------------------------------------------------
@@ -184,7 +174,6 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
         deps.auth.revokeSession(resolved.session.id);
       }
     }
-    deleteCookie(event, deps.cookieName, { path: "/" });
-    return new Response(null, { status: 302, headers: { location: "/auth/login" } });
+    return redirectClearCookie("/auth/login", deps.cookieName);
   });
 }

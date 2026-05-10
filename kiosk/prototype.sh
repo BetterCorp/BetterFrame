@@ -59,7 +59,7 @@ pair_with_server() {
   local hostname
   hostname=$(hostname)
   local hw_model
-  hw_model=$(cat /proc/device-tree/model 2>/dev/null || echo "unknown")
+  hw_model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo "unknown")
 
   echo "Requesting pairing code..."
   local resp

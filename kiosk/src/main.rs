@@ -13,5 +13,7 @@ fn main() {
 
     gstreamer::init().expect("Failed to init GStreamer");
     let app = ui::build_app();
-    std::process::exit(app.run().into());
+    // Pass empty args to GTK — server URL handled via env or argv directly
+    app.set_flags(gtk4::gio::ApplicationFlags::NON_UNIQUE | gtk4::gio::ApplicationFlags::HANDLES_COMMAND_LINE);
+    std::process::exit(app.run_with_args::<&str>(&[]).into());
 }

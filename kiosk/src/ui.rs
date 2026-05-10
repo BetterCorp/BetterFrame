@@ -38,7 +38,8 @@ fn activate(app: &Application) {
 
     let (tx, rx) = mpsc::channel::<WorkerMsg>();
 
-    let server_url = std::env::args().nth(1);
+    let server_url = std::env::var("BETTERFRAME_SERVER").ok()
+        .or_else(|| std::env::args().nth(1));
     std::thread::spawn(move || {
         let server = server::discover_server(server_url.as_deref());
         info!("server: {server}");

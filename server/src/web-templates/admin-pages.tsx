@@ -10,7 +10,6 @@ import type {
   Label,
   Layout as LayoutType,
   LayoutCell,
-  LayoutRegion,
   PairingCode,
   EventLog,
 } from "../shared/types.js";
@@ -879,7 +878,8 @@ export function LabelsPage(props: LabelsPageProps) {
 interface LayoutsPageProps {
   user: string;
   layouts: LayoutType[];
-  displays: Map<number, Display>;
+  /** layout_id → number of displays the layout is attached to */
+  displayCounts: Map<number, number>;
 }
 
 export function LayoutsPage(props: LayoutsPageProps) {
@@ -890,30 +890,33 @@ export function LayoutsPage(props: LayoutsPageProps) {
         <a href="/admin/layouts/new" class="btn btn-primary">New Layout</a>
       </div>
       <p style="color:#666; margin-bottom:1.25rem">
-        A layout defines a grid of regions and binds cameras or other content into them for a display.
+        Layouts are standalone — they define a grid of regions and bind cameras or
+        other content into them. Attach a layout to one or more displays from the
+        display's edit page.
       </p>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>Name</th>
-              <th>Grid</th>
-              <th>Display</th>
+              <th>Displays</th>
               <th>Priority</th>
-              <th>Default</th>
             </tr>
           </thead>
           <tbody>
             {props.layouts.length === 0 ? (
-              <tr><td colspan="5" style="text-align:center; color:#999; padding:2rem">No layouts created yet</td></tr>
+              <tr><td colspan="3" style="text-align:center; color:#999; padding:2rem">No layouts created yet</td></tr>
             ) : (
               props.layouts.map((l) => {
-                const disp = props.displays.get(l.display_id);
+                const count = props.displayCounts.get(l.id) ?? 0;
                 return (
                   <tr>
                     <td><a href={`/admin/layouts/${l.id}`}><strong>{l.name}</strong></a></td>
-                    <td>{String(l.grid_cols)}x{String(l.grid_rows)} ({String(l.regions.length)} regions)</td>
-                    <td>{disp ? disp.name : `#${String(l.display_id)}`}</td>
+                    <td>
+                      {count === 0
+                        ? <span style="color:#999">unattached</span>
+                        : <span>{String(count)} display{count !== 1 ? "s" : ""}</span>}
+                    </td>
                     <td>
                       {l.priority === "hot"
                         ? <span class="badge badge-red">hot</span>
@@ -921,9 +924,6 @@ export function LayoutsPage(props: LayoutsPageProps) {
                           ? <span class="badge badge-blue">cold</span>
                           : <span class="badge badge-gray">normal</span>
                       }
-                    </td>
-                    <td>
-                      {l.is_default ? <span class="badge badge-green">Yes</span> : ""}
                     </td>
                   </tr>
                 );
@@ -940,7 +940,6 @@ export function LayoutsPage(props: LayoutsPageProps) {
 
 interface LayoutNewPageProps {
   user: string;
-  displays: Display[];
   error?: string;
   values?: Record<string, string>;
 }
@@ -954,85 +953,21 @@ export function LayoutNewPage(props: LayoutNewPageProps) {
       activeNav="layouts"
       flash={props.error ? { type: "error", message: props.error } : undefined}
     >
-      <div style="max-width:700px">
-        {/* Quick presets */}
-        <div class="card" style="margin-bottom:1.5rem">
-          <h2 style="margin:0 0 1rem; font-size:1.1rem">Quick Create from Preset</h2>
-          <p style="color:#666; margin-bottom:1rem; font-size:0.85rem">
-            Pick a preset grid layout. You can also define a custom grid below.
-          </p>
-          <div class="stats-grid" style="margin-bottom:0">
-            {[
-              { preset: "fullscreen", label: "Fullscreen", desc: "1x1 grid, single region" },
-              { preset: "2x2", label: "2x2 Grid", desc: "4 equal regions" },
-              { preset: "1plus3", label: "1+3", desc: "Large left, 3 stacked right" },
-              { preset: "3x3", label: "3x3 Grid", desc: "9 equal regions" },
-            ].map((p) => (
-              <form method="post" action="/admin/layouts/new" style="margin:0">
-                <input type="hidden" name="preset" value={p.preset} />
-                <input type="hidden" name="name" value={v["name"] || p.label} />
-                <input type="hidden" name="display_id" value={v["display_id"] ?? String(props.displays[0]?.id ?? "")} />
-                <input type="hidden" name="is_default" value={v["is_default"] ?? "0"} />
-                <input type="hidden" name="resets_idle_timer" value={v["resets_idle_timer"] ?? "1"} />
-                <button type="submit" class="card" style="width:100%; text-align:left; cursor:pointer; border:1px solid #d0d0d0; background:#fff">
-                  <strong>{p.label}</strong>
-                  <div style="color:#666; font-size:0.8rem">{p.desc}</div>
-                </button>
-              </form>
-            ))}
-          </div>
-        </div>
-
-        {/* Full form */}
+      <div style="max-width:600px">
+        <p style="color:#666; margin-bottom:1.25rem">
+          Create an empty layout. You'll add cells visually on the next page,
+          then attach the layout to one or more displays.
+        </p>
         <div class="card">
-          <h2 style="margin:0 0 1rem; font-size:1.1rem">Custom Layout</h2>
           <form method="post" action="/admin/layouts/new">
-            <input type="hidden" name="preset" value="custom" />
             <div class="form-group">
               <label for="name">Layout Name</label>
               <input id="name" name="name" type="text" class="form-input" required maxlength="128" value={v["name"] ?? ""} />
             </div>
 
             <div class="form-group">
-              <label for="display_id">Display</label>
-              <select id="display_id" name="display_id" class="form-input" required>
-                <option value="">-- Select Display --</option>
-                {props.displays.map((d) => (
-                  <option value={String(d.id)} selected={v["display_id"] === String(d.id)}>
-                    {d.name} ({String(d.width_px)}x{String(d.height_px)})
-                  </option>
-                ))}
-              </select>
-              {props.displays.length === 0 && (
-                <div class="form-hint">
-                  No displays exist yet. Pair a kiosk first to create a display.
-                </div>
-              )}
-            </div>
-
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem">
-              <div class="form-group">
-                <label for="grid_cols">Grid Columns</label>
-                <input id="grid_cols" name="grid_cols" type="number" class="form-input" min="1" max="12" value={v["grid_cols"] ?? "1"} />
-              </div>
-              <div class="form-group">
-                <label for="grid_rows">Grid Rows</label>
-                <input id="grid_rows" name="grid_rows" type="number" class="form-input" min="1" max="12" value={v["grid_rows"] ?? "1"} />
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label for="regions">Regions (JSON)</label>
-              <textarea
-                id="regions"
-                name="regions"
-                class="form-input"
-                rows="6"
-                placeholder={'[\n  { "name": "main", "row": 0, "col": 0, "rowSpan": 1, "colSpan": 1 }\n]'}
-              >{v["regions"] ?? ""}</textarea>
-              <div class="form-hint">
-                Array of regions: name, row, col, rowSpan, colSpan. Grid is zero-indexed.
-              </div>
+              <label for="description">Description (optional)</label>
+              <input id="description" name="description" type="text" class="form-input" value={v["description"] ?? ""} />
             </div>
 
             <div class="form-group">
@@ -1042,18 +977,6 @@ export function LayoutNewPage(props: LayoutNewPageProps) {
                 <option value="hot" selected={v["priority"] === "hot"}>Hot (always warm)</option>
                 <option value="cold" selected={v["priority"] === "cold"}>Cold</option>
               </select>
-            </div>
-
-            <div class="form-group">
-              <label for="description">Description (optional)</label>
-              <input id="description" name="description" type="text" class="form-input" value={v["description"] ?? ""} />
-            </div>
-
-            <div class="form-group">
-              <label>
-                <input type="checkbox" name="is_default" value="1" checked={v["is_default"] === "1"} />
-                {" "}Set as default layout for this display
-              </label>
             </div>
 
             <div class="form-group">
@@ -1077,24 +1000,65 @@ export function LayoutNewPage(props: LayoutNewPageProps) {
 interface LayoutEditPageProps {
   user: string;
   layout: LayoutType;
-  display: Display;
+  /** Displays this layout is attached to (informational, read-only). */
+  displays: Display[];
   cells: LayoutCell[];
   cameras: Camera[];
+  /** If set, render the content-assignment form for this cell beneath the grid. */
+  selectedCellId?: number | null;
   error?: string;
   success?: string;
 }
 
+const LAYOUT_BUILDER_CSS = `
+.layout-builder { display: grid; gap: 4px; aspect-ratio: 16/9; max-width: 100%; background: #ddd; padding: 4px; border-radius: 4px; }
+.layout-cell { background: #fff; border: 2px solid #2563eb; border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; position: relative; min-height: 60px; padding: 4px; text-align: center; font-size: 0.85rem; font-weight: 600; color: #1e40af; overflow: hidden; }
+.layout-cell:hover { background: #f0f7ff; }
+.layout-cell.selected { background: #dbeafe; border-color: #1e40af; box-shadow: 0 0 0 2px #1e40af33; }
+.layout-cell-empty-text { color: #999; font-size: 0.75rem; font-weight: 400; }
+.layout-cell-add { position: absolute; background: #2563eb; color: #fff; border: none; width: 24px; height: 24px; border-radius: 50%; cursor: pointer; font-size: 16px; line-height: 1; opacity: 0; transition: opacity 0.2s; padding: 0; z-index: 2; }
+.layout-cell:hover .layout-cell-add { opacity: 1; }
+.layout-cell-add:hover { background: #1e40af; opacity: 1; }
+.layout-cell-add-top { top: -12px; left: 50%; transform: translateX(-50%); }
+.layout-cell-add-right { right: -12px; top: 50%; transform: translateY(-50%); }
+.layout-cell-add-bottom { bottom: -12px; left: 50%; transform: translateX(-50%); }
+.layout-cell-add-left { left: -12px; top: 50%; transform: translateY(-50%); }
+.layout-cell-delete { position: absolute; top: 4px; right: 4px; background: rgba(220, 38, 38, 0.9); color: #fff; border: none; width: 20px; height: 20px; border-radius: 50%; cursor: pointer; font-size: 12px; line-height: 1; padding: 0; opacity: 0; transition: opacity 0.2s; z-index: 2; }
+.layout-cell:hover .layout-cell-delete { opacity: 1; }
+.layout-empty { display: flex; align-items: center; justify-content: center; aspect-ratio: 16/9; background: #f3f4f6; border-radius: 4px; }
+.layout-empty-add { background: #2563eb; color: #fff; border: none; width: 80px; height: 80px; border-radius: 50%; cursor: pointer; font-size: 36px; line-height: 1; padding: 0; }
+.layout-empty-add:hover { background: #1e40af; }
+`;
+
 export function LayoutEditPage(props: LayoutEditPageProps) {
   const l = props.layout;
-  // Build a map from region_name → cell for easy lookup
-  const cellByRegion = new Map<string, LayoutCell>();
-  for (const c of props.cells) {
-    cellByRegion.set(c.region_name, c);
-  }
-  // Also build camera name lookup
+  const cells = props.cells;
   const cameraById = new Map<number, Camera>();
   for (const cam of props.cameras) {
     cameraById.set(cam.id, cam);
+  }
+
+  // Compute grid dimensions from cells.
+  let gridCols = 1;
+  let gridRows = 1;
+  for (const c of cells) {
+    const right = c.col + c.col_span;
+    const bottom = c.row + c.row_span;
+    if (right > gridCols) gridCols = right;
+    if (bottom > gridRows) gridRows = bottom;
+  }
+
+  const selectedCell = props.selectedCellId
+    ? cells.find((c) => c.id === props.selectedCellId) ?? null
+    : null;
+
+  function cellLabel(c: LayoutCell): string {
+    if (c.content_type === "camera" && c.camera_id) {
+      return cameraById.get(c.camera_id)?.name ?? `cam #${String(c.camera_id)}`;
+    }
+    if (c.content_type === "web") return c.web_url ? `Web: ${c.web_url}` : "Web";
+    if (c.content_type === "html") return c.html_content ? "HTML" : "HTML (empty)";
+    return "Empty";
   }
 
   return (
@@ -1108,7 +1072,8 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
         : undefined
       }
     >
-      <div style="max-width:800px">
+      <style>{LAYOUT_BUILDER_CSS}</style>
+      <div style="max-width:900px">
         {/* Settings */}
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Settings</h2>
@@ -1136,12 +1101,6 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
             </div>
             <div class="form-group">
               <label>
-                <input type="checkbox" name="is_default" value="1" checked={l.is_default} />
-                {" "}Default layout for display
-              </label>
-            </div>
-            <div class="form-group">
-              <label>
                 <input type="checkbox" name="resets_idle_timer" value="1" checked={l.resets_idle_timer} />
                 {" "}Resets idle timer
               </label>
@@ -1150,201 +1109,180 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
             <a href="/admin/layouts" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
           </form>
           <div style="margin-top:1rem; color:#666; font-size:0.85rem">
-            <div>Grid: {String(l.grid_cols)}x{String(l.grid_rows)}, {String(l.regions.length)} region{l.regions.length !== 1 ? "s" : ""}</div>
-            <div>Display: <a href={`/admin/displays/${props.display.id}`}>{props.display.name}</a></div>
+            <div>Grid: {String(gridCols)}x{String(gridRows)}, {String(cells.length)} cell{cells.length !== 1 ? "s" : ""}</div>
+            <div>
+              {props.displays.length === 0
+                ? <span>Attached to no displays — attach from a display's edit page.</span>
+                : (
+                  <span>
+                    Attached to:{" "}
+                    {props.displays.map((d, i) => (
+                      <span>
+                        {i > 0 ? ", " : ""}
+                        <a href={`/admin/displays/${d.id}`}>{d.name}</a>
+                      </span>
+                    ))}
+                  </span>
+                )}
+            </div>
           </div>
         </div>
 
-        {/* Grid preview with cell assignments */}
-        {l.regions.length > 0 && (
-          <div class="card" style="margin-bottom:1.5rem">
-            <h2 style="margin:0 0 1rem; font-size:1.1rem">Grid Preview</h2>
-            <div style={`display:grid; grid-template-columns:repeat(${String(l.grid_cols)}, 1fr); grid-template-rows:repeat(${String(l.grid_rows)}, 40px); gap:2px; background:#e5e7eb; padding:2px; border-radius:4px`}>
-              {l.regions.map((r) => {
-                const cell = cellByRegion.get(r.name);
-                let label = r.name;
-                let bgColor = "#f9fafb";
-                let textColor = "#666";
-                if (cell) {
-                  bgColor = "#dbeafe";
-                  textColor = "#1e40af";
-                  if (cell.content_type === "camera" && cell.camera_id) {
-                    const cam = cameraById.get(cell.camera_id);
-                    label = cam ? cam.name : `cam #${String(cell.camera_id)}`;
-                  } else if (cell.content_type === "web") {
-                    label = "Web";
-                  } else if (cell.content_type === "html") {
-                    label = "HTML";
-                  }
-                }
+        {/* Visual builder */}
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Layout Builder</h2>
+          <p style="color:#666; font-size:0.85rem; margin-bottom:1rem">
+            Hover a cell to see <strong>+</strong> buttons (add a neighbour) and the <strong>×</strong> delete button.
+            Click a cell to assign content.
+          </p>
+          {cells.length === 0 ? (
+            <div class="layout-empty">
+              <form method="post" action={`/admin/layouts/${l.id}/cells`} style="margin:0">
+                <input type="hidden" name="row" value="0" />
+                <input type="hidden" name="col" value="0" />
+                <button type="submit" class="layout-empty-add" title="Add first cell">+</button>
+              </form>
+            </div>
+          ) : (
+            <div class="layout-builder" style={`grid-template-columns:repeat(${String(gridCols)}, 1fr); grid-template-rows:repeat(${String(gridRows)}, 1fr)`}>
+              {cells.map((c) => {
+                const isSelected = selectedCell?.id === c.id;
+                const cellStyle = `grid-column:${String(c.col + 1)} / span ${String(c.col_span)}; grid-row:${String(c.row + 1)} / span ${String(c.row_span)};`;
+                const isEmpty = c.content_type === "html" && !c.html_content
+                  || c.content_type === "camera" && !c.camera_id
+                  || c.content_type === "web" && !c.web_url;
                 return (
-                  <div style={`grid-column:${String(r.col + 1)} / span ${String(r.colSpan)}; grid-row:${String(r.row + 1)} / span ${String(r.rowSpan)}; background:${bgColor}; display:flex; align-items:center; justify-content:center; font-size:0.7rem; font-weight:600; color:${textColor}; border-radius:2px; overflow:hidden; text-overflow:ellipsis; padding:0 4px`}>
-                    {label}
-                  </div>
+                  <a
+                    href={`/admin/layouts/${l.id}?cell=${String(c.id)}`}
+                    class={`layout-cell${isSelected ? " selected" : ""}`}
+                    style={cellStyle}
+                  >
+                    {isEmpty
+                      ? <span class="layout-cell-empty-text">{cellLabel(c)}</span>
+                      : <span>{cellLabel(c)}</span>
+                    }
+                    {/* + buttons (4 sides) */}
+                    {(["top", "right", "bottom", "left"] as const).map((dir) => {
+                      const directionParam = dir === "top" ? "above" : dir;
+                      return (
+                        <form
+                          method="post"
+                          action={`/admin/layouts/${l.id}/cells`}
+                          {...{"onclick": "event.stopPropagation()"}}
+                          style="display:contents"
+                        >
+                          <input type="hidden" name="after_cell_id" value={String(c.id)} />
+                          <input type="hidden" name="direction" value={directionParam} />
+                          <button
+                            type="submit"
+                            class={`layout-cell-add layout-cell-add-${dir}`}
+                            title={`Add cell ${dir}`}
+                          >+</button>
+                        </form>
+                      );
+                    })}
+                    {/* delete button */}
+                    <form
+                      method="post"
+                      action={`/admin/layouts/${l.id}/cells/${String(c.id)}/delete`}
+                      {...{"onclick": "event.stopPropagation()"}}
+                      style="display:contents"
+                    >
+                      <button
+                        type="submit"
+                        class="layout-cell-delete"
+                        title="Delete cell"
+                        {...{"onclick": "event.stopPropagation(); return confirm('Delete this cell?')"}}
+                      >×</button>
+                    </form>
+                  </a>
                 );
               })}
             </div>
+          )}
+        </div>
+
+        {/* Selected-cell content form */}
+        {selectedCell && (
+          <div class="card" style="margin-bottom:1.5rem">
+            <h2 style="margin:0 0 1rem; font-size:1.1rem">
+              Cell at row {String(selectedCell.row)}, col {String(selectedCell.col)}
+              {" "}<span style="font-weight:400; color:#666; font-size:0.85rem">({String(selectedCell.row_span)}x{String(selectedCell.col_span)})</span>
+            </h2>
+            <form method="post" action={`/admin/layouts/${l.id}/cells/${String(selectedCell.id)}`}>
+              <div class="form-group">
+                <label>Content Type</label>
+                <div class="radio-group">
+                  <label>
+                    <input type="radio" name="content_type" value="camera" checked={selectedCell.content_type === "camera"} />
+                    {" "}Camera
+                  </label>
+                  <label>
+                    <input type="radio" name="content_type" value="web" checked={selectedCell.content_type === "web"} />
+                    {" "}Web URL
+                  </label>
+                  <label>
+                    <input type="radio" name="content_type" value="html" checked={selectedCell.content_type === "html"} />
+                    {" "}HTML
+                  </label>
+                </div>
+              </div>
+
+              <div id="cell-camera-fields" style={selectedCell.content_type === "camera" ? "" : "display:none"}>
+                <div class="form-group">
+                  <label for="camera_id">Camera</label>
+                  <select id="camera_id" name="camera_id" class="form-input">
+                    <option value="">-- Select Camera --</option>
+                    {props.cameras.map((cam) => (
+                      <option value={String(cam.id)} selected={selectedCell.camera_id === cam.id}>{cam.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="stream_selector">Stream</label>
+                  <select id="stream_selector" name="stream_selector" class="form-input">
+                    <option value="auto" selected={selectedCell.stream_selector === "auto"}>Auto</option>
+                    <option value="main" selected={selectedCell.stream_selector === "main"}>Main</option>
+                    <option value="sub" selected={selectedCell.stream_selector === "sub"}>Sub</option>
+                  </select>
+                </div>
+              </div>
+
+              <div id="cell-web-fields" style={selectedCell.content_type === "web" ? "" : "display:none"}>
+                <div class="form-group">
+                  <label for="web_url">URL</label>
+                  <input id="web_url" name="web_url" type="url" class="form-input" placeholder="https://example.com" value={selectedCell.web_url ?? ""} />
+                </div>
+              </div>
+
+              <div id="cell-html-fields" style={selectedCell.content_type === "html" ? "" : "display:none"}>
+                <div class="form-group">
+                  <label for="html_content">HTML Content</label>
+                  <textarea id="html_content" name="html_content" class="form-input" rows="4" placeholder="<div>...</div>">{selectedCell.html_content ?? ""}</textarea>
+                </div>
+              </div>
+
+              <button type="submit" class="btn btn-primary">Save Cell</button>
+              <a href={`/admin/layouts/${l.id}`} class="btn btn-ghost" style="margin-left:0.5rem">Cancel</a>
+              <form method="post" action={`/admin/layouts/${l.id}/cells/${String(selectedCell.id)}/delete`} style="display:inline; margin-left:0.5rem">
+                <button type="submit" class="btn btn-danger" {...{"onclick": "return confirm('Delete this cell?')"}}>Delete Cell</button>
+              </form>
+            </form>
+            <script>{js(
+              `(function(){` +
+              `var rs=document.querySelectorAll('input[name="content_type"]');` +
+              `var cf=document.getElementById("cell-camera-fields");` +
+              `var wf=document.getElementById("cell-web-fields");` +
+              `var hf=document.getElementById("cell-html-fields");` +
+              `function t(){var el=document.querySelector('input[name="content_type"]:checked');` +
+              `var v=el?el.value:"html";` +
+              `if(cf)cf.style.display=v==="camera"?"block":"none";` +
+              `if(wf)wf.style.display=v==="web"?"block":"none";` +
+              `if(hf)hf.style.display=v==="html"?"block":"none";}` +
+              `rs.forEach(function(r){r.addEventListener("change",t)});t();})()`
+            )}</script>
           </div>
         )}
-
-        {/* Regions table */}
-        <div class="card" style="margin-bottom:1.5rem">
-          <h2 style="margin:0 0 1rem; font-size:1.1rem">Regions</h2>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Region</th>
-                  <th>Position</th>
-                  <th>Size</th>
-                </tr>
-              </thead>
-              <tbody>
-                {l.regions.length === 0 ? (
-                  <tr><td colspan="3" style="text-align:center; color:#999; padding:1rem">No regions defined</td></tr>
-                ) : (
-                  l.regions.map((r) => (
-                    <tr>
-                      <td><strong>{r.name}</strong></td>
-                      <td>row {String(r.row)}, col {String(r.col)}</td>
-                      <td>{String(r.rowSpan)}x{String(r.colSpan)}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Cell assignments table */}
-        <div class="card" style="margin-bottom:1.5rem">
-          <h2 style="margin:0 0 1rem; font-size:1.1rem">Cell Assignments</h2>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Region</th>
-                  <th>Content</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {l.regions.map((r) => {
-                  const cell = cellByRegion.get(r.name);
-                  return (
-                    <tr>
-                      <td><strong>{r.name}</strong></td>
-                      <td>
-                        {cell ? (
-                          <span>
-                            <span class="badge badge-blue">{cell.content_type}</span>
-                            {" "}
-                            {cell.content_type === "camera" && cell.camera_id
-                              ? (cameraById.get(cell.camera_id)?.name ?? `#${String(cell.camera_id)}`)
-                              : cell.content_type === "web" && cell.web_url
-                                ? <span style="font-size:0.8rem; color:#666">{cell.web_url}</span>
-                                : cell.content_type === "html"
-                                  ? <span style="font-size:0.8rem; color:#666">(custom HTML)</span>
-                                  : ""
-                            }
-                          </span>
-                        ) : (
-                          <span style="color:#999">Empty</span>
-                        )}
-                      </td>
-                      <td>
-                        {cell && (
-                          <form method="post" action={`/admin/layouts/${l.id}/cells/${cell.id}/delete`} style="display:inline">
-                            <button type="submit" class="btn btn-sm btn-danger" {...{"onclick": "return confirm('Remove this cell?')"}}>Remove</button>
-                          </form>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Add cell form */}
-        <div class="card" style="margin-bottom:1.5rem">
-          <h2 style="margin:0 0 1rem; font-size:1.1rem">Assign Content to Region</h2>
-          <form method="post" action={`/admin/layouts/${l.id}/cells`}>
-            <div class="form-group">
-              <label for="region_name">Region</label>
-              <select id="region_name" name="region_name" class="form-input" required>
-                <option value="">-- Select Region --</option>
-                {l.regions.map((r) => {
-                  const taken = cellByRegion.has(r.name);
-                  return (
-                    <option value={r.name} disabled={taken}>
-                      {r.name}{taken ? " (assigned)" : ""}
-                    </option>
-                  );
-                })}
-              </select>
-            </div>
-
-            <div class="form-group">
-              <label for="content_type">Content Type</label>
-              <select id="content_type" name="content_type" class="form-input" required>
-                <option value="camera">Camera</option>
-                <option value="web">Web URL</option>
-                <option value="html">HTML</option>
-              </select>
-            </div>
-
-            <div id="camera-fields">
-              <div class="form-group">
-                <label for="camera_id">Camera</label>
-                <select id="camera_id" name="camera_id" class="form-input">
-                  <option value="">-- Select Camera --</option>
-                  {props.cameras.map((cam) => (
-                    <option value={String(cam.id)}>{cam.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div class="form-group">
-                <label for="stream_selector">Stream</label>
-                <select id="stream_selector" name="stream_selector" class="form-input">
-                  <option value="auto">Auto</option>
-                  <option value="main">Main</option>
-                  <option value="sub">Sub</option>
-                </select>
-              </div>
-            </div>
-
-            <div id="web-fields" style="display:none">
-              <div class="form-group">
-                <label for="web_url">URL</label>
-                <input id="web_url" name="web_url" type="url" class="form-input" placeholder="https://example.com" />
-              </div>
-            </div>
-
-            <div id="html-fields" style="display:none">
-              <div class="form-group">
-                <label for="html_content">HTML Content</label>
-                <textarea id="html_content" name="html_content" class="form-input" rows="4" placeholder="<div>...</div>"></textarea>
-              </div>
-            </div>
-
-            <button type="submit" class="btn btn-primary">Assign</button>
-          </form>
-        </div>
-
-        <script>{js(
-          `(function(){` +
-          `var sel=document.getElementById("content_type");` +
-          `var cf=document.getElementById("camera-fields");` +
-          `var wf=document.getElementById("web-fields");` +
-          `var hf=document.getElementById("html-fields");` +
-          `function t(){var v=sel?sel.value:"camera";` +
-          `if(cf)cf.style.display=v==="camera"?"block":"none";` +
-          `if(wf)wf.style.display=v==="web"?"block":"none";` +
-          `if(hf)hf.style.display=v==="html"?"block":"none";}` +
-          `if(sel)sel.addEventListener("change",t);t();})()`
-        )}</script>
 
         <form method="post" action={`/admin/layouts/${l.id}/delete`} style="margin-top:1rem">
           <button type="submit" class="btn btn-danger" {...{"onclick": "return confirm('Delete this layout and all its cells?')"}}>Delete Layout</button>
@@ -1359,7 +1297,10 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
 interface DisplayEditPageProps {
   user: string;
   display: Display;
-  layouts: LayoutType[];
+  /** Layouts currently attached to this display. */
+  attachedLayouts: LayoutType[];
+  /** All other layouts that could be attached. */
+  availableLayouts: LayoutType[];
   kioskName?: string | null;
   error?: string;
   success?: string;
@@ -1383,7 +1324,7 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Display Info</h2>
           <div style="color:#666; font-size:0.85rem; margin-bottom:1rem">
             <div>Index: {String(d.index)}</div>
-            <div>Resolution: {String(d.width_px)}x{String(d.height_px)}</div>
+            <div>Resolution: {String(d.width_px)}x{String(d.height_px)} <span style="color:#999">(reported by kiosk)</span></div>
             {d.kiosk_id && (
               <div>Kiosk: <a href={`/admin/kiosks/${d.kiosk_id}`}>{props.kioskName ?? `#${String(d.kiosk_id)}`}</a></div>
             )}
@@ -1398,13 +1339,15 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
               <label for="default_layout_id">Default Layout</label>
               <select id="default_layout_id" name="default_layout_id" class="form-input">
                 <option value="">-- None --</option>
-                {props.layouts.map((l) => (
+                {props.attachedLayouts.map((l) => (
                   <option value={String(l.id)} selected={d.default_layout_id === l.id}>
                     {l.name}
                   </option>
                 ))}
               </select>
-              <div class="form-hint">Layout shown on idle revert.</div>
+              <div class="form-hint">
+                Layout shown on idle revert. Only layouts attached below are eligible.
+              </div>
             </div>
 
             <div class="form-group">
@@ -1419,46 +1362,68 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
               <div class="form-hint">Send CEC standby after this many seconds of inactivity. 0 to disable.</div>
             </div>
 
-            <div class="form-group">
-              <label for="width_px">Width (px)</label>
-              <input id="width_px" name="width_px" type="number" class="form-input" value={String(d.width_px)} min="1" />
-            </div>
-
-            <div class="form-group">
-              <label for="height_px">Height (px)</label>
-              <input id="height_px" name="height_px" type="number" class="form-input" value={String(d.height_px)} min="1" />
-            </div>
-
             <button type="submit" class="btn btn-primary">Save</button>
             <a href="/admin/displays" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
           </form>
         </div>
 
-        {props.layouts.length > 0 && (
-          <div class="card">
-            <h2 style="margin:0 0 1rem; font-size:1.1rem">Layouts on This Display</h2>
-            <div class="table-wrap">
+        {/* Layout attachments */}
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Available Layouts</h2>
+          <p style="color:#666; font-size:0.85rem; margin-bottom:1rem">
+            Pick which layouts this display can show. The kiosk receives only
+            attached layouts in its bundle.
+          </p>
+
+          {props.attachedLayouts.length === 0 ? (
+            <p style="color:#999; margin-bottom:1rem">No layouts attached yet.</p>
+          ) : (
+            <div class="table-wrap" style="margin-bottom:1rem">
               <table>
                 <thead>
                   <tr>
                     <th>Name</th>
                     <th>Priority</th>
                     <th>Default</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {props.layouts.map((l) => (
+                  {props.attachedLayouts.map((l) => (
                     <tr>
                       <td><a href={`/admin/layouts/${l.id}`}><strong>{l.name}</strong></a></td>
                       <td><span class={`badge ${l.priority === "hot" ? "badge-red" : l.priority === "cold" ? "badge-blue" : "badge-gray"}`}>{l.priority}</span></td>
-                      <td>{l.is_default ? <span class="badge badge-green">Yes</span> : ""}</td>
+                      <td>{d.default_layout_id === l.id ? <span class="badge badge-green">Yes</span> : ""}</td>
+                      <td>
+                        <form method="post" action={`/admin/displays/${d.id}/layouts/${l.id}/remove`} style="display:inline">
+                          <button type="submit" class="btn btn-sm btn-danger" {...{"onclick": "return confirm('Detach this layout from the display?')"}}>Detach</button>
+                        </form>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          </div>
-        )}
+          )}
+
+          {props.availableLayouts.length > 0 ? (
+            <form method="post" action={`/admin/displays/${d.id}/layouts`} style="display:flex; gap:0.5rem">
+              <select name="layout_id" class="form-input" style="flex:1" required>
+                <option value="">-- Pick a layout to attach --</option>
+                {props.availableLayouts.map((l) => (
+                  <option value={String(l.id)}>{l.name}</option>
+                ))}
+              </select>
+              <button type="submit" class="btn btn-primary">Attach</button>
+            </form>
+          ) : (
+            <p style="color:#999; font-size:0.85rem; margin:0">
+              {props.attachedLayouts.length === 0
+                ? <span>No layouts exist yet. <a href="/admin/layouts/new">Create one</a>.</span>
+                : "All existing layouts are already attached."}
+            </p>
+          )}
+        </div>
       </div>
     </Layout>
   );

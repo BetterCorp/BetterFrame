@@ -284,4 +284,86 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "displays", "kiosk_id", "INTEGER REFERENCES kiosks(id) ON DELETE SET NULL");
   },
   `CREATE INDEX IF NOT EXISTS idx_displays_kiosk ON displays(kiosk_id)`,
+
+  // ---- v0.3: decouple layouts from displays via join table -------------------
+  // Layouts become standalone entities; displays maintain a list of available
+  // layouts via display_layouts. Old layouts.display_id column is kept (SQLite
+  // can't drop columns) but no longer used by the application.
+  `CREATE TABLE IF NOT EXISTS display_layouts (
+    display_id INTEGER NOT NULL REFERENCES displays(id) ON DELETE CASCADE,
+    layout_id INTEGER NOT NULL REFERENCES layouts(id) ON DELETE CASCADE,
+    PRIMARY KEY (display_id, layout_id)
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_display_layouts_layout ON display_layouts(layout_id)`,
+  (db: DatabaseSync) => {
+    // Backfill: every existing layout that has display_id gets attached to
+    // that display via the new join table. Idempotent via INSERT OR IGNORE.
+    const cols = db.prepare(`PRAGMA table_info("layouts")`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "display_id")) return;
+    const rows = db
+      .prepare(`SELECT id, display_id FROM layouts WHERE display_id IS NOT NULL`)
+      .all() as Array<{ id: number; display_id: number | null }>;
+    const ins = db.prepare(
+      `INSERT OR IGNORE INTO display_layouts (display_id, layout_id) VALUES (?, ?)`,
+    );
+    for (const r of rows) {
+      if (r.display_id != null) ins.run(r.display_id, r.id);
+    }
+  },
+
+  // ---- v0.4: cells own their position; drop regions/grid_*/is_default ----------
+  // layout_cells now have row/col/row_span/col_span columns directly. Existing
+  // cells get backfilled by parsing layouts.regions JSON and matching on
+  // region_name. The old columns (regions, grid_cols, grid_rows, is_default,
+  // region_name) are kept on the row (SQLite can't drop columns) but no longer
+  // used by the application.
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "layout_cells", "row", "INTEGER NOT NULL DEFAULT 0");
+    addColumnIfNotExists(db, "layout_cells", "col", "INTEGER NOT NULL DEFAULT 0");
+    addColumnIfNotExists(db, "layout_cells", "row_span", "INTEGER NOT NULL DEFAULT 1");
+    addColumnIfNotExists(db, "layout_cells", "col_span", "INTEGER NOT NULL DEFAULT 1");
+
+    // Backfill: parse each layout's regions JSON, match cells by region_name,
+    // copy row/col/rowSpan/colSpan onto the cell row. Only update cells that
+    // still have the default 0,0,1,1 (idempotent re-runs become no-ops once the
+    // operator has edited cells through the new UI).
+    const cellCols = db.prepare(`PRAGMA table_info("layout_cells")`).all() as Array<{ name: string }>;
+    const hasRegionName = cellCols.some((c) => c.name === "region_name");
+    const layoutCols = db.prepare(`PRAGMA table_info("layouts")`).all() as Array<{ name: string }>;
+    const hasRegions = layoutCols.some((c) => c.name === "regions");
+    if (!hasRegionName || !hasRegions) return;
+
+    const layouts = db
+      .prepare(`SELECT id, regions FROM layouts WHERE regions IS NOT NULL AND regions != '[]'`)
+      .all() as Array<{ id: number; regions: string }>;
+    const updateCell = db.prepare(
+      `UPDATE layout_cells
+          SET row = ?, col = ?, row_span = ?, col_span = ?
+        WHERE id = ?
+          AND row = 0 AND col = 0 AND row_span = 1 AND col_span = 1`,
+    );
+    for (const l of layouts) {
+      let regions: Array<{ name: string; row: number; col: number; rowSpan: number; colSpan: number }>;
+      try {
+        regions = JSON.parse(l.regions);
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(regions)) continue;
+      const cells = db
+        .prepare(`SELECT id, region_name FROM layout_cells WHERE layout_id = ?`)
+        .all(l.id) as Array<{ id: number; region_name: string }>;
+      for (const c of cells) {
+        const r = regions.find((reg) => reg.name === c.region_name);
+        if (!r) continue;
+        updateCell.run(
+          Number(r.row) || 0,
+          Number(r.col) || 0,
+          Number(r.rowSpan) || 1,
+          Number(r.colSpan) || 1,
+          c.id,
+        );
+      }
+    }
+  },
 ];

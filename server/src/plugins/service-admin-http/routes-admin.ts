@@ -1,7 +1,7 @@
 /**
  * Admin page routes — overview, cameras, kiosks, labels, etc.
  */
-import { type H3, readBody, getRouterParam } from "h3";
+import { type H3, readBody, getRouterParam, getQuery } from "h3";
 import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { confirmPairing } from "../../shared/pairing.js";
@@ -19,7 +19,6 @@ import {
   DisplaysPage,
   DisplayEditPage,
 } from "../../web-templates/admin-pages.js";
-import type { Display } from "../../shared/types.js";
 
 function sanitizeRtspUrl(raw: string): string {
   const match = raw.match(/^(rtsp:\/\/)([^@]+)@(.+)$/);
@@ -198,105 +197,36 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.get("/admin/layouts", (event) => {
     const user = event.context.user!;
     const layouts = deps.repo.listLayouts();
-    const displayIds = [...new Set(layouts.map((l) => l.display_id))];
-    const displays = new Map<number, Display>();
-    for (const did of displayIds) {
-      const d = deps.repo.getDisplayById(did);
-      if (d) displays.set(did, d);
+    // For each layout, how many displays use it (for the list view).
+    const displayCounts = new Map<number, number>();
+    for (const l of layouts) {
+      displayCounts.set(l.id, deps.repo.listDisplaysForLayout(l.id).length);
     }
-    return htmlPage(LayoutsPage({ user: user.username, layouts, displays }));
+    return htmlPage(LayoutsPage({ user: user.username, layouts, displayCounts }));
   });
 
   app.get("/admin/layouts/new", (event) => {
     const user = event.context.user!;
-    return htmlPage(LayoutNewPage({
-      user: user.username,
-      displays: deps.repo.listDisplays(),
-    }));
+    return htmlPage(LayoutNewPage({ user: user.username }));
   });
 
   app.post("/admin/layouts/new", async (event) => {
     const user = event.context.user!;
     const body = await readBody<Record<string, string>>(event);
     const name = (body?.["name"] ?? "").trim();
-    const preset = body?.["preset"] ?? "custom";
-    const displayId = parseInt(body?.["display_id"] ?? "", 10);
     const priority = body?.["priority"] ?? "normal";
     const description = (body?.["description"] ?? "").trim() || null;
-    const isDefault = body?.["is_default"] === "1";
     const resetsIdleTimer = body?.["resets_idle_timer"] === "1";
     const errors: string[] = [];
 
     if (!name || name.length > 128) errors.push("Name required (max 128 chars).");
-    if (isNaN(displayId)) errors.push("Select a display.");
-
-    type Region = { name: string; row: number; col: number; rowSpan: number; colSpan: number };
-    let regions: Region[] = [];
-    let gridCols = 1;
-    let gridRows = 1;
-
-    if (preset === "fullscreen") {
-      gridCols = 1;
-      gridRows = 1;
-      regions = [{ name: "main", row: 0, col: 0, rowSpan: 1, colSpan: 1 }];
-    } else if (preset === "2x2") {
-      gridCols = 2;
-      gridRows = 2;
-      regions = [
-        { name: "tl", row: 0, col: 0, rowSpan: 1, colSpan: 1 },
-        { name: "tr", row: 0, col: 1, rowSpan: 1, colSpan: 1 },
-        { name: "bl", row: 1, col: 0, rowSpan: 1, colSpan: 1 },
-        { name: "br", row: 1, col: 1, rowSpan: 1, colSpan: 1 },
-      ];
-    } else if (preset === "1plus3") {
-      gridCols = 2;
-      gridRows = 3;
-      regions = [
-        { name: "main", row: 0, col: 0, rowSpan: 3, colSpan: 1 },
-        { name: "r1", row: 0, col: 1, rowSpan: 1, colSpan: 1 },
-        { name: "r2", row: 1, col: 1, rowSpan: 1, colSpan: 1 },
-        { name: "r3", row: 2, col: 1, rowSpan: 1, colSpan: 1 },
-      ];
-    } else if (preset === "3x3") {
-      gridCols = 3;
-      gridRows = 3;
-      regions = [
-        { name: "r1", row: 0, col: 0, rowSpan: 1, colSpan: 1 },
-        { name: "r2", row: 0, col: 1, rowSpan: 1, colSpan: 1 },
-        { name: "r3", row: 0, col: 2, rowSpan: 1, colSpan: 1 },
-        { name: "r4", row: 1, col: 0, rowSpan: 1, colSpan: 1 },
-        { name: "r5", row: 1, col: 1, rowSpan: 1, colSpan: 1 },
-        { name: "r6", row: 1, col: 2, rowSpan: 1, colSpan: 1 },
-        { name: "r7", row: 2, col: 0, rowSpan: 1, colSpan: 1 },
-        { name: "r8", row: 2, col: 1, rowSpan: 1, colSpan: 1 },
-        { name: "r9", row: 2, col: 2, rowSpan: 1, colSpan: 1 },
-      ];
-    } else {
-      // Custom
-      gridCols = parseInt(body?.["grid_cols"] ?? "1", 10);
-      gridRows = parseInt(body?.["grid_rows"] ?? "1", 10);
-      if (isNaN(gridCols) || gridCols < 1 || gridCols > 12) errors.push("Grid columns must be 1-12.");
-      if (isNaN(gridRows) || gridRows < 1 || gridRows > 12) errors.push("Grid rows must be 1-12.");
-
-      const regionsStr = (body?.["regions"] ?? "").trim();
-      if (!regionsStr) {
-        errors.push("Regions JSON is required for custom layout.");
-      } else {
-        try {
-          regions = JSON.parse(regionsStr);
-          if (!Array.isArray(regions) || regions.length === 0) {
-            errors.push("Regions must be a non-empty JSON array.");
-          }
-        } catch {
-          errors.push("Invalid JSON in regions field.");
-        }
-      }
+    if (priority !== "hot" && priority !== "normal" && priority !== "cold") {
+      errors.push("Priority must be hot/normal/cold.");
     }
 
     if (errors.length > 0) {
       return htmlPage(LayoutNewPage({
         user: user.username,
-        displays: deps.repo.listDisplays(),
         error: errors.join(" "),
         values: body,
       }));
@@ -305,12 +235,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const layout = deps.repo.createLayout({
       name,
       description,
-      regions,
-      grid_cols: gridCols,
-      grid_rows: gridRows,
-      display_id: displayId,
       priority,
-      is_default: isDefault,
       resets_idle_timer: resetsIdleTimer,
     });
 
@@ -322,16 +247,19 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = Number(getRouterParam(event, "id"));
     const layout = deps.repo.getLayoutById(id);
     if (!layout) return new Response(null, { status: 302, headers: { location: "/admin/layouts" } });
-    const display = deps.repo.getDisplayById(layout.display_id);
-    if (!display) return new Response(null, { status: 302, headers: { location: "/admin/layouts" } });
     const cells = deps.repo.layoutCells(id);
     const cameras = deps.repo.listCameras();
+    const displays = deps.repo.listDisplaysForLayout(id);
+    const q = getQuery(event) as Record<string, string | undefined>;
+    const selectedRaw = q["cell"];
+    const selectedCellId = selectedRaw ? Number(selectedRaw) : null;
     return htmlPage(LayoutEditPage({
       user: user.username,
       layout,
-      display,
+      displays,
       cells,
       cameras,
+      selectedCellId: selectedCellId && cells.some((c) => c.id === selectedCellId) ? selectedCellId : null,
     }));
   });
 
@@ -345,28 +273,93 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       description: body?.["description"] || null,
       priority: (body?.["priority"] ?? "normal") as any,
       cooling_timeout_seconds: coolingTimeout,
-      is_default: body?.["is_default"] === "1",
       resets_idle_timer: body?.["resets_idle_timer"] === "1",
     });
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${id}` } });
   });
 
+  // Create a new 1x1 cell. Two body shapes:
+  //   { position: { row, col } }  — explicit position, may shift others.
+  //   { after_cell_id, direction } — relative to existing cell (right/below/left/above).
+  // Returns 302 redirect to the layout edit page (htmx will swap on hx-target).
   app.post("/admin/layouts/:id/cells", async (event) => {
     const layoutId = Number(getRouterParam(event, "id"));
-    const body = await readBody<Record<string, string>>(event);
-    const regionName = (body?.["region_name"] ?? "").trim();
-    const contentType = body?.["content_type"] ?? "camera";
+    const body = await readBody<Record<string, string | number | { row: number; col: number }>>(event);
 
-    if (!regionName) {
-      return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
+    let row = 0;
+    let col = 0;
+
+    const afterCellIdRaw = body?.["after_cell_id"];
+    const direction = typeof body?.["direction"] === "string" ? (body["direction"] as string) : "";
+
+    if (afterCellIdRaw && direction) {
+      const afterId = Number(afterCellIdRaw);
+      const cells = deps.repo.layoutCells(layoutId);
+      const ref = cells.find((c) => c.id === afterId);
+      if (!ref) {
+        return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
+      }
+      if (direction === "right") {
+        row = ref.row;
+        col = ref.col + ref.col_span;
+      } else if (direction === "bottom") {
+        row = ref.row + ref.row_span;
+        col = ref.col;
+      } else if (direction === "left") {
+        row = ref.row;
+        if (ref.col === 0) {
+          deps.repo.shiftCellsForLayout(layoutId, "col", 0, 1);
+          col = 0;
+        } else {
+          col = ref.col - 1;
+        }
+      } else if (direction === "above") {
+        col = ref.col;
+        if (ref.row === 0) {
+          deps.repo.shiftCellsForLayout(layoutId, "row", 0, 1);
+          row = 0;
+        } else {
+          row = ref.row - 1;
+        }
+      }
+    } else {
+      // Explicit position — accept top-level row/col or nested position.
+      const pos = body?.["position"];
+      if (pos && typeof pos === "object" && !Array.isArray(pos)) {
+        row = Number((pos as { row: number; col: number }).row) || 0;
+        col = Number((pos as { row: number; col: number }).col) || 0;
+      } else {
+        row = Number(body?.["row"] ?? 0) || 0;
+        col = Number(body?.["col"] ?? 0) || 0;
+      }
     }
 
     deps.repo.createLayoutCell({
       layout_id: layoutId,
-      region_name: regionName,
+      row,
+      col,
+      row_span: 1,
+      col_span: 1,
+      content_type: "html",
+      html_content: null,
+    });
+
+    return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
+  });
+
+  // Update a cell's content assignment.
+  app.post("/admin/layouts/:id/cells/:cellId", async (event) => {
+    const layoutId = Number(getRouterParam(event, "id"));
+    const cellId = Number(getRouterParam(event, "cellId"));
+    const body = await readBody<Record<string, string>>(event);
+    const contentType = (body?.["content_type"] ?? "html") as "camera" | "web" | "html";
+
+    deps.repo.updateLayoutCell(cellId, {
       content_type: contentType,
       camera_id: contentType === "camera" && body?.["camera_id"] ? Number(body["camera_id"]) : null,
-      stream_selector: contentType === "camera" ? (body?.["stream_selector"] ?? "auto") : null,
+      stream_selector: contentType === "camera"
+        ? ((body?.["stream_selector"] as "auto" | "main" | "sub") ?? "auto")
+        : "auto",
       web_url: contentType === "web" ? (body?.["web_url"] ?? null) : null,
       html_content: contentType === "html" ? (body?.["html_content"] ?? null) : null,
     });
@@ -400,24 +393,62 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = Number(getRouterParam(event, "id"));
     const display = deps.repo.getDisplayById(id);
     if (!display) return new Response(null, { status: 302, headers: { location: "/admin/displays" } });
-    const layouts = deps.repo.layoutsForDisplay(id);
+    const attachedLayouts = deps.repo.listLayoutsForDisplay(id);
+    const attachedIds = new Set(attachedLayouts.map((l) => l.id));
+    const availableLayouts = deps.repo.listLayouts().filter((l) => !attachedIds.has(l.id));
     const kiosk = display.kiosk_id ? deps.repo.getKioskById(display.kiosk_id) : null;
-    return htmlPage(DisplayEditPage({ user: user.username, display, layouts, kioskName: kiosk?.name ?? null }));
+    return htmlPage(DisplayEditPage({
+      user: user.username,
+      display,
+      attachedLayouts,
+      availableLayouts,
+      kioskName: kiosk?.name ?? null,
+    }));
   });
 
   app.post("/admin/displays/:id", async (event) => {
     const id = Number(getRouterParam(event, "id"));
     const body = await readBody<Record<string, string>>(event);
-    const defaultLayoutId = body?.["default_layout_id"] ? Number(body["default_layout_id"]) : null;
+    const defaultLayoutIdRaw = body?.["default_layout_id"];
+    const defaultLayoutId = defaultLayoutIdRaw ? Number(defaultLayoutIdRaw) : null;
+
+    // Validate default_layout_id is actually attached to this display.
+    let validatedDefault: number | null = defaultLayoutId;
+    if (defaultLayoutId != null) {
+      const attached = deps.repo.listLayoutsForDisplay(id);
+      if (!attached.some((l) => l.id === defaultLayoutId)) {
+        validatedDefault = null;
+      }
+    }
+
+    // width/height are no longer admin-editable — they come from the kiosk's
+    // hardware report. Just update the editable fields.
     deps.repo.updateDisplay(id, {
       name: body?.["name"],
-      default_layout_id: defaultLayoutId,
+      default_layout_id: validatedDefault,
       idle_timeout_seconds: parseInt(body?.["idle_timeout_seconds"] ?? "0", 10),
       sleep_timeout_seconds: parseInt(body?.["sleep_timeout_seconds"] ?? "0", 10),
-      width_px: body?.["width_px"] ? parseInt(body["width_px"], 10) : undefined,
-      height_px: body?.["height_px"] ? parseInt(body["height_px"], 10) : undefined,
     } as any);
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${id}` } });
+  });
+
+  // Attach a layout to a display.
+  app.post("/admin/displays/:id/layouts", async (event) => {
+    const displayId = Number(getRouterParam(event, "id"));
+    const body = await readBody<Record<string, string>>(event);
+    const layoutId = body?.["layout_id"] ? Number(body["layout_id"]) : null;
+    if (layoutId && Number.isFinite(layoutId)) {
+      deps.repo.attachLayoutToDisplay(displayId, layoutId);
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/displays/${displayId}` } });
+  });
+
+  // Detach a layout from a display.
+  app.post("/admin/displays/:id/layouts/:layoutId/remove", (event) => {
+    const displayId = Number(getRouterParam(event, "id"));
+    const layoutId = Number(getRouterParam(event, "layoutId"));
+    deps.repo.detachLayoutFromDisplay(displayId, layoutId);
+    return new Response(null, { status: 302, headers: { location: `/admin/displays/${displayId}` } });
   });
 
   app.get("/admin/labels", (event) => {

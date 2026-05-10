@@ -120,8 +120,8 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
         return;
     };
 
-    if layout.regions.is_empty() {
-        warn!("layout has no regions");
+    if layout.cells.is_empty() {
+        warn!("layout has no cells");
         show_logo(window);
         return;
     }
@@ -141,12 +141,6 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
     let pipelines: Rc<RefCell<Vec<gstreamer::Pipeline>>> = Rc::new(RefCell::new(Vec::new()));
 
     for cell in &layout.cells {
-        let region = layout.regions.iter().find(|r| r.name == cell.region_name);
-        let Some(region) = region else {
-            warn!("region '{}' not found in layout", cell.region_name);
-            continue;
-        };
-
         let widget: gtk::Widget = match cell.content_type.as_str() {
             "camera" => {
                 if let Some(cam_id) = cell.camera_id {
@@ -192,28 +186,11 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
 
         grid.attach(
             &widget,
-            region.col as i32,
-            region.row as i32,
-            region.col_span as i32,
-            region.row_span as i32,
+            cell.col as i32,
+            cell.row as i32,
+            cell.col_span as i32,
+            cell.row_span as i32,
         );
-    }
-
-    // Fill empty regions
-    for region in &layout.regions {
-        if !layout.cells.iter().any(|c| c.region_name == region.name) {
-            let empty = GtkBox::new(Orientation::Vertical, 0);
-            add_css(&empty, "box { background-color: #111; }");
-            empty.set_vexpand(true);
-            empty.set_hexpand(true);
-            grid.attach(
-                &empty,
-                region.col as i32,
-                region.row as i32,
-                region.col_span as i32,
-                region.row_span as i32,
-            );
-        }
     }
 
     window.set_child(Some(&grid));

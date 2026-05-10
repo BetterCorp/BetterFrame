@@ -141,13 +141,19 @@ export interface Layout {
   name: string;
   description: string | null;
   template_id: number | null; // deprecated — kept nullable for backward compat
+  /** @deprecated Cells now own their own position. Computed from cells at read time. */
   regions: LayoutRegion[];
+  /** @deprecated Computed from cells: max(col + col_span). */
   grid_cols: number;
+  /** @deprecated Computed from cells: max(row + row_span). */
   grid_rows: number;
-  display_id: number;
+  /** @deprecated Layouts are now standalone; use display_layouts join table.
+   *  Column kept on the row for backward compat — will be removed in a future migration. */
+  display_id: number | null;
   priority: LayoutPriority;
   cooling_timeout_seconds: number | null;
   preload_camera_ids: number[];
+  /** @deprecated Per-display defaults live on `display.default_layout_id`. */
   is_default: boolean;
   resets_idle_timer: boolean;
 }
@@ -155,7 +161,12 @@ export interface Layout {
 export interface LayoutCell {
   id: number;
   layout_id: number;
+  /** @deprecated Cells own their position via row/col/row_span/col_span now. */
   region_name: string;
+  row: number;
+  col: number;
+  row_span: number;
+  col_span: number;
   content_type: CellContentType;
   camera_id: number | null;
   stream_selector: StreamSelector;

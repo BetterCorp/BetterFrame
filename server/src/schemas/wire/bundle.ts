@@ -58,27 +58,18 @@ const camera = av.object(
   { unknownKeys: "reject" },
 );
 
-const layoutRegion = av.object(
-  {
-    name: av.string().minLength(1).maxLength(64),
-    row: av.int().min(0).max(11),
-    col: av.int().min(0).max(11),
-    rowSpan: av.int().min(1).max(12),
-    colSpan: av.int().min(1).max(12),
-  },
-  { unknownKeys: "reject" },
-);
-
 const layoutCell = av.object(
   {
-    region_name: av.string().minLength(1).maxLength(64),
+    row: av.int().min(0).max(63),
+    col: av.int().min(0).max(63),
+    row_span: av.int().min(1).max(64),
+    col_span: av.int().min(1).max(64),
     content_type: cellContentType,
     camera_id: av.nullable(av.int().min(1)),
     stream_selector: streamSelector,
     web_url: av.nullable(av.string()),
     html_content: av.nullable(av.string()),
     cooling_timeout_seconds: av.nullable(av.int().min(0)),
-    options: av.record(av.unknown()),
   },
   { unknownKeys: "reject" },
 );
@@ -87,14 +78,13 @@ const layout = av.object(
   {
     id: av.int().min(1),
     name: av.string().minLength(1).maxLength(128),
-    regions: av.array(layoutRegion),
     grid_cols: av.int().min(1).max(64),
     grid_rows: av.int().min(1).max(64),
     priority: layoutPriority,
     cooling_timeout_seconds: av.nullable(av.int().min(0)),
     preload_camera_ids: av.array(av.int().min(1)),
-    is_default: av.bool(),
     resets_idle_timer: av.bool(),
+    is_default: av.bool(),
     cells: av.array(layoutCell),
   },
   { unknownKeys: "reject" },

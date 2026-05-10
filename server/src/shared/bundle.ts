@@ -31,7 +31,10 @@ export interface BundleCamera {
 }
 
 export interface BundleCell {
-  region_name: string;
+  row: number;
+  col: number;
+  row_span: number;
+  col_span: number;
   content_type: string;
   camera_id: number | null;
   stream_selector: string | null;
@@ -43,14 +46,16 @@ export interface BundleCell {
 export interface BundleLayout {
   id: number;
   name: string;
-  regions: unknown;
+  /** Computed from cells: max(col + col_span). 1 if no cells. */
   grid_cols: number;
+  /** Computed from cells: max(row + row_span). 1 if no cells. */
   grid_rows: number;
   priority: string;
   cooling_timeout_seconds: number | null;
   preload_camera_ids: number[];
-  is_default: boolean;
   resets_idle_timer: boolean;
+  /** True if the kiosk's display has this layout as its default_layout_id. */
+  is_default: boolean;
   cells: BundleCell[];
 }
 
@@ -97,21 +102,32 @@ export function generateBundle(
   // Collect all cameras referenced by cells in these layouts
   const cameras = repo.camerasForLayoutIds(layoutIds);
 
+  const defaultLayoutId = display.default_layout_id;
   const bundleLayouts: BundleLayout[] = layouts.map((l) => {
     const cells = repo.layoutCells(l.id);
+    let gridCols = 1;
+    let gridRows = 1;
+    for (const c of cells) {
+      const right = c.col + c.col_span;
+      const bottom = c.row + c.row_span;
+      if (right > gridCols) gridCols = right;
+      if (bottom > gridRows) gridRows = bottom;
+    }
     return {
       id: l.id,
       name: l.name,
-      regions: l.regions,
-      grid_cols: l.grid_cols,
-      grid_rows: l.grid_rows,
+      grid_cols: gridCols,
+      grid_rows: gridRows,
       priority: l.priority,
       cooling_timeout_seconds: l.cooling_timeout_seconds,
       preload_camera_ids: l.preload_camera_ids,
-      is_default: l.is_default,
       resets_idle_timer: l.resets_idle_timer,
+      is_default: defaultLayoutId === l.id,
       cells: cells.map((c) => ({
-        region_name: c.region_name,
+        row: c.row,
+        col: c.col,
+        row_span: c.row_span,
+        col_span: c.col_span,
         content_type: c.content_type,
         camera_id: c.camera_id,
         stream_selector: c.stream_selector,

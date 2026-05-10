@@ -25,7 +25,6 @@ pub struct BundleDisplay {
 pub struct BundleLayout {
     pub id: u32,
     pub name: String,
-    pub regions: Vec<BundleRegion>,
     pub grid_cols: u32,
     pub grid_rows: u32,
     pub priority: String,
@@ -37,19 +36,11 @@ pub struct BundleLayout {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct BundleRegion {
-    pub name: String,
+pub struct BundleCell {
     pub row: u32,
     pub col: u32,
-    #[serde(rename = "rowSpan")]
     pub row_span: u32,
-    #[serde(rename = "colSpan")]
     pub col_span: u32,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct BundleCell {
-    pub region_name: String,
     pub content_type: String,
     pub camera_id: Option<u32>,
     pub stream_selector: Option<String>,

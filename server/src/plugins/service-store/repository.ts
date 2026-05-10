@@ -484,42 +484,87 @@ export class Repository {
     return r ? rowToLayout(r as Record<string, unknown>) : null;
   }
 
+  /**
+   * @deprecated Use `listLayoutsForDisplay` which goes through the
+   *             `display_layouts` join table. Kept as a thin alias for any
+   *             callers still on the old API.
+   */
   layoutsForDisplay(displayId: number): Layout[] {
+    return this.listLayoutsForDisplay(displayId);
+  }
+
+  /** All layouts attached to the given display, via display_layouts. */
+  listLayoutsForDisplay(displayId: number): Layout[] {
     const rs = this.prep(
-      "SELECT * FROM layouts WHERE display_id = ? ORDER BY name",
+      `SELECT l.* FROM layouts l
+         JOIN display_layouts dl ON dl.layout_id = l.id
+        WHERE dl.display_id = ?
+        ORDER BY l.name`,
     ).all(displayId);
     return rs.map((r) => rowToLayout(r as Record<string, unknown>));
+  }
+
+  /** Inverse: all displays that have this layout attached. */
+  listDisplaysForLayout(layoutId: number): Display[] {
+    const rs = this.prep(
+      `SELECT d.* FROM displays d
+         JOIN display_layouts dl ON dl.display_id = d.id
+        WHERE dl.layout_id = ?
+        ORDER BY d."index"`,
+    ).all(layoutId);
+    return rs.map((r) => rowToDisplay(r as Record<string, unknown>));
+  }
+
+  /** Idempotent attach. */
+  attachLayoutToDisplay(displayId: number, layoutId: number): void {
+    this.prep(
+      `INSERT OR IGNORE INTO display_layouts (display_id, layout_id)
+       VALUES (?, ?)`,
+    ).run(displayId, layoutId);
+    void this.notify("display_layouts", "create", layoutId);
+  }
+
+  /** Detach. If the display's default_layout_id pointed at this layout, clear it. */
+  detachLayoutFromDisplay(displayId: number, layoutId: number): void {
+    this.db
+      .prepare(`DELETE FROM display_layouts WHERE display_id = ? AND layout_id = ?`)
+      .run(displayId, layoutId);
+    this.db
+      .prepare(
+        `UPDATE displays SET default_layout_id = NULL
+          WHERE id = ? AND default_layout_id = ?`,
+      )
+      .run(displayId, layoutId);
+    void this.notify("display_layouts", "delete", layoutId);
   }
 
   createLayout(input: {
     name: string;
     description?: string | null;
-    template_id?: number | null;
-    regions: unknown;
-    grid_cols: number;
-    grid_rows: number;
-    display_id: number;
     priority?: string;
     cooling_timeout_seconds?: number | null;
     preload_camera_ids?: number[];
-    is_default?: boolean;
     resets_idle_timer?: boolean;
   }): Layout {
+    // Legacy NOT NULL columns (template_id, display_id, regions, grid_*) are
+    // populated with sentinel values: cells own their position now and the
+    // grid is computed at read time. The columns will be dropped by a future
+    // migration — until then they're inert.
     const result = this.prep(
       `INSERT INTO layouts (name, description, template_id, regions, grid_cols, grid_rows, display_id, priority, cooling_timeout_seconds, preload_camera_ids, is_default, resets_idle_timer)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.name,
       input.description ?? null,
-      input.template_id ?? null,
-      J(input.regions),
-      input.grid_cols,
-      input.grid_rows,
-      input.display_id,
+      null,
+      J([]),
+      1,
+      1,
+      0,
       input.priority ?? "normal",
       input.cooling_timeout_seconds ?? null,
       J(input.preload_camera_ids ?? []),
-      B(input.is_default ?? false),
+      B(false),
       B(input.resets_idle_timer ?? true),
     );
     const id = Number(result.lastInsertRowid);
@@ -533,7 +578,7 @@ export class Repository {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
-      if (k === "id") continue;
+      if (k === "id" || k === "display_id") continue; // display_id deprecated
       sets.push(`${k} = ?`);
       if (k === "preload_camera_ids" || k === "regions") vals.push(J(v));
       else if (typeof v === "boolean") vals.push(B(v));
@@ -548,6 +593,9 @@ export class Repository {
   deleteLayout(id: number): void {
     this.db.prepare(`DELETE FROM layout_cells WHERE layout_id = ?`).run(id);
     this.db.prepare(`DELETE FROM layout_labels WHERE layout_id = ?`).run(id);
+    this.db.prepare(`DELETE FROM display_layouts WHERE layout_id = ?`).run(id);
+    // Any display whose default pointed here gets cleared.
+    this.db.prepare(`UPDATE displays SET default_layout_id = NULL WHERE default_layout_id = ?`).run(id);
     this.db.prepare(`DELETE FROM layouts WHERE id = ?`).run(id);
     void this.notify("layouts", "delete", id);
   }
@@ -558,7 +606,10 @@ export class Repository {
 
   createLayoutCell(input: {
     layout_id: number;
-    region_name: string;
+    row: number;
+    col: number;
+    row_span?: number;
+    col_span?: number;
     content_type: string;
     camera_id?: number | null;
     stream_selector?: string | null;
@@ -567,12 +618,19 @@ export class Repository {
     cooling_timeout_seconds?: number | null;
     options?: Record<string, unknown>;
   }): LayoutCell {
+    // region_name column is legacy NOT NULL — synthesize a unique placeholder
+    // until the column is dropped by a future migration. Nothing reads it.
+    const placeholder = `cell_${input.layout_id}_${input.row}_${input.col}_${Date.now()}`;
     const result = this.prep(
-      `INSERT INTO layout_cells (layout_id, region_name, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO layout_cells (layout_id, region_name, "row", col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.layout_id,
-      input.region_name,
+      placeholder,
+      input.row,
+      input.col,
+      input.row_span ?? 1,
+      input.col_span ?? 1,
       input.content_type,
       input.camera_id ?? null,
       input.stream_selector ?? "auto",
@@ -593,7 +651,8 @@ export class Repository {
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
       if (k === "id" || k === "layout_id") continue;
-      sets.push(`${k} = ?`);
+      const col = k === "row" ? `"row"` : k;
+      sets.push(`${col} = ?`);
       if (k === "options") vals.push(J(v));
       else vals.push(v === undefined ? null : v);
     }
@@ -608,15 +667,45 @@ export class Repository {
     void this.notify("layout_cells", "delete", id);
   }
 
+  /**
+   * Shift cells along an axis to make room for an insertion (or close a gap
+   * after a deletion). For axis="row", any cell whose `row >= fromIndex` has
+   * its row bumped by `delta`. Same for axis="col". Used by the visual
+   * builder when adding a cell to the top/left of an existing one.
+   */
+  shiftCellsForLayout(
+    layoutId: number,
+    axis: "row" | "col",
+    fromIndex: number,
+    delta: number,
+  ): void {
+    if (delta === 0) return;
+    const colName = axis === "row" ? `"row"` : "col";
+    this.db
+      .prepare(
+        `UPDATE layout_cells
+            SET ${colName} = ${colName} + ?
+          WHERE layout_id = ?
+            AND ${colName} >= ?`,
+      )
+      .run(delta, layoutId, fromIndex);
+    void this.notify("layout_cells", "update", layoutId);
+  }
+
+  listLayoutCells(layoutId: number): LayoutCell[] {
+    const rs = this.prep(
+      `SELECT * FROM layout_cells WHERE layout_id = ? ORDER BY "row", col`,
+    ).all(layoutId);
+    return rs.map((r) => rowToLayoutCell(r as Record<string, unknown>));
+  }
+
   // ===========================================================================
   // display-chain bundle queries (kiosk → display → layouts → cells → cameras)
   // ===========================================================================
 
+  /** Bundle generation: layouts attached to a display via display_layouts. */
   layoutsForDisplayId(displayId: number): Layout[] {
-    const rs = this.prep(
-      "SELECT * FROM layouts WHERE display_id = ? ORDER BY is_default DESC, name",
-    ).all(displayId);
-    return rs.map((r) => rowToLayout(r as Record<string, unknown>));
+    return this.listLayoutsForDisplay(displayId);
   }
 
   camerasForLayoutIds(layoutIds: number[]): Camera[] {
@@ -1064,10 +1153,7 @@ export class Repository {
   }
 
   layoutCells(layoutId: number): LayoutCell[] {
-    const rs = this.prep(
-      "SELECT * FROM layout_cells WHERE layout_id = ?",
-    ).all(layoutId);
-    return rs.map((r) => rowToLayoutCell(r as Record<string, unknown>));
+    return this.listLayoutCells(layoutId);
   }
 
   layoutTemplates(ids: number[]): LayoutTemplate[] {

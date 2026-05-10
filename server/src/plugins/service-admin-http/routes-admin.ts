@@ -105,8 +105,18 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     let onvifPass: string | undefined;
 
     if (type === "rtsp") {
-      rtspUrl = sanitizeRtspUrl((body?.["rtsp_url"] ?? "").trim());
-      if (!rtspUrl) errors.push("RTSP URL required.");
+      const host = (body?.["rtsp_host"] ?? "").trim();
+      const port = (body?.["rtsp_port"] ?? "554").trim();
+      const path = (body?.["rtsp_path"] ?? "").trim();
+      const user = (body?.["rtsp_username"] ?? "").trim();
+      const pass = body?.["rtsp_password"] ?? "";
+      if (!host) {
+        errors.push("RTSP host required.");
+      } else {
+        const userPart = user ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : "";
+        const pathPart = path.startsWith("/") ? path : `/${path}`;
+        rtspUrl = `rtsp://${userPart}${host}:${port}${pathPart}`;
+      }
     } else if (type === "onvif") {
       onvifHost = (body?.["onvif_host"] ?? "").trim();
       onvifPort = parseInt(body?.["onvif_port"] ?? "80", 10);
@@ -532,15 +542,54 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/cameras/:id", async (event) => {
     const id = Number(getRouterParam(event, "id"));
     const body = await readBody<Record<string, string>>(event);
-    deps.repo.updateCamera(id, {
+    const cam = deps.repo.getCameraById(id);
+
+    let rtspUrl: string | null = null;
+    if (cam?.type === "rtsp") {
+      const host = (body?.["rtsp_host"] ?? "").trim();
+      const port = (body?.["rtsp_port"] ?? "554").trim();
+      const path = (body?.["rtsp_path"] ?? "").trim();
+      const user = (body?.["rtsp_username"] ?? "").trim();
+      const pass = body?.["rtsp_password"] ?? "";
+      if (host) {
+        // If password blank, keep old URL (password unchanged)
+        if (!pass && cam.rtsp_url) {
+          const oldParts = cam.rtsp_url.match(/^rtsp:\/\/(?:([^@]+)@)?/);
+          const oldUserinfo = oldParts?.[1] ?? "";
+          const userPart = oldUserinfo ? `${oldUserinfo}@` : "";
+          const pathPart = path.startsWith("/") ? path : `/${path}`;
+          rtspUrl = `rtsp://${userPart}${host}:${port}${pathPart}`;
+        } else {
+          const userPart = user ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : "";
+          const pathPart = path.startsWith("/") ? path : `/${path}`;
+          rtspUrl = `rtsp://${userPart}${host}:${port}${pathPart}`;
+        }
+      }
+    }
+
+    const patch: Record<string, unknown> = {
       name: body?.["name"],
-      rtsp_url: body?.["rtsp_url"] ? sanitizeRtspUrl(body["rtsp_url"]) : null,
-      onvif_host: body?.["onvif_host"] || null,
-      onvif_port: body?.["onvif_port"] ? Number(body["onvif_port"]) : null,
-      onvif_username: body?.["onvif_username"] || null,
-      onvif_password: body?.["onvif_password"] || undefined,
       enabled: body?.["enabled"] === "1",
-    } as any);
+    };
+    if (cam?.type === "rtsp" && rtspUrl) {
+      patch["rtsp_url"] = rtspUrl;
+    } else if (cam?.type === "onvif") {
+      patch["onvif_host"] = body?.["onvif_host"] || null;
+      patch["onvif_port"] = body?.["onvif_port"] ? Number(body["onvif_port"]) : null;
+      patch["onvif_username"] = body?.["onvif_username"] || null;
+      if (body?.["onvif_password"]) patch["onvif_password"] = body["onvif_password"];
+    }
+    deps.repo.updateCamera(id, patch as any);
+
+    // Also update main stream URI for RTSP cameras
+    if (cam?.type === "rtsp" && rtspUrl) {
+      const streams = deps.repo.listCameraStreams(id);
+      const mainStream = streams.find((s) => s.role === "main");
+      if (mainStream) {
+        deps.repo.updateCameraStream(mainStream.id, { rtsp_uri: rtspUrl });
+      }
+    }
+
     return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
   });
 

@@ -689,6 +689,20 @@ export class Repository {
     return rowToCameraStream(r as Record<string, unknown>);
   }
 
+  updateCameraStream(id: number, patch: Partial<CameraStream>): void {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (k === "id" || k === "camera_id") continue;
+      sets.push(`${k} = ?`);
+      vals.push(v === undefined ? null : v);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    this.db.prepare(`UPDATE camera_streams SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    void this.notify("camera_streams", "update", id);
+  }
+
   // ===========================================================================
   // labels (incl. join tables)
   // ===========================================================================

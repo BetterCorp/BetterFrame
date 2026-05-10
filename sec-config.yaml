@@ -63,6 +63,10 @@ default:
       plugin: service-coordinator-ws
       enabled: true
       config:
-        host: 127.0.0.1
+        host: 0.0.0.0
         port: 18082
         noderedUrl: http://127.0.0.1:1880
+        dataDir: /var/lib/betterframe
+        argon2Memory: 65536
+        argon2TimeCost: 3
+        argon2Parallelism: 2

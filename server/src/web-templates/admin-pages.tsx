@@ -200,34 +200,49 @@ export function CameraNewPage(props: CameraNewProps) {
 
           <div id="rtsp-fields">
             <div class="form-group">
-              <label for="rtsp_url">RTSP URL</label>
-              <input
-                id="rtsp_url"
-                name="rtsp_url"
-                type="url"
-                class="form-input"
-                placeholder="rtsp://192.168.1.100:554/stream1"
-                value={v["rtsp_url"] ?? ""}
-              />
+              <label for="rtsp_host">Host</label>
+              <input id="rtsp_host" name="rtsp_host" type="text" class="form-input" placeholder="192.168.1.100" value={v["rtsp_host"] ?? ""} />
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 2fr; gap:0.75rem">
+              <div class="form-group">
+                <label for="rtsp_port">Port</label>
+                <input id="rtsp_port" name="rtsp_port" type="number" class="form-input" value={v["rtsp_port"] ?? "554"} />
+              </div>
+              <div class="form-group">
+                <label for="rtsp_path">Path</label>
+                <input id="rtsp_path" name="rtsp_path" type="text" class="form-input" placeholder="/Streaming/Channels/101" value={v["rtsp_path"] ?? ""} />
+              </div>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem">
+              <div class="form-group">
+                <label for="rtsp_username">Username</label>
+                <input id="rtsp_username" name="rtsp_username" type="text" class="form-input" value={v["rtsp_username"] ?? ""} />
+              </div>
+              <div class="form-group">
+                <label for="rtsp_password">Password</label>
+                <input id="rtsp_password" name="rtsp_password" type="password" class="form-input" value={v["rtsp_password"] ?? ""} />
+              </div>
             </div>
           </div>
 
           <div id="onvif-fields" style="display:none">
             <div class="form-group">
-              <label for="onvif_host">ONVIF Host</label>
+              <label for="onvif_host">Host</label>
               <input id="onvif_host" name="onvif_host" type="text" class="form-input" value={v["onvif_host"] ?? ""} />
             </div>
             <div class="form-group">
               <label for="onvif_port">Port</label>
               <input id="onvif_port" name="onvif_port" type="number" class="form-input" value={v["onvif_port"] ?? "80"} />
             </div>
-            <div class="form-group">
-              <label for="onvif_username">Username</label>
-              <input id="onvif_username" name="onvif_username" type="text" class="form-input" value={v["onvif_username"] ?? ""} />
-            </div>
-            <div class="form-group">
-              <label for="onvif_password">Password</label>
-              <input id="onvif_password" name="onvif_password" type="password" class="form-input" />
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem">
+              <div class="form-group">
+                <label for="onvif_username">Username</label>
+                <input id="onvif_username" name="onvif_username" type="text" class="form-input" value={v["onvif_username"] ?? ""} />
+              </div>
+              <div class="form-group">
+                <label for="onvif_password">Password</label>
+                <input id="onvif_password" name="onvif_password" type="password" class="form-input" />
+              </div>
             </div>
           </div>
 
@@ -568,12 +583,37 @@ export function CameraEditPage(props: CameraEditProps) {
               <label for="name">Name</label>
               <input id="name" name="name" type="text" class="form-input" value={cam.name} required maxlength="128" />
             </div>
-            {cam.type === "rtsp" && (
-              <div class="form-group">
-                <label for="rtsp_url">RTSP URL</label>
-                <input id="rtsp_url" name="rtsp_url" type="text" class="form-input" value={cam.rtsp_url ?? ""} />
-              </div>
-            )}
+            {cam.type === "rtsp" && (() => {
+              const parts = parseRtspUrl(cam.rtsp_url ?? "");
+              return (
+                <div>
+                  <div class="form-group">
+                    <label for="rtsp_host">Host</label>
+                    <input id="rtsp_host" name="rtsp_host" type="text" class="form-input" value={parts.host} />
+                  </div>
+                  <div style="display:grid; grid-template-columns:1fr 2fr; gap:0.75rem">
+                    <div class="form-group">
+                      <label for="rtsp_port">Port</label>
+                      <input id="rtsp_port" name="rtsp_port" type="number" class="form-input" value={parts.port} />
+                    </div>
+                    <div class="form-group">
+                      <label for="rtsp_path">Path</label>
+                      <input id="rtsp_path" name="rtsp_path" type="text" class="form-input" value={parts.path} />
+                    </div>
+                  </div>
+                  <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem">
+                    <div class="form-group">
+                      <label for="rtsp_username">Username</label>
+                      <input id="rtsp_username" name="rtsp_username" type="text" class="form-input" value={parts.username} />
+                    </div>
+                    <div class="form-group">
+                      <label for="rtsp_password">Password (leave blank to keep)</label>
+                      <input id="rtsp_password" name="rtsp_password" type="password" class="form-input" />
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
             {cam.type === "onvif" && (
               <div>
                 <div class="form-group">
@@ -1606,6 +1646,18 @@ export function DisplaysPage(props: DisplaysPageProps) {
 }
 
 // ---- Helpers ----------------------------------------------------------------
+
+function parseRtspUrl(url: string): { host: string; port: string; path: string; username: string; password: string } {
+  const m = url.match(/^rtsp:\/\/(?:([^:@]+)(?::([^@]*))?@)?([^:/]+)(?::(\d+))?(\/.*)?$/);
+  if (!m) return { host: "", port: "554", path: "", username: "", password: "" };
+  return {
+    username: decodeURIComponent(m[1] ?? ""),
+    password: decodeURIComponent(m[2] ?? ""),
+    host: m[3] ?? "",
+    port: m[4] ?? "554",
+    path: m[5] ?? "",
+  };
+}
 
 function formatTime(iso: string): string {
   try {

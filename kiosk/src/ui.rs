@@ -92,10 +92,11 @@ fn activate(app: &Application) {
             }
         });
 
-        // Heartbeat loop
+        // Heartbeat loop — also reports display geometry
         loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
-            server::heartbeat(&server, &key);
+            let displays = query_displays();
+            server::heartbeat(&server, &key, &displays);
         }
     });
 
@@ -115,6 +116,33 @@ fn activate(app: &Application) {
 enum WorkerMsg {
     ShowPairingCode(String),
     RenderBundle(KioskBundle),
+}
+
+/// Query connected HDMI displays from sysfs. Returns (name, width, height).
+/// Reads /sys/class/drm/*/status and /sys/class/drm/*/modes.
+fn query_displays() -> Vec<(String, u32, u32)> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/sys/class/drm") else { return out };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Skip non-HDMI connectors and the "card" parents
+        if !name.contains("-HDMI-") && !name.contains("-DP-") { continue; }
+        let path = entry.path();
+        let status = std::fs::read_to_string(path.join("status")).unwrap_or_default();
+        if status.trim() != "connected" { continue; }
+        let modes = std::fs::read_to_string(path.join("modes")).unwrap_or_default();
+        // First line = preferred mode
+        let mode = modes.lines().next().unwrap_or("");
+        let parts: Vec<&str> = mode.split('x').collect();
+        if parts.len() != 2 { continue; }
+        let w: u32 = parts[0].parse().unwrap_or(0);
+        let h: u32 = parts[1].trim().parse().unwrap_or(0);
+        if w == 0 || h == 0 { continue; }
+        // Strip "cardN-" prefix for cleaner name
+        let clean_name = name.split_once('-').map(|(_, rest)| rest.to_string()).unwrap_or(name);
+        out.push((clean_name, w, h));
+    }
+    out
 }
 
 fn show_pairing_code(window: &ApplicationWindow, code: &str) {
@@ -212,16 +240,20 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
                 }
             }
             "html" => {
-                let html = cell.html_content.as_deref().unwrap_or("HTML");
-                let label = Label::new(Some(&html.chars().take(100).collect::<String>()));
-                add_css(&label, "label { color: #888; background-color: #111; }");
-                label.set_vexpand(true);
-                label.set_hexpand(true);
-                label.upcast()
+                let html = cell.html_content.as_deref().unwrap_or("");
+                let webview = webkit6::WebView::new();
+                webkit6::prelude::WebViewExt::load_html(&webview, html, None);
+                webview.set_vexpand(true);
+                webview.set_hexpand(true);
+                webview.upcast()
             }
             "web" => {
                 let url = cell.web_url.as_deref().unwrap_or("about:blank");
-                placeholder(&format!("Web: {url}"))
+                let webview = webkit6::WebView::new();
+                webkit6::prelude::WebViewExt::load_uri(&webview, url);
+                webview.set_vexpand(true);
+                webview.set_hexpand(true);
+                webview.upcast()
             }
             _ => placeholder("Unknown content"),
         };

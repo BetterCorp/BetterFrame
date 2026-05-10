@@ -148,14 +148,18 @@ pub fn fetch_bundle(server: &str, key: &str) -> KioskBundle {
     resp.json().expect("bad bundle JSON")
 }
 
-/// Send heartbeat.
-pub fn heartbeat(server: &str, key: &str) {
+/// Send heartbeat with display geometry.
+pub fn heartbeat(server: &str, key: &str, displays: &[(String, u32, u32)]) {
     let client = reqwest::blocking::Client::new();
+    let display_info: Vec<_> = displays.iter().map(|(name, w, h)| {
+        serde_json::json!({ "name": name, "width_px": w, "height_px": h })
+    }).collect();
     let _ = client
         .post(format!("{server}/api/kiosk/heartbeat"))
         .header("Authorization", format!("Bearer {key}"))
         .json(&serde_json::json!({
             "kiosk_app_version": env!("CARGO_PKG_VERSION"),
+            "displays": display_info,
         }))
         .timeout(Duration::from_secs(5))
         .send();

@@ -226,6 +226,7 @@ function registerKioskRoutes(
       bundle_version?: string;
       kiosk_app_version?: string;
       os_version?: string;
+      displays?: Array<{ name: string; width_px: number; height_px: number }>;
     }>(event);
 
     repo.touchKiosk(kiosk.id, {
@@ -233,6 +234,29 @@ function registerKioskRoutes(
       kiosk_app_version: body?.kiosk_app_version ?? null,
       os_version: body?.os_version ?? null,
     });
+
+    // Sync displays reported by the kiosk
+    if (Array.isArray(body?.displays)) {
+      const existing = repo.listDisplaysForKiosk(kiosk.id);
+      for (const reported of body.displays) {
+        const match = existing.find((d) => d.name.endsWith(reported.name));
+        if (match) {
+          if (match.width_px !== reported.width_px || match.height_px !== reported.height_px) {
+            repo.updateDisplay(match.id, {
+              width_px: reported.width_px,
+              height_px: reported.height_px,
+            } as any);
+          }
+        } else {
+          // New display — create it
+          repo.createDisplayForKiosk(kiosk.id, {
+            name: reported.name,
+            width_px: reported.width_px,
+            height_px: reported.height_px,
+          });
+        }
+      }
+    }
 
     return { ok: true, now: new Date().toISOString() };
   });

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::bundle::KioskBundle;
 

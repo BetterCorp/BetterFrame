@@ -6,7 +6,7 @@ use gtk4::{self as gtk, Application, ApplicationWindow, Box as GtkBox, Grid, Lab
 use gstreamer::prelude::*;
 use tracing::{info, warn};
 
-use crate::bundle::{BundleLayout, KioskBundle};
+use crate::bundle::KioskBundle;
 use crate::pipeline;
 use crate::server;
 
@@ -29,7 +29,7 @@ fn activate(app: &Application) {
     let provider = gtk::CssProvider::new();
     provider.load_from_string("window { background-color: #1a1a2e; }");
     gtk::style_context_add_provider_for_display(
-        &window.display(),
+        &WidgetExt::display(&window),
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );

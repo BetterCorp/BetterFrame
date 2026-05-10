@@ -3,7 +3,7 @@ mod bundle;
 mod pipeline;
 mod ui;
 
-use gtk4::prelude::ApplicationExtManual;
+use gtk4::prelude::{ApplicationExt, ApplicationExtManual};
 use tracing_subscriber::EnvFilter;
 
 fn main() {

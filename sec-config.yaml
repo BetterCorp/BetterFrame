@@ -57,6 +57,7 @@ default:
         argon2Memory: 65536
         argon2TimeCost: 3
         argon2Parallelism: 2
+        noderedUrl: http://127.0.0.1:1880
 
     # ----- Live kiosk WebSocket channel -----
     service-coordinator-ws:

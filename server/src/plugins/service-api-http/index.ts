@@ -20,6 +20,7 @@ import { initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
 import { initiatePairing, claimPairing } from "../../shared/pairing.js";
 import { generateBundle } from "../../shared/bundle.js";
+import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 import type { Repository } from "../service-store/repository.js";
 import type { AuthApi } from "../../shared/auth.js";
 import type { SecretsApi } from "../../shared/secrets.js";
@@ -42,6 +43,7 @@ const ConfigSchema = av.object(
     loginLockoutThreshold: av.int().min(1).default(8),
     loginLockoutSeconds: av.int().min(1).default(900),
     totpIssuer: av.string().minLength(1).default("BetterFrame"),
+    noderedUrl: av.string().minLength(1).default("http://127.0.0.1:1880"),
   },
   { unknownKeys: "strip" },
 );
@@ -99,11 +101,15 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       cookieName: this.config.cookieName,
     });
     const codeTtl = this.config.codeTtlSeconds;
+    const nodered = initNoderedBridge(
+      { baseUrl: this.config.noderedUrl },
+      { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
+    );
 
     const app = new H3();
 
     registerPairingRoutes(app, repo, auth, secrets, codeTtl);
-    registerKioskRoutes(app, repo, auth, secrets);
+    registerKioskRoutes(app, repo, auth, secrets, nodered);
 
     this.server = serve(app, {
       port: this.config.port,
@@ -198,6 +204,7 @@ function registerKioskRoutes(
   repo: Repository,
   auth: AuthApi,
   secrets: SecretsApi,
+  nodered: NoderedBridge,
 ): void {
   // Bundle delivery
   app.get("/api/kiosk/bundle", async (event) => {
@@ -287,6 +294,17 @@ function registerKioskRoutes(
       property_op: body.property_op ?? null,
       payload: body.payload ?? {},
       forwarded_to_nodered: false,
+    });
+
+    // Best-effort forward to Node-RED
+    nodered.forward(body.topic, {
+      event_id: eventId,
+      kiosk_id: kiosk.id,
+      camera_id: body.camera_id ?? null,
+      source_type: body.source_type ?? "system",
+      property_op: body.property_op ?? null,
+      payload: body.payload ?? {},
+      timestamp: new Date().toISOString(),
     });
 
     return { ok: true, event_id: eventId };

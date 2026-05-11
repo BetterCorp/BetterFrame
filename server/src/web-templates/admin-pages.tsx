@@ -278,6 +278,7 @@ interface DiscoveredProfileRow {
   height: number | null;
   framerate: number | null;
   stream_uri: string;
+  snapshot_uri: string | null;
   role: "main" | "sub" | "other";
 }
 
@@ -296,6 +297,31 @@ interface CameraDiscoverResultsProps {
   error?: string;
   success?: string;
 }
+
+function discoverResultsScript(rootId: string): string {
+  return (
+    `(function(){` +
+    `var root=document.getElementById('${rootId}');if(!root)return;` +
+    `var checks=function(){return Array.prototype.slice.call(root.querySelectorAll('input[name="selected"]'));};` +
+    `root.querySelector('[data-action="check-all"]')?.addEventListener('click',function(){checks().forEach(function(c){c.checked=true;});});` +
+    `root.querySelector('[data-action="uncheck-all"]')?.addEventListener('click',function(){checks().forEach(function(c){c.checked=false;});});` +
+    `root.querySelector('[data-view="list"]')?.addEventListener('click',function(){root.dataset.view='list';});` +
+    `root.querySelector('[data-view="cards"]')?.addEventListener('click',function(){root.dataset.view='cards';});` +
+    `})()`
+  );
+}
+
+const DISCOVER_RESULTS_CSS = `
+#discover-results-root[data-view="cards"] .discover-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; }
+#discover-results-root[data-view="list"] .discover-camera-card { margin-bottom: 1rem; }
+#discover-results-root[data-view="list"] .discover-snaps { display: none; }
+.discover-camera-card { margin-bottom: 1rem; }
+.discover-snaps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 0.75rem; }
+.discover-snap { position: relative; min-height: 150px; background: #111827; border-radius: 4px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.discover-snap img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; }
+.discover-snap-label { position: absolute; left: 6px; top: 6px; background: rgba(17, 24, 39, 0.8); color: #fff; border-radius: 3px; padding: 2px 5px; font-size: 0.7rem; text-transform: uppercase; z-index: 1; }
+.discover-snap-empty { color: #d1d5db; font-size: 0.8rem; }
+`;
 
 function CameraDiscoverResultsPageLegacy(props: {
   user: string;
@@ -380,55 +406,86 @@ export function CameraDiscoverResultsPage(props: CameraDiscoverResultsProps) {
         : undefined
       }
     >
-      <p style="color:#666; margin-bottom:1rem">
-        Video sources reported by <strong>{props.host}</strong>. Each source imports
-        as one camera with its profiles saved as streams.
-      </p>
-      {props.cameras.length === 0 ? (
-        <div class="card" style="text-align:center; color:#999; padding:2rem">No profiles returned</div>
-      ) : props.cameras.map((cam) => (
-        <div class="card" style="margin-bottom:1rem">
-          <div class="section-header" style="margin-bottom:0.75rem">
-            <div>
-              <h2 class="section-title" style="font-size:1rem">{cam.name}</h2>
-              {cam.source_token ? <div style="color:#666; font-size:0.8rem">Source: {cam.source_token}</div> : ""}
+      <style>{DISCOVER_RESULTS_CSS}</style>
+      <div id="discover-results-root" data-view="list">
+        <p style="color:#666; margin-bottom:1rem">
+          Video sources reported by <strong>{props.host}</strong>. Each source imports
+          as one camera with its profiles saved as streams.
+        </p>
+        {props.cameras.length === 0 ? (
+          <div class="card" style="text-align:center; color:#999; padding:2rem">No profiles returned</div>
+        ) : (
+          <form method="post" action="/admin/cameras/discover/add">
+            <input type="hidden" name="username" value={props.username} />
+            <input type="hidden" name="password" value={props.password} />
+            <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:1rem; flex-wrap:wrap">
+              <button type="button" class="btn btn-ghost" data-action="check-all">Check all</button>
+              <button type="button" class="btn btn-ghost" data-action="uncheck-all">Uncheck all</button>
+              <button type="button" class="btn btn-ghost" data-view="list">List</button>
+              <button type="button" class="btn btn-ghost" data-view="cards">Cards</button>
+              <button type="submit" class="btn btn-primary">Add selected</button>
             </div>
-            <form method="post" action="/admin/cameras/discover/add" style="display:inline">
-              <input type="hidden" name="name" value={cam.name} />
-              <input type="hidden" name="username" value={props.username} />
-              <input type="hidden" name="password" value={props.password} />
-              <input type="hidden" name="streams_json" value={JSON.stringify(cam.profiles)} />
-              <button type="submit" class="btn btn-sm btn-primary">Add Camera</button>
-            </form>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Role</th>
-                  <th>Profile</th>
-                  <th>Encoding</th>
-                  <th>Resolution</th>
-                  <th>FPS</th>
-                  <th>Stream URI</th>
-                </tr>
-              </thead>
-              <tbody>
-                {cam.profiles.map((p) => (
-                  <tr>
-                    <td><span class="badge badge-gray">{p.role}</span></td>
-                    <td><strong>{p.profile_name}</strong></td>
-                    <td>{p.encoding ? <span class="badge badge-blue">{p.encoding}</span> : "-"}</td>
-                    <td>{p.width && p.height ? `${String(p.width)}x${String(p.height)}` : "-"}</td>
-                    <td>{p.framerate != null ? String(p.framerate) : "-"}</td>
-                    <td style="font-size:0.75rem; word-break:break-all; max-width:300px">{p.stream_uri}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )).join("")}
+            <div class="discover-results">
+              {props.cameras.map((cam, idx) => {
+                const main = cam.profiles.find((p) => p.role === "main") ?? cam.profiles[0] ?? null;
+                const sub = cam.profiles.find((p) => p.role === "sub") ?? null;
+                return (
+                  <div class="card discover-camera-card">
+                    <input type="hidden" name={`camera_${String(idx)}_name`} value={cam.name} />
+                    <input type="hidden" name={`camera_${String(idx)}_streams_json`} value={JSON.stringify(cam.profiles)} />
+                    <div class="section-header" style="margin-bottom:0.75rem">
+                      <label style="display:flex; gap:0.5rem; align-items:center">
+                        <input type="checkbox" name="selected" value={String(idx)} checked />
+                        <span>
+                          <strong>{cam.name}</strong>
+                          {cam.source_token ? <span style="color:#666; font-size:0.8rem"> Source: {cam.source_token}</span> : ""}
+                        </span>
+                      </label>
+                    </div>
+                    <div class="discover-snaps">
+                      {[main, sub].filter(Boolean).map((p) => (
+                        <div class="discover-snap">
+                          <div class="discover-snap-label">{p!.role}</div>
+                          {p!.snapshot_uri
+                            ? <img src={p!.snapshot_uri} loading="lazy" />
+                            : <div class="discover-snap-empty">No snapshot</div>}
+                        </div>
+                      ))}
+                    </div>
+                    <div class="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Role</th>
+                            <th>Profile</th>
+                            <th>Encoding</th>
+                            <th>Resolution</th>
+                            <th>FPS</th>
+                            <th>Stream URI</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {cam.profiles.map((p) => (
+                            <tr>
+                              <td><span class="badge badge-gray">{p.role}</span></td>
+                              <td><strong>{p.profile_name}</strong></td>
+                              <td>{p.encoding ? <span class="badge badge-blue">{p.encoding}</span> : "-"}</td>
+                              <td>{p.width && p.height ? `${String(p.width)}x${String(p.height)}` : "-"}</td>
+                              <td>{p.framerate != null ? String(p.framerate) : "-"}</td>
+                              <td style="font-size:0.75rem; word-break:break-all; max-width:300px">{p.stream_uri}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              }).join("")}
+            </div>
+          </form>
+        )}
+      </div>
+      <script>{js(discoverResultsScript("discover-results-root"))}</script>
       <div style="margin-top:1rem">
         <a href="/admin/cameras/discover" class="btn btn-ghost">Discover Another</a>
         <a href="/admin/cameras" class="btn btn-ghost" style="margin-left:0.5rem">Back to Cameras</a>

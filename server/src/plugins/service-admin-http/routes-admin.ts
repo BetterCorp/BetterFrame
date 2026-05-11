@@ -38,8 +38,11 @@ interface DiscoverAddStream {
   height: number | null;
   framerate: number | null;
   stream_uri: string;
+  snapshot_uri?: string | null;
   role: "main" | "sub" | "other";
 }
+
+type FormValue = string | string[] | undefined;
 
 function htmlFragment(markup: unknown): Response {
   return new Response(String(markup), {
@@ -86,6 +89,60 @@ function rtspWithCredentials(raw: string, username: string, password: string): s
     return url.toString();
   } catch {
     return raw;
+  }
+}
+
+function formValue(v: FormValue): string {
+  return Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
+}
+
+function formValues(v: FormValue): string[] {
+  if (Array.isArray(v)) return v;
+  return v ? [v] : [];
+}
+
+function parseDiscoveredStreams(raw: string): DiscoverAddStream[] {
+  try {
+    const parsed = JSON.parse(raw) as DiscoverAddStream[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function importDiscoveredCamera(
+  deps: AdminDeps,
+  rawName: string,
+  username: string,
+  password: string,
+  streams: DiscoverAddStream[],
+): void {
+  if (streams.length === 0) return;
+  const main = streams.find((s) => s.role === "main") ?? streams[0]!;
+  const mainRtspUrl = rtspWithCredentials(main.stream_uri, username, password);
+  const name = uniqueCameraName(deps, rawName || "ONVIF camera");
+
+  const cam = deps.repo.createCamera({
+    name,
+    type: "rtsp",
+    rtsp_url: mainRtspUrl,
+  });
+  for (const stream of streams) {
+    const width = stream.width == null ? null : Number(stream.width);
+    const height = stream.height == null ? null : Number(stream.height);
+    const framerate = stream.framerate == null ? null : Number(stream.framerate);
+    deps.repo.createCameraStream({
+      camera_id: cam.id,
+      role: stream.role === "main" || stream.role === "sub" ? stream.role : "other",
+      name: stream.profile_name || stream.role,
+      rtsp_uri: rtspWithCredentials(stream.stream_uri, username, password),
+      profile_token: stream.profile_token || null,
+      width: Number.isFinite(width) ? width : null,
+      height: Number.isFinite(height) ? height : null,
+      encoding: stream.encoding || null,
+      framerate: Number.isFinite(framerate) ? framerate : null,
+      is_discovered: true,
+    });
   }
 }
 
@@ -310,47 +367,31 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/cameras/discover/add", async (event) => {
-    const body = await readBody<Record<string, string>>(event);
-    const rawName = (body?.["name"] ?? "").trim() || "ONVIF camera";
-    const username = (body?.["username"] ?? "").trim();
-    const password = body?.["password"] ?? "";
-    let streams: DiscoverAddStream[] = [];
-    try {
-      const parsed = JSON.parse(body?.["streams_json"] ?? "[]") as DiscoverAddStream[];
-      streams = Array.isArray(parsed) ? parsed : [];
-    } catch {
-      streams = [];
+    const body = await readBody<Record<string, string | string[]>>(event);
+    const username = formValue(body?.["username"]).trim();
+    const password = formValue(body?.["password"]);
+    let imported = 0;
+
+    const selected = formValues(body?.["selected"]);
+    if (selected.length > 0) {
+      for (const idx of selected) {
+        const rawName = formValue(body?.[`camera_${idx}_name`]).trim() || "ONVIF camera";
+        const streams = parseDiscoveredStreams(formValue(body?.[`camera_${idx}_streams_json`]));
+        if (streams.length === 0) continue;
+        importDiscoveredCamera(deps, rawName, username, password, streams);
+        imported += 1;
+      }
+    } else {
+      const rawName = formValue(body?.["name"]).trim() || "ONVIF camera";
+      const streams = parseDiscoveredStreams(formValue(body?.["streams_json"]));
+      if (streams.length > 0) {
+        importDiscoveredCamera(deps, rawName, username, password, streams);
+        imported += 1;
+      }
     }
 
-    if (streams.length === 0) {
+    if (imported === 0) {
       return new Response(null, { status: 302, headers: { location: "/admin/cameras/discover" } });
-    }
-
-    const main = streams.find((s) => s.role === "main") ?? streams[0]!;
-    const mainRtspUrl = rtspWithCredentials(main.stream_uri, username, password);
-    const name = uniqueCameraName(deps, rawName);
-
-    const cam = deps.repo.createCamera({
-      name,
-      type: "rtsp",
-      rtsp_url: mainRtspUrl,
-    });
-    for (const stream of streams) {
-      const width = stream.width == null ? null : Number(stream.width);
-      const height = stream.height == null ? null : Number(stream.height);
-      const framerate = stream.framerate == null ? null : Number(stream.framerate);
-      deps.repo.createCameraStream({
-        camera_id: cam.id,
-        role: stream.role === "main" || stream.role === "sub" ? stream.role : "other",
-        name: stream.profile_name || stream.role,
-        rtsp_uri: rtspWithCredentials(stream.stream_uri, username, password),
-        profile_token: stream.profile_token || null,
-        width: Number.isFinite(width) ? width : null,
-        height: Number.isFinite(height) ? height : null,
-        encoding: stream.encoding || null,
-        framerate: Number.isFinite(framerate) ? framerate : null,
-        is_discovered: true,
-      });
     }
     notifyKiosks();
 

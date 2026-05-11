@@ -20,6 +20,7 @@ export interface DiscoveredProfile {
   height: number | null;
   framerate: number | null;
   stream_uri: string;
+  snapshot_uri: string | null;
   role: "main" | "sub" | "other";
 }
 
@@ -335,6 +336,22 @@ export async function discover(input: DiscoverInput): Promise<DiscoveredCamera[]
     }
     const uri = pickAll(streamXml, "Uri")[0] ?? "";
     if (!uri) continue;
+    const snapshotBody = `<trt:GetSnapshotUri>
+      <trt:ProfileToken>${escapeXml(token)}</trt:ProfileToken>
+    </trt:GetSnapshotUri>`;
+    const snapshotEnv = buildEnvelope(wsseHeader(input.username, input.password), snapshotBody);
+    let snapshotUri: string | null = null;
+    try {
+      const snapshotXml = await soap(
+        mediaUrl,
+        "http://www.onvif.org/ver10/media/wsdl/GetSnapshotUri",
+        snapshotEnv,
+        timeoutMs,
+      );
+      snapshotUri = pickAll(snapshotXml, "Uri")[0] ?? null;
+    } catch {
+      snapshotUri = null;
+    }
 
     out.push({
       profile_name: profileName,
@@ -345,6 +362,7 @@ export async function discover(input: DiscoverInput): Promise<DiscoveredCamera[]
       height,
       framerate,
       stream_uri: uri,
+      snapshot_uri: snapshotUri,
       role: "other",
     });
   }

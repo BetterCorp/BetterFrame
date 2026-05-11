@@ -3,9 +3,10 @@ use std::sync::mpsc;
 use url::Url;
 
 thread_local! {
-    /// camera_id → (pipeline, paintable). Pipelines stay warm across layout
-    /// swaps for cameras still referenced or in preload_camera_ids.
-    static WARM_CAMERAS: RefCell<std::collections::HashMap<u32, (gstreamer::Pipeline, gtk::gdk::Paintable)>>
+    /// camera_id → (pipeline, paintable, badge). Pipelines stay warm across
+    /// layout swaps for cameras still referenced or in preload_camera_ids.
+    /// badge is 'M' / 'S' / ' ' indicating which stream is active.
+    static WARM_CAMERAS: RefCell<std::collections::HashMap<u32, (gstreamer::Pipeline, gtk::gdk::Paintable, char)>>
         = RefCell::new(std::collections::HashMap::new());
 }
 
@@ -218,7 +219,7 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle, server_url: &s
         let mut warm = w.borrow_mut();
         let stale: Vec<u32> = warm.keys().filter(|id| !needed.contains(id)).copied().collect();
         for id in stale {
-            if let Some((pipe, _)) = warm.remove(&id) {
+            if let Some((pipe, _, _)) = warm.remove(&id) {
                 info!("stopping pipeline for camera {id} (no longer needed)");
                 pipeline::stop(&pipe);
             }
@@ -234,10 +235,13 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle, server_url: &s
     let cam_map: std::collections::HashMap<u32, &crate::bundle::BundleCamera> =
         bundle.cameras.iter().map(|c| (c.id, c)).collect();
 
-    // Ensure preloaded cameras have pipelines even if not visible
+    // Total grid area for the heuristic
+    let total_area = (layout.grid_cols.max(1) * layout.grid_rows.max(1)) as f32;
+
+    // Ensure preloaded cameras have pipelines even if not visible (use sub for warmth)
     for cam_id in &layout.preload_camera_ids {
         if let Some(cam) = cam_map.get(cam_id) {
-            ensure_warm(*cam_id, cam, None);
+            ensure_warm(*cam_id, cam, None, 0.0);
         }
     }
 
@@ -246,12 +250,27 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle, server_url: &s
             "camera" => {
                 if let Some(cam_id) = cell.camera_id {
                     if let Some(cam) = cam_map.get(&cam_id) {
-                        if let Some(paintable) = ensure_warm(cam_id, cam, cell.stream_selector.as_deref()) {
+                        let area = (cell.col_span * cell.row_span) as f32 / total_area;
+                        if let Some((paintable, badge)) = ensure_warm(cam_id, cam, cell.stream_selector.as_deref(), area) {
                             let picture = Picture::for_paintable(&paintable);
                             picture.set_content_fit(gtk::ContentFit::Cover);
                             picture.set_vexpand(true);
                             picture.set_hexpand(true);
-                            picture.upcast()
+                            // Wrap in Overlay so we can stack a stream-role badge on top
+                            let overlay = gtk::Overlay::new();
+                            overlay.set_child(Some(&picture));
+                            overlay.set_vexpand(true);
+                            overlay.set_hexpand(true);
+                            if badge == 'M' || badge == 'S' {
+                                let label = Label::new(Some(&badge.to_string()));
+                                label.set_halign(gtk::Align::Start);
+                                label.set_valign(gtk::Align::Start);
+                                label.set_margin_start(4);
+                                label.set_margin_top(4);
+                                add_css(&label, "label { background: rgba(0,0,0,0.6); color: #fff; font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; min-width: 14px; }");
+                                overlay.add_overlay(&label);
+                            }
+                            overlay.upcast()
                         } else {
                             placeholder(Some(&format!("{} (no stream)", cam.name)))
                         }
@@ -304,7 +323,7 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle, server_url: &s
 
 fn clear_warm_cameras() {
     WARM_CAMERAS.with(|w| {
-        for (_, (pipe, _)) in w.borrow().iter() { pipeline::stop(pipe); }
+        for (_, (pipe, _, _)) in w.borrow().iter() { pipeline::stop(pipe); }
         w.borrow_mut().clear();
     });
 }
@@ -336,25 +355,29 @@ fn should_attach_kiosk_auth(url: &str, server_url: &str) -> bool {
     path.starts_with("/dash/") || path.starts_with("/in/kiosk/")
 }
 
-/// Returns the paintable for a camera, creating a warm pipeline if missing.
+/// Returns (paintable, badge_char) for a camera, creating a warm pipeline if missing.
+/// badge is 'M' / 'S' (when multi-stream) or ' ' (single stream).
 fn ensure_warm(
     cam_id: u32,
     cam: &crate::bundle::BundleCamera,
     selector: Option<&str>,
-) -> Option<gtk::gdk::Paintable> {
-    let existing = WARM_CAMERAS.with(|w| w.borrow().get(&cam_id).map(|(_, p)| p.clone()));
-    if let Some(p) = existing {
-        return Some(p);
+    area_fraction: f32,
+) -> Option<(gtk::gdk::Paintable, char)> {
+    let existing = WARM_CAMERAS.with(|w| {
+        w.borrow().get(&cam_id).map(|(_, p, b)| (p.clone(), *b))
+    });
+    if let Some(pair) = existing {
+        return Some(pair);
     }
-    let uri = cam.stream_uri(selector)?;
-    let (pipe, sink) = pipeline::create_camera_pipeline(&cam.name, uri)?;
+    let (uri, badge) = cam.pick_stream(selector, area_fraction)?;
+    let (pipe, sink) = pipeline::create_camera_pipeline(&cam.name, &uri)?;
     let paintable = sink.property::<gtk::gdk::Paintable>("paintable");
     pipeline::play(&pipe);
     WARM_CAMERAS.with(|w| {
-        w.borrow_mut().insert(cam_id, (pipe, paintable.clone()));
+        w.borrow_mut().insert(cam_id, (pipe, paintable.clone(), badge));
     });
-    info!("warmed pipeline for camera {cam_id}");
-    Some(paintable)
+    info!("warmed pipeline for camera {cam_id} (stream: {badge})");
+    Some((paintable, badge))
 }
 
 fn show_logo(window: &ApplicationWindow) {

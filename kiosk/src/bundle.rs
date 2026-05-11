@@ -73,17 +73,45 @@ pub struct BundleStream {
 }
 
 impl BundleCamera {
-    /// Pick the best stream URI for this camera given a cell's stream_selector.
+    /// Pick stream URI + role tag for this camera given selector and cell area fraction.
+    /// Heuristic: when selector=auto, cell ≥20% of grid → main, else sub.
+    /// Returns (uri, role_letter) where role_letter is 'M' or 'S' (or empty if single stream).
+    pub fn pick_stream(&self, selector: Option<&str>, area_fraction: f32) -> Option<(String, char)> {
+        let has_main = self.streams.iter().any(|s| s.role == "main");
+        let has_sub = self.streams.iter().any(|s| s.role == "sub");
+        let multi = has_main && has_sub;
+
+        let sel = selector.unwrap_or("auto");
+        let role_pref = match sel {
+            "main" => "main",
+            "sub" => "sub",
+            _ => if area_fraction >= 0.2 { "main" } else { "sub" },
+        };
+
+        let stream = self.streams.iter().find(|s| s.role == role_pref)
+            .or_else(|| self.streams.iter().find(|s| s.role == "main"))
+            .or_else(|| self.streams.first());
+
+        let uri = stream.map(|s| s.rtsp_uri.clone())
+            .or_else(|| self.rtsp_url.clone())?;
+        let badge = if !multi {
+            ' '
+        } else if stream.map(|s| s.role.as_str()) == Some("main") {
+            'M'
+        } else {
+            'S'
+        };
+        Some((uri, badge))
+    }
+
+    /// Legacy single-arg stream picker (no heuristic).
     pub fn stream_uri(&self, selector: Option<&str>) -> Option<&str> {
         let sel = selector.unwrap_or("auto");
         match sel {
             "main" => self.streams.iter().find(|s| s.role == "main"),
             "sub" => self.streams.iter().find(|s| s.role == "sub"),
-            _ => {
-                // auto: prefer main, fall back to any
-                self.streams.iter().find(|s| s.role == "main")
-                    .or_else(|| self.streams.first())
-            }
+            _ => self.streams.iter().find(|s| s.role == "main")
+                .or_else(|| self.streams.first()),
         }
         .map(|s| s.rtsp_uri.as_str())
         .or(self.rtsp_url.as_deref())

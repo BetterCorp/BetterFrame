@@ -31,7 +31,7 @@ import { setCoordinator } from "../../shared/coordinator-registry.js";
 
 const ConfigSchema = av.object(
   {
-    host: av.string().default("0.0.0.0"),
+    host: av.string().default("127.0.0.1"),
     port: av.int().min(1).max(65535).default(18082),
     noderedUrl: av.string().minLength(1).default("http://127.0.0.1:1880"),
     dataDir: av.string().minLength(1).default("/var/lib/betterframe"),

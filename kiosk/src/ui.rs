@@ -175,22 +175,23 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
 }
 
 fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
-    let layout = bundle.layouts.iter()
-        .find(|l| l.is_default)
-        .or_else(|| bundle.layouts.first());
+    let layout = match bundle.display.default_layout_id {
+        Some(default_layout_id) => bundle.layouts.iter()
+            .find(|l| l.id == default_layout_id)
+            .or_else(|| bundle.layouts.iter().find(|l| l.is_default)),
+        None => None,
+    };
 
     let Some(layout) = layout else {
-        warn!("no layouts in bundle");
-        WARM_CAMERAS.with(|w| {
-            for (_, (pipe, _)) in w.borrow().iter() { pipeline::stop(pipe); }
-            w.borrow_mut().clear();
-        });
+        warn!("display has no default layout");
+        clear_warm_cameras();
         show_logo(window);
         return;
     };
 
     if layout.cells.is_empty() {
         warn!("layout has no cells");
+        clear_warm_cameras();
         show_logo(window);
         return;
     }
@@ -294,6 +295,13 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
     }
 
     window.set_child(Some(&grid));
+}
+
+fn clear_warm_cameras() {
+    WARM_CAMERAS.with(|w| {
+        for (_, (pipe, _)) in w.borrow().iter() { pipeline::stop(pipe); }
+        w.borrow_mut().clear();
+    });
 }
 
 /// Returns the paintable for a camera, creating a warm pipeline if missing.

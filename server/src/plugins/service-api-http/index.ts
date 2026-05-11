@@ -29,7 +29,7 @@ import type { SecretsApi } from "../../shared/secrets.js";
 
 const ConfigSchema = av.object(
   {
-    host: av.string().default("0.0.0.0"),
+    host: av.string().default("127.0.0.1"),
     port: av.int().min(1).max(65535).default(18081),
     codeTtlSeconds: av.int().min(60).max(3600).default(600),
     // Secrets + auth config (shared with admin-http for now)

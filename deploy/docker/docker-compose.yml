@@ -21,7 +21,7 @@ services:
     restart: unless-stopped
     volumes:
       - betterframe-data:/var/lib/betterframe
-      - ../../sec-config.yaml:/app/server/sec-config.yaml:ro
+      - ./sec-config.yaml:/app/server/sec-config.yaml:ro
     expose:
       - "18080"
       - "18081"

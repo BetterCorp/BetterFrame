@@ -1,11 +1,6 @@
-# BSB runtime configuration for BetterFrame server.
-#
-# Profile: 'default' — single-host install where the server, node-red, and
-# (optionally) one kiosk all run on the same Pi. For multi-kiosk deployments
-# the server is the same; kiosks have their own runtime config.
-#
-# Override individual values via env: BSB_<plugin>_<key>=value (consult BSB
-# docs for the exact env-override semantics for v9).
+# BSB runtime configuration for the Docker compose stack.
+# Backend services bind all interfaces inside the private compose network;
+# Angie/nginx is the only published host port.
 
 default:
   observable:
@@ -18,55 +13,49 @@ default:
       plugin: events-default
       enabled: true
   services:
-    # ----- Data layer -----
     service-store:
       plugin: service-store
       enabled: true
       config:
         sqlitePath: /var/lib/betterframe/betterframe.db
 
-    # ----- Admin UI + API (includes secrets + auth config) -----
     service-admin-http:
       plugin: service-admin-http
       enabled: true
       config:
-        host: 127.0.0.1
+        host: 0.0.0.0
         port: 18080
-        # Secrets (was service-secrets)
         dataDir: /var/lib/betterframe
-        # Auth (was service-auth)
-        sessionIdleSeconds: 43200    # 12h
-        sessionMaxSeconds: 2592000   # 30d
+        sessionIdleSeconds: 43200
+        sessionMaxSeconds: 2592000
         loginLockoutThreshold: 8
-        loginLockoutSeconds: 900     # 15m
-        argon2Memory: 65536          # KiB; tuned for Pi5 ~100ms
+        loginLockoutSeconds: 900
+        argon2Memory: 65536
         argon2TimeCost: 3
         argon2Parallelism: 2
         cookieName: betterframe_session
         totpIssuer: BetterFrame
 
-    # ----- Kiosk-facing REST API -----
     service-api-http:
       plugin: service-api-http
       enabled: true
       config:
-        host: 127.0.0.1
+        host: 0.0.0.0
         port: 18081
-        codeTtlSeconds: 600          # 10m pairing code TTL
+        codeTtlSeconds: 600
         dataDir: /var/lib/betterframe
         argon2Memory: 65536
         argon2TimeCost: 3
         argon2Parallelism: 2
-        noderedUrl: http://127.0.0.1:1880
+        noderedUrl: http://nodered:1880
 
-    # ----- Live kiosk WebSocket channel -----
     service-coordinator-ws:
       plugin: service-coordinator-ws
       enabled: true
       config:
-        host: 127.0.0.1
+        host: 0.0.0.0
         port: 18082
-        noderedUrl: http://127.0.0.1:1880
+        noderedUrl: http://nodered:1880
         dataDir: /var/lib/betterframe
         argon2Memory: 65536
         argon2TimeCost: 3

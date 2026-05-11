@@ -1,0 +1,27 @@
+[Unit]
+Description=BetterFrame Node-RED
+Documentation=https://github.com/BetterCorp/BetterFrame
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=betterframe
+Group=betterframe
+WorkingDirectory=/var/lib/betterframe/nodered
+Environment=NODE_ENV=production
+Environment=PORT=1880
+ExecStart=/usr/bin/env node-red --userDir /var/lib/betterframe/nodered --settings /opt/betterframe/deploy/nodered/settings.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/betterframe/nodered
+
+[Install]
+WantedBy=multi-user.target

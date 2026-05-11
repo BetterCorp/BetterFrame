@@ -32,8 +32,8 @@ pub fn discover_server(override_url: Option<&str>) -> String {
     }
 
     let candidates = [
-        "http://localhost:18081",
-        "http://betterframe.local:18081",
+        "http://localhost",
+        "http://betterframe.local",
         "https://frame.betterportal.cloud",
     ];
 

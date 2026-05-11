@@ -5,14 +5,15 @@
 ### Server
 
 ```bash
-# Install Node.js 23
+# Install Node.js 23 + Node-RED
 curl -fsSL https://deb.nodesource.com/setup_23.x | sudo bash -
 sudo apt install -y nodejs build-essential
+sudo npm install -g --unsafe-perm node-red
 
 # Create user + dirs
 sudo useradd -r -m -d /var/lib/betterframe betterframe
-sudo mkdir -p /opt/betterframe /var/log/betterframe /etc/betterframe
-sudo chown betterframe:betterframe /var/lib/betterframe /var/log/betterframe
+sudo mkdir -p /opt/betterframe /var/log/betterframe /etc/betterframe /var/lib/betterframe/nodered
+sudo chown -R betterframe:betterframe /var/lib/betterframe /var/log/betterframe
 
 # Deploy code
 sudo git clone https://github.com/BetterCorp/BetterFrame.git /opt/betterframe
@@ -21,11 +22,17 @@ sudo -u betterframe npm install
 sudo -u betterframe npm run build
 sudo cp sec-config.yaml /opt/betterframe/server/sec-config.yaml
 
-# Install systemd unit
+# Install systemd units
 sudo cp deploy/systemd/betterframe-server.service /etc/systemd/system/
+sudo cp deploy/systemd/betterframe-nodered.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now betterframe-server
+sudo systemctl enable --now betterframe-server betterframe-nodered
 ```
+
+The native config binds BetterFrame service ports and Node-RED to `127.0.0.1`.
+Do not expose ports `18080`, `18081`, `18082`, or `1880` directly on the LAN.
+Use Angie/nginx as the public entry point so `/nrdp/`, `/in/kiosk/`, and the
+admin routes get the auth protections in `deploy/angie/betterframe.conf`.
 
 ### Kiosk
 
@@ -63,6 +70,9 @@ sudo systemctl reload angie
 The Angie config gates `/nrdp/*` with the admin session/API-key auth-check
 endpoint and `/in/kiosk/*` with the kiosk Bearer-key auth-check endpoint.
 
+Access: `http://<pi-ip>/setup` for first-run. Kiosks should use the proxy URL
+(`http://<pi-ip>` or `http://betterframe.local`), not direct backend ports.
+
 ## Docker
 
 ```bash
@@ -70,8 +80,9 @@ docker compose -f deploy/docker/docker-compose.yml up -d
 ```
 
 Kiosk still runs natively on the Pi (needs Wayland/HDMI), not in Docker.
-The Compose stack uses `deploy/angie/betterframe.docker.conf` because service
-names, not `127.0.0.1`, are the correct upstreams inside the Docker network.
+The Compose stack uses `deploy/angie/betterframe.docker.conf` and
+`deploy/docker/sec-config.yaml` because service names, not `127.0.0.1`, are the
+correct upstreams inside the Docker network.
 
 Access: `http://<pi-ip>/setup` for first-run.
 

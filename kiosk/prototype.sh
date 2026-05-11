@@ -34,8 +34,8 @@ discover_server() {
   fi
 
   local candidates=(
-    "http://localhost:18081"
-    "http://betterframe.local:18081"
+    "http://localhost"
+    "http://betterframe.local"
     "https://frame.betterportal.cloud"
   )
 

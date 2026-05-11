@@ -84,7 +84,7 @@ fn build_ws_url(http_url: &str, token: &str) -> String {
         format!("ws://{http_url}")
     };
 
-    // coordinator-ws runs on a different port (18082 vs api-http on 18081)
+    // Direct dev URLs may point at api-http; normal installs go through Angie.
     let base_port = base.rsplit(':').next().unwrap_or("");
     let base = if base_port == "18081" {
         base.replace(":18081", ":18082")

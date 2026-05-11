@@ -748,11 +748,15 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       entityIdRaw && String(entityIdRaw).trim() !== "" ? Number(entityIdRaw) : null;
     deps.repo.assignCellEntity(cellId, Number.isFinite(entityId) ? entityId : null);
 
-    // stream_selector + spans are still settable on the cell.
+    // stream_selector + spans + fit are still settable on the cell.
     const dimsPatch: Record<string, unknown> = {};
     const streamSelector = body?.["stream_selector"];
     if (streamSelector === "auto" || streamSelector === "main" || streamSelector === "sub") {
       dimsPatch["stream_selector"] = streamSelector;
+    }
+    const fit = body?.["fit"];
+    if (fit === "cover" || fit === "contain" || fit === "fill") {
+      dimsPatch["fit"] = fit;
     }
     const colSpanRaw = body?.["col_span"];
     const rowSpanRaw = body?.["row_span"];

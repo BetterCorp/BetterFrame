@@ -187,6 +187,7 @@ export interface LayoutCell {
   cooling_timeout_seconds: number | null;
   options: Record<string, unknown>;
   entity_id: number | null;
+  fit: "cover" | "contain" | "fill";
 }
 
 export interface Kiosk {

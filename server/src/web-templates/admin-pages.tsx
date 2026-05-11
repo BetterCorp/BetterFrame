@@ -1610,6 +1610,15 @@ export function renderCell(
             </select>
           </div>
 
+          <div class="form-group">
+            <label>Fit</label>
+            <select name="fit" class="form-input">
+              <option value="cover" selected={c.fit === "cover"}>Cover (fill, crop overflow)</option>
+              <option value="contain" selected={c.fit === "contain"}>Contain (letterbox)</option>
+              <option value="fill" selected={c.fit === "fill"}>Fill (stretch)</option>
+            </select>
+          </div>
+
           <div class="form-group span-grid">
             <div>
               <label>Width</label>

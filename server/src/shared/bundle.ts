@@ -41,6 +41,7 @@ export interface BundleCell {
   web_url: string | null;
   html_content: string | null;
   cooling_timeout_seconds: number | null;
+  fit: "cover" | "contain" | "fill";
 }
 
 export interface BundleLayout {
@@ -152,6 +153,7 @@ export function generateBundle(
           web_url: webUrl,
           html_content: htmlContent,
           cooling_timeout_seconds: c.cooling_timeout_seconds,
+          fit: c.fit,
         };
       }),
     };

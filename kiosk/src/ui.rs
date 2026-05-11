@@ -256,7 +256,11 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle, server_url: &s
                         let area = (cell.col_span * cell.row_span) as f32 / total_area;
                         if let Some((paintable, badge)) = ensure_warm(cam_id, cam, cell.stream_selector.as_deref(), area) {
                             let picture = Picture::for_paintable(&paintable);
-                            picture.set_content_fit(gtk::ContentFit::Contain);
+                            picture.set_content_fit(match cell.fit.as_str() {
+                                "contain" => gtk::ContentFit::Contain,
+                                "fill" => gtk::ContentFit::Fill,
+                                _ => gtk::ContentFit::Cover,
+                            });
                             picture.set_vexpand(true);
                             picture.set_hexpand(true);
                             // Wrap in Overlay so we can stack a stream-role badge on top

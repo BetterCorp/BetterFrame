@@ -556,6 +556,7 @@ export class Repository {
     cooling_timeout_seconds?: number | null;
     options?: Record<string, unknown>;
     entity_id?: number | null;
+    fit?: "cover" | "contain" | "fill";
   }): LayoutCell {
     // Resolve content fields from the entity (if given). The legacy columns
     // remain populated for backward-compatible bundle generation.
@@ -574,8 +575,8 @@ export class Repository {
     }
 
     const result = this.prep(
-      `INSERT INTO layout_cells (layout_id, "row", col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options, entity_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO layout_cells (layout_id, "row", col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options, entity_id, fit)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.layout_id,
       input.row,
@@ -590,6 +591,7 @@ export class Repository {
       input.cooling_timeout_seconds ?? null,
       J(input.options ?? {}),
       input.entity_id ?? null,
+      input.fit ?? "cover",
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("layout_cells", "create", id);

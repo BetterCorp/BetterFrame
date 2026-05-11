@@ -47,7 +47,11 @@ pub struct BundleCell {
     pub web_url: Option<String>,
     pub html_content: Option<String>,
     pub cooling_timeout_seconds: Option<u32>,
+    #[serde(default = "default_fit")]
+    pub fit: String,
 }
+
+fn default_fit() -> String { "cover".to_string() }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleCamera {

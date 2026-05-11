@@ -208,6 +208,7 @@ export function rowToLayoutCell(r: Row): LayoutCell {
     cooling_timeout_seconds: nn(r["cooling_timeout_seconds"]),
     options: j<Record<string, unknown>>(r["options"], {}),
     entity_id: nn(r["entity_id"]),
+    fit: (s(r["fit"]) || "cover") as "cover" | "contain" | "fill",
   };
 }
 

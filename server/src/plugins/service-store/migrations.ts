@@ -596,4 +596,9 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "kiosks", "fan_rpm", "INTEGER");
     addColumnIfNotExists(db, "kiosks", "fan_pwm", "INTEGER");
   },
+
+  // ---- per-cell content fit (cover|contain|fill) ----
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "layout_cells", "fit", "TEXT NOT NULL DEFAULT 'cover'");
+  },
 ];

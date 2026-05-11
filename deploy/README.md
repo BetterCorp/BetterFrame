@@ -29,20 +29,25 @@ Access first-run setup at:
 http://<pi-ip>/setup
 ```
 
-Node-RED is reachable only through:
+Node-RED editor is reachable only through:
 
 ```text
 http://<pi-ip>/nrdp/
 ```
 
-Node-RED HTTP-in routes have two public base URLs:
+The proxy has four route surfaces:
 
-- Public webhook/user actions: `http://<pi-ip>/in/public/<node-red-path>`
-- Kiosk-authenticated ingress: `http://<pi-ip>/in/kiosk/<node-red-path>`
+- BetterFrame web/API: `/`, `/setup`, `/admin/*`, `/auth/*`, `/static/*`,
+  `/api/admin/*`, `/api/kiosk/*`, `/api/pair/*`, `/ws/kiosk`
+- Kiosk-only Node-RED ingress: `/in/kiosk/<node-red-path>`
+- Kiosk-only Node-RED dashboards: `/dash/*`
+- Public Node-RED HTTP-in URLs: any otherwise-unmatched root path, plus
+  `/in/public/<node-red-path>`
 
-For example, a Node-RED `http in` node at `/test1` is called as
-`http://<pi-ip>/in/public/test1` for public traffic, or
-`http://<pi-ip>/in/kiosk/test1` for kiosk-authenticated traffic.
+For example, a Node-RED `http in` node at `/test1` is public at
+`http://<pi-ip>/test1` and also available at
+`http://<pi-ip>/in/public/test1`. Kiosk-authenticated traffic to that same
+Node-RED path uses `http://<pi-ip>/in/kiosk/test1`.
 
 Do not publish `18080`, `18081`, `18082`, or `1880` on the host.
 

@@ -51,6 +51,7 @@ services:
       - TZ=UTC
     volumes:
       - nodered-data:/data
+      - ./nodered-settings.js:/data/settings.js:ro
     expose:
       - "1880"
     networks:

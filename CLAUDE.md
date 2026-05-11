@@ -47,6 +47,11 @@
         ↕ BSB event bus (events-default in-memory; swap to RabbitMQ later if needed)
 ```
 
+Route correction: `/nrdp/*` is the admin-auth Node-RED editor, `/dash/*` is
+kiosk-auth Node-RED dashboard content, `/in/kiosk/*` is kiosk-auth ingest
+(ONVIF/GPIO/etc.), and otherwise-unmatched root paths are public Node-RED
+HTTP-in endpoints for user webhooks/actions.
+
 ## stack & languages
 - **TS / Node.js ≥23** — server. BSB v9 framework. h3 v2 for HTTP. node:sqlite built-in. argon2 + otpauth for crypto/totp. jsx-htmx for SSR.
 - **TS** — Node-RED custom nodes (`bf-*`).
@@ -64,14 +69,17 @@
 7. **multi-display ready** but v1 = index 0. all api carries display_id.
 8. **node-red owns ALL rules**. dropped the py engine plan. `event_log` table kept.
 9. **shortlinks live in node-red**, not our db.
-10. **3 auth tiers** at proxy via `auth_request`:
+10. **Proxy route surfaces**:
     - public `/in/public/*` `/s/*` — rate-limited
     - kiosk-key `/api/kiosk/*` `/in/kiosk/*` `/dash/*` (kiosks)
-    - admin session+TOTP `/admin/*` `/api/admin/*` `/nrdp/*` `/dash/*` (humans)
-    Node-RED external HTTP-in has exactly two ingress bases: `/in/public/*`
-    for user webhooks/actions and `/in/kiosk/*` for kiosk-authenticated data.
-    Angie strips that base before proxying, so a Node-RED route `/test1` is
-    called as `/in/public/test1` or `/in/kiosk/test1`.
+    - admin session+TOTP `/admin/*` `/api/admin/*` `/nrdp/*` (humans)
+    BetterFrame web/API stays on backend routes; kiosk-specific ingest/control
+    uses `/api/kiosk/*`, `/ws/kiosk`, `/in/kiosk/*`, and `/dash/*`; dashboards
+    are kiosk-only; otherwise-unmatched root paths are public Node-RED HTTP-in
+    URLs for user webhooks/actions. `/api/*` and `/ws/*` must not fall through
+    to Node-RED. Angie strips `/in/public` and `/in/kiosk` before proxying, so
+    a Node-RED route `/test1` is callable as `/test1`, `/in/public/test1`, or
+    `/in/kiosk/test1` depending on the desired auth surface.
 11. **labels** = routing primitive. cams+layouts+kiosks carry labels. 2 binding kinds:
     - `consume`: any kiosk w/label may render
     - `operate`: exactly ONE kiosk authoritative (composite PK incl role)

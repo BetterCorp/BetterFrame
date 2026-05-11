@@ -29,8 +29,8 @@ export function initNoderedBridge(config: NoderedConfig, log: NoderedLog): Noder
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
 
-      // POST to /in/<topic> on Node-RED. Node-RED flows can attach
-      // http-in nodes at /in/<topic> to consume.
+      // Internal server-to-Node-RED delivery for events the backend already
+      // authenticated, such as kiosk ONVIF/GPIO ingest.
       const url = `${base}/in/${encodeURIComponent(topic)}`;
       fetch(url, {
         method: "POST",

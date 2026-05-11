@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::sync::mpsc;
+use url::Url;
 
 thread_local! {
     /// camera_id → (pipeline, paintable). Pipelines stay warm across layout
@@ -70,7 +71,7 @@ fn activate(app: &Application) {
 
         let bundle = server::fetch_bundle(&server, &key);
         info!("bundle: {} cameras, {} layouts", bundle.cameras.len(), bundle.layouts.len());
-        let _ = tx.send(WorkerMsg::RenderBundle(bundle));
+        let _ = tx.send(WorkerMsg::RenderBundle(bundle, server.clone(), key.clone()));
 
         // Spawn WS client in a separate thread for live updates
         let server_ws = server.clone();
@@ -91,7 +92,11 @@ fn activate(app: &Application) {
                     ServerMsg::ReloadBundle => {
                         info!("reloading bundle");
                         let bundle = server::fetch_bundle(&server_for_reload, &key_for_reload);
-                        let _ = tx_for_reload.send(WorkerMsg::RenderBundle(bundle));
+                        let _ = tx_for_reload.send(WorkerMsg::RenderBundle(
+                            bundle,
+                            server_for_reload.clone(),
+                            key_for_reload.clone(),
+                        ));
                     }
                     ServerMsg::Standby => cec::standby(),
                     ServerMsg::Wake => cec::wake(),
@@ -113,7 +118,7 @@ fn activate(app: &Application) {
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 WorkerMsg::ShowPairingCode(code) => show_pairing_code(&window_clone, &code),
-                WorkerMsg::RenderBundle(bundle) => render_bundle(&window_clone, bundle),
+                WorkerMsg::RenderBundle(bundle, server, key) => render_bundle(&window_clone, bundle, &server, &key),
             }
         }
         gtk::glib::ControlFlow::Continue
@@ -122,7 +127,7 @@ fn activate(app: &Application) {
 
 enum WorkerMsg {
     ShowPairingCode(String),
-    RenderBundle(KioskBundle),
+    RenderBundle(KioskBundle, String, String),
 }
 
 /// Query connected HDMI displays from sysfs. Returns (name, width, height).
@@ -174,7 +179,7 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
     window.set_child(Some(&vbox));
 }
 
-fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
+fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle, server_url: &str, kiosk_key: &str) {
     let layout = match bundle.display.default_layout_id {
         Some(default_layout_id) => bundle.layouts.iter()
             .find(|l| l.id == default_layout_id)
@@ -275,7 +280,7 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
                     none_cell()
                 } else {
                     let webview = webkit6::WebView::new();
-                    webkit6::prelude::WebViewExt::load_uri(&webview, url);
+                    load_webview_url(&webview, url, server_url, kiosk_key);
                     webview.set_vexpand(true);
                     webview.set_hexpand(true);
                     webview.upcast()
@@ -302,6 +307,33 @@ fn clear_warm_cameras() {
         for (_, (pipe, _)) in w.borrow().iter() { pipeline::stop(pipe); }
         w.borrow_mut().clear();
     });
+}
+
+fn load_webview_url(webview: &webkit6::WebView, url: &str, server_url: &str, kiosk_key: &str) {
+    if should_attach_kiosk_auth(url, server_url) {
+        let request = webkit6::URIRequest::new(url);
+        if let Some(headers) = request.http_headers() {
+            headers.append("Authorization", &format!("Bearer {kiosk_key}"));
+        }
+        webkit6::prelude::WebViewExt::load_request(webview, &request);
+        return;
+    }
+
+    webkit6::prelude::WebViewExt::load_uri(webview, url);
+}
+
+fn should_attach_kiosk_auth(url: &str, server_url: &str) -> bool {
+    let Ok(target) = Url::parse(url) else { return false };
+    let Ok(server) = Url::parse(server_url) else { return false };
+    if target.scheme() != server.scheme()
+        || target.host_str() != server.host_str()
+        || target.port_or_known_default() != server.port_or_known_default()
+    {
+        return false;
+    }
+
+    let path = target.path();
+    path.starts_with("/dash/") || path.starts_with("/in/kiosk/")
 }
 
 /// Returns the paintable for a camera, creating a warm pipeline if missing.

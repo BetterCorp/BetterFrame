@@ -68,6 +68,10 @@
     - public `/in/public/*` `/s/*` — rate-limited
     - kiosk-key `/api/kiosk/*` `/in/kiosk/*` `/dash/*` (kiosks)
     - admin session+TOTP `/admin/*` `/api/admin/*` `/nrdp/*` `/dash/*` (humans)
+    Node-RED external HTTP-in has exactly two ingress bases: `/in/public/*`
+    for user webhooks/actions and `/in/kiosk/*` for kiosk-authenticated data.
+    Angie strips that base before proxying, so a Node-RED route `/test1` is
+    called as `/in/public/test1` or `/in/kiosk/test1`.
 11. **labels** = routing primitive. cams+layouts+kiosks carry labels. 2 binding kinds:
     - `consume`: any kiosk w/label may render
     - `operate`: exactly ONE kiosk authoritative (composite PK incl role)

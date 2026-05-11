@@ -35,6 +35,15 @@ Node-RED is reachable only through:
 http://<pi-ip>/nrdp/
 ```
 
+Node-RED HTTP-in routes have two public base URLs:
+
+- Public webhook/user actions: `http://<pi-ip>/in/public/<node-red-path>`
+- Kiosk-authenticated ingress: `http://<pi-ip>/in/kiosk/<node-red-path>`
+
+For example, a Node-RED `http in` node at `/test1` is called as
+`http://<pi-ip>/in/public/test1` for public traffic, or
+`http://<pi-ip>/in/kiosk/test1` for kiosk-authenticated traffic.
+
 Do not publish `18080`, `18081`, `18082`, or `1880` on the host.
 
 If migrating from an older native install, stop the old host daemons first:

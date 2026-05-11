@@ -104,16 +104,4 @@ impl BundleCamera {
         Some((uri, badge))
     }
 
-    /// Legacy single-arg stream picker (no heuristic).
-    pub fn stream_uri(&self, selector: Option<&str>) -> Option<&str> {
-        let sel = selector.unwrap_or("auto");
-        match sel {
-            "main" => self.streams.iter().find(|s| s.role == "main"),
-            "sub" => self.streams.iter().find(|s| s.role == "sub"),
-            _ => self.streams.iter().find(|s| s.role == "main")
-                .or_else(|| self.streams.first()),
-        }
-        .map(|s| s.rtsp_uri.as_str())
-        .or(self.rtsp_url.as_deref())
-    }
 }

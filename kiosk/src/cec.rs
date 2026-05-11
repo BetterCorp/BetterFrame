@@ -9,23 +9,23 @@ use tracing::{info, warn};
 
 const CEC_DEVICE: &str = "/dev/cec0";
 
-/// Put the display to sleep — try CEC first, fall back to compositor DPMS.
+/// Put the display to sleep — fire both CEC and DPMS.
+/// CEC handles TVs that listen. DPMS handles monitors that don't.
+/// Both are idempotent; doing both is cheap and covers both cases.
 pub fn standby() {
     info!("power: standby");
-    if !cec_standby() {
-        if !wlr_output_off() {
-            xset_dpms_off();
-        }
+    cec_standby();
+    if !wlr_output_off() {
+        xset_dpms_off();
     }
 }
 
-/// Wake the display — try CEC first, fall back to compositor DPMS.
+/// Wake the display — fire both CEC and DPMS.
 pub fn wake() {
     info!("power: wake");
-    if !cec_wake() {
-        if !wlr_output_on() {
-            xset_dpms_on();
-        }
+    cec_wake();
+    if !wlr_output_on() {
+        xset_dpms_on();
     }
 }
 

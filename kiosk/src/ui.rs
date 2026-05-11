@@ -16,6 +16,7 @@ use tracing::{info, warn};
 
 use crate::bundle::KioskBundle;
 use crate::cec;
+use crate::hwmon;
 use crate::pipeline;
 use crate::server;
 use crate::ws_client;
@@ -101,15 +102,17 @@ fn activate(app: &Application) {
                     }
                     ServerMsg::Standby => cec::standby(),
                     ServerMsg::Wake => cec::wake(),
+                    ServerMsg::Fan(pwm) => { hwmon::set_fan(pwm); }
                 }
             }
         });
 
-        // Heartbeat loop — also reports display geometry
+        // Heartbeat loop — reports display geometry + hwmon
         loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
             let displays = query_displays();
-            server::heartbeat(&server, &key, &displays);
+            let hw = hwmon::read();
+            server::heartbeat(&server, &key, &displays, &hw);
         }
     });
 
@@ -253,7 +256,7 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle, server_url: &s
                         let area = (cell.col_span * cell.row_span) as f32 / total_area;
                         if let Some((paintable, badge)) = ensure_warm(cam_id, cam, cell.stream_selector.as_deref(), area) {
                             let picture = Picture::for_paintable(&paintable);
-                            picture.set_content_fit(gtk::ContentFit::Cover);
+                            picture.set_content_fit(gtk::ContentFit::Contain);
                             picture.set_vexpand(true);
                             picture.set_hexpand(true);
                             // Wrap in Overlay so we can stack a stream-role badge on top
@@ -356,28 +359,37 @@ fn should_attach_kiosk_auth(url: &str, server_url: &str) -> bool {
 }
 
 /// Returns (paintable, badge_char) for a camera, creating a warm pipeline if missing.
-/// badge is 'M' / 'S' (when multi-stream) or ' ' (single stream).
+/// If cached pipeline's stream differs from what the cell needs (M↔S swap due
+/// to layout change), tear down old and spin up new.
 fn ensure_warm(
     cam_id: u32,
     cam: &crate::bundle::BundleCamera,
     selector: Option<&str>,
     area_fraction: f32,
 ) -> Option<(gtk::gdk::Paintable, char)> {
-    let existing = WARM_CAMERAS.with(|w| {
-        w.borrow().get(&cam_id).map(|(_, p, b)| (p.clone(), *b))
+    let (uri, desired_badge) = cam.pick_stream(selector, area_fraction)?;
+
+    // Check cached: if badge matches desired, reuse. Else swap.
+    let cached = WARM_CAMERAS.with(|w| {
+        w.borrow().get(&cam_id).map(|(p, paint, b)| (p.clone(), paint.clone(), *b))
     });
-    if let Some(pair) = existing {
-        return Some(pair);
+    if let Some((pipe, paintable, badge)) = cached {
+        if badge == desired_badge {
+            return Some((paintable, badge));
+        }
+        info!("camera {cam_id}: stream change {badge} → {desired_badge}, swapping");
+        pipeline::stop(&pipe);
+        WARM_CAMERAS.with(|w| { w.borrow_mut().remove(&cam_id); });
     }
-    let (uri, badge) = cam.pick_stream(selector, area_fraction)?;
+
     let (pipe, sink) = pipeline::create_camera_pipeline(&cam.name, &uri)?;
     let paintable = sink.property::<gtk::gdk::Paintable>("paintable");
     pipeline::play(&pipe);
     WARM_CAMERAS.with(|w| {
-        w.borrow_mut().insert(cam_id, (pipe, paintable.clone(), badge));
+        w.borrow_mut().insert(cam_id, (pipe, paintable.clone(), desired_badge));
     });
-    info!("warmed pipeline for camera {cam_id} (stream: {badge})");
-    Some((paintable, badge))
+    info!("warmed pipeline for camera {cam_id} (stream: {desired_badge})");
+    Some((paintable, desired_badge))
 }
 
 fn show_logo(window: &ApplicationWindow) {

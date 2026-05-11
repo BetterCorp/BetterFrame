@@ -971,6 +971,9 @@ export class Repository {
       bundle_version?: string | null;
       kiosk_app_version?: string | null;
       os_version?: string | null;
+      cpu_temp_c?: number | null;
+      fan_rpm?: number | null;
+      fan_pwm?: number | null;
     },
   ): void {
     this.prep(
@@ -978,13 +981,19 @@ export class Repository {
          last_seen_at = ?,
          last_bundle_version = COALESCE(?, last_bundle_version),
          kiosk_app_version = COALESCE(?, kiosk_app_version),
-         os_version = COALESCE(?, os_version)
+         os_version = COALESCE(?, os_version),
+         cpu_temp_c = ?,
+         fan_rpm = ?,
+         fan_pwm = ?
        WHERE id = ?`,
     ).run(
       isoNow(),
       patch.bundle_version ?? null,
       patch.kiosk_app_version ?? null,
       patch.os_version ?? null,
+      patch.cpu_temp_c ?? null,
+      patch.fan_rpm ?? null,
+      patch.fan_pwm ?? null,
       id,
     );
   }

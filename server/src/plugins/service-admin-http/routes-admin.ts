@@ -1110,4 +1110,18 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     getCoordinator().sendToKiosk(id, { type: "wake" });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
+
+  // ---- Fan control ------------------------------------------------------
+  app.post("/admin/kiosks/:id/fan", async (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const body = await readBody<Record<string, string>>(event);
+    const mode = body?.["mode"];
+    if (mode === "auto") {
+      getCoordinator().sendToKiosk(id, { type: "fan", mode: "auto" });
+    } else {
+      const pwm = Math.max(0, Math.min(255, Number(body?.["pwm"]) || 0));
+      getCoordinator().sendToKiosk(id, { type: "fan", pwm });
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+  });
 }

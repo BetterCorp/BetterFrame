@@ -1212,6 +1212,33 @@ export function KioskEditPage(props: KioskEditProps) {
               <button type="submit" class="btn btn-sm btn-ghost">Standby</button>
             </form>
           </div>
+
+          <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
+            <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Hardware</div>
+            <div style="display:flex; gap:1.5rem; flex-wrap:wrap; font-size:0.85rem; color:#666; margin-bottom:0.75rem">
+              <div>CPU: {k.cpu_temp_c != null ? `${k.cpu_temp_c.toFixed(1)}°C` : "—"}</div>
+              <div>Fan: {k.fan_rpm != null ? `${k.fan_rpm} RPM` : "—"}</div>
+              <div>PWM: {k.fan_pwm != null ? `${k.fan_pwm}/255` : "—"}</div>
+            </div>
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
+              <form method="post" action={`/admin/kiosks/${k.id}/fan`} style="display:inline">
+                <input type="hidden" name="mode" value="auto" />
+                <button type="submit" class="btn btn-sm btn-ghost">Auto</button>
+              </form>
+              <form method="post" action={`/admin/kiosks/${k.id}/fan`} style="display:inline">
+                <input type="hidden" name="pwm" value="0" />
+                <button type="submit" class="btn btn-sm btn-ghost">Off</button>
+              </form>
+              <form method="post" action={`/admin/kiosks/${k.id}/fan`} style="display:inline">
+                <input type="hidden" name="pwm" value="128" />
+                <button type="submit" class="btn btn-sm btn-ghost">50%</button>
+              </form>
+              <form method="post" action={`/admin/kiosks/${k.id}/fan`} style="display:inline">
+                <input type="hidden" name="pwm" value="255" />
+                <button type="submit" class="btn btn-sm btn-ghost">Full</button>
+              </form>
+            </div>
+          </div>
         </div>
 
         {/* Associated displays */}

@@ -589,4 +589,11 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     `);
     db.exec("PRAGMA foreign_keys = ON");
   },
+
+  // ---- hwmon columns on kiosks: cpu_temp_c, fan_rpm, fan_pwm ------
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "kiosks", "cpu_temp_c", "REAL");
+    addColumnIfNotExists(db, "kiosks", "fan_rpm", "INTEGER");
+    addColumnIfNotExists(db, "kiosks", "fan_pwm", "INTEGER");
+  },
 ];

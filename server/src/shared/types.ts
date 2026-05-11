@@ -204,6 +204,9 @@ export interface Kiosk {
   last_seen_at: string | null;
   last_bundle_version: string | null;
   display_id: number | null; // deprecated — displays now point to kiosks via kiosk_id
+  cpu_temp_c: number | null;
+  fan_rpm: number | null;
+  fan_pwm: number | null;
   created_at: string;
 }
 

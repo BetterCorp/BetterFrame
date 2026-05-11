@@ -259,12 +259,18 @@ function registerKioskRoutes(
       kiosk_app_version?: string;
       os_version?: string;
       displays?: Array<{ name: string; width_px: number; height_px: number }>;
+      cpu_temp_c?: number | null;
+      fan_rpm?: number | null;
+      fan_pwm?: number | null;
     }>(event);
 
     repo.touchKiosk(kiosk.id, {
       bundle_version: body?.bundle_version ?? null,
       kiosk_app_version: body?.kiosk_app_version ?? null,
       os_version: body?.os_version ?? null,
+      cpu_temp_c: body?.cpu_temp_c ?? null,
+      fan_rpm: body?.fan_rpm ?? null,
+      fan_pwm: body?.fan_pwm ?? null,
     });
 
     // Sync displays reported by the kiosk

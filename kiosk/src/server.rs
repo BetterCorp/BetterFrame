@@ -148,8 +148,13 @@ pub fn fetch_bundle(server: &str, key: &str) -> KioskBundle {
     resp.json().expect("bad bundle JSON")
 }
 
-/// Send heartbeat with display geometry.
-pub fn heartbeat(server: &str, key: &str, displays: &[(String, u32, u32)]) {
+/// Send heartbeat with display geometry + hwmon.
+pub fn heartbeat(
+    server: &str,
+    key: &str,
+    displays: &[(String, u32, u32)],
+    hw: &crate::hwmon::HwInfo,
+) {
     let client = reqwest::blocking::Client::new();
     let display_info: Vec<_> = displays.iter().map(|(name, w, h)| {
         serde_json::json!({ "name": name, "width_px": w, "height_px": h })
@@ -160,6 +165,9 @@ pub fn heartbeat(server: &str, key: &str, displays: &[(String, u32, u32)]) {
         .json(&serde_json::json!({
             "kiosk_app_version": env!("CARGO_PKG_VERSION"),
             "displays": display_info,
+            "cpu_temp_c": hw.cpu_temp_c,
+            "fan_rpm": hw.fan_rpm,
+            "fan_pwm": hw.fan_pwm,
         }))
         .timeout(Duration::from_secs(5))
         .send();

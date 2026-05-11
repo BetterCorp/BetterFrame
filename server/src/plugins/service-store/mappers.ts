@@ -240,6 +240,9 @@ export function rowToKiosk(r: Row): Kiosk {
     last_seen_at: sn(r["last_seen_at"]),
     last_bundle_version: sn(r["last_bundle_version"]),
     display_id: nn(r["display_id"]),
+    cpu_temp_c: nn(r["cpu_temp_c"]),
+    fan_rpm: nn(r["fan_rpm"]),
+    fan_pwm: nn(r["fan_pwm"]),
     created_at: s(r["created_at"]),
   };
 }

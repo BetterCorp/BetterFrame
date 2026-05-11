@@ -40,7 +40,7 @@ fn activate(app: &Application) {
         .build();
 
     let provider = gtk::CssProvider::new();
-    provider.load_from_string("window { background-color: #1a1a2e; }");
+    provider.load_from_string("window { background-color: #000000; }");
     gtk::style_context_add_provider_for_display(
         &WidgetExt::display(&window),
         &provider,

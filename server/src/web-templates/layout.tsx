@@ -38,6 +38,7 @@ function Sidebar(props: { activeNav?: string }) {
   return (
     <aside class="sidebar">
       <div class="sidebar-brand">
+        <img src="/static/betterframe-mark.svg" alt="" class="brand-mark" />
         <strong>BetterFrame</strong>
       </div>
       <nav class="sidebar-nav">
@@ -65,6 +66,7 @@ export function Layout(props: PageProps) {
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{props.title} — BetterFrame</title>
+        <link rel="icon" href="/static/betterframe-mark.svg" type="image/svg+xml" />
         <link rel="stylesheet" href="/static/app.css" />
         <style>{css(baseStyles as Parameters<typeof css>[0])}</style>
       </head>
@@ -99,6 +101,7 @@ export function MinimalLayout(props: { title: string; flash?: PageProps["flash"]
     <Layout title={props.title} minimal flash={props.flash}>
       <div class="center-card">
         <div class="card">
+          <img src="/static/betterframe-logo.svg" alt="BetterFrame" class="auth-logo" />
           <h1 class="card-title">{props.title}</h1>
           {props.children}
         </div>
@@ -132,7 +135,15 @@ const baseStyles = {
     height: "100vh",
     overflowY: "auto" as const,
   },
-  ".sidebar-brand": { padding: "1.25rem 1rem", fontSize: "1.1rem", borderBottom: "1px solid #2a2a4e" },
+  ".sidebar-brand": {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.65rem",
+    padding: "1rem",
+    fontSize: "1.1rem",
+    borderBottom: "1px solid #2a2a4e",
+  },
+  ".brand-mark": { width: "2rem", height: "2rem", display: "block", flex: "0 0 auto" },
   ".sidebar-nav": { padding: "0.5rem 0", display: "flex", flexDirection: "column", gap: "2px" },
   ".nav-item": {
     display: "flex",
@@ -163,6 +174,7 @@ const baseStyles = {
   ".content": { flex: "1", padding: "1.5rem" },
   ".minimal .content": { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh" },
   ".center-card": { width: "100%", maxWidth: "420px" },
+  ".auth-logo": { display: "block", width: "220px", maxWidth: "100%", height: "auto", margin: "0 0 1.25rem" },
   ".card": {
     backgroundColor: "#fff",
     borderRadius: "8px",

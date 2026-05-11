@@ -559,7 +559,7 @@ export class Repository {
   }): LayoutCell {
     // Resolve content fields from the entity (if given). The legacy columns
     // remain populated for backward-compatible bundle generation.
-    let contentType = input.content_type ?? "html";
+    let contentType = input.content_type ?? "none";
     let cameraId: number | null = input.camera_id ?? null;
     let webUrl: string | null = input.web_url ?? null;
     let htmlContent: string | null = input.html_content ?? null;
@@ -609,7 +609,7 @@ export class Repository {
         .prepare(
           `UPDATE layout_cells
               SET entity_id = NULL,
-                  content_type = 'html',
+                  content_type = 'none',
                   camera_id = NULL,
                   web_url = NULL,
                   html_content = NULL

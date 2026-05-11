@@ -1517,6 +1517,7 @@ function cellLabel(
   if (c.content_type === "camera" && c.camera_id) {
     return cameraById.get(c.camera_id)?.name ?? `cam #${String(c.camera_id)}`;
   }
+  if (c.content_type === "none") return "None";
   if (c.content_type === "web") return c.web_url ? `Web: ${c.web_url}` : "Web";
   if (c.content_type === "html") return c.html_content ? "HTML" : "HTML (empty)";
   return "Empty";
@@ -1619,7 +1620,8 @@ export function renderCell(
   // Read mode. Empty when no entity is bound.
   const ent = c.entity_id != null ? entityById.get(c.entity_id) ?? null : null;
   const isEmpty = !ent && (
-    (c.content_type === "html" && !c.html_content)
+    c.content_type === "none"
+    || (c.content_type === "html" && !c.html_content)
     || (c.content_type === "camera" && !c.camera_id)
     || (c.content_type === "web" && !c.web_url)
   );

@@ -20,6 +20,8 @@ use crate::ws_client;
 use crate::ServerMsg;
 
 const APP_ID: &str = "dev.betterframe.kiosk";
+const BETTERFRAME_LOGO_SVG: &str = include_str!("../../server/src/web-static/betterframe-logo.svg");
+const BETTERFRAME_MARK_SVG: &str = include_str!("../../server/src/web-static/betterframe-mark.svg");
 
 pub fn build_app() -> Application {
     let app = Application::builder().application_id(APP_ID).build();
@@ -156,9 +158,7 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
     vbox.set_halign(gtk::Align::Center);
     vbox.set_vexpand(true);
 
-    let title = Label::new(Some("BetterFrame"));
-    add_css(&title, ".title { font-size: 24px; color: #888; font-weight: 300; }");
-    title.add_css_class("title");
+    let title = logo_picture(BETTERFRAME_LOGO_SVG, 360, 88, "pairing-logo");
 
     let code_label = Label::new(Some(code));
     add_css(&code_label, ".code { font-size: 72px; color: #fff; font-weight: 700; letter-spacing: 12px; font-family: monospace; }");
@@ -247,32 +247,41 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle) {
                             picture.set_hexpand(true);
                             picture.upcast()
                         } else {
-                            placeholder(&format!("{} (no stream)", cam.name))
+                            placeholder(Some(&format!("{} (no stream)", cam.name)))
                         }
                     } else {
-                        placeholder("Unknown camera")
+                        placeholder(Some("Unknown camera"))
                     }
                 } else {
-                    placeholder("No camera assigned")
+                    none_cell()
                 }
             }
             "html" => {
                 let html = cell.html_content.as_deref().unwrap_or("");
-                let webview = webkit6::WebView::new();
-                webkit6::prelude::WebViewExt::load_html(&webview, html, None);
-                webview.set_vexpand(true);
-                webview.set_hexpand(true);
-                webview.upcast()
+                if html.trim().is_empty() {
+                    none_cell()
+                } else {
+                    let webview = webkit6::WebView::new();
+                    webkit6::prelude::WebViewExt::load_html(&webview, html, None);
+                    webview.set_vexpand(true);
+                    webview.set_hexpand(true);
+                    webview.upcast()
+                }
             }
             "web" => {
-                let url = cell.web_url.as_deref().unwrap_or("about:blank");
-                let webview = webkit6::WebView::new();
-                webkit6::prelude::WebViewExt::load_uri(&webview, url);
-                webview.set_vexpand(true);
-                webview.set_hexpand(true);
-                webview.upcast()
+                let url = cell.web_url.as_deref().unwrap_or("").trim();
+                if url.is_empty() {
+                    none_cell()
+                } else {
+                    let webview = webkit6::WebView::new();
+                    webkit6::prelude::WebViewExt::load_uri(&webview, url);
+                    webview.set_vexpand(true);
+                    webview.set_hexpand(true);
+                    webview.upcast()
+                }
             }
-            _ => placeholder("Unknown content"),
+            "none" => none_cell(),
+            _ => placeholder(Some("Unknown content")),
         };
 
         grid.attach(
@@ -309,20 +318,61 @@ fn ensure_warm(
 }
 
 fn show_logo(window: &ApplicationWindow) {
-    let label = Label::new(Some("BetterFrame"));
-    add_css(&label, "label { font-size: 48px; color: #fff; font-weight: 300; }");
-    label.set_valign(gtk::Align::Center);
-    label.set_halign(gtk::Align::Center);
-    label.set_vexpand(true);
-    window.set_child(Some(&label));
+    let vbox = GtkBox::new(Orientation::Vertical, 0);
+    vbox.set_valign(gtk::Align::Center);
+    vbox.set_halign(gtk::Align::Center);
+    vbox.set_vexpand(true);
+    vbox.set_hexpand(true);
+    vbox.append(&logo_picture(BETTERFRAME_LOGO_SVG, 480, 118, "idle-logo"));
+    window.set_child(Some(&vbox));
 }
 
-fn placeholder(text: &str) -> gtk::Widget {
-    let label = Label::new(Some(text));
-    add_css(&label, "label { color: #666; font-size: 14px; background-color: #111; }");
-    label.set_vexpand(true);
-    label.set_hexpand(true);
-    label.upcast()
+fn none_cell() -> gtk::Widget {
+    placeholder(None)
+}
+
+fn placeholder(text: Option<&str>) -> gtk::Widget {
+    let vbox = GtkBox::new(Orientation::Vertical, 8);
+    add_css(
+        &vbox,
+        ".bf-placeholder { background-color: #111; } .bf-placeholder-text { color: #666; font-size: 14px; }",
+    );
+    vbox.add_css_class("bf-placeholder");
+    vbox.set_valign(gtk::Align::Center);
+    vbox.set_halign(gtk::Align::Center);
+    vbox.set_vexpand(true);
+    vbox.set_hexpand(true);
+    vbox.append(&logo_picture(BETTERFRAME_MARK_SVG, 56, 56, "cell-logo"));
+    if let Some(text) = text {
+        let label = Label::new(Some(text));
+        label.add_css_class("bf-placeholder-text");
+        vbox.append(&label);
+    }
+    vbox.upcast()
+}
+
+fn logo_picture(svg: &'static str, width: i32, height: i32, css_class: &str) -> gtk::Widget {
+    let bytes = gtk::glib::Bytes::from_static(svg.as_bytes());
+    match gtk::gdk::Texture::from_bytes(&bytes) {
+        Ok(texture) => {
+            let picture = Picture::for_paintable(&texture);
+            picture.add_css_class(css_class);
+            picture.set_content_fit(gtk::ContentFit::Contain);
+            picture.set_can_shrink(true);
+            picture.set_size_request(width, height);
+            picture.set_valign(gtk::Align::Center);
+            picture.set_halign(gtk::Align::Center);
+            picture.upcast()
+        }
+        Err(err) => {
+            warn!("failed to load embedded logo: {err}");
+            let label = Label::new(Some("BetterFrame"));
+            label.set_size_request(width, height);
+            label.set_valign(gtk::Align::Center);
+            label.set_halign(gtk::Align::Center);
+            label.upcast()
+        }
+    }
 }
 
 fn add_css(widget: &impl IsA<gtk::Widget>, css: &str) {

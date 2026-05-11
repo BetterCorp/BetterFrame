@@ -12,7 +12,7 @@ export type StreamRole = "main" | "sub" | "other";
 export type StreamSelector = "auto" | "main" | "sub";
 export type StreamPolicy = "auto" | "always_main" | "always_sub";
 export type LayoutPriority = "hot" | "normal" | "cold";
-export type CellContentType = "camera" | "web" | "html";
+export type CellContentType = "none" | "camera" | "web" | "html";
 export type EntityType = "camera" | "html" | "web";
 
 export interface Entity {

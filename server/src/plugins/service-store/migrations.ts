@@ -178,7 +178,7 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     layout_id INTEGER NOT NULL REFERENCES layouts(id) ON DELETE CASCADE,
     region_name TEXT NOT NULL,
-    content_type TEXT NOT NULL CHECK(content_type IN ('camera', 'web', 'html')),
+    content_type TEXT NOT NULL CHECK(content_type IN ('none', 'camera', 'web', 'html')),
     camera_id INTEGER REFERENCES cameras(id) ON DELETE SET NULL,
     stream_selector TEXT NOT NULL DEFAULT 'auto'
       CHECK(stream_selector IN ('auto', 'main', 'sub')),
@@ -421,7 +421,7 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
         col INTEGER NOT NULL DEFAULT 0,
         row_span INTEGER NOT NULL DEFAULT 1,
         col_span INTEGER NOT NULL DEFAULT 1,
-        content_type TEXT NOT NULL CHECK(content_type IN ('camera', 'web', 'html')),
+        content_type TEXT NOT NULL CHECK(content_type IN ('none', 'camera', 'web', 'html')),
         camera_id INTEGER REFERENCES cameras(id) ON DELETE SET NULL,
         stream_selector TEXT,
         web_url TEXT,
@@ -536,5 +536,57 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
       }
       // empty cell — leave entity_id null
     }
+  },
+
+  // ---- v0.9: explicit empty layout cell state -------------------------------
+  (db: DatabaseSync) => {
+    const createSql = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'layout_cells'")
+      .get() as { sql?: string } | undefined;
+    if (createSql?.sql?.includes("'none'")) return;
+
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec(`
+      CREATE TABLE layout_cells_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        layout_id INTEGER NOT NULL REFERENCES layouts(id) ON DELETE CASCADE,
+        row INTEGER NOT NULL DEFAULT 0,
+        col INTEGER NOT NULL DEFAULT 0,
+        row_span INTEGER NOT NULL DEFAULT 1,
+        col_span INTEGER NOT NULL DEFAULT 1,
+        content_type TEXT NOT NULL CHECK(content_type IN ('none', 'camera', 'web', 'html')),
+        camera_id INTEGER REFERENCES cameras(id) ON DELETE SET NULL,
+        stream_selector TEXT,
+        web_url TEXT,
+        html_content TEXT,
+        cooling_timeout_seconds INTEGER,
+        options TEXT NOT NULL DEFAULT '{}',
+        entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL
+      ) STRICT;
+
+      INSERT INTO layout_cells_new (
+        id, layout_id, row, col, row_span, col_span,
+        content_type, camera_id, stream_selector, web_url, html_content,
+        cooling_timeout_seconds, options, entity_id
+      )
+      SELECT
+        id, layout_id, row, col, row_span, col_span,
+        CASE
+          WHEN entity_id IS NULL
+           AND content_type = 'html'
+           AND (html_content IS NULL OR html_content = '')
+          THEN 'none'
+          ELSE content_type
+        END,
+        camera_id, stream_selector, web_url, html_content,
+        cooling_timeout_seconds, options, entity_id
+      FROM layout_cells;
+
+      DROP TABLE layout_cells;
+      ALTER TABLE layout_cells_new RENAME TO layout_cells;
+      CREATE INDEX IF NOT EXISTS idx_layout_cells_layout ON layout_cells(layout_id);
+      CREATE INDEX IF NOT EXISTS idx_layout_cells_entity ON layout_cells(entity_id);
+    `);
+    db.exec("PRAGMA foreign_keys = ON");
   },
 ];

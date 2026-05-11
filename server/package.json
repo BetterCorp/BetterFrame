@@ -12,7 +12,7 @@
     "bsb-tests.json"
   ],
   "scripts": {
-    "build": "cross-env NODE_OPTIONS=\"--import tsx\" bsb-plugin-cli build",
+    "build": "cross-env NODE_OPTIONS=\"--import tsx\" bsb-plugin-cli build && cross-env NODE_OPTIONS=\"--import tsx\" node src/scripts/copy-web-static.ts",
     "clean": "bsb-plugin-cli clean",
     "start": "bsb-plugin-cli start",
     "dev": "cross-env NODE_OPTIONS=\"--import tsx\" bsb-plugin-cli dev",

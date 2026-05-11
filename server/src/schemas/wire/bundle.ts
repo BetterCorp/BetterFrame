@@ -15,7 +15,7 @@ const cameraType = av.enum_(["rtsp", "onvif"] as const);
 const streamRole = av.enum_(["main", "sub", "other"] as const);
 const streamSelector = av.enum_(["auto", "main", "sub"] as const);
 const layoutPriority = av.enum_(["hot", "normal", "cold"] as const);
-const cellContentType = av.enum_(["camera", "web", "html"] as const);
+const cellContentType = av.enum_(["none", "camera", "web", "html"] as const);
 
 const cameraStream = av.object(
   {

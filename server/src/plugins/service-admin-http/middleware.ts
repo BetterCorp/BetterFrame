@@ -22,6 +22,7 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
       path === "/healthz" ||
       path === "/readyz" ||
       path === "/version" ||
+      path === "/api/admin/_check" ||
       path === "/"
     ) {
       return;

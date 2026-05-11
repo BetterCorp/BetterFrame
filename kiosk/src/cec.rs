@@ -13,7 +13,9 @@ const CEC_DEVICE: &str = "/dev/cec0";
 pub fn standby() {
     info!("power: standby");
     if !cec_standby() {
-        wlr_output_off();
+        if !wlr_output_off() {
+            xset_dpms_off();
+        }
     }
 }
 
@@ -21,7 +23,9 @@ pub fn standby() {
 pub fn wake() {
     info!("power: wake");
     if !cec_wake() {
-        wlr_output_on();
+        if !wlr_output_on() {
+            xset_dpms_on();
+        }
     }
 }
 
@@ -54,37 +58,51 @@ fn run_cec(args: &[&str]) -> bool {
 }
 
 /// Turn off all outputs via wlr-randr (Wayland compositors: labwc, wayfire, sway).
-fn wlr_output_off() {
+fn wlr_output_off() -> bool {
     // Get list of outputs
     let outputs = list_outputs();
     if outputs.is_empty() {
         warn!("dpms: no outputs found");
-        return;
+        return false;
     }
+    let mut ok = false;
     for output in outputs {
         match Command::new("wlr-randr")
             .args(["--output", &output, "--off"])
             .output()
         {
-            Ok(out) if out.status.success() => info!("dpms: {output} off"),
+            Ok(out) if out.status.success() => {
+                info!("dpms: {output} off");
+                ok = true;
+            }
             Ok(out) => warn!("dpms off {output} failed: {}", String::from_utf8_lossy(&out.stderr)),
             Err(e) => warn!("wlr-randr unavailable: {e}"),
         }
     }
+    ok
 }
 
-fn wlr_output_on() {
+fn wlr_output_on() -> bool {
     let outputs = list_outputs();
+    if outputs.is_empty() {
+        warn!("dpms: no outputs found");
+        return false;
+    }
+    let mut ok = false;
     for output in outputs {
         match Command::new("wlr-randr")
             .args(["--output", &output, "--on"])
             .output()
         {
-            Ok(out) if out.status.success() => info!("dpms: {output} on"),
+            Ok(out) if out.status.success() => {
+                info!("dpms: {output} on");
+                ok = true;
+            }
             Ok(out) => warn!("dpms on {output} failed: {}", String::from_utf8_lossy(&out.stderr)),
             Err(e) => warn!("wlr-randr unavailable: {e}"),
         }
     }
+    ok
 }
 
 fn list_outputs() -> Vec<String> {
@@ -98,4 +116,20 @@ fn list_outputs() -> Vec<String> {
         .map(|l| l.split_whitespace().next().unwrap_or("").to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+fn xset_dpms_off() {
+    match Command::new("xset").args(["dpms", "force", "off"]).output() {
+        Ok(out) if out.status.success() => info!("xset: dpms off"),
+        Ok(out) => warn!("xset dpms off failed: {}", String::from_utf8_lossy(&out.stderr)),
+        Err(e) => warn!("xset unavailable: {e}"),
+    }
+}
+
+fn xset_dpms_on() {
+    match Command::new("xset").args(["dpms", "force", "on"]).output() {
+        Ok(out) if out.status.success() => info!("xset: dpms on"),
+        Ok(out) => warn!("xset dpms on failed: {}", String::from_utf8_lossy(&out.stderr)),
+        Err(e) => warn!("xset unavailable: {e}"),
+    }
 }

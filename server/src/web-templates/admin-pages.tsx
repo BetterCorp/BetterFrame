@@ -1204,7 +1204,7 @@ export function KioskEditPage(props: KioskEditProps) {
             <div>Last seen: {k.last_seen_at ? formatTime(k.last_seen_at) : "Never"}</div>
           </div>
           <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
-            <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Display Power (CEC)</div>
+            <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Display Power</div>
             <form method="post" action={`/admin/kiosks/${k.id}/power/wake`} style="display:inline">
               <button type="submit" class="btn btn-sm">Wake</button>
             </form>
@@ -1898,7 +1898,7 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
             <div class="form-group">
               <label for="sleep_timeout_seconds">Sleep Timeout (seconds)</label>
               <input id="sleep_timeout_seconds" name="sleep_timeout_seconds" type="number" class="form-input" value={String(d.sleep_timeout_seconds)} min="0" />
-              <div class="form-hint">Send CEC standby after this many seconds of inactivity. 0 to disable.</div>
+              <div class="form-hint">Send display standby after this many seconds of inactivity. 0 to disable.</div>
             </div>
 
             <button type="submit" class="btn btn-primary">Save</button>

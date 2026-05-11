@@ -132,6 +132,17 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     // Auth-check endpoint for Angie auth_request subrequest.
     // Returns 200 if session cookie is valid + admin role, 401 otherwise.
     app.get("/api/admin/_check", (event) => {
+      const authz = event.req.headers.get("authorization");
+      if (authz?.startsWith("Bearer ")) {
+        return deps.auth.verifyApiKey(authz.slice(7), event.req.headers.get("x-real-ip")).then((key) => {
+          if (!key || !key.scopes.includes("admin")) return new Response(null, { status: 401 });
+          return new Response(null, {
+            status: 200,
+            headers: { "x-betterframe-api-key": key.key_prefix },
+          });
+        });
+      }
+
       const cookie = event.req.headers.get("cookie") ?? "";
       const match = cookie.match(new RegExp(`${deps.cookieName}=([^;]+)`));
       if (!match) return new Response(null, { status: 401 });

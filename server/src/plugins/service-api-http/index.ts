@@ -108,6 +108,31 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
     const app = new H3();
 
+    app.get("/api/kiosk/_check", async (event) => {
+      const token = extractBearerToken(event);
+      if (!token) return new Response(null, { status: 401 });
+      const kiosk = await auth.verifyKioskKey(token);
+      if (!kiosk) return new Response(null, { status: 401 });
+      return new Response(null, {
+        status: 200,
+        headers: { "x-betterframe-kiosk-id": String(kiosk.id) },
+      });
+    });
+
+    app.get("/api/key/_check", async (event) => {
+      const token = extractBearerToken(event);
+      if (!token) return new Response(null, { status: 401 });
+      const key = await auth.verifyApiKey(token, getRequestHeader(event, "x-real-ip") ?? null);
+      if (!key) return new Response(null, { status: 401 });
+      return new Response(null, {
+        status: 200,
+        headers: {
+          "x-betterframe-api-key": key.key_prefix,
+          "x-betterframe-scopes": key.scopes.join(","),
+        },
+      });
+    });
+
     registerPairingRoutes(app, repo, auth, secrets, codeTtl);
     registerKioskRoutes(app, repo, auth, secrets, nodered);
 

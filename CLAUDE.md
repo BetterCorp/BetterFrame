@@ -234,9 +234,9 @@ Everything else is a shared module (plain TS, no BSB lifecycle).
 4. **coordinator-ws WebSocket** — install crossws, implement kiosk connections + layout-switch commands
 5. **Rust kiosk polish** — multi-camera compositor, H264/H265 auto-detect, web cells via WebKit
 6. **Node-RED bridge** — outbound HTTP forwarder + inbound callbacks
-7. **CEC relay** — cec-ctl subprocess + ws command translation
+7. **Display power relay** — kiosk handles CEC first, then monitor DPMS fallback (`wlr-randr`, then `xset`). Server/admin should keep using generic wake/standby commands, not CEC-only naming.
 8. **Angie config** + systemd units + Dockerfile
-9. **Auth-check endpoints** — for proxy `auth_request`
+9. **Auth-check endpoints** — ✅ admin session/API-key, kiosk key, and API-key checks added for proxy `auth_request`
 
 ## conventions (additions discovered while building)
 - **BSB build needs tsx**: `cross-env NODE_OPTIONS="--import tsx" bsb-plugin-cli build` in package.json scripts. Required because BSB's schema extractor doesn't resolve .js→.ts imports in multi-file plugins
@@ -246,6 +246,7 @@ Everything else is a shared module (plain TS, no BSB lifecycle).
 - **Cookie signing uses HKDF-derived key** (deterministic). NOT encryptString (random IV = non-deterministic = broken)
 - **RTSP URLs with special chars** in password: URL-encode user/pass components. Camera form splits into host/port/path/user/pass fields, builds URL server-side
 - **ONVIF discovery import**: ONVIF profiles are streams, not cameras. Group profiles by VideoSourceConfiguration/SourceToken (fallback to channel-ish URI/name), assign largest stream `main`, next `sub`, rest `other`, and import one camera with multiple `camera_streams`. If RTSP URIs omit userinfo, inject the ONVIF username/password before storing so kiosk playback avoids RTSP 401.
+- **Display power**: TVs may support CEC, monitors usually won't. Kiosk power commands should try `cec-ctl`, then standard output sleep/wake (`wlr-randr`, then `xset dpms`) so monitor installs still work.
 - **GStreamer on Pi5**: hw H265 decoder rejects non-standard resolutions (960x1080). Use avdec_h265 (sw) as fallback
 - **Log message strings MUST be string literals** (BSB SmartLogMeta extracts placeholders from literal type)
 - **Datetimes are ISO-8601 strings** stored as TEXT

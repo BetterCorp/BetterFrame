@@ -235,7 +235,7 @@ Everything else is a shared module (plain TS, no BSB lifecycle).
 5. **Rust kiosk polish** — multi-camera compositor, H264/H265 auto-detect, web cells via WebKit
 6. **Node-RED bridge** — outbound HTTP forwarder + inbound callbacks
 7. **Display power relay** — kiosk handles CEC first, then monitor DPMS fallback (`wlr-randr`, then `xset`). Server/admin should keep using generic wake/standby commands, not CEC-only naming.
-8. **Angie config** + systemd units + Dockerfile
+8. **Angie config** + systemd units + Dockerfile — ✅ baseline native + Docker deployment files exist; Angie now uses auth_request for admin/kiosk-gated Node-RED routes, and Docker uses container upstreams.
 9. **Auth-check endpoints** — ✅ admin session/API-key, kiosk key, and API-key checks added for proxy `auth_request`
 
 ## conventions (additions discovered while building)

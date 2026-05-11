@@ -18,6 +18,7 @@ sudo chown betterframe:betterframe /var/lib/betterframe /var/log/betterframe
 sudo git clone https://github.com/BetterCorp/BetterFrame.git /opt/betterframe
 cd /opt/betterframe
 sudo -u betterframe npm install
+sudo -u betterframe npm run build
 sudo cp sec-config.yaml /opt/betterframe/server/sec-config.yaml
 
 # Install systemd unit
@@ -59,6 +60,9 @@ sudo cp deploy/angie/betterframe.conf /etc/angie/conf.d/
 sudo systemctl reload angie
 ```
 
+The Angie config gates `/nrdp/*` with the admin session/API-key auth-check
+endpoint and `/in/kiosk/*` with the kiosk Bearer-key auth-check endpoint.
+
 ## Docker
 
 ```bash
@@ -66,6 +70,8 @@ docker compose -f deploy/docker/docker-compose.yml up -d
 ```
 
 Kiosk still runs natively on the Pi (needs Wayland/HDMI), not in Docker.
+The Compose stack uses `deploy/angie/betterframe.docker.conf` because service
+names, not `127.0.0.1`, are the correct upstreams inside the Docker network.
 
 Access: `http://<pi-ip>/setup` for first-run.
 

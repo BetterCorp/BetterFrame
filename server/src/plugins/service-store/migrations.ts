@@ -601,4 +601,18 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
   (db: DatabaseSync) => {
     addColumnIfNotExists(db, "layout_cells", "fit", "TEXT NOT NULL DEFAULT 'cover'");
   },
+
+  // ---- kiosk GPIO bindings ----
+  `CREATE TABLE IF NOT EXISTS kiosk_gpio_bindings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kiosk_id INTEGER NOT NULL REFERENCES kiosks(id) ON DELETE CASCADE,
+    chip TEXT NOT NULL DEFAULT 'gpiochip0',
+    pin INTEGER NOT NULL,
+    direction TEXT NOT NULL CHECK(direction IN ('in', 'out')),
+    pull TEXT CHECK(pull IN ('up', 'down', 'none')),
+    edge TEXT CHECK(edge IN ('rising', 'falling', 'both')),
+    topic TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_kiosk_gpio_bindings_kiosk ON kiosk_gpio_bindings(kiosk_id)`,
 ];

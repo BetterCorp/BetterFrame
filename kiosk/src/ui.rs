@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -7,20 +8,32 @@ use gtk4::prelude::*;
 use gtk4::{self as gtk, Application, ApplicationWindow, Box as GtkBox, Grid, Label, Orientation, Picture};
 use tracing::{info, warn};
 
-use crate::bundle::KioskBundle;
+use crate::bundle::{BundleDisplayWithLayouts, KioskBundle};
 use crate::cec;
+use crate::gpio;
 use crate::hwmon;
 use crate::pipeline;
 use crate::server;
 use crate::ws_client;
 use crate::ServerMsg;
 
+/// Per-display runtime state. Kept inside a thread-local hashmap keyed by
+/// display id, so all the idle/sleep/layout tracking is local to that display
+/// even though the GTK main loop is shared.
+struct DisplayState {
+    window: ApplicationWindow,
+    current_layout_id: Option<u32>,
+    last_activity: Instant,
+    is_asleep: bool,
+}
+
 thread_local! {
     /// camera_id → (pipeline, paintable, badge). Pipelines stay warm across
     /// layout swaps for cameras still referenced or in preload_camera_ids.
-    /// badge is 'M' / 'S' / ' ' indicating which stream is active.
-    static WARM_CAMERAS: RefCell<std::collections::HashMap<u32, (gstreamer::Pipeline, gtk::gdk::Paintable, char)>>
-        = RefCell::new(std::collections::HashMap::new());
+    /// Shared across ALL displays — if two displays use the same camera the
+    /// pipeline is reused. The paintable can be attached to multiple Pictures.
+    static WARM_CAMERAS: RefCell<HashMap<u32, (gstreamer::Pipeline, gtk::gdk::Paintable, char)>>
+        = RefCell::new(HashMap::new());
 
     /// Most recently rendered bundle. Used for layout-switch + idle revert.
     static CURRENT_BUNDLE: RefCell<Option<KioskBundle>> = const { RefCell::new(None) };
@@ -28,14 +41,8 @@ thread_local! {
     /// Server URL + kiosk key for re-rendering on layout-switch.
     static CURRENT_AUTH: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
 
-    /// Layout id currently on screen, if any.
-    static CURRENT_LAYOUT_ID: Cell<Option<u32>> = const { Cell::new(None) };
-
-    /// Timestamp of the last "activity" event (render, switch, wake).
-    static LAST_ACTIVITY: RefCell<Instant> = RefCell::new(Instant::now());
-
-    /// True after we've fired CEC standby due to sleep timeout.
-    static IS_ASLEEP: Cell<bool> = const { Cell::new(false) };
+    /// Per-display state, keyed by bundle display id.
+    static DISPLAYS: RefCell<HashMap<u32, DisplayState>> = RefCell::new(HashMap::new());
 
     /// Has the idle-watchdog already been installed on the main loop?
     static WATCHDOG_INSTALLED: Cell<bool> = const { Cell::new(false) };
@@ -52,7 +59,9 @@ pub fn build_app() -> Application {
 }
 
 fn activate(app: &Application) {
-    let window = ApplicationWindow::builder()
+    // Create the initial pairing window. Multi-display windows are spawned
+    // later once we receive a bundle.
+    let pairing_window = ApplicationWindow::builder()
         .application(app)
         .title("BetterFrame")
         .fullscreened(true)
@@ -61,13 +70,13 @@ fn activate(app: &Application) {
     let provider = gtk::CssProvider::new();
     provider.load_from_string("window { background-color: #000000; }");
     gtk::style_context_add_provider_for_display(
-        &WidgetExt::display(&window),
+        &WidgetExt::display(&pairing_window),
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
 
-    show_logo(&window);
-    window.present();
+    show_logo(&pairing_window);
+    pairing_window.present();
 
     let (tx, rx) = mpsc::channel::<WorkerMsg>();
 
@@ -94,7 +103,7 @@ fn activate(app: &Application) {
         // cached on-disk bundle and keep retrying every 30s in the background.
         let initial = match server::fetch_bundle(&server, &key) {
             Some(b) => {
-                info!("bundle: {} cameras, {} layouts", b.cameras.len(), b.layouts.len());
+                info!("bundle: {} cameras, {} display(s)", b.cameras.len(), b.normalized_displays().len());
                 Some(b)
             }
             None => {
@@ -130,10 +139,6 @@ fn activate(app: &Application) {
         let retry_server = server.clone();
         let retry_key = key.clone();
         std::thread::spawn(move || {
-            // Only loop while we have no live bundle yet — best-effort heuristic:
-            // we attempt once, then sleep. If server unreachable each time we
-            // keep waiting; once a fetch succeeds we push a fresh render.
-            // After first success we exit; subsequent updates flow via WS.
             loop {
                 std::thread::sleep(Duration::from_secs(30));
                 if let Some(b) = server::fetch_bundle(&retry_server, &retry_key) {
@@ -187,22 +192,27 @@ fn activate(app: &Application) {
     });
 
     // Poll channel from UI thread via timeout
-    let window_clone = window.clone();
+    let app_clone = app.clone();
+    let pairing_window_clone = pairing_window.clone();
     gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                WorkerMsg::ShowPairingCode(code) => show_pairing_code(&window_clone, &code),
+                WorkerMsg::ShowPairingCode(code) => show_pairing_code(&pairing_window_clone, &code),
                 WorkerMsg::RenderBundle(bundle, server, key) => {
-                    render_bundle(&window_clone, bundle, &server, &key);
-                    install_idle_watchdog(&window_clone);
+                    render_bundle(&app_clone, &pairing_window_clone, bundle, &server, &key);
+                    install_idle_watchdog();
                 }
                 WorkerMsg::SwitchLayout(id) => {
-                    render_layout(&window_clone, id);
+                    switch_layout_anywhere(id);
                 }
                 WorkerMsg::Wake => {
                     cec::wake();
-                    IS_ASLEEP.with(|c| c.set(false));
-                    mark_activity();
+                    DISPLAYS.with(|ds| {
+                        for st in ds.borrow_mut().values_mut() {
+                            st.is_asleep = false;
+                            st.last_activity = Instant::now();
+                        }
+                    });
                 }
             }
         }
@@ -217,65 +227,77 @@ enum WorkerMsg {
     Wake,
 }
 
-/// Reset activity timer. If we were asleep, wake the display first.
-fn mark_activity() {
-    LAST_ACTIVITY.with(|t| *t.borrow_mut() = Instant::now());
-    if IS_ASLEEP.with(|c| c.get()) {
-        info!("activity while asleep → waking display");
-        cec::wake();
-        IS_ASLEEP.with(|c| c.set(false));
-    }
+/// Reset activity timer for one display. If asleep, wake it.
+fn mark_activity(display_id: u32) {
+    DISPLAYS.with(|ds| {
+        if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
+            st.last_activity = Instant::now();
+            if st.is_asleep {
+                info!("activity while asleep → waking display {display_id}");
+                cec::wake();
+                st.is_asleep = false;
+            }
+        }
+    });
 }
 
-/// Install the once-per-second watchdog that enforces idle/sleep timeouts.
-/// Safe to call multiple times — installs at most once.
-fn install_idle_watchdog(window: &ApplicationWindow) {
+/// Install the once-per-second watchdog that enforces idle/sleep timeouts
+/// per display. Safe to call multiple times — installs at most once.
+fn install_idle_watchdog() {
     if WATCHDOG_INSTALLED.with(|c| c.get()) { return; }
     WATCHDOG_INSTALLED.with(|c| c.set(true));
-    let window = window.clone();
     gtk::glib::timeout_add_local(Duration::from_secs(1), move || {
-        let elapsed = LAST_ACTIVITY.with(|t| t.borrow().elapsed());
+        let bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
+        let Some(bundle) = bundle else { return gtk::glib::ControlFlow::Continue };
 
-        // Need the bundle to read display timeouts + default layout.
-        let (idle_to, sleep_to, default_id) = CURRENT_BUNDLE.with(|b| {
-            match b.borrow().as_ref() {
-                Some(bundle) => (
-                    bundle.display.idle_timeout_seconds as u64,
-                    bundle.display.sleep_timeout_seconds as u64,
-                    bundle.display.default_layout_id,
-                ),
-                None => (0, 0, None),
+        // Snapshot per-display timing decisions so we can act outside the borrow.
+        struct Action { display_id: u32, revert_to: Option<u32>, sleep: bool }
+        let mut actions: Vec<Action> = Vec::new();
+
+        DISPLAYS.with(|ds| {
+            for (display_id, st) in ds.borrow().iter() {
+                let Some(d) = bundle.normalized_displays().into_iter().find(|d| d.id == *display_id) else { continue };
+                let idle_to = d.idle_timeout_seconds as u64;
+                let sleep_to = d.sleep_timeout_seconds as u64;
+                let elapsed = st.last_activity.elapsed();
+                let default_id = d.default_layout_id;
+
+                let mut act = Action { display_id: *display_id, revert_to: None, sleep: false };
+
+                if idle_to > 0 && elapsed >= Duration::from_secs(idle_to) {
+                    let cur_resets_idle = st.current_layout_id
+                        .and_then(|cur_id| d.layouts.iter().find(|l| l.id == cur_id))
+                        .map(|l| l.resets_idle_timer)
+                        .unwrap_or(false);
+                    if let (Some(cur_id), Some(def_id)) = (st.current_layout_id, default_id) {
+                        if cur_id != def_id && cur_resets_idle {
+                            act.revert_to = Some(def_id);
+                        }
+                    }
+                }
+                if sleep_to > 0 && elapsed >= Duration::from_secs(sleep_to) && !st.is_asleep {
+                    act.sleep = true;
+                }
+                if act.revert_to.is_some() || act.sleep {
+                    actions.push(act);
+                }
             }
         });
 
-        // Idle revert: if elapsed >= idle timeout AND current layout is not
-        // default AND current layout doesn't itself reset the idle timer.
-        if idle_to > 0 && elapsed >= Duration::from_secs(idle_to) {
-            let cur = CURRENT_LAYOUT_ID.with(|c| c.get());
-            let cur_resets_idle = CURRENT_BUNDLE.with(|b| {
-                let bundle = b.borrow();
-                let Some(bundle) = bundle.as_ref() else { return false };
-                let Some(cur_id) = cur else { return false };
-                bundle.layouts.iter().find(|l| l.id == cur_id)
-                    .map(|l| l.resets_idle_timer)
-                    .unwrap_or(false)
-            });
-            if let (Some(cur_id), Some(def_id)) = (cur, default_id) {
-                if cur_id != def_id && cur_resets_idle {
-                    info!("idle timeout reached → reverting to default layout");
-                    render_layout(&window, def_id);
-                }
+        for a in actions {
+            if let Some(layout_id) = a.revert_to {
+                info!("idle timeout reached → reverting display {} to default", a.display_id);
+                render_layout(a.display_id, layout_id);
             }
-        }
-
-        // Sleep: fire CEC standby once, mark asleep.
-        if sleep_to > 0
-            && elapsed >= Duration::from_secs(sleep_to)
-            && !IS_ASLEEP.with(|c| c.get())
-        {
-            info!("sleep timeout reached → CEC standby");
-            cec::standby();
-            IS_ASLEEP.with(|c| c.set(true));
+            if a.sleep {
+                info!("sleep timeout reached on display {} → CEC standby", a.display_id);
+                cec::standby();
+                DISPLAYS.with(|ds| {
+                    if let Some(st) = ds.borrow_mut().get_mut(&a.display_id) {
+                        st.is_asleep = true;
+                    }
+                });
+            }
         }
 
         gtk::glib::ControlFlow::Continue
@@ -289,20 +311,17 @@ fn query_displays() -> Vec<(String, u32, u32)> {
     let Ok(entries) = std::fs::read_dir("/sys/class/drm") else { return out };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        // Skip non-HDMI connectors and the "card" parents
         if !name.contains("-HDMI-") && !name.contains("-DP-") { continue; }
         let path = entry.path();
         let status = std::fs::read_to_string(path.join("status")).unwrap_or_default();
         if status.trim() != "connected" { continue; }
         let modes = std::fs::read_to_string(path.join("modes")).unwrap_or_default();
-        // First line = preferred mode
         let mode = modes.lines().next().unwrap_or("");
         let parts: Vec<&str> = mode.split('x').collect();
         if parts.len() != 2 { continue; }
         let w: u32 = parts[0].parse().unwrap_or(0);
         let h: u32 = parts[1].trim().parse().unwrap_or(0);
         if w == 0 || h == 0 { continue; }
-        // Strip "cardN-" prefix for cleaner name
         let clean_name = name.split_once('-').map(|(_, rest)| rest.to_string()).unwrap_or(name);
         out.push((clean_name, w, h));
     }
@@ -331,33 +350,160 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
     window.set_child(Some(&vbox));
 }
 
-fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle, server_url: &str, kiosk_key: &str) {
-    // Cache the bundle + auth so layout-switch and idle-revert can re-render
-    // without needing a full reload.
+/// Render a fresh bundle: rebuild the per-display window set, restart GPIO
+/// workers, recompute warm-camera needs across all displays.
+fn render_bundle(
+    app: &Application,
+    pairing_window: &ApplicationWindow,
+    bundle: KioskBundle,
+    server_url: &str,
+    kiosk_key: &str,
+) {
     CURRENT_BUNDLE.with(|b| *b.borrow_mut() = Some(bundle.clone()));
     CURRENT_AUTH.with(|a| *a.borrow_mut() = Some((server_url.to_string(), kiosk_key.to_string())));
-    mark_activity();
 
-    let target_layout_id = bundle.display.default_layout_id
-        .or_else(|| bundle.layouts.iter().find(|l| l.is_default).map(|l| l.id));
+    // Restart GPIO workers (always — even if list is empty, this drops the old set).
+    gpio::start_workers(&bundle.gpio_bindings, server_url, kiosk_key);
 
-    let Some(target_layout_id) = target_layout_id else {
-        warn!("display has no default layout");
-        clear_warm_cameras();
-        CURRENT_LAYOUT_ID.with(|c| c.set(None));
-        show_logo(window);
+    let displays = bundle.normalized_displays();
+    if displays.is_empty() {
+        warn!("bundle has no displays");
+        show_logo(pairing_window);
         return;
-    };
+    }
 
-    render_layout(window, target_layout_id);
+    // Match GDK monitors to bundle displays by index. Bundle display 0 → GDK
+    // monitor 0, etc. v1 simple ordering — re-binding will land if/when the
+    // admin UI exposes a mapping. Falls back to overlapping windows on a
+    // single physical screen if the kiosk has fewer monitors than bundle
+    // displays (rare on Pi5).
+    let gdk_monitors: Vec<gtk::gdk::Monitor> = WidgetExt::display(pairing_window)
+        .monitors()
+        .iter::<gtk::gdk::Monitor>()
+        .flatten()
+        .collect();
+
+    // Tear down any previous per-display windows we no longer need.
+    let keep_ids: std::collections::HashSet<u32> = displays.iter().map(|d| d.id).collect();
+    let to_remove: Vec<u32> = DISPLAYS.with(|ds| {
+        ds.borrow().keys().filter(|id| !keep_ids.contains(id)).copied().collect()
+    });
+    for id in to_remove {
+        if let Some(st) = DISPLAYS.with(|ds| ds.borrow_mut().remove(&id)) {
+            st.window.close();
+        }
+    }
+
+    // Compute global warm-camera set: union across all displays' current/needed cameras.
+    let mut globally_needed: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for (i, bd) in displays.iter().enumerate() {
+        let target_id = pick_initial_layout(bd);
+        if let Some(target_id) = target_id {
+            if let Some(layout) = bd.layouts.iter().find(|l| l.id == target_id) {
+                for cell in &layout.cells {
+                    if cell.content_type == "camera" {
+                        if let Some(id) = cell.camera_id { globally_needed.insert(id); }
+                    }
+                }
+                for id in &layout.preload_camera_ids { globally_needed.insert(*id); }
+            }
+        }
+        // Pre-touch the monitor binding to silence warnings about unused var.
+        let _ = gdk_monitors.get(i);
+    }
+
+    // Stop pipelines for cameras no longer needed by any display.
+    WARM_CAMERAS.with(|w| {
+        let mut warm = w.borrow_mut();
+        let stale: Vec<u32> = warm.keys().filter(|id| !globally_needed.contains(id)).copied().collect();
+        for id in stale {
+            if let Some((pipe, _, _)) = warm.remove(&id) {
+                info!("stopping pipeline for camera {id} (no longer needed by any display)");
+                pipeline::stop(&pipe);
+            }
+        }
+    });
+
+    // Build/reuse window per bundle display, then render its initial layout.
+    let mut new_state: HashMap<u32, DisplayState> = HashMap::new();
+    for (i, bd) in displays.iter().enumerate() {
+        let existing = DISPLAYS.with(|ds| ds.borrow_mut().remove(&bd.id));
+        let window = match existing {
+            Some(st) => st.window,
+            None => {
+                let w = ApplicationWindow::builder()
+                    .application(app)
+                    .title(format!("BetterFrame — {}", bd.name))
+                    .fullscreened(true)
+                    .build();
+                let provider = gtk::CssProvider::new();
+                provider.load_from_string("window { background-color: #000000; }");
+                gtk::style_context_add_provider_for_display(
+                    &WidgetExt::display(&w),
+                    &provider,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+                w.present();
+                if let Some(monitor) = gdk_monitors.get(i) {
+                    w.fullscreen_on_monitor(monitor);
+                }
+                w
+            }
+        };
+        new_state.insert(bd.id, DisplayState {
+            window,
+            current_layout_id: None,
+            last_activity: Instant::now(),
+            is_asleep: false,
+        });
+    }
+    DISPLAYS.with(|ds| *ds.borrow_mut() = new_state);
+
+    // Hide the pairing window now that real displays are up (if we created any).
+    if !displays.is_empty() {
+        pairing_window.set_visible(false);
+    }
+
+    // Now render each display's initial layout.
+    for bd in &displays {
+        let target = pick_initial_layout(bd);
+        if let Some(layout_id) = target {
+            render_layout(bd.id, layout_id);
+        } else {
+            warn!("display {} has no default layout", bd.id);
+            DISPLAYS.with(|ds| {
+                if let Some(st) = ds.borrow_mut().get_mut(&bd.id) {
+                    show_logo(&st.window);
+                    st.current_layout_id = None;
+                }
+            });
+        }
+    }
 }
 
-/// Render a specific layout id from the cached bundle. If not found, fall back
-/// to the display's default layout. If neither exists, show the logo.
-fn render_layout(window: &ApplicationWindow, layout_id: u32) {
-    mark_activity();
+fn pick_initial_layout(bd: &BundleDisplayWithLayouts) -> Option<u32> {
+    bd.default_layout_id
+        .or_else(|| bd.layouts.iter().find(|l| l.is_default).map(|l| l.id))
+        .or_else(|| bd.layouts.first().map(|l| l.id))
+}
 
-    // Snapshot what we need out of the cached bundle.
+/// Find which display owns a given layout_id and render it there.
+fn switch_layout_anywhere(layout_id: u32) {
+    let bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
+    let Some(bundle) = bundle else { return };
+    for bd in bundle.normalized_displays() {
+        if bd.layouts.iter().any(|l| l.id == layout_id) {
+            render_layout(bd.id, layout_id);
+            return;
+        }
+    }
+    warn!("switch_layout: layout {layout_id} not found on any display");
+}
+
+/// Render a specific layout id on a specific display.
+fn render_layout(display_id: u32, layout_id: u32) {
+    mark_activity(display_id);
+
     let snapshot: Option<(KioskBundle, String, String)> = CURRENT_BUNDLE.with(|b| {
         let bundle = b.borrow();
         let bundle = bundle.as_ref()?.clone();
@@ -367,59 +513,59 @@ fn render_layout(window: &ApplicationWindow, layout_id: u32) {
     });
     let Some((bundle, server_url, kiosk_key)) = snapshot else {
         warn!("render_layout: no cached bundle yet");
-        show_logo(window);
         return;
     };
 
-    let layout = bundle.layouts.iter().find(|l| l.id == layout_id)
+    let displays = bundle.normalized_displays();
+    let Some(bd) = displays.iter().find(|d| d.id == display_id) else {
+        warn!("render_layout: display {display_id} not in bundle");
+        return;
+    };
+
+    let layout = bd.layouts.iter().find(|l| l.id == layout_id)
         .or_else(|| {
-            warn!("render_layout: layout {layout_id} not found, falling back to default");
-            bundle.display.default_layout_id
-                .and_then(|did| bundle.layouts.iter().find(|l| l.id == did))
-                .or_else(|| bundle.layouts.iter().find(|l| l.is_default))
+            warn!("render_layout: layout {layout_id} not on display {display_id}, falling back to default");
+            bd.default_layout_id
+                .and_then(|did| bd.layouts.iter().find(|l| l.id == did))
+                .or_else(|| bd.layouts.iter().find(|l| l.is_default))
         });
 
     let Some(layout) = layout else {
-        warn!("render_layout: no usable layout");
-        clear_warm_cameras();
-        CURRENT_LAYOUT_ID.with(|c| c.set(None));
-        show_logo(window);
+        warn!("render_layout: no usable layout on display {display_id}");
+        DISPLAYS.with(|ds| {
+            if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
+                show_logo(&st.window);
+                st.current_layout_id = None;
+            }
+        });
         return;
     };
 
+    // Update per-display layout id BEFORE recomputing warm-cameras so the
+    // union across displays is correct.
+    DISPLAYS.with(|ds| {
+        if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
+            st.current_layout_id = Some(layout.id);
+        }
+    });
+
+    info!("rendering layout '{}' (id {}) on display {} ({}x{} grid, {} cells)",
+        layout.name, layout.id, display_id, layout.grid_cols, layout.grid_rows, layout.cells.len());
+
     if layout.cells.is_empty() {
         warn!("layout has no cells");
-        clear_warm_cameras();
-        CURRENT_LAYOUT_ID.with(|c| c.set(Some(layout.id)));
-        show_logo(window);
+        recompute_warm_cameras(&bundle);
+        DISPLAYS.with(|ds| {
+            if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
+                show_logo(&st.window);
+            }
+        });
         return;
     }
 
-    CURRENT_LAYOUT_ID.with(|c| c.set(Some(layout.id)));
-
-    info!("rendering layout '{}' (id {}) with {}x{} grid, {} cells",
-        layout.name, layout.id, layout.grid_cols, layout.grid_rows, layout.cells.len());
-
-    // Compute which cameras are needed: cells with content_type=camera + preload_camera_ids
-    let mut needed: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    for cell in &layout.cells {
-        if cell.content_type == "camera" {
-            if let Some(id) = cell.camera_id { needed.insert(id); }
-        }
-    }
-    for id in &layout.preload_camera_ids { needed.insert(*id); }
-
-    // Stop pipelines for cameras no longer needed
-    WARM_CAMERAS.with(|w| {
-        let mut warm = w.borrow_mut();
-        let stale: Vec<u32> = warm.keys().filter(|id| !needed.contains(id)).copied().collect();
-        for id in stale {
-            if let Some((pipe, _, _)) = warm.remove(&id) {
-                info!("stopping pipeline for camera {id} (no longer needed)");
-                pipeline::stop(&pipe);
-            }
-        }
-    });
+    // Recompute warm-camera set across ALL displays (the union), then drop
+    // pipelines no longer needed anywhere.
+    recompute_warm_cameras(&bundle);
 
     let server_url = server_url.as_str();
     let kiosk_key = kiosk_key.as_str();
@@ -430,13 +576,12 @@ fn render_layout(window: &ApplicationWindow, layout_id: u32) {
     grid.set_vexpand(true);
     grid.set_hexpand(true);
 
-    let cam_map: std::collections::HashMap<u32, &crate::bundle::BundleCamera> =
+    let cam_map: HashMap<u32, &crate::bundle::BundleCamera> =
         bundle.cameras.iter().map(|c| (c.id, c)).collect();
 
-    // Total grid area for the heuristic
     let total_area = (layout.grid_cols.max(1) * layout.grid_rows.max(1)) as f32;
 
-    // Ensure preloaded cameras have pipelines even if not visible (use sub for warmth)
+    // Ensure preloaded cameras have pipelines even if not visible.
     for cam_id in &layout.preload_camera_ids {
         if let Some(cam) = cam_map.get(cam_id) {
             ensure_warm(*cam_id, cam, None, 0.0);
@@ -458,7 +603,6 @@ fn render_layout(window: &ApplicationWindow, layout_id: u32) {
                             });
                             picture.set_vexpand(true);
                             picture.set_hexpand(true);
-                            // Wrap in Overlay so we can stack a stream-role badge on top
                             let overlay = gtk::Overlay::new();
                             overlay.set_child(Some(&picture));
                             overlay.set_vexpand(true);
@@ -520,13 +664,40 @@ fn render_layout(window: &ApplicationWindow, layout_id: u32) {
         );
     }
 
-    window.set_child(Some(&grid));
+    DISPLAYS.with(|ds| {
+        if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
+            st.window.set_child(Some(&grid));
+        }
+    });
 }
 
-fn clear_warm_cameras() {
+/// Compute the union of cameras needed across all displays' current layouts +
+/// preload sets, then drop any warm pipelines outside that set.
+fn recompute_warm_cameras(bundle: &KioskBundle) {
+    let mut needed: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let displays = bundle.normalized_displays();
+    DISPLAYS.with(|ds| {
+        for (display_id, st) in ds.borrow().iter() {
+            let Some(bd) = displays.iter().find(|d| d.id == *display_id) else { continue };
+            let Some(cur_id) = st.current_layout_id else { continue };
+            let Some(layout) = bd.layouts.iter().find(|l| l.id == cur_id) else { continue };
+            for cell in &layout.cells {
+                if cell.content_type == "camera" {
+                    if let Some(id) = cell.camera_id { needed.insert(id); }
+                }
+            }
+            for id in &layout.preload_camera_ids { needed.insert(*id); }
+        }
+    });
     WARM_CAMERAS.with(|w| {
-        for (_, (pipe, _, _)) in w.borrow().iter() { pipeline::stop(pipe); }
-        w.borrow_mut().clear();
+        let mut warm = w.borrow_mut();
+        let stale: Vec<u32> = warm.keys().filter(|id| !needed.contains(id)).copied().collect();
+        for id in stale {
+            if let Some((pipe, _, _)) = warm.remove(&id) {
+                info!("stopping pipeline for camera {id} (no longer needed)");
+                pipeline::stop(&pipe);
+            }
+        }
     });
 }
 
@@ -568,7 +739,6 @@ fn ensure_warm(
 ) -> Option<(gtk::gdk::Paintable, char)> {
     let (uri, desired_badge) = cam.pick_stream(selector, area_fraction)?;
 
-    // Check cached: if badge matches desired, reuse. Else swap.
     let cached = WARM_CAMERAS.with(|w| {
         w.borrow().get(&cam_id).map(|(p, paint, b)| (p.clone(), paint.clone(), *b))
     });

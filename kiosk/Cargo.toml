@@ -33,3 +33,4 @@ tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
 url = "2"
 webkit6 = "0.4"
+gpiod = "0.3"

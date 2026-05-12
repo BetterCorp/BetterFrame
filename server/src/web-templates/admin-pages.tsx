@@ -8,6 +8,7 @@ import type {
   Display,
   Entity,
   Kiosk,
+  KioskGpioBinding,
   Label,
   Layout as LayoutType,
   LayoutCell,
@@ -691,6 +692,31 @@ export function EntityEditPage(props: EntityEditPageProps) {
                 </select>
               </div>
             )}
+            {e.type === "camera" && e.camera_id != null && (
+              <div class="form-group">
+                <label>Live Preview</label>
+                <div style="background:#111827; border-radius:4px; overflow:hidden; aspect-ratio:16/9; display:flex; align-items:center; justify-content:center">
+                  <img
+                    id={`snap-${String(e.id)}`}
+                    src={`/admin/entities/${e.id}/snapshot?t=${String(Date.now())}`}
+                    alt="Camera snapshot"
+                    style="width:100%; height:100%; object-fit:contain; display:block"
+                    {...{ "onerror": "this.style.display='none'; var s=this.nextElementSibling; if(s) s.style.display='block';" }}
+                  />
+                  <span style="display:none; color:#fca5a5; font-size:0.85rem">Snapshot failed — camera unreachable or RTSP not configured</span>
+                </div>
+                <div style="margin-top:0.5rem">
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-ghost"
+                    {...{ "onclick": `(function(){var img=document.getElementById('snap-${String(e.id)}'); if(img){img.style.display='block'; img.src='/admin/entities/${String(e.id)}/snapshot?t='+Date.now();}})()` }}
+                  >
+                    Refresh
+                  </button>
+                  <span style="margin-left:0.5rem; color:#666; font-size:0.8rem">Pulls one frame via ffmpeg/gst (up to ~8s).</span>
+                </div>
+              </div>
+            )}
             {e.type === "web" && (
               <div class="form-group">
                 <label for="web_url">URL</label>
@@ -1165,6 +1191,7 @@ interface KioskEditProps {
   allLabels: Label[];
   displays?: Display[];
   switchableLayouts?: LayoutType[];
+  gpioBindings?: KioskGpioBinding[];
   error?: string;
   success?: string;
 }
@@ -1282,6 +1309,93 @@ export function KioskEditPage(props: KioskEditProps) {
           ) : (
             <p style="color:#999">No displays associated with this kiosk</p>
           )}
+        </div>
+
+        {/* GPIO bindings */}
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">GPIO Bindings</h2>
+          <p style="color:#666; font-size:0.85rem; margin-bottom:1rem">
+            Each input binding fires an event with the configured topic when the
+            pin's edge triggers. Pi 5's main GPIO chip is <code>gpiochip4</code>;
+            older Pis use <code>gpiochip0</code>.
+          </p>
+          {props.gpioBindings && props.gpioBindings.length > 0 ? (
+            <div class="table-wrap" style="margin-bottom:1rem">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Chip</th>
+                    <th>Pin</th>
+                    <th>Dir</th>
+                    <th>Pull</th>
+                    <th>Edge</th>
+                    <th>Topic</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {props.gpioBindings.map((g) => (
+                    <tr>
+                      <td style="font-family:monospace; font-size:0.85rem">{g.chip}</td>
+                      <td style="font-family:monospace">{String(g.pin)}</td>
+                      <td><span class="badge badge-gray">{g.direction}</span></td>
+                      <td style="font-size:0.85rem">{g.pull ?? "—"}</td>
+                      <td style="font-size:0.85rem">{g.edge ?? "—"}</td>
+                      <td style="font-family:monospace; font-size:0.85rem">{g.topic}</td>
+                      <td>
+                        <form method="post" action={`/admin/kiosks/${k.id}/gpio/${g.id}/delete`} style="display:inline">
+                          <button type="submit" class="btn btn-sm btn-danger" {...{"onclick": "return confirm('Remove GPIO binding?')"}}>×</button>
+                        </form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p style="color:#999; margin-bottom:1rem">No GPIO bindings configured</p>
+          )}
+
+          <form method="post" action={`/admin/kiosks/${k.id}/gpio`} style="display:grid; grid-template-columns:repeat(6, 1fr) auto; gap:0.5rem; align-items:end">
+            <div>
+              <label style="font-size:0.75rem; color:#666">Chip</label>
+              <input name="chip" class="form-input" value="gpiochip0" />
+            </div>
+            <div>
+              <label style="font-size:0.75rem; color:#666">Pin</label>
+              <input name="pin" type="number" class="form-input" required min="0" />
+            </div>
+            <div>
+              <label style="font-size:0.75rem; color:#666">Dir</label>
+              <select name="direction" class="form-input">
+                <option value="in">in</option>
+                <option value="out">out</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:0.75rem; color:#666">Pull</label>
+              <select name="pull" class="form-input">
+                <option value="">—</option>
+                <option value="up">up</option>
+                <option value="down">down</option>
+                <option value="none">none</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:0.75rem; color:#666">Edge</label>
+              <select name="edge" class="form-input">
+                <option value="">—</option>
+                <option value="rising">rising</option>
+                <option value="falling">falling</option>
+                <option value="both">both</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:0.75rem; color:#666">Topic</label>
+              <input name="topic" class="form-input" required placeholder="gpio/button-1" />
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm">Add</button>
+          </form>
         </div>
 
         <div class="card" style="margin-bottom:1.5rem">
@@ -1926,6 +2040,25 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
               <div>Kiosk: <a href={`/admin/kiosks/${d.kiosk_id}`}>{props.kioskName ?? `#${String(d.kiosk_id)}`}</a></div>
             )}
           </div>
+          {props.attachedLayouts.length > 0 && d.kiosk_id ? (
+            <div style="margin-bottom:1rem; padding:0.75rem; background:#f9fafb; border-radius:4px">
+              <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Switch Layout Now</div>
+              <form
+                method="post"
+                action={`/admin/displays/${d.id}/layout/0`}
+                style="display:flex; gap:0.5rem; align-items:center"
+                {...{ "onsubmit": "this.action = this.action.replace(/\\/layout\\/.*/, '/layout/' + this.layout_id.value); return true;" }}
+              >
+                <select name="layout_id" class="form-input" style="flex:1">
+                  {props.attachedLayouts.map((l) => (
+                    <option value={String(l.id)}>{l.name}</option>
+                  ))}
+                </select>
+                <button type="submit" class="btn btn-sm">Switch</button>
+              </form>
+            </div>
+          ) : null}
+
           <form method="post" action={`/admin/displays/${d.id}`}>
             <div class="form-group">
               <label for="name">Name</label>
@@ -2089,4 +2222,136 @@ function formatTime(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+// ---- System Health ----------------------------------------------------------
+
+interface SystemHealthRow {
+  kiosk: Kiosk;
+  online: boolean;
+  bundleMismatch: boolean;
+  expectedBundleVersion: string | null;
+  displays: Display[];
+}
+
+interface SystemHealthPageProps {
+  user: string;
+  rows: SystemHealthRow[];
+}
+
+function tempBadge(temp: number | null) {
+  if (temp == null) return <span class="badge badge-gray">—</span>;
+  const txt = `${temp.toFixed(1)}°C`;
+  if (temp >= 80) return <span class="badge badge-red">{txt}</span>;
+  if (temp >= 70) return <span class="badge" style="background-color:#fef3c7; color:#92400e">{txt}</span>;
+  return <span class="badge badge-green">{txt}</span>;
+}
+
+// ---- Node-RED Embed ---------------------------------------------------
+
+export function NoderedEmbedPage(props: { user: string }) {
+  return (
+    <Layout title="Node-RED" user={props.user} activeNav="nodered">
+      <div style="position:fixed; top:48px; left:220px; right:0; bottom:0; background:#fff">
+        <iframe
+          src="/nrdp/"
+          style="width:100%; height:100%; border:none; display:block"
+          {...{ "sandbox": "allow-same-origin allow-scripts allow-forms allow-popups allow-downloads" }}
+        />
+      </div>
+    </Layout>
+  );
+}
+
+export function SystemHealthPage(props: SystemHealthPageProps) {
+  const total = props.rows.length;
+  const online = props.rows.filter((r) => r.online).length;
+  const hot = props.rows.filter((r) => r.kiosk.cpu_temp_c != null && r.kiosk.cpu_temp_c >= 70).length;
+  const mismatched = props.rows.filter((r) => r.bundleMismatch).length;
+  return (
+    <Layout title="System Health" user={props.user} activeNav="health">
+      <meta http-equiv="refresh" content="30" />
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">Kiosks</div>
+          <div class="stat-value">{String(total)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Online</div>
+          <div class="stat-value" style={online === total ? "color:#065f46" : "color:#92400e"}>{String(online)}/{String(total)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Hot (≥70°C)</div>
+          <div class="stat-value" style={hot > 0 ? "color:#b91c1c" : "color:#065f46"}>{String(hot)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Bundle Mismatch</div>
+          <div class="stat-value" style={mismatched > 0 ? "color:#b91c1c" : "color:#065f46"}>{String(mismatched)}</div>
+        </div>
+      </div>
+      <p style="color:#666; margin-bottom:1rem; font-size:0.85rem">
+        Auto-refresh every 30 seconds. Online = last seen within 5 minutes.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Kiosk</th>
+              <th>Status</th>
+              <th>Last Seen</th>
+              <th>CPU Temp</th>
+              <th>Fan</th>
+              <th>Bundle</th>
+              <th>Displays</th>
+            </tr>
+          </thead>
+          <tbody>
+            {props.rows.length === 0 ? (
+              <tr><td colspan="7" style="text-align:center; color:#999; padding:2rem">No kiosks paired</td></tr>
+            ) : (
+              props.rows.map((row) => {
+                const k = row.kiosk;
+                return (
+                  <tr>
+                    <td><a href={`/admin/kiosks/${k.id}`}><strong>{k.name}</strong></a></td>
+                    <td>
+                      {row.online
+                        ? <span class="badge badge-green">Online</span>
+                        : <span class="badge badge-red">Offline</span>}
+                    </td>
+                    <td style="font-size:0.85rem; white-space:nowrap">{k.last_seen_at ? formatTime(k.last_seen_at) : "Never"}</td>
+                    <td>{tempBadge(k.cpu_temp_c)}</td>
+                    <td style="font-size:0.85rem">
+                      {k.fan_rpm != null ? `${String(k.fan_rpm)} RPM` : "—"}
+                      {k.fan_pwm != null && (
+                        <span style="color:#999"> ({String(k.fan_pwm)}/255)</span>
+                      )}
+                    </td>
+                    <td style="font-size:0.85rem">
+                      {row.bundleMismatch ? (
+                        <span class="badge badge-red" title={`expected ${row.expectedBundleVersion ?? "?"}, have ${k.last_bundle_version ?? "none"}`}>mismatch</span>
+                      ) : k.last_bundle_version ? (
+                        <span class="badge badge-green">{k.last_bundle_version.slice(0, 8)}</span>
+                      ) : (
+                        <span class="badge badge-gray">—</span>
+                      )}
+                    </td>
+                    <td style="font-size:0.85rem">
+                      {row.displays.length === 0 ? (
+                        <span style="color:#999">none</span>
+                      ) : (
+                        row.displays.map((d) => (
+                          <div>{d.name}: {String(d.width_px)}×{String(d.height_px)}</div>
+                        ))
+                      )}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Layout>
+  );
 }

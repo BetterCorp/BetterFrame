@@ -237,6 +237,22 @@ export interface PairingCode {
   extras: Record<string, unknown>;
 }
 
+export type GpioDirection = "in" | "out";
+export type GpioPull = "up" | "down" | "none";
+export type GpioEdge = "rising" | "falling" | "both";
+
+export interface KioskGpioBinding {
+  id: number;
+  kiosk_id: number;
+  chip: string;
+  pin: number;
+  direction: GpioDirection;
+  pull: GpioPull | null;
+  edge: GpioEdge | null;
+  topic: string;
+  created_at: string;
+}
+
 export interface EventLog {
   id: number;
   source_kiosk_id: number | null;

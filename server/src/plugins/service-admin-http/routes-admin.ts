@@ -24,10 +24,14 @@ import {
   LayoutEditPage,
   DisplaysPage,
   DisplayEditPage,
+  SystemHealthPage,
+  NoderedEmbedPage,
   renderCell,
   renderGrid,
 } from "../../web-templates/admin-pages.js";
 import { discover as onvifDiscover } from "../../shared/onvif.js";
+import { generateBundle } from "../../shared/bundle.js";
+import { captureSnapshot } from "../../shared/snapshot.js";
 
 interface DiscoverAddStream {
   profile_name: string;
@@ -250,6 +254,44 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // Redirect /admin to /admin/
   app.get("/admin", () => {
     return new Response(null, { status: 301, headers: { location: "/admin/" } });
+  });
+
+  // ---- System Health --------------------------------------------------------
+
+  app.get("/admin/health", (event) => {
+    const user = event.context.user!;
+    const kiosks = deps.repo.listKiosks();
+    const now = Date.now();
+    let clusterKey: string | undefined;
+    try {
+      const enc = deps.repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
+      if (enc) clusterKey = deps.secrets.decryptString(enc, "cluster");
+    } catch { /* ignore */ }
+
+    const rows = kiosks.map((k) => {
+      const online = k.last_seen_at
+        ? now - new Date(k.last_seen_at).getTime() < 5 * 60 * 1000
+        : false;
+      const displays = deps.repo.listDisplaysForKiosk(k.id);
+      let expectedBundleVersion: string | null = null;
+      try {
+        const b = generateBundle(deps.repo, deps.secrets, k.id, clusterKey);
+        expectedBundleVersion = b?.version ?? null;
+      } catch { /* ignore */ }
+      const bundleMismatch =
+        expectedBundleVersion != null
+        && k.last_bundle_version != null
+        && k.last_bundle_version !== expectedBundleVersion;
+      return {
+        kiosk: k,
+        online,
+        bundleMismatch,
+        expectedBundleVersion,
+        displays,
+      };
+    });
+
+    return htmlPage(SystemHealthPage({ user: user.username, rows }));
   });
 
   // ---- Cameras --------------------------------------------------------------
@@ -511,6 +553,33 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     deps.repo.deleteEntity(id);
     notifyKiosks();
     return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
+  });
+
+  // Camera snapshot — pulls one frame from the entity's main stream and
+  // returns it as JPEG. Used by the EntityEditPage "Test" preview.
+  app.get("/admin/entities/:id/snapshot", async (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const ent = deps.repo.getEntityById(id);
+    if (!ent || ent.type !== "camera" || ent.camera_id == null) {
+      return new Response("Not a camera entity", { status: 404 });
+    }
+    const streams = deps.repo.listCameraStreams(ent.camera_id);
+    const main = streams.find((s) => s.role === "main") ?? streams[0];
+    const cam = deps.repo.getCameraById(ent.camera_id);
+    const rtsp = main?.rtsp_uri ?? cam?.rtsp_url ?? null;
+    if (!rtsp) return new Response("No RTSP URL", { status: 404 });
+
+    const jpeg = await captureSnapshot(rtsp, { timeoutMs: 8000 });
+    if (!jpeg) {
+      return new Response("Snapshot failed (camera unreachable or ffmpeg/gst missing)", { status: 502 });
+    }
+    return new Response(jpeg, {
+      status: 200,
+      headers: {
+        "content-type": "image/jpeg",
+        "cache-control": "no-store",
+      },
+    });
   });
 
   // ---- Kiosks ---------------------------------------------------------------
@@ -1054,6 +1123,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const displays = deps.repo.listDisplaysForKiosk(id);
     const firstDisplay = displays[0];
     const switchableLayouts = firstDisplay ? deps.repo.listLayoutsForDisplay(firstDisplay.id) : [];
+    const gpioBindings = deps.repo.listGpioBindings(id);
     return htmlPage(KioskEditPage({
       user: user.username,
       kiosk,
@@ -1061,7 +1131,43 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       allLabels: deps.repo.listLabels(),
       displays,
       switchableLayouts,
+      gpioBindings,
     }));
+  });
+
+  // ---- GPIO bindings ----------------------------------------------------
+  app.post("/admin/kiosks/:id/gpio", async (event) => {
+    const kioskId = Number(getRouterParam(event, "id"));
+    const body = await readBody<Record<string, string>>(event);
+    const pin = Number(body?.["pin"]);
+    const direction = (body?.["direction"] ?? "in") === "out" ? "out" : "in";
+    const pullRaw = body?.["pull"];
+    const pull = pullRaw === "up" || pullRaw === "down" || pullRaw === "none" ? pullRaw : null;
+    const edgeRaw = body?.["edge"];
+    const edge = edgeRaw === "rising" || edgeRaw === "falling" || edgeRaw === "both" ? edgeRaw : null;
+    const chip = (body?.["chip"] ?? "gpiochip0").trim() || "gpiochip0";
+    const topic = (body?.["topic"] ?? "").trim();
+    if (Number.isFinite(pin) && topic) {
+      deps.repo.createGpioBinding({
+        kiosk_id: kioskId,
+        chip,
+        pin,
+        direction,
+        pull,
+        edge,
+        topic,
+      });
+      notifyKiosks();
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${kioskId}` } });
+  });
+
+  app.post("/admin/kiosks/:id/gpio/:bindingId/delete", (event) => {
+    const kioskId = Number(getRouterParam(event, "id"));
+    const bindingId = Number(getRouterParam(event, "bindingId"));
+    deps.repo.deleteGpioBinding(bindingId);
+    notifyKiosks();
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${kioskId}` } });
   });
 
   app.post("/admin/kiosks/:id", async (event) => {
@@ -1106,13 +1212,39 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // ---- Layout switch ----------------------------------------------------
-  app.post("/admin/kiosks/:id/layout/:layoutId", (event) => {
+  const kioskLayoutSwitch = (event: any) => {
     const id = Number(getRouterParam(event, "id"));
     const layoutId = Number(getRouterParam(event, "layoutId"));
     if (Number.isFinite(id) && Number.isFinite(layoutId)) {
       getCoordinator().sendToKiosk(id, { type: "layout-switch", layout_id: layoutId });
     }
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+  };
+  app.post("/admin/kiosks/:id/layout/:layoutId", kioskLayoutSwitch);
+  app.get("/admin/kiosks/:id/layout/:layoutId", kioskLayoutSwitch);
+
+  const displayLayoutSwitch = (event: any) => {
+    const displayId = Number(getRouterParam(event, "displayId"));
+    const layoutId = Number(getRouterParam(event, "layoutId"));
+    if (Number.isFinite(displayId) && Number.isFinite(layoutId)) {
+      const display = deps.repo.getDisplayById(displayId);
+      if (display?.kiosk_id) {
+        getCoordinator().sendToKiosk(display.kiosk_id, {
+          type: "layout-switch",
+          display_id: displayId,
+          layout_id: layoutId,
+        });
+      }
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/displays/${displayId}` } });
+  };
+  app.post("/admin/displays/:displayId/layout/:layoutId", displayLayoutSwitch);
+  app.get("/admin/displays/:displayId/layout/:layoutId", displayLayoutSwitch);
+
+  // Node-RED embedded page
+  app.get("/admin/nodered", (event) => {
+    const user = event.context.user!;
+    return htmlPage(NoderedEmbedPage({ user: user.username }));
   });
 
   // ---- CEC power commands -----------------------------------------------

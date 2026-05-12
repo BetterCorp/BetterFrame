@@ -1,6 +1,7 @@
 mod server;
 mod bundle;
 mod cec;
+mod gpio;
 mod hwmon;
 mod pipeline;
 mod ui;

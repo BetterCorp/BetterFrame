@@ -4,10 +4,45 @@ use serde::{Deserialize, Serialize};
 pub struct KioskBundle {
     pub kiosk_id: u32,
     pub kiosk_name: String,
-    pub display: BundleDisplay,
+    /// Legacy single-display field (mirrors `displays[0]`). New code should
+    /// iterate `displays` instead.
+    #[serde(default)]
+    pub display: Option<BundleDisplay>,
+    /// Legacy single-display layouts (mirrors `displays[0].layouts`). Kept for
+    /// backward compatibility with older bundles that pre-date multi-display.
+    #[serde(default)]
     pub layouts: Vec<BundleLayout>,
+    /// All physical displays driven by this kiosk.
+    #[serde(default)]
+    pub displays: Vec<BundleDisplayWithLayouts>,
     pub cameras: Vec<BundleCamera>,
+    #[serde(default)]
+    pub gpio_bindings: Vec<BundleGpioBinding>,
     pub version: String,
+}
+
+impl KioskBundle {
+    /// Normalize the bundle: if `displays` is empty (old server), synthesize it
+    /// from the legacy single `display` + `layouts` fields so the rest of the
+    /// kiosk only deals with one shape.
+    pub fn normalized_displays(&self) -> Vec<BundleDisplayWithLayouts> {
+        if !self.displays.is_empty() {
+            return self.displays.clone();
+        }
+        if let Some(d) = &self.display {
+            return vec![BundleDisplayWithLayouts {
+                id: d.id,
+                name: d.name.clone(),
+                width_px: d.width_px,
+                height_px: d.height_px,
+                idle_timeout_seconds: d.idle_timeout_seconds,
+                sleep_timeout_seconds: d.sleep_timeout_seconds,
+                default_layout_id: d.default_layout_id,
+                layouts: self.layouts.clone(),
+            }];
+        }
+        Vec::new()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -19,6 +54,19 @@ pub struct BundleDisplay {
     pub idle_timeout_seconds: u32,
     pub sleep_timeout_seconds: u32,
     pub default_layout_id: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BundleDisplayWithLayouts {
+    pub id: u32,
+    pub name: String,
+    pub width_px: u32,
+    pub height_px: u32,
+    pub idle_timeout_seconds: u32,
+    pub sleep_timeout_seconds: u32,
+    pub default_layout_id: Option<u32>,
+    #[serde(default)]
+    pub layouts: Vec<BundleLayout>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -74,6 +122,17 @@ pub struct BundleStream {
     pub height: Option<u32>,
     pub encoding: Option<String>,
     pub framerate: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BundleGpioBinding {
+    pub id: u32,
+    pub chip: String,
+    pub pin: u32,
+    pub direction: String,
+    pub pull: Option<String>,
+    pub edge: Option<String>,
+    pub topic: String,
 }
 
 impl BundleCamera {

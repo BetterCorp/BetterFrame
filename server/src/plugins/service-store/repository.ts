@@ -22,7 +22,11 @@ import type {
   EntityType,
   EventLog,
   EventSourceType,
+  GpioDirection,
+  GpioEdge,
+  GpioPull,
   Kiosk,
+  KioskGpioBinding,
   KioskLabel,
   Label,
   LabelRole,
@@ -45,6 +49,7 @@ import {
   rowToEntity,
   rowToEventLog,
   rowToKiosk,
+  rowToKioskGpioBinding,
   rowToLabel,
   rowToLayout,
   rowToLayoutCell,
@@ -1375,6 +1380,55 @@ export class Repository {
     this.db.prepare(`DELETE FROM layout_labels WHERE label_id = ?`).run(id);
     this.db.prepare(`DELETE FROM labels WHERE id = ?`).run(id);
     void this.notify("labels", "delete", id);
+  }
+
+  // ===========================================================================
+  // kiosk GPIO bindings
+  // ===========================================================================
+
+  listGpioBindings(kioskId: number): KioskGpioBinding[] {
+    const rs = this.prep(
+      "SELECT * FROM kiosk_gpio_bindings WHERE kiosk_id = ? ORDER BY chip, pin",
+    ).all(kioskId);
+    return rs.map((r) => rowToKioskGpioBinding(r as Record<string, unknown>));
+  }
+
+  getGpioBindingById(id: number): KioskGpioBinding | null {
+    const r = this.prep("SELECT * FROM kiosk_gpio_bindings WHERE id = ?").get(id);
+    return r ? rowToKioskGpioBinding(r as Record<string, unknown>) : null;
+  }
+
+  createGpioBinding(input: {
+    kiosk_id: number;
+    chip?: string;
+    pin: number;
+    direction: GpioDirection;
+    pull?: GpioPull | null;
+    edge?: GpioEdge | null;
+    topic: string;
+  }): KioskGpioBinding {
+    const result = this.prep(
+      `INSERT INTO kiosk_gpio_bindings (kiosk_id, chip, pin, direction, pull, edge, topic)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.kiosk_id,
+      input.chip ?? "gpiochip0",
+      input.pin,
+      input.direction,
+      input.pull ?? null,
+      input.edge ?? null,
+      input.topic,
+    );
+    const id = Number(result.lastInsertRowid);
+    void this.notify("kiosk_gpio_bindings", "create", id);
+    const b = this.getGpioBindingById(id);
+    if (!b) throw new Error("gpio binding vanished after insert");
+    return b;
+  }
+
+  deleteGpioBinding(id: number): void {
+    this.db.prepare(`DELETE FROM kiosk_gpio_bindings WHERE id = ?`).run(id);
+    void this.notify("kiosk_gpio_bindings", "delete", id);
   }
 
   updateLabel(id: number, patch: { name?: string; description?: string | null; color?: string | null }): void {

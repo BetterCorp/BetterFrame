@@ -70,12 +70,37 @@ export interface BundleDisplay {
   default_layout_id: number | null;
 }
 
+export interface BundleDisplayWithLayouts extends BundleDisplay {
+  layouts: BundleLayout[];
+}
+
+export interface BundleGpioBinding {
+  id: number;
+  chip: string;
+  pin: number;
+  direction: "in" | "out";
+  pull: "up" | "down" | "none" | null;
+  edge: "rising" | "falling" | "both" | null;
+  topic: string;
+}
+
 export interface KioskBundle {
   kiosk_id: number;
   kiosk_name: string;
+  /**
+   * @deprecated Use `displays` (array). Kept for backward compat with older
+   * kiosk builds that consume a single display. Mirrors `displays[0]`.
+   */
   display: BundleDisplay;
+  /**
+   * @deprecated Use `displays[N].layouts`. Mirrors `displays[0].layouts` for
+   * older kiosk builds.
+   */
   layouts: BundleLayout[];
+  /** All physical displays driven by this kiosk. New (multi-display) shape. */
+  displays: BundleDisplayWithLayouts[];
   cameras: BundleCamera[];
+  gpio_bindings: BundleGpioBinding[];
   version: string;
 }
 
@@ -88,76 +113,90 @@ export function generateBundle(
   const kiosk = repo.getKioskById(kioskId);
   if (!kiosk) return null;
 
-  // Find display for this kiosk (displays now point to kiosks via kiosk_id)
+  // Find all displays for this kiosk (displays now point to kiosks via kiosk_id)
   const kioskDisplays = repo.listDisplaysForKiosk(kioskId);
   // Fall back to legacy kiosk.display_id if no displays point to this kiosk yet
-  let display = kioskDisplays[0] ?? null;
-  if (!display && kiosk.display_id) {
-    display = repo.getDisplayById(kiosk.display_id);
+  const displays = kioskDisplays.length > 0
+    ? kioskDisplays
+    : (kiosk.display_id ? [repo.getDisplayById(kiosk.display_id)].filter((d): d is NonNullable<typeof d> => d != null) : []);
+
+  if (displays.length === 0) return null;
+
+  // Collect camera IDs across ALL displays' layouts (de-duped).
+  const allLayoutIds = new Set<number>();
+  for (const d of displays) {
+    for (const l of repo.layoutsForDisplayId(d.id)) allLayoutIds.add(l.id);
   }
-  if (!display) return null;
+  const cameras = repo.camerasForLayoutIds([...allLayoutIds]);
 
-  const layouts = repo.layoutsForDisplayId(display.id);
-  const layoutIds = layouts.map((l) => l.id);
-
-  // Collect all cameras referenced by cells in these layouts
-  const cameras = repo.camerasForLayoutIds(layoutIds);
-
-  const defaultLayoutId = display.default_layout_id;
-  const bundleLayouts: BundleLayout[] = layouts.map((l) => {
-    const cells = repo.layoutCells(l.id);
-    let gridCols = 1;
-    let gridRows = 1;
-    for (const c of cells) {
-      const right = c.col + c.col_span;
-      const bottom = c.row + c.row_span;
-      if (right > gridCols) gridCols = right;
-      if (bottom > gridRows) gridRows = bottom;
-    }
-    return {
-      id: l.id,
-      name: l.name,
-      grid_cols: gridCols,
-      grid_rows: gridRows,
-      priority: l.priority,
-      cooling_timeout_seconds: l.cooling_timeout_seconds,
-      preload_camera_ids: l.preload_camera_ids,
-      resets_idle_timer: l.resets_idle_timer,
-      is_default: defaultLayoutId === l.id,
-      cells: cells.map((c) => {
-        // If the cell has an entity, prefer its current content so admin
-        // edits to the entity propagate without forcing a cell-touch. The
-        // bundle still ships the legacy camera_id/web_url/html_content shape
-        // so the existing Rust kiosk consumes it unchanged.
-        let contentType = c.content_type;
-        let cameraId = c.camera_id;
-        let webUrl = c.web_url;
-        let htmlContent = c.html_content;
-        if (c.entity_id != null) {
-          const ent = repo.getEntityById(c.entity_id);
-          if (ent) {
-            contentType = ent.type;
-            cameraId = ent.type === "camera" ? ent.camera_id : null;
-            webUrl = ent.type === "web" ? ent.web_url : null;
-            htmlContent = ent.type === "html" ? ent.html_content : null;
+  function buildLayouts(displayId: number, defaultLayoutId: number | null): BundleLayout[] {
+    const layouts = repo.layoutsForDisplayId(displayId);
+    return layouts.map((l) => {
+      const cells = repo.layoutCells(l.id);
+      let gridCols = 1;
+      let gridRows = 1;
+      for (const c of cells) {
+        const right = c.col + c.col_span;
+        const bottom = c.row + c.row_span;
+        if (right > gridCols) gridCols = right;
+        if (bottom > gridRows) gridRows = bottom;
+      }
+      return {
+        id: l.id,
+        name: l.name,
+        grid_cols: gridCols,
+        grid_rows: gridRows,
+        priority: l.priority,
+        cooling_timeout_seconds: l.cooling_timeout_seconds,
+        preload_camera_ids: l.preload_camera_ids,
+        resets_idle_timer: l.resets_idle_timer,
+        is_default: defaultLayoutId === l.id,
+        cells: cells.map((c) => {
+          // If the cell has an entity, prefer its current content so admin
+          // edits to the entity propagate without forcing a cell-touch. The
+          // bundle still ships the legacy camera_id/web_url/html_content shape
+          // so the existing Rust kiosk consumes it unchanged.
+          let contentType = c.content_type;
+          let cameraId = c.camera_id;
+          let webUrl = c.web_url;
+          let htmlContent = c.html_content;
+          if (c.entity_id != null) {
+            const ent = repo.getEntityById(c.entity_id);
+            if (ent) {
+              contentType = ent.type;
+              cameraId = ent.type === "camera" ? ent.camera_id : null;
+              webUrl = ent.type === "web" ? ent.web_url : null;
+              htmlContent = ent.type === "html" ? ent.html_content : null;
+            }
           }
-        }
-        return {
-          row: c.row,
-          col: c.col,
-          row_span: c.row_span,
-          col_span: c.col_span,
-          content_type: contentType,
-          camera_id: cameraId,
-          stream_selector: c.stream_selector,
-          web_url: webUrl,
-          html_content: htmlContent,
-          cooling_timeout_seconds: c.cooling_timeout_seconds,
-          fit: c.fit,
-        };
-      }),
-    };
-  });
+          return {
+            row: c.row,
+            col: c.col,
+            row_span: c.row_span,
+            col_span: c.col_span,
+            content_type: contentType,
+            camera_id: cameraId,
+            stream_selector: c.stream_selector,
+            web_url: webUrl,
+            html_content: htmlContent,
+            cooling_timeout_seconds: c.cooling_timeout_seconds,
+            fit: c.fit,
+          };
+        }),
+      };
+    });
+  }
+
+  const bundleDisplays: BundleDisplayWithLayouts[] = displays.map((display) => ({
+    id: display.id,
+    name: display.name,
+    width_px: display.width_px,
+    height_px: display.height_px,
+    idle_timeout_seconds: display.idle_timeout_seconds,
+    sleep_timeout_seconds: display.sleep_timeout_seconds,
+    default_layout_id: display.default_layout_id,
+    layouts: buildLayouts(display.id, display.default_layout_id),
+  }));
 
   const bundleCameras: BundleCamera[] = cameras.map((cam) => {
     const streams = repo.listCameraStreams(cam.id);
@@ -188,20 +227,36 @@ export function generateBundle(
     };
   });
 
+  const gpioBindings: BundleGpioBinding[] = repo.listGpioBindings(kioskId).map((g) => ({
+    id: g.id,
+    chip: g.chip,
+    pin: g.pin,
+    direction: g.direction,
+    pull: g.pull,
+    edge: g.edge,
+    topic: g.topic,
+  }));
+
+  // Mirror first display into the legacy top-level `display` + `layouts` so
+  // older kiosk builds keep working unchanged. New builds should read
+  // `displays`.
+  const primary = bundleDisplays[0]!;
   const bundle: KioskBundle = {
     kiosk_id: kioskId,
     kiosk_name: kiosk.name,
     display: {
-      id: display.id,
-      name: display.name,
-      width_px: display.width_px,
-      height_px: display.height_px,
-      idle_timeout_seconds: display.idle_timeout_seconds,
-      sleep_timeout_seconds: display.sleep_timeout_seconds,
-      default_layout_id: display.default_layout_id,
+      id: primary.id,
+      name: primary.name,
+      width_px: primary.width_px,
+      height_px: primary.height_px,
+      idle_timeout_seconds: primary.idle_timeout_seconds,
+      sleep_timeout_seconds: primary.sleep_timeout_seconds,
+      default_layout_id: primary.default_layout_id,
     },
-    layouts: bundleLayouts,
+    layouts: primary.layouts,
+    displays: bundleDisplays,
     cameras: bundleCameras,
+    gpio_bindings: gpioBindings,
     version: "",
   };
 

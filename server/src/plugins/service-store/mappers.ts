@@ -18,7 +18,11 @@ import type {
   EntityType,
   EventLog,
   EventSourceType,
+  GpioDirection,
+  GpioEdge,
+  GpioPull,
   Kiosk,
+  KioskGpioBinding,
   KioskLabel,
   Label,
   LabelRole,
@@ -277,6 +281,22 @@ export function rowToPairingCode(r: Row): PairingCode {
     consumed_at: sn(r["consumed_at"]),
     consumed_by_kiosk_id: nn(r["consumed_by_kiosk_id"]),
     extras: j<Record<string, unknown>>(r["extras"], {}),
+  };
+}
+
+export function rowToKioskGpioBinding(r: Row): KioskGpioBinding {
+  const pullRaw = sn(r["pull"]);
+  const edgeRaw = sn(r["edge"]);
+  return {
+    id: n(r["id"]),
+    kiosk_id: n(r["kiosk_id"]),
+    chip: s(r["chip"]) || "gpiochip0",
+    pin: n(r["pin"]),
+    direction: s(r["direction"]) as GpioDirection,
+    pull: pullRaw ? (pullRaw as GpioPull) : null,
+    edge: edgeRaw ? (edgeRaw as GpioEdge) : null,
+    topic: s(r["topic"]),
+    created_at: s(r["created_at"]),
   };
 }
 

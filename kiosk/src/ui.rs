@@ -1,14 +1,7 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 use url::Url;
-
-thread_local! {
-    /// camera_id → (pipeline, paintable, badge). Pipelines stay warm across
-    /// layout swaps for cameras still referenced or in preload_camera_ids.
-    /// badge is 'M' / 'S' / ' ' indicating which stream is active.
-    static WARM_CAMERAS: RefCell<std::collections::HashMap<u32, (gstreamer::Pipeline, gtk::gdk::Paintable, char)>>
-        = RefCell::new(std::collections::HashMap::new());
-}
 
 use gtk4::prelude::*;
 use gtk4::{self as gtk, Application, ApplicationWindow, Box as GtkBox, Grid, Label, Orientation, Picture};
@@ -21,6 +14,32 @@ use crate::pipeline;
 use crate::server;
 use crate::ws_client;
 use crate::ServerMsg;
+
+thread_local! {
+    /// camera_id → (pipeline, paintable, badge). Pipelines stay warm across
+    /// layout swaps for cameras still referenced or in preload_camera_ids.
+    /// badge is 'M' / 'S' / ' ' indicating which stream is active.
+    static WARM_CAMERAS: RefCell<std::collections::HashMap<u32, (gstreamer::Pipeline, gtk::gdk::Paintable, char)>>
+        = RefCell::new(std::collections::HashMap::new());
+
+    /// Most recently rendered bundle. Used for layout-switch + idle revert.
+    static CURRENT_BUNDLE: RefCell<Option<KioskBundle>> = const { RefCell::new(None) };
+
+    /// Server URL + kiosk key for re-rendering on layout-switch.
+    static CURRENT_AUTH: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
+
+    /// Layout id currently on screen, if any.
+    static CURRENT_LAYOUT_ID: Cell<Option<u32>> = const { Cell::new(None) };
+
+    /// Timestamp of the last "activity" event (render, switch, wake).
+    static LAST_ACTIVITY: RefCell<Instant> = RefCell::new(Instant::now());
+
+    /// True after we've fired CEC standby due to sleep timeout.
+    static IS_ASLEEP: Cell<bool> = const { Cell::new(false) };
+
+    /// Has the idle-watchdog already been installed on the main loop?
+    static WATCHDOG_INSTALLED: Cell<bool> = const { Cell::new(false) };
+}
 
 const APP_ID: &str = "dev.betterframe.kiosk";
 const BETTERFRAME_LOGO_SVG: &str = include_str!("../../server/src/web-static/betterframe-logo.svg");
@@ -71,9 +90,27 @@ fn activate(app: &Application) {
             key
         };
 
-        let bundle = server::fetch_bundle(&server, &key);
-        info!("bundle: {} cameras, {} layouts", bundle.cameras.len(), bundle.layouts.len());
-        let _ = tx.send(WorkerMsg::RenderBundle(bundle, server.clone(), key.clone()));
+        // Try fetching live bundle. If server unreachable, fall back to
+        // cached on-disk bundle and keep retrying every 30s in the background.
+        let initial = match server::fetch_bundle(&server, &key) {
+            Some(b) => {
+                info!("bundle: {} cameras, {} layouts", b.cameras.len(), b.layouts.len());
+                Some(b)
+            }
+            None => {
+                if let Some(cached) = server::load_cached_bundle() {
+                    warn!("offline mode: rendering cached bundle");
+                    Some(cached)
+                } else {
+                    warn!("no bundle available (server unreachable, no cache)");
+                    None
+                }
+            }
+        };
+
+        if let Some(bundle) = initial {
+            let _ = tx.send(WorkerMsg::RenderBundle(bundle, server.clone(), key.clone()));
+        }
 
         // Spawn WS client in a separate thread for live updates
         let server_ws = server.clone();
@@ -87,22 +124,55 @@ fn activate(app: &Application) {
             ws_client::run(&server_ws, &key_ws, ws_tx);
         });
 
+        // Background retry thread: if we couldn't fetch a live bundle on boot,
+        // try again every 30s until we get one. Once fetched, send a render.
+        let retry_tx = tx.clone();
+        let retry_server = server.clone();
+        let retry_key = key.clone();
+        std::thread::spawn(move || {
+            // Only loop while we have no live bundle yet — best-effort heuristic:
+            // we attempt once, then sleep. If server unreachable each time we
+            // keep waiting; once a fetch succeeds we push a fresh render.
+            // After first success we exit; subsequent updates flow via WS.
+            loop {
+                std::thread::sleep(Duration::from_secs(30));
+                if let Some(b) = server::fetch_bundle(&retry_server, &retry_key) {
+                    info!("offline-retry: fresh bundle fetched, rendering");
+                    let _ = retry_tx.send(WorkerMsg::RenderBundle(
+                        b,
+                        retry_server.clone(),
+                        retry_key.clone(),
+                    ));
+                    return;
+                }
+            }
+        });
+
         // Listen for WS messages and dispatch
         std::thread::spawn(move || {
             for msg in ws_rx {
                 match msg {
                     ServerMsg::ReloadBundle => {
                         info!("reloading bundle");
-                        let bundle = server::fetch_bundle(&server_for_reload, &key_for_reload);
-                        let _ = tx_for_reload.send(WorkerMsg::RenderBundle(
-                            bundle,
-                            server_for_reload.clone(),
-                            key_for_reload.clone(),
-                        ));
+                        match server::fetch_bundle(&server_for_reload, &key_for_reload) {
+                            Some(bundle) => {
+                                let _ = tx_for_reload.send(WorkerMsg::RenderBundle(
+                                    bundle,
+                                    server_for_reload.clone(),
+                                    key_for_reload.clone(),
+                                ));
+                            }
+                            None => warn!("reload-bundle: fetch failed, keeping current render"),
+                        }
                     }
                     ServerMsg::Standby => cec::standby(),
-                    ServerMsg::Wake => cec::wake(),
+                    ServerMsg::Wake => {
+                        let _ = tx_for_reload.send(WorkerMsg::Wake);
+                    }
                     ServerMsg::Fan(pwm) => { hwmon::set_fan(pwm); }
+                    ServerMsg::SwitchLayout(id) => {
+                        let _ = tx_for_reload.send(WorkerMsg::SwitchLayout(id));
+                    }
                 }
             }
         });
@@ -122,7 +192,18 @@ fn activate(app: &Application) {
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 WorkerMsg::ShowPairingCode(code) => show_pairing_code(&window_clone, &code),
-                WorkerMsg::RenderBundle(bundle, server, key) => render_bundle(&window_clone, bundle, &server, &key),
+                WorkerMsg::RenderBundle(bundle, server, key) => {
+                    render_bundle(&window_clone, bundle, &server, &key);
+                    install_idle_watchdog(&window_clone);
+                }
+                WorkerMsg::SwitchLayout(id) => {
+                    render_layout(&window_clone, id);
+                }
+                WorkerMsg::Wake => {
+                    cec::wake();
+                    IS_ASLEEP.with(|c| c.set(false));
+                    mark_activity();
+                }
             }
         }
         gtk::glib::ControlFlow::Continue
@@ -132,6 +213,73 @@ fn activate(app: &Application) {
 enum WorkerMsg {
     ShowPairingCode(String),
     RenderBundle(KioskBundle, String, String),
+    SwitchLayout(u32),
+    Wake,
+}
+
+/// Reset activity timer. If we were asleep, wake the display first.
+fn mark_activity() {
+    LAST_ACTIVITY.with(|t| *t.borrow_mut() = Instant::now());
+    if IS_ASLEEP.with(|c| c.get()) {
+        info!("activity while asleep → waking display");
+        cec::wake();
+        IS_ASLEEP.with(|c| c.set(false));
+    }
+}
+
+/// Install the once-per-second watchdog that enforces idle/sleep timeouts.
+/// Safe to call multiple times — installs at most once.
+fn install_idle_watchdog(window: &ApplicationWindow) {
+    if WATCHDOG_INSTALLED.with(|c| c.get()) { return; }
+    WATCHDOG_INSTALLED.with(|c| c.set(true));
+    let window = window.clone();
+    gtk::glib::timeout_add_local(Duration::from_secs(1), move || {
+        let elapsed = LAST_ACTIVITY.with(|t| t.borrow().elapsed());
+
+        // Need the bundle to read display timeouts + default layout.
+        let (idle_to, sleep_to, default_id) = CURRENT_BUNDLE.with(|b| {
+            match b.borrow().as_ref() {
+                Some(bundle) => (
+                    bundle.display.idle_timeout_seconds as u64,
+                    bundle.display.sleep_timeout_seconds as u64,
+                    bundle.display.default_layout_id,
+                ),
+                None => (0, 0, None),
+            }
+        });
+
+        // Idle revert: if elapsed >= idle timeout AND current layout is not
+        // default AND current layout doesn't itself reset the idle timer.
+        if idle_to > 0 && elapsed >= Duration::from_secs(idle_to) {
+            let cur = CURRENT_LAYOUT_ID.with(|c| c.get());
+            let cur_resets_idle = CURRENT_BUNDLE.with(|b| {
+                let bundle = b.borrow();
+                let Some(bundle) = bundle.as_ref() else { return false };
+                let Some(cur_id) = cur else { return false };
+                bundle.layouts.iter().find(|l| l.id == cur_id)
+                    .map(|l| l.resets_idle_timer)
+                    .unwrap_or(false)
+            });
+            if let (Some(cur_id), Some(def_id)) = (cur, default_id) {
+                if cur_id != def_id && cur_resets_idle {
+                    info!("idle timeout reached → reverting to default layout");
+                    render_layout(&window, def_id);
+                }
+            }
+        }
+
+        // Sleep: fire CEC standby once, mark asleep.
+        if sleep_to > 0
+            && elapsed >= Duration::from_secs(sleep_to)
+            && !IS_ASLEEP.with(|c| c.get())
+        {
+            info!("sleep timeout reached → CEC standby");
+            cec::standby();
+            IS_ASLEEP.with(|c| c.set(true));
+        }
+
+        gtk::glib::ControlFlow::Continue
+    });
 }
 
 /// Query connected HDMI displays from sysfs. Returns (name, width, height).
@@ -184,16 +332,57 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
 }
 
 fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle, server_url: &str, kiosk_key: &str) {
-    let layout = match bundle.display.default_layout_id {
-        Some(default_layout_id) => bundle.layouts.iter()
-            .find(|l| l.id == default_layout_id)
-            .or_else(|| bundle.layouts.iter().find(|l| l.is_default)),
-        None => None,
-    };
+    // Cache the bundle + auth so layout-switch and idle-revert can re-render
+    // without needing a full reload.
+    CURRENT_BUNDLE.with(|b| *b.borrow_mut() = Some(bundle.clone()));
+    CURRENT_AUTH.with(|a| *a.borrow_mut() = Some((server_url.to_string(), kiosk_key.to_string())));
+    mark_activity();
 
-    let Some(layout) = layout else {
+    let target_layout_id = bundle.display.default_layout_id
+        .or_else(|| bundle.layouts.iter().find(|l| l.is_default).map(|l| l.id));
+
+    let Some(target_layout_id) = target_layout_id else {
         warn!("display has no default layout");
         clear_warm_cameras();
+        CURRENT_LAYOUT_ID.with(|c| c.set(None));
+        show_logo(window);
+        return;
+    };
+
+    render_layout(window, target_layout_id);
+}
+
+/// Render a specific layout id from the cached bundle. If not found, fall back
+/// to the display's default layout. If neither exists, show the logo.
+fn render_layout(window: &ApplicationWindow, layout_id: u32) {
+    mark_activity();
+
+    // Snapshot what we need out of the cached bundle.
+    let snapshot: Option<(KioskBundle, String, String)> = CURRENT_BUNDLE.with(|b| {
+        let bundle = b.borrow();
+        let bundle = bundle.as_ref()?.clone();
+        let auth = CURRENT_AUTH.with(|a| a.borrow().clone());
+        let (server_url, kiosk_key) = auth?;
+        Some((bundle, server_url, kiosk_key))
+    });
+    let Some((bundle, server_url, kiosk_key)) = snapshot else {
+        warn!("render_layout: no cached bundle yet");
+        show_logo(window);
+        return;
+    };
+
+    let layout = bundle.layouts.iter().find(|l| l.id == layout_id)
+        .or_else(|| {
+            warn!("render_layout: layout {layout_id} not found, falling back to default");
+            bundle.display.default_layout_id
+                .and_then(|did| bundle.layouts.iter().find(|l| l.id == did))
+                .or_else(|| bundle.layouts.iter().find(|l| l.is_default))
+        });
+
+    let Some(layout) = layout else {
+        warn!("render_layout: no usable layout");
+        clear_warm_cameras();
+        CURRENT_LAYOUT_ID.with(|c| c.set(None));
         show_logo(window);
         return;
     };
@@ -201,12 +390,15 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle, server_url: &s
     if layout.cells.is_empty() {
         warn!("layout has no cells");
         clear_warm_cameras();
+        CURRENT_LAYOUT_ID.with(|c| c.set(Some(layout.id)));
         show_logo(window);
         return;
     }
 
-    info!("rendering layout '{}' with {}x{} grid, {} cells",
-        layout.name, layout.grid_cols, layout.grid_rows, layout.cells.len());
+    CURRENT_LAYOUT_ID.with(|c| c.set(Some(layout.id)));
+
+    info!("rendering layout '{}' (id {}) with {}x{} grid, {} cells",
+        layout.name, layout.id, layout.grid_cols, layout.grid_rows, layout.cells.len());
 
     // Compute which cameras are needed: cells with content_type=camera + preload_camera_ids
     let mut needed: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -228,6 +420,9 @@ fn render_bundle(window: &ApplicationWindow, bundle: KioskBundle, server_url: &s
             }
         }
     });
+
+    let server_url = server_url.as_str();
+    let kiosk_key = kiosk_key.as_str();
 
     let grid = Grid::new();
     grid.set_row_homogeneous(true);

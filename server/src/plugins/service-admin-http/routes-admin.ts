@@ -1052,12 +1052,15 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       role: kl.role,
     }));
     const displays = deps.repo.listDisplaysForKiosk(id);
+    const firstDisplay = displays[0];
+    const switchableLayouts = firstDisplay ? deps.repo.listLayoutsForDisplay(firstDisplay.id) : [];
     return htmlPage(KioskEditPage({
       user: user.username,
       kiosk,
       labels: kioskLabels,
       allLabels: deps.repo.listLabels(),
       displays,
+      switchableLayouts,
     }));
   });
 
@@ -1100,6 +1103,16 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = Number(getRouterParam(event, "id"));
     deps.repo.deleteKiosk(id);
     return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
+  });
+
+  // ---- Layout switch ----------------------------------------------------
+  app.post("/admin/kiosks/:id/layout/:layoutId", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const layoutId = Number(getRouterParam(event, "layoutId"));
+    if (Number.isFinite(id) && Number.isFinite(layoutId)) {
+      getCoordinator().sendToKiosk(id, { type: "layout-switch", layout_id: layoutId });
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
   // ---- CEC power commands -----------------------------------------------

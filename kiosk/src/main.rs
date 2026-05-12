@@ -12,6 +12,8 @@ pub enum ServerMsg {
     Wake,
     /// Some(0..=255) = manual PWM. None = restore auto.
     Fan(Option<u32>),
+    /// Switch to a specific layout by ID (must be present in current bundle).
+    SwitchLayout(u32),
 }
 
 use gtk4::prelude::{ApplicationExt, ApplicationExtManual};

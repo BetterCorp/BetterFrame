@@ -46,6 +46,16 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
                                 } else if text.contains("\"type\":\"wake\"") {
                                     info!("ws: wake received");
                                     let _ = tx.send(ServerMsg::Wake);
+                                } else if text.contains("\"type\":\"layout-switch\"") {
+                                    info!("ws: layout-switch received: {text}");
+                                    let layout_id: Option<u32> = text.split("\"layout_id\":").nth(1)
+                                        .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
+                                        .and_then(|s| s.parse::<u32>().ok());
+                                    if let Some(id) = layout_id {
+                                        let _ = tx.send(ServerMsg::SwitchLayout(id));
+                                    } else {
+                                        warn!("ws: layout-switch missing layout_id");
+                                    }
                                 } else if text.contains("\"type\":\"fan\"") {
                                     info!("ws: fan received: {text}");
                                     let pwm: Option<u32> = if text.contains("\"mode\":\"auto\"") {

@@ -1164,6 +1164,7 @@ interface KioskEditProps {
   labels: Array<{ label_id: number; name: string; role: string }>;
   allLabels: Label[];
   displays?: Display[];
+  switchableLayouts?: LayoutType[];
   error?: string;
   success?: string;
 }
@@ -1212,6 +1213,25 @@ export function KioskEditPage(props: KioskEditProps) {
               <button type="submit" class="btn btn-sm btn-ghost">Standby</button>
             </form>
           </div>
+
+          {props.switchableLayouts && props.switchableLayouts.length > 0 ? (
+            <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
+              <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Switch Layout</div>
+              <form
+                method="post"
+                action={`/admin/kiosks/${k.id}/layout/0`}
+                style="display:flex; gap:0.5rem; align-items:center"
+                {...{ "onsubmit": "this.action = this.action.replace(/\\/layout\\/.*/, '/layout/' + this.layout_id.value); return true;" }}
+              >
+                <select name="layout_id" class="form-input" style="flex:1">
+                  {props.switchableLayouts.map((l) => (
+                    <option value={String(l.id)}>{l.name}</option>
+                  ))}
+                </select>
+                <button type="submit" class="btn btn-sm">Switch</button>
+              </form>
+            </div>
+          ) : null}
 
           <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
             <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Hardware</div>

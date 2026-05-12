@@ -16,6 +16,32 @@ fn state_dir() -> PathBuf {
 
 fn key_file() -> PathBuf { state_dir().join("kiosk.key") }
 fn server_file() -> PathBuf { state_dir().join("server.url") }
+fn bundle_cache_path() -> PathBuf { state_dir().join("bundle.json") }
+
+/// Persist the latest bundle to disk for offline boot.
+pub fn save_bundle(bundle: &KioskBundle) {
+    match serde_json::to_string(bundle) {
+        Ok(text) => {
+            if let Err(e) = fs::write(bundle_cache_path(), text) {
+                tracing::warn!("failed to save bundle cache: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("failed to serialize bundle: {e}"),
+    }
+}
+
+/// Load a cached bundle from disk. Returns None if file missing or invalid.
+pub fn load_cached_bundle() -> Option<KioskBundle> {
+    let path = bundle_cache_path();
+    let text = fs::read_to_string(&path).ok()?;
+    match serde_json::from_str::<KioskBundle>(&text) {
+        Ok(b) => Some(b),
+        Err(e) => {
+            tracing::warn!("cached bundle invalid: {e}");
+            None
+        }
+    }
+}
 
 /// Discover the BetterFrame server.
 pub fn discover_server(override_url: Option<&str>) -> String {
@@ -132,20 +158,38 @@ pub fn poll_claim(server: &str, code: &str) -> (String, String) {
     }
 }
 
-/// Fetch bundle from server.
-pub fn fetch_bundle(server: &str, key: &str) -> KioskBundle {
+/// Fetch bundle from server. Returns None on network/HTTP/parse failure.
+/// On success, also writes the bundle to the on-disk cache.
+pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
     let client = reqwest::blocking::Client::new();
-    let resp = client
+    let resp = match client
         .get(format!("{server}/api/kiosk/bundle"))
         .header("Authorization", format!("Bearer {key}"))
+        .timeout(Duration::from_secs(10))
         .send()
-        .expect("bundle fetch failed");
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("bundle fetch failed: {e}");
+            return None;
+        }
+    };
 
     if !resp.status().is_success() {
-        panic!("Bundle fetch returned {}", resp.status());
+        tracing::warn!("bundle fetch returned {}", resp.status());
+        return None;
     }
 
-    resp.json().expect("bad bundle JSON")
+    match resp.json::<KioskBundle>() {
+        Ok(b) => {
+            save_bundle(&b);
+            Some(b)
+        }
+        Err(e) => {
+            tracing::warn!("bundle parse failed: {e}");
+            None
+        }
+    }
 }
 
 /// Send heartbeat with display geometry + hwmon.

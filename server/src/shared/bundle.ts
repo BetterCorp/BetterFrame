@@ -163,9 +163,15 @@ export function generateBundle(
           if (c.entity_id != null) {
             const ent = repo.getEntityById(c.entity_id);
             if (ent) {
-              contentType = ent.type;
+              // Dashboard entities are surfaced to the kiosk as `web` cells
+              // pointing at /dash/<dashboard_id> — kiosk WebKit handles them
+              // identically to user-supplied web cells.
+              contentType = ent.type === "dashboard" ? "web" : ent.type;
               cameraId = ent.type === "camera" ? ent.camera_id : null;
-              webUrl = ent.type === "web" ? ent.web_url : null;
+              webUrl =
+                ent.type === "web" ? ent.web_url :
+                ent.type === "dashboard" && ent.dashboard_id ? `/dash/${ent.dashboard_id}` :
+                null;
               htmlContent = ent.type === "html" ? ent.html_content : null;
             }
           }

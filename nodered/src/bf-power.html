@@ -1,0 +1,44 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-power", {
+    category: "BetterFrame",
+    color: "#a6d4ff",
+    defaults: {
+      name: { value: "" },
+      config: { value: "", type: "bf-config", required: true },
+      kiosk_id: { value: "" },
+      mode: { value: "wake" },
+    },
+    inputs: 1,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      return this.name || ("bf power " + (this.mode || ""));
+    },
+    paletteLabel: "bf power",
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-power">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-config"><i class="fa fa-cog"></i> BF</label>
+    <input type="text" id="node-input-config" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-kiosk_id"><i class="fa fa-tv"></i> Kiosk ID</label>
+    <input type="number" id="node-input-kiosk_id" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-mode"><i class="fa fa-power-off"></i> Mode</label>
+    <select id="node-input-mode">
+      <option value="wake">wake</option>
+      <option value="standby">standby</option>
+    </select>
+  </div>
+  <div class="form-tips">
+    Override via <code>msg.kiosk_id</code> and <code>msg.mode</code>.
+  </div>
+</script>

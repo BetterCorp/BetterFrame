@@ -35,6 +35,7 @@ default:
         argon2Parallelism: 2
         cookieName: betterframe_session
         totpIssuer: BetterFrame
+        noderedUrl: http://nodered:1880
 
     service-api-http:
       plugin: service-api-http

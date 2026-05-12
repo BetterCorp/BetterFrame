@@ -13,7 +13,7 @@ export type StreamSelector = "auto" | "main" | "sub";
 export type StreamPolicy = "auto" | "always_main" | "always_sub";
 export type LayoutPriority = "hot" | "normal" | "cold";
 export type CellContentType = "none" | "camera" | "web" | "html";
-export type EntityType = "camera" | "html" | "web";
+export type EntityType = "camera" | "html" | "web" | "dashboard";
 
 export interface Entity {
   id: number;
@@ -23,6 +23,8 @@ export interface Entity {
   camera_id: number | null;
   html_content: string | null;
   web_url: string | null;
+  /** Node-RED dashboard tab id; populated when type === "dashboard". */
+  dashboard_id: string | null;
   created_at: string;
 }
 export type DesiredPowerState = "follow_layout" | "on" | "standby";

@@ -225,6 +225,7 @@ export function rowToEntity(r: Row): Entity {
     camera_id: nn(r["camera_id"]),
     html_content: sn(r["html_content"]),
     web_url: sn(r["web_url"]),
+    dashboard_id: sn(r["dashboard_id"]),
     created_at: s(r["created_at"]),
   };
 }

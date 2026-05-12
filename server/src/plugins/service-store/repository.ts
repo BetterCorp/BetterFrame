@@ -564,7 +564,9 @@ export class Repository {
     fit?: "cover" | "contain" | "fill";
   }): LayoutCell {
     // Resolve content fields from the entity (if given). The legacy columns
-    // remain populated for backward-compatible bundle generation.
+    // remain populated for backward-compatible bundle generation. Dashboard
+    // entities materialise as web cells pointing at /dash/<id> so the existing
+    // kiosk's WebKit cell path renders them with no app changes.
     let contentType = input.content_type ?? "none";
     let cameraId: number | null = input.camera_id ?? null;
     let webUrl: string | null = input.web_url ?? null;
@@ -572,9 +574,12 @@ export class Repository {
     if (input.entity_id != null) {
       const ent = this.getEntityById(input.entity_id);
       if (ent) {
-        contentType = ent.type;
+        contentType = ent.type === "dashboard" ? "web" : ent.type;
         cameraId = ent.type === "camera" ? ent.camera_id : null;
-        webUrl = ent.type === "web" ? ent.web_url : null;
+        webUrl =
+          ent.type === "web" ? ent.web_url :
+          ent.type === "dashboard" && ent.dashboard_id ? `/dash/${ent.dashboard_id}` :
+          null;
         htmlContent = ent.type === "html" ? ent.html_content : null;
       }
     }
@@ -628,6 +633,11 @@ export class Repository {
     }
     const ent = this.getEntityById(entityId);
     if (!ent) return;
+    const cellContentType = ent.type === "dashboard" ? "web" : ent.type;
+    const cellWebUrl =
+      ent.type === "web" ? ent.web_url :
+      ent.type === "dashboard" && ent.dashboard_id ? `/dash/${ent.dashboard_id}` :
+      null;
     this.db
       .prepare(
         `UPDATE layout_cells
@@ -640,9 +650,9 @@ export class Repository {
       )
       .run(
         ent.id,
-        ent.type,
+        cellContentType,
         ent.type === "camera" ? ent.camera_id : null,
-        ent.type === "web" ? ent.web_url : null,
+        cellWebUrl,
         ent.type === "html" ? ent.html_content : null,
         cellId,
       );
@@ -1261,10 +1271,11 @@ export class Repository {
     camera_id?: number | null;
     html_content?: string | null;
     web_url?: string | null;
+    dashboard_id?: string | null;
   }): Entity {
     const result = this.prep(
-      `INSERT INTO entities (name, type, description, camera_id, html_content, web_url)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO entities (name, type, description, camera_id, html_content, web_url, dashboard_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.name,
       input.type,
@@ -1272,12 +1283,21 @@ export class Repository {
       input.type === "camera" ? (input.camera_id ?? null) : null,
       input.type === "html" ? (input.html_content ?? null) : null,
       input.type === "web" ? (input.web_url ?? null) : null,
+      input.type === "dashboard" ? (input.dashboard_id ?? null) : null,
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("entities", "create", id);
     const e = this.getEntityById(id);
     if (!e) throw new Error("entity vanished after insert");
     return e;
+  }
+
+  /** Find a dashboard entity by Node-RED tab id (used by the sync flow). */
+  getEntityForDashboard(dashboardId: string): Entity | null {
+    const r = this.prep(
+      `SELECT * FROM entities WHERE type = 'dashboard' AND dashboard_id = ? LIMIT 1`,
+    ).get(dashboardId);
+    return r ? rowToEntity(r as Record<string, unknown>) : null;
   }
 
   updateEntity(
@@ -1288,6 +1308,7 @@ export class Repository {
       camera_id?: number | null;
       html_content?: string | null;
       web_url?: string | null;
+      dashboard_id?: string | null;
     },
   ): void {
     const sets: string[] = [];
@@ -1304,9 +1325,15 @@ export class Repository {
     void this.notify("entities", "update", id);
 
     // Propagate content fields into any cell that uses this entity, so the
-    // legacy cell columns stay aligned for bundle generation.
+    // legacy cell columns stay aligned for bundle generation. Dashboard
+    // entities materialise as `web` cells pointing at /dash/<dashboard_id>.
     const ent = this.getEntityById(id);
     if (!ent) return;
+    const cellContentType = ent.type === "dashboard" ? "web" : ent.type;
+    const cellWebUrl =
+      ent.type === "web" ? ent.web_url :
+      ent.type === "dashboard" && ent.dashboard_id ? `/dash/${ent.dashboard_id}` :
+      null;
     this.db
       .prepare(
         `UPDATE layout_cells
@@ -1317,9 +1344,9 @@ export class Repository {
           WHERE entity_id = ?`,
       )
       .run(
-        ent.type,
+        cellContentType,
         ent.type === "camera" ? ent.camera_id : null,
-        ent.type === "web" ? ent.web_url : null,
+        cellWebUrl,
         ent.type === "html" ? ent.html_content : null,
         id,
       );

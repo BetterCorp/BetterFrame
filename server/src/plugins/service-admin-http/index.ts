@@ -18,6 +18,7 @@ import type { Server } from "srvx";
 import { getRepo } from "../../shared/plugin-registry.js";
 import { initSecrets, type SecretsApi } from "../../shared/secrets.js";
 import { createAuth, type AuthApi } from "../../shared/auth.js";
+import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 import type { Repository } from "../service-store/repository.js";
 
 import { registerMiddleware } from "./middleware.js";
@@ -46,6 +47,7 @@ const ConfigSchema = av.object(
     argon2Parallelism: av.int().min(1).default(2),
     totpIssuer: av.string().minLength(1).default("BetterFrame"),
     cookieName: av.string().minLength(1).default("betterframe_session"),
+    noderedUrl: av.string().minLength(1).default("http://127.0.0.1:1880"),
   },
   { unknownKeys: "strip" },
 );
@@ -75,6 +77,7 @@ export interface AdminDeps {
   auth: AuthApi;
   secrets: SecretsApi;
   cookieName: string;
+  nodered: NoderedBridge;
 }
 
 // ---- Plugin -----------------------------------------------------------------
@@ -113,11 +116,17 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       cookieName: this.config.cookieName,
     });
 
+    const nodered = initNoderedBridge(
+      { baseUrl: this.config.noderedUrl },
+      { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
+    );
+
     const deps: AdminDeps = {
       repo,
       auth,
       secrets,
       cookieName: this.config.cookieName,
+      nodered,
     };
 
     const app = new H3();

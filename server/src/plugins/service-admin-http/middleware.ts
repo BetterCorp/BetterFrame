@@ -1,5 +1,10 @@
 /**
  * Auth & setup gate middleware for admin-http.
+ *
+ * Accepts EITHER a valid session cookie OR an admin-scoped API key in
+ * `Authorization: Bearer <bf-...>`. API-key callers get a synthetic User
+ * record so downstream handlers (which always read `event.context.user`)
+ * keep working unchanged.
  */
 import { type H3, getCookie, getRequestPath } from "h3";
 import type { AdminDeps } from "./index.js";
@@ -9,11 +14,30 @@ declare module "h3" {
   interface H3EventContext {
     user?: User;
     session?: Session;
+    apiKeyPrefix?: string;
   }
 }
 
+function syntheticApiKeyUser(keyPrefix: string): User {
+  return {
+    id: 0,
+    username: `api:${keyPrefix}`,
+    password_hash: "",
+    role: "admin",
+    is_active: true,
+    totp_enabled: false,
+    totp_secret_encrypted: null,
+    recovery_codes_hashed: [],
+    must_change_password: false,
+    failed_login_count: 0,
+    locked_until: null,
+    last_login_at: null,
+    created_at: new Date(0).toISOString(),
+  };
+}
+
 export function registerMiddleware(app: H3, deps: AdminDeps): void {
-  app.use((event) => {
+  app.use(async (event) => {
     const path = getRequestPath(event);
 
     if (
@@ -39,6 +63,22 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
     }
 
     if (path.startsWith("/admin") || path.startsWith("/api/admin")) {
+      // ---- Bearer API key (admin scope) -------------------------------------
+      // Lets Node-RED nodes + scripted automation hit /admin/* without owning
+      // a session cookie. Must come BEFORE the cookie redirect so a missing
+      // cookie + present API key doesn't 302 to /auth/login.
+      const authz = event.req.headers.get("authorization");
+      if (authz && authz.startsWith("Bearer ")) {
+        const token = authz.slice(7);
+        const key = await deps.auth.verifyApiKey(token, event.req.headers.get("x-real-ip"));
+        if (!key || !key.scopes.includes("admin")) {
+          return new Response(null, { status: 401 });
+        }
+        event.context.user = syntheticApiKeyUser(key.key_prefix);
+        event.context.apiKeyPrefix = key.key_prefix;
+        return;
+      }
+
       const cookie = getCookie(event, deps.cookieName);
       if (!cookie) {
         return new Response(null, { status: 302, headers: { location: "/auth/login" } });

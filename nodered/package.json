@@ -1,0 +1,24 @@
+{
+  "name": "@betterframe/nodered-nodes",
+  "version": "0.1.0",
+  "description": "BetterFrame integration nodes for Node-RED.",
+  "license": "AGPL-3.0-only OR Commercial",
+  "keywords": [
+    "node-red",
+    "betterframe"
+  ],
+  "node-red": {
+    "version": ">=3.0.0",
+    "nodes": {
+      "bf-config": "src/bf-config.js",
+      "bf-event-in": "src/bf-event-in.js",
+      "bf-layout-switch": "src/bf-layout-switch.js",
+      "bf-power": "src/bf-power.js",
+      "bf-fan": "src/bf-fan.js",
+      "bf-cameras": "src/bf-cameras.js"
+    },
+    "icons": [
+      "icons"
+    ]
+  }
+}

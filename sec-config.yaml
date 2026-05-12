@@ -44,6 +44,7 @@ default:
         argon2Parallelism: 2
         cookieName: betterframe_session
         totpIssuer: BetterFrame
+        noderedUrl: http://127.0.0.1:1880
 
     # ----- Kiosk-facing REST API -----
     service-api-http:

@@ -1320,4 +1320,77 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
+
+  // ---- JSON API (admin scope) — used by Node-RED bf-cameras node ----------
+  app.get("/api/admin/cameras", (_event) => {
+    const cameras = deps.repo.listCameras();
+    const payload = cameras.map((c) => ({
+      id: c.id,
+      name: c.name,
+      type: c.type,
+      enabled: c.enabled,
+      labels: deps.repo.cameraLabelNames(c.id),
+    }));
+    return new Response(JSON.stringify({ cameras: payload }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+
+  // ---- Dashboard entity sync — pull tabs from Node-RED, mirror as entities --
+  app.post("/admin/entities/sync-dashboards", async (event) => {
+    const result = await syncDashboardsFromNodered(deps);
+    if (isHtmxRequest(event)) {
+      return htmlFragment(
+        `<div class="flash flash-success">Synced: +${String(result.added)} added, ${String(result.updated)} updated, ${String(result.total)} total.</div>`,
+      );
+    }
+    return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
+  });
+}
+
+/**
+ * Pull dashboard tabs from the Node-RED runtime and mirror them as `dashboard`
+ * entities. Idempotent: existing entities matched by dashboard_id get name
+ * updates, new tabs get inserted. Tabs that no longer exist are NOT auto-
+ * deleted — admins might still be using a stale layout cell that points to one,
+ * and dashboards are cheap to leave around.
+ */
+async function syncDashboardsFromNodered(
+  deps: AdminDeps,
+): Promise<{ added: number; updated: number; total: number }> {
+  const tabs = await deps.nodered.listDashboards();
+  let added = 0;
+  let updated = 0;
+  for (const tab of tabs) {
+    const existing = deps.repo.getEntityForDashboard(tab.id);
+    if (existing) {
+      if (existing.name !== tab.name) {
+        // Avoid name collisions with non-dashboard entities of the same name.
+        const collision = deps.repo.getEntityByName(tab.name);
+        const safeName = collision && collision.id !== existing.id
+          ? `${tab.name} (dash ${tab.id.slice(0, 6)})`
+          : tab.name;
+        deps.repo.updateEntity(existing.id, { name: safeName });
+        updated += 1;
+      }
+      continue;
+    }
+    // New dashboard tab — insert.
+    let name = tab.name || `Dashboard ${tab.id.slice(0, 6)}`;
+    if (deps.repo.getEntityByName(name)) {
+      name = `${name} (dash ${tab.id.slice(0, 6)})`;
+    }
+    deps.repo.createEntity({
+      name,
+      type: "dashboard",
+      dashboard_id: tab.id,
+      description: tab.hidden ? "hidden tab" : null,
+    });
+    added += 1;
+  }
+  if (added > 0 || updated > 0) {
+    try { getCoordinator().notifyBundleChanged(); } catch { /* ignore */ }
+  }
+  return { added, updated, total: tabs.length };
 }

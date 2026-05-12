@@ -503,7 +503,11 @@ interface EntitiesPageProps {
 }
 
 function entityBadge(type: string) {
-  const cls = type === "camera" ? "badge-blue" : type === "web" ? "badge-green" : "badge-gray";
+  const cls =
+    type === "camera" ? "badge-blue" :
+    type === "web" ? "badge-green" :
+    type === "dashboard" ? "badge-blue" :
+    "badge-gray";
   return <span class={`badge ${cls}`}>{type}</span>;
 }
 
@@ -511,22 +515,31 @@ function entityDetail(e: Entity): string {
   if (e.type === "camera") return e.camera_id ? `cam #${String(e.camera_id)}` : "—";
   if (e.type === "web") return e.web_url ?? "—";
   if (e.type === "html") return e.html_content ? `${e.html_content.slice(0, 80)}…` : "—";
+  if (e.type === "dashboard") return e.dashboard_id ? `/dash/${e.dashboard_id}` : "—";
   return "—";
 }
 
 export function EntitiesPage(props: EntitiesPageProps) {
+  const dashboards = props.entities.filter((e) => e.type === "dashboard");
+  const others = props.entities.filter((e) => e.type !== "dashboard");
   return (
     <Layout title="Entities" user={props.user} activeNav="entities">
       <div class="section-header">
         <h2 class="section-title">All Entities</h2>
-        <a href="/admin/entities/new" class="btn btn-primary">New Entity</a>
+        <div style="display:flex; gap:0.5rem">
+          <form method="post" action="/admin/entities/sync-dashboards" style="display:inline">
+            <button type="submit" class="btn btn-ghost">Sync Dashboards</button>
+          </form>
+          <a href="/admin/entities/new" class="btn btn-primary">New Entity</a>
+        </div>
       </div>
       <p style="color:#666; margin-bottom:1.25rem">
         Entities are reusable content blocks (a camera reference, an HTML
-        snippet, or a web page). Bind one entity to any number of layout cells —
-        edit the entity once and every cell updates.
+        snippet, a web page, or a Node-RED dashboard tab). Bind one entity to
+        any number of layout cells — edit the entity once and every cell
+        updates.
       </p>
-      <div class="table-wrap">
+      <div class="table-wrap" style="margin-bottom:1.5rem">
         <table>
           <thead>
             <tr>
@@ -536,14 +549,47 @@ export function EntitiesPage(props: EntitiesPageProps) {
             </tr>
           </thead>
           <tbody>
-            {props.entities.length === 0 ? (
+            {others.length === 0 ? (
               <tr><td colspan="3" style="text-align:center; color:#999; padding:2rem">No entities yet</td></tr>
             ) : (
-              props.entities.map((e) => (
+              others.map((e) => (
                 <tr>
                   <td><a href={`/admin/entities/${e.id}`}><strong>{e.name}</strong></a></td>
                   <td>{entityBadge(e.type)}</td>
                   <td style="color:#666; font-size:0.85rem">{entityDetail(e)}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section-header">
+        <h2 class="section-title">Dashboards (Node-RED)</h2>
+      </div>
+      <p style="color:#666; margin-bottom:1rem; font-size:0.85rem">
+        Auto-synced from Node-RED. Press <b>Sync Dashboards</b> after adding or
+        renaming tabs in Node-RED. Editing a dashboard happens in the Node-RED
+        editor.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Tab ID</th>
+              <th>URL</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dashboards.length === 0 ? (
+              <tr><td colspan="3" style="text-align:center; color:#999; padding:2rem">No dashboards synced yet — press Sync.</td></tr>
+            ) : (
+              dashboards.map((e) => (
+                <tr>
+                  <td><a href={`/admin/entities/${e.id}`}><strong>{e.name}</strong></a></td>
+                  <td style="font-family:monospace; font-size:0.8rem; color:#666">{e.dashboard_id ?? "—"}</td>
+                  <td style="color:#666; font-size:0.85rem">{e.dashboard_id ? `/dash/${e.dashboard_id}` : "—"}</td>
                 </tr>
               ))
             )}
@@ -729,9 +775,22 @@ export function EntityEditPage(props: EntityEditPageProps) {
                 <textarea id="html_content" name="html_content" class="form-input" rows="8">{e.html_content ?? ""}</textarea>
               </div>
             )}
+            {e.type === "dashboard" && (
+              <div class="form-group">
+                <label>Node-RED Tab ID</label>
+                <code style="display:block; padding:0.5rem; background:#f9fafb; border-radius:4px; font-size:0.85rem">{e.dashboard_id ?? "—"}</code>
+                <div class="form-hint">
+                  Synced from Node-RED. Resolved as <code>/dash/{e.dashboard_id ?? "?"}</code> in
+                  kiosk bundles. Edit the dashboard contents in the Node-RED editor.
+                </div>
+              </div>
+            )}
 
             <button type="submit" class="btn btn-primary">Save</button>
             <a href="/admin/entities" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
+            {e.type === "dashboard" && (
+              <a href="/admin/nodered" class="btn btn-ghost" style="margin-left:0.5rem" target="_blank" rel="noopener">Open in Node-RED</a>
+            )}
           </form>
         </div>
 

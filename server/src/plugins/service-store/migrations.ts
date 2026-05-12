@@ -602,6 +602,43 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "layout_cells", "fit", "TEXT NOT NULL DEFAULT 'cover'");
   },
 
+  // ---- entities.dashboard — Node-RED Dashboard tab entity type ---------------
+  // Adds dashboard_id column and broadens the type CHECK to include
+  // 'dashboard'. SQLite can't ALTER a CHECK in place — rebuild the table when
+  // the old constraint is detected.
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "entities", "dashboard_id", "TEXT");
+
+    const row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entities'")
+      .get() as { sql?: string } | undefined;
+    if (!row?.sql) return;
+    if (row.sql.includes("'dashboard'")) return; // already migrated
+
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec(`
+      CREATE TABLE entities_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        type TEXT NOT NULL CHECK(type IN ('camera', 'html', 'web', 'dashboard')),
+        description TEXT,
+        camera_id INTEGER REFERENCES cameras(id) ON DELETE CASCADE,
+        html_content TEXT,
+        web_url TEXT,
+        dashboard_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ) STRICT;
+
+      INSERT INTO entities_new (id, name, type, description, camera_id, html_content, web_url, dashboard_id, created_at)
+      SELECT id, name, type, description, camera_id, html_content, web_url, dashboard_id, created_at FROM entities;
+
+      DROP TABLE entities;
+      ALTER TABLE entities_new RENAME TO entities;
+      CREATE INDEX IF NOT EXISTS idx_entities_camera ON entities(camera_id);
+    `);
+    db.exec("PRAGMA foreign_keys = ON");
+  },
+
   // ---- kiosk GPIO bindings ----
   `CREATE TABLE IF NOT EXISTS kiosk_gpio_bindings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

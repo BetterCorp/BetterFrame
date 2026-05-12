@@ -2125,6 +2125,9 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
                       <td><span class={`badge ${l.priority === "hot" ? "badge-red" : l.priority === "cold" ? "badge-blue" : "badge-gray"}`}>{l.priority}</span></td>
                       <td>{d.default_layout_id === l.id ? <span class="badge badge-green">Yes</span> : ""}</td>
                       <td>
+                        <form method="post" action={`/admin/displays/${d.id}/layout/${l.id}`} style="display:inline; margin-right:0.25rem">
+                          <button type="submit" class="btn btn-sm">Show</button>
+                        </form>
                         <form method="post" action={`/admin/displays/${d.id}/layouts/${l.id}/remove`} style="display:inline">
                           <button type="submit" class="btn btn-sm btn-danger" {...{"onclick": "return confirm('Detach this layout from the display?')"}}>Detach</button>
                         </form>

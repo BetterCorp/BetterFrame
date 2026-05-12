@@ -97,7 +97,7 @@ fn run_binding(b: BundleGpioBinding, server: String, key: String, running: Arc<A
         opts = opts.bias(bias);
     }
 
-    let lines = match chip.request_lines(opts) {
+    let mut lines = match chip.request_lines(opts) {
         Ok(l) => l,
         Err(e) => {
             warn!("gpio: request {}:{} failed: {e}", b.chip, b.pin);

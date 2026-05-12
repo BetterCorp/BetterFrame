@@ -44,7 +44,9 @@ services:
       - betterframe
 
   nodered:
-    image: nodered/node-red:latest
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.nodered
     container_name: betterframe-nodered
     restart: unless-stopped
     environment:

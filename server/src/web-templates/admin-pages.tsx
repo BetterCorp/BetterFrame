@@ -2043,19 +2043,23 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
           {props.attachedLayouts.length > 0 && d.kiosk_id ? (
             <div style="margin-bottom:1rem; padding:0.75rem; background:#f9fafb; border-radius:4px">
               <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Switch Layout Now</div>
-              <form
-                method="post"
-                action={`/admin/displays/${d.id}/layout/0`}
-                style="display:flex; gap:0.5rem; align-items:center"
-                {...{ "onsubmit": "this.action = this.action.replace(/\\/layout\\/.*/, '/layout/' + this.layout_id.value); return true;" }}
-              >
-                <select name="layout_id" class="form-input" style="flex:1">
+              <div style="display:flex; gap:0.5rem; align-items:center">
+                <select id={`layout-pick-${d.id}`} class="form-input" style="flex:1">
                   {props.attachedLayouts.map((l) => (
                     <option value={String(l.id)}>{l.name}</option>
                   ))}
                 </select>
-                <button type="submit" class="btn btn-sm">Switch</button>
-              </form>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  {...{
+                    "hx-post": `/admin/displays/${d.id}/layout/0`,
+                    "hx-swap": "none",
+                    "hx-vals": "js:{}",
+                    "hx-on::config-request": `event.detail.path = event.detail.path.replace(/\\/layout\\/.*/, '/layout/' + document.getElementById('layout-pick-${d.id}').value);`,
+                  }}
+                >Switch</button>
+              </div>
             </div>
           ) : null}
 
@@ -2125,9 +2129,15 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
                       <td><span class={`badge ${l.priority === "hot" ? "badge-red" : l.priority === "cold" ? "badge-blue" : "badge-gray"}`}>{l.priority}</span></td>
                       <td>{d.default_layout_id === l.id ? <span class="badge badge-green">Yes</span> : ""}</td>
                       <td>
-                        <form method="post" action={`/admin/displays/${d.id}/layout/${l.id}`} style="display:inline; margin-right:0.25rem">
-                          <button type="submit" class="btn btn-sm">Show</button>
-                        </form>
+                        <button
+                          type="button"
+                          class="btn btn-sm"
+                          style="margin-right:0.25rem"
+                          {...{
+                            "hx-post": `/admin/displays/${d.id}/layout/${l.id}`,
+                            "hx-swap": "none",
+                          }}
+                        >Show</button>
                         <form method="post" action={`/admin/displays/${d.id}/layouts/${l.id}/remove`} style="display:inline">
                           <button type="submit" class="btn btn-sm btn-danger" {...{"onclick": "return confirm('Detach this layout from the display?')"}}>Detach</button>
                         </form>

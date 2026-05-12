@@ -28,6 +28,9 @@ import {
   NoderedEmbedPage,
   renderCell,
   renderGrid,
+  renderCameraLabels,
+  renderKioskLabels,
+  renderDisplayLayouts,
 } from "../../web-templates/admin-pages.js";
 import { discover as onvifDiscover } from "../../shared/onvif.js";
 import { generateBundle } from "../../shared/bundle.js";
@@ -959,6 +962,17 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${id}` } });
   });
 
+  // Render the attached + available layouts region for a display.
+  const renderDisplayLayoutsFragment = (displayId: number): Response => {
+    const display = deps.repo.getDisplayById(displayId);
+    const attached = deps.repo.listLayoutsForDisplay(displayId);
+    const attachedIds = new Set(attached.map((l) => l.id));
+    const available = deps.repo.listLayouts().filter((l) => !attachedIds.has(l.id));
+    return htmlFragment(
+      renderDisplayLayouts(displayId, display?.default_layout_id ?? null, attached, available),
+    );
+  };
+
   // Attach a layout to a display.
   app.post("/admin/displays/:id/layouts", async (event) => {
     const displayId = Number(getRouterParam(event, "id"));
@@ -967,6 +981,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (layoutId && Number.isFinite(layoutId)) {
       deps.repo.attachLayoutToDisplay(displayId, layoutId);
       notifyKiosks();
+    }
+    if (isHtmxRequest(event)) {
+      return renderDisplayLayoutsFragment(displayId);
     }
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${displayId}` } });
   });
@@ -977,6 +994,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const layoutId = Number(getRouterParam(event, "layoutId"));
     deps.repo.detachLayoutFromDisplay(displayId, layoutId);
     notifyKiosks();
+    if (isHtmxRequest(event)) {
+      return renderDisplayLayoutsFragment(displayId);
+    }
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${displayId}` } });
   });
 
@@ -1090,6 +1110,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (labelId) {
       deps.repo.attachCameraLabel(camId, labelId);
     }
+    if (isHtmxRequest(event)) {
+      return htmlFragment(renderCameraLabels(camId, deps.repo.cameraLabelIds(camId), deps.repo.listLabels()));
+    }
     return new Response(null, { status: 302, headers: { location: `/admin/cameras/${camId}` } });
   });
 
@@ -1098,6 +1121,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const body = await readBody<Record<string, string>>(event);
     const labelId = Number(body?.["label_id"]);
     deps.repo.detachCameraLabel(camId, labelId);
+    if (isHtmxRequest(event)) {
+      return htmlFragment(renderCameraLabels(camId, deps.repo.cameraLabelIds(camId), deps.repo.listLabels()));
+    }
     return new Response(null, { status: 302, headers: { location: `/admin/cameras/${camId}` } });
   });
 
@@ -1167,6 +1193,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const bindingId = Number(getRouterParam(event, "bindingId"));
     deps.repo.deleteGpioBinding(bindingId);
     notifyKiosks();
+    if (isHtmxRequest(event)) {
+      // Row is swapped via hx-target="closest tr" hx-swap="outerHTML" — empty
+      // response collapses the row out of the table.
+      return htmlFragment("");
+    }
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${kioskId}` } });
   });
 
@@ -1194,6 +1225,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (labelId) {
       deps.repo.attachKioskLabel(kioskId, labelId, role);
     }
+    if (isHtmxRequest(event)) {
+      const kioskLabels = deps.repo.listKioskLabels(kioskId).map((kl) => ({
+        label_id: kl.label_id,
+        name: kl.name,
+        role: kl.role,
+      }));
+      return htmlFragment(renderKioskLabels(kioskId, kioskLabels, deps.repo.listLabels()));
+    }
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${kioskId}` } });
   });
 
@@ -1202,6 +1241,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const body = await readBody<Record<string, string>>(event);
     const labelId = Number(body?.["label_id"]);
     deps.repo.detachKioskLabel(kioskId, labelId);
+    if (isHtmxRequest(event)) {
+      const kioskLabels = deps.repo.listKioskLabels(kioskId).map((kl) => ({
+        label_id: kl.label_id,
+        name: kl.name,
+        role: kl.role,
+      }));
+      return htmlFragment(renderKioskLabels(kioskId, kioskLabels, deps.repo.listLabels()));
+    }
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${kioskId}` } });
   });
 

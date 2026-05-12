@@ -1039,6 +1039,65 @@ interface CameraEditProps {
   success?: string;
 }
 
+/**
+ * Render the camera labels region (chips + add forms). Returned standalone so
+ * htmx label add/remove can swap just this fragment via
+ * hx-target="#camera-labels-<id>" hx-swap="innerHTML".
+ */
+export function renderCameraLabels(
+  cameraId: number,
+  labels: Array<{ label_id: number; name: string }>,
+  allLabels: Label[],
+): string {
+  const labelsTargetSelector = `#camera-labels-${String(cameraId)}`;
+  return (
+    <div>
+      {labels.length > 0 ? (
+        <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:1rem">
+          {labels.map((l) => (
+            <button
+              type="button"
+              class="badge badge-blue"
+              style="cursor:pointer; border:none"
+              title="Click to remove"
+              hx-post={`/admin/cameras/${String(cameraId)}/labels/remove`}
+              hx-vals={JSON.stringify({ label_id: l.label_id })}
+              hx-target={labelsTargetSelector}
+              hx-swap="innerHTML"
+            >
+              {l.name} ×
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p style="color:#999; margin-bottom:1rem">No labels attached</p>
+      )}
+      <form
+        hx-post={`/admin/cameras/${String(cameraId)}/labels`}
+        hx-target={labelsTargetSelector}
+        hx-swap="innerHTML"
+        style="display:flex; gap:0.5rem"
+      >
+        <select name="label_id" class="form-input" style="flex:1">
+          {allLabels
+            .filter((al) => !labels.some((l) => l.label_id === al.id))
+            .map((al) => <option value={String(al.id)}>{al.name}</option>)}
+        </select>
+        <button type="submit" class="btn btn-primary">Add</button>
+      </form>
+      <form
+        hx-post={`/admin/cameras/${String(cameraId)}/labels`}
+        hx-target={labelsTargetSelector}
+        hx-swap="innerHTML"
+        style="display:flex; gap:0.5rem; margin-top:0.5rem"
+      >
+        <input name="new_label" type="text" class="form-input" placeholder="Or create new label..." style="flex:1" />
+        <button type="submit" class="btn btn-ghost">Create &amp; Add</button>
+      </form>
+    </div>
+  );
+}
+
 export function CameraEditPage(props: CameraEditProps) {
   const cam = props.camera;
   return (
@@ -1124,32 +1183,9 @@ export function CameraEditPage(props: CameraEditProps) {
 
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Labels</h2>
-          {props.labels.length > 0 ? (
-            <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:1rem">
-              {props.labels.map((l) => (
-                <form method="post" action={`/admin/cameras/${cam.id}/labels/remove`} style="display:inline">
-                  <input type="hidden" name="label_id" value={String(l.label_id)} />
-                  <button type="submit" class="badge badge-blue" style="cursor:pointer; border:none" title="Click to remove">
-                    {l.name} ×
-                  </button>
-                </form>
-              ))}
-            </div>
-          ) : (
-            <p style="color:#999; margin-bottom:1rem">No labels attached</p>
-          )}
-          <form method="post" action={`/admin/cameras/${cam.id}/labels`} style="display:flex; gap:0.5rem">
-            <select name="label_id" class="form-input" style="flex:1">
-              {props.allLabels
-                .filter((al) => !props.labels.some((l) => l.label_id === al.id))
-                .map((al) => <option value={String(al.id)}>{al.name}</option>)}
-            </select>
-            <button type="submit" class="btn btn-primary">Add</button>
-          </form>
-          <form method="post" action={`/admin/cameras/${cam.id}/labels`} style="display:flex; gap:0.5rem; margin-top:0.5rem">
-            <input name="new_label" type="text" class="form-input" placeholder="Or create new label..." style="flex:1" />
-            <button type="submit" class="btn btn-ghost">Create &amp; Add</button>
-          </form>
+          <div id={`camera-labels-${String(cam.id)}`}>
+            {renderCameraLabels(cam.id, props.labels, props.allLabels)}
+          </div>
         </div>
 
         <div class="card" style="margin-bottom:1.5rem">
@@ -1196,6 +1232,73 @@ interface KioskEditProps {
   success?: string;
 }
 
+/**
+ * Render the kiosk labels region (chips + add forms). Returned standalone so
+ * htmx label add/remove can swap just this fragment via
+ * hx-target="#kiosk-labels-<id>" hx-swap="innerHTML".
+ */
+export function renderKioskLabels(
+  kioskId: number,
+  labels: Array<{ label_id: number; name: string; role: string }>,
+  allLabels: Label[],
+): string {
+  const labelsTargetSelector = `#kiosk-labels-${String(kioskId)}`;
+  return (
+    <div>
+      {labels.length > 0 ? (
+        <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:1rem">
+          {labels.map((l) => (
+            <button
+              type="button"
+              class="badge badge-blue"
+              style="cursor:pointer; border:none"
+              title="Click to remove"
+              hx-post={`/admin/kiosks/${String(kioskId)}/labels/remove`}
+              hx-vals={JSON.stringify({ label_id: l.label_id })}
+              hx-target={labelsTargetSelector}
+              hx-swap="innerHTML"
+            >
+              {l.name} ({l.role}) ×
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p style="color:#999; margin-bottom:1rem">No labels attached</p>
+      )}
+      <form
+        hx-post={`/admin/kiosks/${String(kioskId)}/labels`}
+        hx-target={labelsTargetSelector}
+        hx-swap="innerHTML"
+        style="display:flex; gap:0.5rem"
+      >
+        <select name="label_id" class="form-input" style="flex:1">
+          {allLabels
+            .filter((al) => !labels.some((l) => l.label_id === al.id))
+            .map((al) => <option value={String(al.id)}>{al.name}</option>)}
+        </select>
+        <select name="role" class="form-input" style="width:120px">
+          <option value="consume">consume</option>
+          <option value="operate">operate</option>
+        </select>
+        <button type="submit" class="btn btn-primary">Add</button>
+      </form>
+      <form
+        hx-post={`/admin/kiosks/${String(kioskId)}/labels`}
+        hx-target={labelsTargetSelector}
+        hx-swap="innerHTML"
+        style="display:flex; gap:0.5rem; margin-top:0.5rem"
+      >
+        <input name="new_label" type="text" class="form-input" placeholder="Or create new label..." style="flex:1" />
+        <select name="role" class="form-input" style="width:120px">
+          <option value="consume">consume</option>
+          <option value="operate">operate</option>
+        </select>
+        <button type="submit" class="btn btn-ghost">Create &amp; Add</button>
+      </form>
+    </div>
+  );
+}
+
 export function KioskEditPage(props: KioskEditProps) {
   const k = props.kiosk;
   return (
@@ -1233,30 +1336,44 @@ export function KioskEditPage(props: KioskEditProps) {
           </div>
           <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
             <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Display Power</div>
-            <form method="post" action={`/admin/kiosks/${k.id}/power/wake`} style="display:inline">
-              <button type="submit" class="btn btn-sm">Wake</button>
-            </form>
-            <form method="post" action={`/admin/kiosks/${k.id}/power/standby`} style="display:inline; margin-left:0.5rem">
-              <button type="submit" class="btn btn-sm btn-ghost">Standby</button>
-            </form>
+            <button
+              type="button"
+              class="btn btn-sm"
+              {...{
+                "hx-post": `/admin/kiosks/${String(k.id)}/power/wake`,
+                "hx-swap": "none",
+              }}
+            >Wake</button>
+            <button
+              type="button"
+              class="btn btn-sm btn-ghost"
+              style="margin-left:0.5rem"
+              {...{
+                "hx-post": `/admin/kiosks/${String(k.id)}/power/standby`,
+                "hx-swap": "none",
+              }}
+            >Standby</button>
           </div>
 
           {props.switchableLayouts && props.switchableLayouts.length > 0 ? (
             <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
               <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Switch Layout</div>
-              <form
-                method="post"
-                action={`/admin/kiosks/${k.id}/layout/0`}
-                style="display:flex; gap:0.5rem; align-items:center"
-                {...{ "onsubmit": "this.action = this.action.replace(/\\/layout\\/.*/, '/layout/' + this.layout_id.value); return true;" }}
-              >
-                <select name="layout_id" class="form-input" style="flex:1">
+              <div style="display:flex; gap:0.5rem; align-items:center">
+                <select id={`kiosk-layout-pick-${String(k.id)}`} class="form-input" style="flex:1">
                   {props.switchableLayouts.map((l) => (
                     <option value={String(l.id)}>{l.name}</option>
                   ))}
                 </select>
-                <button type="submit" class="btn btn-sm">Switch</button>
-              </form>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  {...{
+                    "hx-post": `/admin/kiosks/${String(k.id)}/layout/0`,
+                    "hx-swap": "none",
+                    "hx-on::config-request": `event.detail.path = event.detail.path.replace(/\\/layout\\/.*/, '/layout/' + document.getElementById('kiosk-layout-pick-${String(k.id)}').value);`,
+                  }}
+                >Switch</button>
+              </div>
             </div>
           ) : null}
 
@@ -1268,22 +1385,42 @@ export function KioskEditPage(props: KioskEditProps) {
               <div>PWM: {k.fan_pwm != null ? `${k.fan_pwm}/255` : "—"}</div>
             </div>
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
-              <form method="post" action={`/admin/kiosks/${k.id}/fan`} style="display:inline">
-                <input type="hidden" name="mode" value="auto" />
-                <button type="submit" class="btn btn-sm btn-ghost">Auto</button>
-              </form>
-              <form method="post" action={`/admin/kiosks/${k.id}/fan`} style="display:inline">
-                <input type="hidden" name="pwm" value="0" />
-                <button type="submit" class="btn btn-sm btn-ghost">Off</button>
-              </form>
-              <form method="post" action={`/admin/kiosks/${k.id}/fan`} style="display:inline">
-                <input type="hidden" name="pwm" value="128" />
-                <button type="submit" class="btn btn-sm btn-ghost">50%</button>
-              </form>
-              <form method="post" action={`/admin/kiosks/${k.id}/fan`} style="display:inline">
-                <input type="hidden" name="pwm" value="255" />
-                <button type="submit" class="btn btn-sm btn-ghost">Full</button>
-              </form>
+              <button
+                type="button"
+                class="btn btn-sm btn-ghost"
+                {...{
+                  "hx-post": `/admin/kiosks/${String(k.id)}/fan`,
+                  "hx-vals": JSON.stringify({ mode: "auto" }),
+                  "hx-swap": "none",
+                }}
+              >Auto</button>
+              <button
+                type="button"
+                class="btn btn-sm btn-ghost"
+                {...{
+                  "hx-post": `/admin/kiosks/${String(k.id)}/fan`,
+                  "hx-vals": JSON.stringify({ pwm: "0" }),
+                  "hx-swap": "none",
+                }}
+              >Off</button>
+              <button
+                type="button"
+                class="btn btn-sm btn-ghost"
+                {...{
+                  "hx-post": `/admin/kiosks/${String(k.id)}/fan`,
+                  "hx-vals": JSON.stringify({ pwm: "128" }),
+                  "hx-swap": "none",
+                }}
+              >50%</button>
+              <button
+                type="button"
+                class="btn btn-sm btn-ghost"
+                {...{
+                  "hx-post": `/admin/kiosks/${String(k.id)}/fan`,
+                  "hx-vals": JSON.stringify({ pwm: "255" }),
+                  "hx-swap": "none",
+                }}
+              >Full</button>
             </div>
           </div>
         </div>
@@ -1343,9 +1480,16 @@ export function KioskEditPage(props: KioskEditProps) {
                       <td style="font-size:0.85rem">{g.edge ?? "—"}</td>
                       <td style="font-family:monospace; font-size:0.85rem">{g.topic}</td>
                       <td>
-                        <form method="post" action={`/admin/kiosks/${k.id}/gpio/${g.id}/delete`} style="display:inline">
-                          <button type="submit" class="btn btn-sm btn-danger" {...{"onclick": "return confirm('Remove GPIO binding?')"}}>×</button>
-                        </form>
+                        <button
+                          type="button"
+                          class="btn btn-sm btn-danger"
+                          {...{
+                            "hx-post": `/admin/kiosks/${String(k.id)}/gpio/${String(g.id)}/delete`,
+                            "hx-target": "closest tr",
+                            "hx-swap": "outerHTML",
+                            "hx-confirm": "Remove GPIO binding?",
+                          }}
+                        >×</button>
                       </td>
                     </tr>
                   ))}
@@ -1400,40 +1544,9 @@ export function KioskEditPage(props: KioskEditProps) {
 
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Labels</h2>
-          {props.labels.length > 0 ? (
-            <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:1rem">
-              {props.labels.map((l) => (
-                <form method="post" action={`/admin/kiosks/${k.id}/labels/remove`} style="display:inline">
-                  <input type="hidden" name="label_id" value={String(l.label_id)} />
-                  <button type="submit" class="badge badge-blue" style="cursor:pointer; border:none" title="Click to remove">
-                    {l.name} ({l.role}) ×
-                  </button>
-                </form>
-              ))}
-            </div>
-          ) : (
-            <p style="color:#999; margin-bottom:1rem">No labels attached</p>
-          )}
-          <form method="post" action={`/admin/kiosks/${k.id}/labels`} style="display:flex; gap:0.5rem">
-            <select name="label_id" class="form-input" style="flex:1">
-              {props.allLabels
-                .filter((al) => !props.labels.some((l) => l.label_id === al.id))
-                .map((al) => <option value={String(al.id)}>{al.name}</option>)}
-            </select>
-            <select name="role" class="form-input" style="width:120px">
-              <option value="consume">consume</option>
-              <option value="operate">operate</option>
-            </select>
-            <button type="submit" class="btn btn-primary">Add</button>
-          </form>
-          <form method="post" action={`/admin/kiosks/${k.id}/labels`} style="display:flex; gap:0.5rem; margin-top:0.5rem">
-            <input name="new_label" type="text" class="form-input" placeholder="Or create new label..." style="flex:1" />
-            <select name="role" class="form-input" style="width:120px">
-              <option value="consume">consume</option>
-              <option value="operate">operate</option>
-            </select>
-            <button type="submit" class="btn btn-ghost">Create &amp; Add</button>
-          </form>
+          <div id={`kiosk-labels-${String(k.id)}`}>
+            {renderKioskLabels(k.id, props.labels, props.allLabels)}
+          </div>
         </div>
 
         <form method="post" action={`/admin/kiosks/${k.id}/delete`} style="margin-top:1rem">
@@ -2017,6 +2130,93 @@ interface DisplayEditPageProps {
   success?: string;
 }
 
+/**
+ * Render the attached + available layouts region for a display. Returned
+ * standalone so htmx attach/detach can swap just this fragment via
+ * hx-target="#display-layouts-<id>" hx-swap="innerHTML".
+ */
+export function renderDisplayLayouts(
+  displayId: number,
+  defaultLayoutId: number | null,
+  attached: LayoutType[],
+  available: LayoutType[],
+): string {
+  const target = `#display-layouts-${String(displayId)}`;
+  return (
+    <div>
+      {attached.length === 0 ? (
+        <p style="color:#999; margin-bottom:1rem">No layouts attached yet.</p>
+      ) : (
+        <div class="table-wrap" style="margin-bottom:1rem">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Priority</th>
+                <th>Default</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {attached.map((l) => (
+                <tr>
+                  <td><a href={`/admin/layouts/${String(l.id)}`}><strong>{l.name}</strong></a></td>
+                  <td><span class={`badge ${l.priority === "hot" ? "badge-red" : l.priority === "cold" ? "badge-blue" : "badge-gray"}`}>{l.priority}</span></td>
+                  <td>{defaultLayoutId === l.id ? <span class="badge badge-green">Yes</span> : ""}</td>
+                  <td>
+                    <button
+                      type="button"
+                      class="btn btn-sm"
+                      style="margin-right:0.25rem"
+                      {...{
+                        "hx-post": `/admin/displays/${String(displayId)}/layout/${String(l.id)}`,
+                        "hx-swap": "none",
+                      }}
+                    >Show</button>
+                    <button
+                      type="button"
+                      class="btn btn-sm btn-danger"
+                      {...{
+                        "hx-post": `/admin/displays/${String(displayId)}/layouts/${String(l.id)}/remove`,
+                        "hx-target": target,
+                        "hx-swap": "innerHTML",
+                        "hx-confirm": "Detach this layout from the display?",
+                      }}
+                    >Detach</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {available.length > 0 ? (
+        <form
+          hx-post={`/admin/displays/${String(displayId)}/layouts`}
+          hx-target={target}
+          hx-swap="innerHTML"
+          style="display:flex; gap:0.5rem"
+        >
+          <select name="layout_id" class="form-input" style="flex:1" required>
+            <option value="">-- Pick a layout to attach --</option>
+            {available.map((l) => (
+              <option value={String(l.id)}>{l.name}</option>
+            ))}
+          </select>
+          <button type="submit" class="btn btn-primary">Attach</button>
+        </form>
+      ) : (
+        <p style="color:#999; font-size:0.85rem; margin:0">
+          {attached.length === 0
+            ? <span>No layouts exist yet. <a href="/admin/layouts/new">Create one</a>.</span>
+            : "All existing layouts are already attached."}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function DisplayEditPage(props: DisplayEditPageProps) {
   const d = props.display;
   return (
@@ -2109,63 +2309,14 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
             attached layouts in its bundle.
           </p>
 
-          {props.attachedLayouts.length === 0 ? (
-            <p style="color:#999; margin-bottom:1rem">No layouts attached yet.</p>
-          ) : (
-            <div class="table-wrap" style="margin-bottom:1rem">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Priority</th>
-                    <th>Default</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {props.attachedLayouts.map((l) => (
-                    <tr>
-                      <td><a href={`/admin/layouts/${l.id}`}><strong>{l.name}</strong></a></td>
-                      <td><span class={`badge ${l.priority === "hot" ? "badge-red" : l.priority === "cold" ? "badge-blue" : "badge-gray"}`}>{l.priority}</span></td>
-                      <td>{d.default_layout_id === l.id ? <span class="badge badge-green">Yes</span> : ""}</td>
-                      <td>
-                        <button
-                          type="button"
-                          class="btn btn-sm"
-                          style="margin-right:0.25rem"
-                          {...{
-                            "hx-post": `/admin/displays/${d.id}/layout/${l.id}`,
-                            "hx-swap": "none",
-                          }}
-                        >Show</button>
-                        <form method="post" action={`/admin/displays/${d.id}/layouts/${l.id}/remove`} style="display:inline">
-                          <button type="submit" class="btn btn-sm btn-danger" {...{"onclick": "return confirm('Detach this layout from the display?')"}}>Detach</button>
-                        </form>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {props.availableLayouts.length > 0 ? (
-            <form method="post" action={`/admin/displays/${d.id}/layouts`} style="display:flex; gap:0.5rem">
-              <select name="layout_id" class="form-input" style="flex:1" required>
-                <option value="">-- Pick a layout to attach --</option>
-                {props.availableLayouts.map((l) => (
-                  <option value={String(l.id)}>{l.name}</option>
-                ))}
-              </select>
-              <button type="submit" class="btn btn-primary">Attach</button>
-            </form>
-          ) : (
-            <p style="color:#999; font-size:0.85rem; margin:0">
-              {props.attachedLayouts.length === 0
-                ? <span>No layouts exist yet. <a href="/admin/layouts/new">Create one</a>.</span>
-                : "All existing layouts are already attached."}
-            </p>
-          )}
+          <div id={`display-layouts-${String(d.id)}`}>
+            {renderDisplayLayouts(
+              d.id,
+              d.default_layout_id ?? null,
+              props.attachedLayouts,
+              props.availableLayouts,
+            )}
+          </div>
         </div>
       </div>
     </Layout>

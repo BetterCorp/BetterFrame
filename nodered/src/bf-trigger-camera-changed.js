@@ -11,6 +11,8 @@
  *
  * Output msg.payload: { camera_id, event: "created" | "updated" | "deleted" }
  */
+const { readJsonBody } = require("./_http-body.js");
+
 module.exports = function (RED) {
   const TOPIC = "camera.changed";
   const ROUTE = "/api/internal/" + TOPIC;
@@ -21,8 +23,8 @@ module.exports = function (RED) {
     const filterIdRaw = (config.camera_id || "").toString().trim();
     const filterId = filterIdRaw && !isNaN(Number(filterIdRaw)) ? Number(filterIdRaw) : null;
 
-    function handler(req, res) {
-      const body = (req.body && typeof req.body === "object") ? req.body : {};
+    async function handler(req, res) {
+      const body = await readJsonBody(req);
       const camId = body.camera_id !== undefined ? body.camera_id : null;
       if (filterId !== null && Number(camId) !== filterId) {
         return res.status(200).end();

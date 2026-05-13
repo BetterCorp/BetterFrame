@@ -14,6 +14,8 @@
  *     event: "connected" | "disconnected" | "heartbeat",
  *     cpu_temp_c?: number, fan_rpm?: number, fan_pwm?: number }
  */
+const { readJsonBody } = require("./_http-body.js");
+
 module.exports = function (RED) {
   const TOPIC = "kiosk.changed";
   const ROUTE = "/api/internal/" + TOPIC;
@@ -24,8 +26,8 @@ module.exports = function (RED) {
     const filterIdRaw = (config.kiosk_id || "").toString().trim();
     const filterId = filterIdRaw && !isNaN(Number(filterIdRaw)) ? Number(filterIdRaw) : null;
 
-    function handler(req, res) {
-      const body = (req.body && typeof req.body === "object") ? req.body : {};
+    async function handler(req, res) {
+      const body = await readJsonBody(req);
       const kioskId = body.kiosk_id !== undefined ? body.kiosk_id : null;
       if (filterId !== null && Number(kioskId) !== filterId) {
         return res.status(200).end();

@@ -10,6 +10,8 @@
  *
  * Output msg.payload: { display_id, kiosk_id, layout_id, layout_name }
  */
+const { readJsonBody } = require("./_http-body.js");
+
 module.exports = function (RED) {
   const TOPIC = "layout.changed";
   const ROUTE = "/api/internal/" + TOPIC;
@@ -20,8 +22,8 @@ module.exports = function (RED) {
     const filterIdRaw = (config.display_id || "").toString().trim();
     const filterId = filterIdRaw && !isNaN(Number(filterIdRaw)) ? Number(filterIdRaw) : null;
 
-    function handler(req, res) {
-      const body = (req.body && typeof req.body === "object") ? req.body : {};
+    async function handler(req, res) {
+      const body = await readJsonBody(req);
       const displayId = body.display_id !== undefined ? body.display_id : null;
       if (filterId !== null && Number(displayId) !== filterId) {
         return res.status(200).end();

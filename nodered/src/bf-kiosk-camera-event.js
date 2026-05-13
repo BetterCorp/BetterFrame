@@ -14,6 +14,8 @@
  * Output msg shape (kept compatible with the previous filter version):
  *   { topic, kiosk_id, camera_id, source_type, payload }
  */
+const { readJsonBody } = require("./_http-body.js");
+
 module.exports = function (RED) {
   // Fixed ingest route. Server-side forwarders that want this node to receive
   // their event should POST to /in/camera.event. (Previous releases used a
@@ -27,8 +29,8 @@ module.exports = function (RED) {
     const filterIdRaw = (config.camera_id || "").toString().trim();
     const filterId = filterIdRaw && !isNaN(Number(filterIdRaw)) ? Number(filterIdRaw) : null;
 
-    function handler(req, res) {
-      const body = (req.body && typeof req.body === "object") ? req.body : {};
+    async function handler(req, res) {
+      const body = await readJsonBody(req);
       const kioskId = body.kiosk_id !== undefined ? body.kiosk_id
         : body.source_kiosk_id !== undefined ? body.source_kiosk_id
         : null;

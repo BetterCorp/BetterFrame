@@ -52,10 +52,29 @@ struct PipelineEntry {
 /// one to cool down naturally so a quick swap back is instant.
 type PoolKey = (u32, char);
 
+/// WebView pool entry. Same Hot/Warm/Cooling/Cold lifecycle as cameras —
+/// switching to a layout that doesn't reference a previously-loaded URL/HTML
+/// leaves the WebView alive (unparented) so a fast switch-back preserves the
+/// page state, JS execution, and avoids a full reload.
+struct WebEntry {
+    webview: webkit6::WebView,
+    state: WarmthState,
+    cooling_until: Option<Instant>,
+}
+
+/// Key for the webview pool. "web:<url>" for remote pages, "html:<hash>" for
+/// inline HTML. Same content under either form across multiple cells/layouts
+/// shares one WebView.
+type WebKey = String;
+
 thread_local! {
     /// (camera_id, badge) → PipelineEntry. Pool shared across all displays.
     /// State machine: see WarmthState. Entries dropped when state goes Cold.
     static WARM_CAMERAS: RefCell<HashMap<PoolKey, PipelineEntry>>
+        = RefCell::new(HashMap::new());
+
+    /// Web/HTML cell pool. Same lifecycle as WARM_CAMERAS.
+    static WARM_WEBVIEWS: RefCell<HashMap<WebKey, WebEntry>>
         = RefCell::new(HashMap::new());
 
     /// Most recently rendered bundle. Used for layout-switch + idle revert.
@@ -285,8 +304,9 @@ fn install_idle_watchdog() {
     if WATCHDOG_INSTALLED.with(|c| c.get()) { return; }
     WATCHDOG_INSTALLED.with(|c| c.set(true));
     gtk::glib::timeout_add_local(Duration::from_secs(1), move || {
-        // Drop any pipelines whose cooling window has elapsed.
+        // Drop any pipelines / webviews whose cooling window has elapsed.
         expire_cooling_pipelines();
+        expire_cooling_webviews();
 
         let bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
         let Some(bundle) = bundle else { return gtk::glib::ControlFlow::Continue };
@@ -667,11 +687,8 @@ fn render_layout(display_id: u32, layout_id: u32) {
                 if html.trim().is_empty() {
                     none_cell()
                 } else {
-                    let webview = webkit6::WebView::new();
-                    webkit6::prelude::WebViewExt::load_html(&webview, html, None);
-                    webview.set_vexpand(true);
-                    webview.set_hexpand(true);
-                    webview.upcast()
+                    let key = html_key(html);
+                    ensure_web(key, WebSource::Html(html), server_url, kiosk_key).upcast()
                 }
             }
             "web" => {
@@ -679,11 +696,8 @@ fn render_layout(display_id: u32, layout_id: u32) {
                 if url.is_empty() {
                     none_cell()
                 } else {
-                    let webview = webkit6::WebView::new();
-                    load_webview_url(&webview, url, server_url, kiosk_key);
-                    webview.set_vexpand(true);
-                    webview.set_hexpand(true);
-                    webview.upcast()
+                    let key = format!("web:{url}");
+                    ensure_web(key, WebSource::Url(url), server_url, kiosk_key).upcast()
                 }
             }
             "none" => none_cell(),
@@ -782,8 +796,26 @@ fn recompute_global_state() {
         }
     }
 
+    // Same walk for web/html cells — pool keys are URL / hash(HTML).
+    let mut warm_webs: std::collections::HashSet<WebKey> = std::collections::HashSet::new();
+    let mut hot_webs: std::collections::HashSet<WebKey> = std::collections::HashSet::new();
+    for bd in &displays {
+        let active_id = active.iter().find(|(id, _)| *id == bd.id).and_then(|(_, l)| *l);
+        if let Some(cur_id) = active_id {
+            if let Some(layout) = bd.layouts.iter().find(|l| l.id == cur_id) {
+                web_keys_for_layout(layout, &mut warm_webs);
+            }
+        }
+        for layout in &bd.layouts {
+            if layout.priority == "hot" {
+                web_keys_for_layout(layout, &mut hot_webs);
+            }
+        }
+    }
+
     if max_cooling_secs == 0 { max_cooling_secs = DEFAULT_COOLING_SECS; }
     recompute_pool_states(&warm_set, &hot_set, max_cooling_secs);
+    recompute_web_states(&warm_webs, &hot_webs, max_cooling_secs);
 }
 
 /// Apply the hot/warm/cooling/cold state machine to the existing WARM_CAMERAS
@@ -936,6 +968,165 @@ fn ensure_warm(
     });
     info!("warmed pipeline for camera {cam_id} (stream: {desired_badge})");
     Some((paintable, desired_badge))
+}
+
+enum WebSource<'a> {
+    Url(&'a str),
+    Html(&'a str),
+}
+
+/// Stable key for an inline HTML cell. Hash the content so identical HTML in
+/// two layouts/cells shares one WebView in the pool.
+fn html_key(html: &str) -> WebKey {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    html.hash(&mut h);
+    format!("html:{:x}", h.finish())
+}
+
+/// Return a WebView for the given pool key, reusing a cached one if present.
+/// On reuse, unparent first (GTK4 forbids attaching a widget with an existing
+/// parent). On miss, build, load, and insert into the pool as Warm.
+fn ensure_web(
+    key: WebKey,
+    source: WebSource<'_>,
+    server_url: &str,
+    kiosk_key: &str,
+) -> webkit6::WebView {
+    let cached = WARM_WEBVIEWS.with(|m| {
+        m.borrow().get(&key).map(|e| e.webview.clone())
+    });
+    if let Some(wv) = cached {
+        WARM_WEBVIEWS.with(|m| {
+            if let Some(e) = m.borrow_mut().get_mut(&key) {
+                if e.state == WarmthState::Cooling {
+                    info!("webview {key}: rescued from cooling → warm");
+                    e.state = WarmthState::Warm;
+                    e.cooling_until = None;
+                }
+            }
+        });
+        // Detach from previous container so the new grid can take it.
+        if wv.parent().is_some() {
+            wv.unparent();
+        }
+        return wv;
+    }
+
+    let wv = webkit6::WebView::new();
+    wv.set_vexpand(true);
+    wv.set_hexpand(true);
+    match source {
+        WebSource::Html(html) => {
+            webkit6::prelude::WebViewExt::load_html(&wv, html, None);
+        }
+        WebSource::Url(url) => {
+            load_webview_url(&wv, url, server_url, kiosk_key);
+        }
+    }
+    WARM_WEBVIEWS.with(|m| {
+        m.borrow_mut().insert(key.clone(), WebEntry {
+            webview: wv.clone(),
+            state: WarmthState::Warm,
+            cooling_until: None,
+        });
+    });
+    info!("warmed webview {key}");
+    wv
+}
+
+/// Walk an arbitrary layout's web/html cells and add their pool keys to `out`.
+/// Mirrors `cell_keys` for cameras.
+fn web_keys_for_layout(
+    layout: &crate::bundle::BundleLayout,
+    out: &mut std::collections::HashSet<WebKey>,
+) {
+    for cell in &layout.cells {
+        match cell.content_type.as_str() {
+            "web" => {
+                if let Some(url) = cell.web_url.as_deref() {
+                    let url = url.trim();
+                    if !url.is_empty() {
+                        out.insert(format!("web:{url}"));
+                    }
+                }
+            }
+            "html" => {
+                if let Some(html) = cell.html_content.as_deref() {
+                    if !html.trim().is_empty() {
+                        out.insert(html_key(html));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Apply hot/warm/cooling state to the WebView pool. Mirror of
+/// `recompute_pool_states` for cameras.
+fn recompute_web_states(
+    warm_set: &std::collections::HashSet<WebKey>,
+    hot_set: &std::collections::HashSet<WebKey>,
+    max_cooling_secs: u32,
+) {
+    let mut to_remove: Vec<WebKey> = Vec::new();
+    WARM_WEBVIEWS.with(|w| {
+        let mut warm = w.borrow_mut();
+        for (key, entry) in warm.iter_mut() {
+            if hot_set.contains(key) {
+                entry.state = WarmthState::Hot;
+                entry.cooling_until = None;
+            } else if warm_set.contains(key) {
+                entry.state = WarmthState::Warm;
+                entry.cooling_until = None;
+            } else {
+                if entry.state == WarmthState::Cooling {
+                    continue;
+                }
+                if max_cooling_secs == 0 {
+                    to_remove.push(key.clone());
+                } else {
+                    entry.state = WarmthState::Cooling;
+                    entry.cooling_until = Some(
+                        Instant::now() + Duration::from_secs(max_cooling_secs as u64),
+                    );
+                    info!("webview {key}: cooling for {max_cooling_secs}s before drop");
+                }
+            }
+        }
+        for k in &to_remove {
+            if let Some(e) = warm.remove(k) {
+                if e.webview.parent().is_some() { e.webview.unparent(); }
+            }
+        }
+    });
+}
+
+/// Drop Cooling webviews whose timer has expired.
+fn expire_cooling_webviews() {
+    let now = Instant::now();
+    let mut expired: Vec<WebKey> = Vec::new();
+    WARM_WEBVIEWS.with(|w| {
+        let mut warm = w.borrow_mut();
+        let keys: Vec<WebKey> = warm
+            .iter()
+            .filter(|(_, e)| {
+                e.state == WarmthState::Cooling
+                    && e.cooling_until.is_some_and(|t| now >= t)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in keys {
+            if let Some(e) = warm.remove(&k) {
+                if e.webview.parent().is_some() { e.webview.unparent(); }
+                expired.push(k);
+            }
+        }
+    });
+    for key in expired {
+        info!("webview {key}: cooling expired → dropped");
+    }
 }
 
 /// Hide the mouse pointer on a window. Kiosks have no input device the user

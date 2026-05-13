@@ -224,10 +224,15 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       return;
     }
 
-    // Retry a few times — Node-RED may still be booting.
-    const delaysMs = [2000, 5000, 10000, 30000];
+    // Retry with backoff — Node-RED may still be booting + initial flow load
+    // can take 30-60s on the Pi. Total wait ~5 minutes worst case.
+    const delaysMs = [2000, 5000, 10000, 15000, 30000, 30000, 60000, 60000, 60000];
     for (let attempt = 0; attempt < delaysMs.length; attempt += 1) {
       await new Promise((r) => setTimeout(r, delaysMs[attempt]));
+      obs.log.info("nodered: provisioning attempt {n} → {url}", {
+        n: attempt + 1,
+        url: this.config.selfUrl,
+      });
       const result = await nodered.ensureServerConfig(this.config.selfUrl, plaintext);
       if (result === "created") {
         obs.log.info("nodered: provisioned bf-server-config at {url}", {
@@ -239,7 +244,6 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
         obs.log.info("nodered: bf-server-config already present, skipping");
         return;
       }
-      // failed — retry
     }
     obs.log.warn("nodered: provisioning bf-server-config gave up after retries");
   }

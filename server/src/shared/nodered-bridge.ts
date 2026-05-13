@@ -142,19 +142,22 @@ async function provisionServerConfig(
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    // GET current flows + revision
+    // GET current flows + revision. Use the "full" format so the response is
+    // always {flows, rev} — the bare default in some Node-RED versions returns
+    // a plain array which has no rev for the POST.
     const getResp = await fetch(`${base}/nrdp/flows`, {
       method: "GET",
-      headers: { accept: "application/json" },
+      headers: {
+        accept: "application/json",
+        "node-red-api-version": "v2",
+      },
       signal: ctrl.signal,
     });
     if (!getResp.ok) throw new Error(`GET /flows HTTP ${String(getResp.status)}`);
-    // Node-RED returns either an array (legacy) or {flows, rev} (current).
     const raw = (await getResp.json()) as NoderedFlowNode[] | { flows: NoderedFlowNode[]; rev?: string };
     const flows: NoderedFlowNode[] = Array.isArray(raw) ? raw : (raw.flows ?? []);
     const rev: string | undefined = Array.isArray(raw) ? undefined : raw.rev;
 
-    // Skip if ANY bf-server-config already exists — user owns it.
     if (flows.some((n) => n.type === "bf-server-config")) {
       return "exists";
     }
@@ -164,8 +167,8 @@ async function provisionServerConfig(
       type: "bf-server-config",
       name: "BetterFrame (auto)",
       server_url: serverUrl.replace(/\/+$/, ""),
-      // Credentials get peeled off by Node-RED's runtime and stored encrypted
-      // into flows_cred.json. The node body keeps only non-credential fields.
+      // Node-RED extracts `credentials` on POST /flows and stores them in
+      // flows_cred.json. Confirmed by the editor's own save path.
       credentials: { api_key: apiKey },
     };
 
@@ -179,12 +182,16 @@ async function provisionServerConfig(
       headers: {
         "content-type": "application/json",
         accept: "application/json",
-        "node-red-deployment-type": "nodes",
+        "node-red-api-version": "v2",
+        "node-red-deployment-type": "full",
       },
       body: JSON.stringify(body),
       signal: ctrl.signal,
     });
-    if (!postResp.ok) throw new Error(`POST /flows HTTP ${String(postResp.status)}`);
+    if (!postResp.ok) {
+      const text = await postResp.text().catch(() => "");
+      throw new Error(`POST /flows HTTP ${String(postResp.status)}: ${text.slice(0, 200)}`);
+    }
     return "created";
   } finally {
     clearTimeout(t);

@@ -562,14 +562,29 @@ fn render_layout(display_id: u32, layout_id: u32) {
 
     // Update per-display layout id BEFORE recomputing warm-cameras so the
     // union across displays is correct.
-    DISPLAYS.with(|ds| {
+    let previous_layout_id = DISPLAYS.with(|ds| {
+        let prev = ds.borrow().get(&display_id).and_then(|s| s.current_layout_id);
         if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
             st.current_layout_id = Some(layout.id);
         }
+        prev
     });
 
     info!("rendering layout '{}' (id {}) on display {} ({}x{} grid, {} cells)",
         layout.name, layout.id, display_id, layout.grid_cols, layout.grid_rows, layout.cells.len());
+
+    // Notify the server when the active layout actually changes so Node-RED
+    // sees idle reverts + any other kiosk-initiated switch. Skip when the
+    // layout id is unchanged (re-render of the same layout).
+    if previous_layout_id != Some(layout.id) {
+        let layout_name = layout.name.clone();
+        let layout_id_for_report = layout.id;
+        let server = server_url.clone();
+        let key = kiosk_key.clone();
+        std::thread::spawn(move || {
+            server::report_layout_change(&server, &key, display_id, layout_id_for_report, &layout_name);
+        });
+    }
 
     if layout.cells.is_empty() {
         warn!("layout has no cells");

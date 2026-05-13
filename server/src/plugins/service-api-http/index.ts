@@ -348,16 +348,34 @@ function registerKioskRoutes(
       forwarded_to_nodered: false,
     });
 
-    // Best-effort forward to Node-RED
-    nodered.forward(body.topic, {
-      event_id: eventId,
-      kiosk_id: kiosk.id,
-      camera_id: body.camera_id ?? null,
-      source_type: body.source_type ?? "system",
-      property_op: body.property_op ?? null,
-      payload: body.payload ?? {},
-      timestamp: new Date().toISOString(),
-    });
+    // Best-effort forward to Node-RED. Topics that have a dedicated trigger
+    // node (bf-trigger-layout-changed etc.) expect a FLAT payload matching
+    // what the admin-side emit produces — splat body.payload up to the top
+    // level and add kiosk_id. Generic camera events keep the wrapped shape
+    // the bf-kiosk-camera-event trigger consumes.
+    const flatTopics = new Set([
+      "layout.changed",
+      "kiosk.changed",
+      "kiosk.status",
+      "display.power.changed",
+      "camera.changed",
+    ]);
+    if (flatTopics.has(body.topic)) {
+      nodered.forward(body.topic, {
+        kiosk_id: kiosk.id,
+        ...(body.payload ?? {}),
+      });
+    } else {
+      nodered.forward(body.topic, {
+        event_id: eventId,
+        kiosk_id: kiosk.id,
+        camera_id: body.camera_id ?? null,
+        source_type: body.source_type ?? "system",
+        property_op: body.property_op ?? null,
+        payload: body.payload ?? {},
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     return { ok: true, event_id: eventId };
   });

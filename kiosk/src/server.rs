@@ -193,6 +193,34 @@ pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
 }
 
 /// Send heartbeat with display geometry + hwmon.
+/// Report a kiosk-side layout switch to the server, which forwards to
+/// node-red as a `layout.changed` event. Covers idle reverts and any other
+/// switch the kiosk performs without an admin click (admin clicks already
+/// emit server-side).
+pub fn report_layout_change(
+    server: &str,
+    key: &str,
+    display_id: u32,
+    layout_id: u32,
+    layout_name: &str,
+) {
+    let client = reqwest::blocking::Client::new();
+    let _ = client
+        .post(format!("{server}/api/kiosk/event"))
+        .header("Authorization", format!("Bearer {key}"))
+        .json(&serde_json::json!({
+            "topic": "layout.changed",
+            "source_type": "system",
+            "payload": {
+                "display_id": display_id,
+                "layout_id": layout_id,
+                "layout_name": layout_name,
+            },
+        }))
+        .timeout(Duration::from_secs(5))
+        .send();
+}
+
 pub fn heartbeat(
     server: &str,
     key: &str,

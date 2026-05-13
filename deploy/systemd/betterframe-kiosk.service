@@ -36,5 +36,15 @@ ExecStart=/usr/bin/cage -s -- /opt/betterframe/kiosk/betterframe-kiosk
 Restart=always
 RestartSec=2
 
+# WebKitGTK uses bubblewrap for its web-content sandbox. bwrap aborts with
+# "Unexpected capabilities but not setuid" when launched from a process that
+# still carries CAP_* bits. Strip caps + lock NoNewPrivileges so WebKit's
+# sandbox can initialise cleanly. Without this WebKit cells crash on load.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+# Fallback if the above isn't enough on a given distro (disables WebKit sandbox):
+#Environment=WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+
 [Install]
 WantedBy=multi-user.target

@@ -211,6 +211,8 @@ const baseStyles = {
   },
   ".btn-primary": { backgroundColor: "#2563eb", color: "#fff" },
   ".btn-primary:hover": { backgroundColor: "#1d4ed8" },
+  ".btn-success": { backgroundColor: "#16a34a", color: "#fff" },
+  ".btn-success:hover": { backgroundColor: "#15803d" },
   ".btn-danger": { backgroundColor: "#dc2626", color: "#fff" },
   ".btn-danger:hover": { backgroundColor: "#b91c1c" },
   ".btn-ghost": { backgroundColor: "transparent", color: "#666", border: "1px solid #d0d0d0" },

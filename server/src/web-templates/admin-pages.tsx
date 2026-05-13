@@ -2193,6 +2193,12 @@ interface DisplayEditPageProps {
  * Render the attached + available layouts region for a display. Returned
  * standalone so htmx attach/detach can swap just this fragment via
  * hx-target="#display-layouts-<id>" hx-swap="innerHTML".
+ *
+ * Both lists render as flat tables with the same columns. Available rows
+ * leave Priority + Default blank and show an Attach button. The
+ * default-layout `<select>` outside this fragment is kept in sync via an
+ * htmx out-of-band swap appended by the route handler — see
+ * `renderDefaultLayoutSelect`.
  */
 export function renderDisplayLayouts(
   displayId: number,
@@ -2203,10 +2209,11 @@ export function renderDisplayLayouts(
   const target = `#display-layouts-${String(displayId)}`;
   return (
     <div>
+      <h3 style="margin:0 0 0.5rem; font-size:0.95rem">Attached</h3>
       {attached.length === 0 ? (
-        <p style="color:#999; margin-bottom:1rem">No layouts attached yet.</p>
+        <p style="color:#999; margin-bottom:1rem; font-size:0.85rem">No layouts attached yet.</p>
       ) : (
-        <div class="table-wrap" style="margin-bottom:1rem">
+        <div class="table-wrap" style="margin-bottom:1.5rem">
           <table>
             <thead>
               <tr>
@@ -2250,29 +2257,72 @@ export function renderDisplayLayouts(
         </div>
       )}
 
-      {available.length > 0 ? (
-        <form
-          hx-post={`/admin/displays/${String(displayId)}/layouts`}
-          hx-target={target}
-          hx-swap="innerHTML"
-          style="display:flex; gap:0.5rem"
-        >
-          <select name="layout_id" class="form-input" style="flex:1" required>
-            <option value="">-- Pick a layout to attach --</option>
-            {available.map((l) => (
-              <option value={String(l.id)}>{l.name}</option>
-            ))}
-          </select>
-          <button type="submit" class="btn btn-primary">Attach</button>
-        </form>
-      ) : (
+      <h3 style="margin:0 0 0.5rem; font-size:0.95rem">Available</h3>
+      {available.length === 0 ? (
         <p style="color:#999; font-size:0.85rem; margin:0">
           {attached.length === 0
             ? <span>No layouts exist yet. <a href="/admin/layouts/new">Create one</a>.</span>
             : "All existing layouts are already attached."}
         </p>
+      ) : (
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Priority</th>
+                <th>Default</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {available.map((l) => (
+                <tr>
+                  <td><a href={`/admin/layouts/${String(l.id)}`}><strong>{l.name}</strong></a></td>
+                  <td></td>
+                  <td></td>
+                  <td>
+                    <button
+                      type="button"
+                      class="btn btn-sm btn-success"
+                      {...{
+                        "hx-post": `/admin/displays/${String(displayId)}/layouts`,
+                        "hx-vals": `{"layout_id": "${String(l.id)}"}`,
+                        "hx-target": target,
+                        "hx-swap": "innerHTML",
+                      }}
+                    >Attach</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Render the "Default Layout" select for a display. Wrapped in an out-of-band
+ * htmx swap so attach/detach responses can refresh it without the rest of the
+ * page. The id matches the in-page select so swap-by-id works.
+ */
+export function renderDefaultLayoutSelect(
+  defaultLayoutId: number | null,
+  attached: LayoutType[],
+  oob: boolean = false,
+): string {
+  const oobAttr = oob ? { "hx-swap-oob": "outerHTML" } : {};
+  return (
+    <select id="default_layout_id" name="default_layout_id" class="form-input" {...oobAttr}>
+      <option value="">-- None --</option>
+      {attached.map((l) => (
+        <option value={String(l.id)} selected={defaultLayoutId === l.id}>
+          {l.name}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -2345,14 +2395,7 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
 
             <div class="form-group">
               <label for="default_layout_id">Default Layout</label>
-              <select id="default_layout_id" name="default_layout_id" class="form-input">
-                <option value="">-- None --</option>
-                {props.attachedLayouts.map((l) => (
-                  <option value={String(l.id)} selected={d.default_layout_id === l.id}>
-                    {l.name}
-                  </option>
-                ))}
-              </select>
+              {renderDefaultLayoutSelect(d.default_layout_id, props.attachedLayouts)}
               <div class="form-hint">
                 Layout shown on idle revert. Only layouts attached below are eligible.
               </div>

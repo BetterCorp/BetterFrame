@@ -31,6 +31,7 @@ import {
   renderCameraLabels,
   renderKioskLabels,
   renderDisplayLayouts,
+  renderDefaultLayoutSelect,
 } from "../../web-templates/admin-pages.js";
 import { discover as onvifDiscover } from "../../shared/onvif.js";
 import { generateBundle } from "../../shared/bundle.js";
@@ -986,7 +987,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const attachedIds = new Set(attached.map((l) => l.id));
     const available = deps.repo.listLayouts().filter((l) => !attachedIds.has(l.id));
     return htmlFragment(
-      renderDisplayLayouts(displayId, display?.default_layout_id ?? null, attached, available),
+      renderDisplayLayouts(displayId, display?.default_layout_id ?? null, attached, available)
+      + renderDefaultLayoutSelect(display?.default_layout_id ?? null, attached, true),
     );
   };
 

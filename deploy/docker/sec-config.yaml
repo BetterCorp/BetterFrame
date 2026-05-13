@@ -36,6 +36,7 @@ default:
         cookieName: betterframe_session
         totpIssuer: BetterFrame
         noderedUrl: http://nodered:1880
+        selfUrl: http://server:18080
 
     service-api-http:
       plugin: service-api-http

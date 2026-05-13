@@ -48,6 +48,8 @@ const ConfigSchema = av.object(
     totpIssuer: av.string().minLength(1).default("BetterFrame"),
     cookieName: av.string().minLength(1).default("betterframe_session"),
     noderedUrl: av.string().minLength(1).default("http://127.0.0.1:1880"),
+    // URL Node-RED uses to reach this server. Native: localhost. Docker: container name.
+    selfUrl: av.string().minLength(1).default("http://127.0.0.1:18080"),
   },
   { unknownKeys: "strip" },
 );
@@ -198,9 +200,68 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       host: this.config.host,
       port: this.config.port,
     });
+
+    // Auto-provision the Node-RED bf-server-config so the user doesn't have
+    // to set server URL + API key manually. Best-effort with retries because
+    // Node-RED may still be starting.
+    void this.provisionNoderedBridge(repo, secrets, auth, nodered, obs);
   }
 
   async run(_obs: Observable): Promise<void> {}
+
+  private async provisionNoderedBridge(
+    repo: Repository,
+    secrets: SecretsApi,
+    auth: AuthApi,
+    nodered: NoderedBridge,
+    obs: Observable,
+  ): Promise<void> {
+    let plaintext: string;
+    try {
+      plaintext = await this.getOrMintNoderedApiKey(repo, secrets, auth);
+    } catch (err) {
+      obs.log.warn("nodered: mint key failed: {err}", { err: (err as Error).message });
+      return;
+    }
+
+    // Retry a few times — Node-RED may still be booting.
+    const delaysMs = [2000, 5000, 10000, 30000];
+    for (let attempt = 0; attempt < delaysMs.length; attempt += 1) {
+      await new Promise((r) => setTimeout(r, delaysMs[attempt]));
+      const result = await nodered.ensureServerConfig(this.config.selfUrl, plaintext);
+      if (result === "created") {
+        obs.log.info("nodered: provisioned bf-server-config at {url}", {
+          url: this.config.selfUrl,
+        });
+        return;
+      }
+      if (result === "exists") {
+        obs.log.info("nodered: bf-server-config already present, skipping");
+        return;
+      }
+      // failed — retry
+    }
+    obs.log.warn("nodered: provisioning bf-server-config gave up after retries");
+  }
+
+  private async getOrMintNoderedApiKey(
+    repo: Repository,
+    secrets: SecretsApi,
+    auth: AuthApi,
+  ): Promise<string> {
+    const KEY = "nodered_api_key";
+    const stored = repo.getSetupExtra(KEY);
+    if (typeof stored === "string" && stored.length > 0) {
+      return secrets.decryptString(stored, "nodered_api_key");
+    }
+    const { plaintext } = await auth.createApiKey({
+      name: "node-red-bridge",
+      scopes: ["admin"],
+      expiresAt: null,
+    });
+    repo.setSetupExtra(KEY, secrets.encryptString(plaintext, "nodered_api_key"));
+    return plaintext;
+  }
 
   async dispose(): Promise<void> {
     if (this.server) {

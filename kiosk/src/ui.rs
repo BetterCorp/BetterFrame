@@ -193,7 +193,12 @@ fn activate(app: &Application) {
                     ServerMsg::Wake => {
                         let _ = tx_for_reload.send(WorkerMsg::Wake);
                     }
-                    ServerMsg::Fan(pwm) => { hwmon::set_fan(pwm); }
+                    ServerMsg::Fan(pwm) => {
+                        if !hwmon::set_fan(pwm) {
+                            warn!("fan command failed");
+                        }
+                        send_heartbeat_now(&server_for_reload, &key_for_reload);
+                    }
                     ServerMsg::SwitchLayout(id) => {
                         let _ = tx_for_reload.send(WorkerMsg::SwitchLayout(id));
                     }
@@ -205,9 +210,7 @@ fn activate(app: &Application) {
         // immediately so admin "Hardware" panel populates without waiting a
         // full minute after boot/pair.
         loop {
-            let displays = query_displays();
-            let hw = hwmon::read();
-            server::heartbeat(&server, &key, &displays, &hw);
+            send_heartbeat_now(&server, &key);
             std::thread::sleep(std::time::Duration::from_secs(60));
         }
     });
@@ -260,6 +263,12 @@ fn mark_activity(display_id: u32) {
             }
         }
     });
+}
+
+fn send_heartbeat_now(server_url: &str, kiosk_key: &str) {
+    let displays = query_displays();
+    let hw = hwmon::read();
+    server::heartbeat(server_url, kiosk_key, &displays, &hw);
 }
 
 /// Install the once-per-second watchdog that enforces idle/sleep timeouts

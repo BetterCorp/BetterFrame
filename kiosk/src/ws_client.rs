@@ -58,15 +58,17 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
                                     }
                                 } else if text.contains("\"type\":\"fan\"") {
                                     info!("ws: fan received: {text}");
-                                    let pwm: Option<u32> = if text.contains("\"mode\":\"auto\"") {
+                                    let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) else {
+                                        warn!("ws: fan command was not valid JSON");
+                                        continue;
+                                    };
+                                    let pwm: Option<u32> = if msg.get("mode").and_then(|v| v.as_str()) == Some("auto") {
                                         None
+                                    } else if let Some(value) = msg.get("pwm").and_then(|v| v.as_u64()) {
+                                        Some(value.min(255) as u32)
                                     } else {
-                                        // Parse "pwm":N
-                                        let v = text.split("\"pwm\":").nth(1)
-                                            .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
-                                            .and_then(|s| s.parse::<u32>().ok());
-                                        if v.is_none() { continue; }
-                                        v
+                                        warn!("ws: fan command missing mode=auto or pwm");
+                                        continue;
                                     };
                                     let _ = tx.send(ServerMsg::Fan(pwm));
                                 } else {

@@ -1,0 +1,34 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-trigger-status", {
+    category: "BetterFrame Triggers",
+    color: "#a6d4ff",
+    defaults: {
+      name: { value: "" },
+      kiosk_id: { value: "" },
+    },
+    inputs: 1,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      return this.name || "kiosk status";
+    },
+    paletteLabel: "Kiosk Status Trigger",
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-trigger-status">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" placeholder="(optional)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-kiosk_id"><i class="fa fa-tv"></i> Kiosk ID</label>
+    <input type="number" id="node-input-kiosk_id" placeholder="(blank = all kiosks)" />
+  </div>
+  <div class="form-tips">
+    Fires on <code>kiosk.status</code> heartbeats with hardware telemetry.
+    Wire <code>http in POST /in/kiosk/kiosk.status</code> in front of this node.
+    Emits <code>msg.payload = {kiosk_id, kiosk_name, cpu_temp_c, fan_rpm, fan_pwm}</code>.
+    Leave Kiosk ID blank to receive heartbeats from all kiosks.
+  </div>
+</script>

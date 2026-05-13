@@ -1,0 +1,40 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-snapshot", {
+    category: "BetterFrame",
+    color: "#a6d4ff",
+    defaults: {
+      name: { value: "" },
+      config: { value: "", type: "bf-server-config", required: true },
+      entity_id: { value: "" },
+    },
+    inputs: 1,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      return this.name || "bf snapshot";
+    },
+    paletteLabel: "bf snapshot",
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-snapshot">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-config"><i class="fa fa-cog"></i> BF</label>
+    <input type="text" id="node-input-config" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-entity_id"><i class="fa fa-camera"></i> Entity ID</label>
+    <input type="number" id="node-input-entity_id" />
+  </div>
+  <div class="form-tips">
+    Pulls one JPEG frame from the camera entity's main stream.
+    Sets <code>msg.payload</code> = Buffer (binary JPEG) and
+    <code>msg.contentType</code> = <code>image/jpeg</code>.
+    Override via <code>msg.entity_id</code>. Errors on 502 (camera unreachable
+    or ffmpeg/gst missing on the server).
+  </div>
+</script>

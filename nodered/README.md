@@ -13,12 +13,15 @@ BetterFrame admin REST API and kiosk event ingest.
 | `bf-trigger-layout-changed` | Triggers | Fires on `layout.changed` |
 | `bf-trigger-kiosk-changed` | Triggers | Fires on `kiosk.changed` (connect/disconnect/heartbeat) |
 | `bf-trigger-camera-changed` | Triggers | Fires on `camera.changed` (created/updated/deleted) |
+| `bf-trigger-status` | Triggers | Fires on `kiosk.status` (heartbeat-only telemetry; optional kiosk_id filter) |
 | `bf-layout-switch` | BetterFrame | Switch a display's active layout |
 | `bf-power` | BetterFrame | Wake / standby a kiosk display |
 | `bf-fan` | BetterFrame | Set fan mode (auto/pwm) on a kiosk |
 | `bf-cameras` | BetterFrame | Fetch the camera list |
 | `bf-config-get` | BetterFrame | Fetch BF state (displays/kiosks/cameras/layouts/entities, by id or full list) |
 | `bf-config-set` | BetterFrame | Mutate BF state (default layout, enabled, priority, name) |
+| `bf-status` | BetterFrame | Fetch current kiosk state by ID (telemetry, last_seen_at, etc.) |
+| `bf-snapshot` | BetterFrame | Fetch a JPEG snapshot for a camera entity (binary Buffer payload) |
 
 ## Authentication
 

@@ -192,14 +192,21 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
                 const cpu = typeof msg["cpu_temp_c"] === "number" ? msg["cpu_temp_c"] : null;
                 const fanRpm = typeof msg["fan_rpm"] === "number" ? msg["fan_rpm"] : null;
                 const fanPwm = typeof msg["fan_pwm"] === "number" ? msg["fan_pwm"] : null;
-                nodered.forward("kiosk.changed", {
+                const telemetry = {
                   kiosk_id: kiosk.id,
                   kiosk_name: kioskData.name,
-                  event: "heartbeat",
                   cpu_temp_c: cpu,
                   fan_rpm: fanRpm,
                   fan_pwm: fanPwm,
+                };
+                nodered.forward("kiosk.changed", {
+                  ...telemetry,
+                  event: "heartbeat",
                 });
+                // Dedicated status topic — same payload sans the event marker
+                // so bf-trigger-status can listen on a heartbeat-only channel
+                // without filtering connect/disconnect noise out.
+                nodered.forward("kiosk.status", telemetry);
               }
             } catch {
               // ignore malformed

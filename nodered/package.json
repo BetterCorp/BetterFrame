@@ -16,12 +16,15 @@
       "bf-trigger-layout-changed": "src/bf-trigger-layout-changed.js",
       "bf-trigger-kiosk-changed": "src/bf-trigger-kiosk-changed.js",
       "bf-trigger-camera-changed": "src/bf-trigger-camera-changed.js",
+      "bf-trigger-status": "src/bf-trigger-status.js",
       "bf-layout-switch": "src/bf-layout-switch.js",
       "bf-power": "src/bf-power.js",
       "bf-fan": "src/bf-fan.js",
       "bf-cameras": "src/bf-cameras.js",
       "bf-config-get": "src/bf-config-get.js",
-      "bf-config-set": "src/bf-config-set.js"
+      "bf-config-set": "src/bf-config-set.js",
+      "bf-status": "src/bf-status.js",
+      "bf-snapshot": "src/bf-snapshot.js"
     },
     "icons": [
       "icons"

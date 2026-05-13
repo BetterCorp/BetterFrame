@@ -1,0 +1,38 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-status", {
+    category: "BetterFrame",
+    color: "#a6d4ff",
+    defaults: {
+      name: { value: "" },
+      config: { value: "", type: "bf-server-config", required: true },
+      kiosk_id: { value: "" },
+    },
+    inputs: 1,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      return this.name || "bf status";
+    },
+    paletteLabel: "bf status",
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-status">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-config"><i class="fa fa-cog"></i> BF</label>
+    <input type="text" id="node-input-config" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-kiosk_id"><i class="fa fa-tv"></i> Kiosk ID</label>
+    <input type="number" id="node-input-kiosk_id" />
+  </div>
+  <div class="form-tips">
+    GETs <code>/api/admin/kiosks/:id</code> and sets <code>msg.payload</code> to the
+    kiosk object (name, enabled, last_seen_at, cpu_temp_c, fan_rpm, fan_pwm, etc.).
+    Override via <code>msg.kiosk_id</code>. Secrets are stripped server-side.
+  </div>
+</script>

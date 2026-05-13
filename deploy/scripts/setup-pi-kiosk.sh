@@ -24,6 +24,7 @@
 #   BF_HOME=/path/to/repo          override repo location (default: $HOME/betterframe)
 #   BF_REPO_URL=git@…              override clone URL (default: github)
 #   SKIP_BUILD=1                   skip kiosk cargo build (expects existing binary)
+#   BF_SKIP_UPGRADE=1              skip apt full-upgrade (faster re-runs)
 #   BF_NO_REBOOT=1                 don't auto-reboot when boot-time files changed
 
 set -euo pipefail
@@ -60,10 +61,27 @@ run_as_user() {
 }
 
 # ----------------------------------------------------------------------------
-# 1. Base packages
+# 1. Base packages + full OS upgrade
 # ----------------------------------------------------------------------------
-echo "==> Installing base packages"
+echo "==> apt update"
+export DEBIAN_FRONTEND=noninteractive
 apt-get update
+
+if [ "${BF_SKIP_UPGRADE:-0}" != "1" ]; then
+  echo "==> apt full-upgrade (OS + dist updates)"
+  # full-upgrade handles changing dependencies (incl. kernel + libc); the
+  # confdef/confold flags keep maintainer scripts non-interactive. If anything
+  # gets held back, autoremove won't touch BetterFrame's deps because we
+  # install them with --no-install-recommends and explicit names below.
+  apt-get -y \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold" \
+    full-upgrade
+  apt-get -y autoremove --purge
+  apt-get -y autoclean
+fi
+
+echo "==> Installing base packages"
 apt-get install -y --no-install-recommends \
   git ca-certificates curl gnupg lsb-release sudo
 

@@ -258,7 +258,7 @@ function registerKioskRoutes(
       bundle_version?: string;
       kiosk_app_version?: string;
       os_version?: string;
-      displays?: Array<{ name: string; width_px: number; height_px: number }>;
+      displays?: Array<{ index?: number; name: string; width_px: number; height_px: number }>;
       cpu_temp_c?: number | null;
       fan_rpm?: number | null;
       fan_pwm?: number | null;
@@ -276,23 +276,44 @@ function registerKioskRoutes(
     // Sync displays reported by the kiosk
     if (Array.isArray(body?.displays)) {
       const existing = repo.listDisplaysForKiosk(kiosk.id);
-      for (const reported of body.displays) {
-        const match = existing.find((d) => d.name.endsWith(reported.name));
+      const seenDisplayIds = new Set<number>();
+      for (const [position, reported] of body.displays.entries()) {
+        const reportedIndex = Number.isInteger(reported.index) && reported.index! >= 0
+          ? reported.index!
+          : position;
+        const match = existing.find((d) => d.name.endsWith(reported.name))
+          ?? existing.find((d) => d.index === reportedIndex);
         if (match) {
-          if (match.width_px !== reported.width_px || match.height_px !== reported.height_px) {
+          seenDisplayIds.add(match.id);
+          if (
+            match.name !== reported.name
+            || match.index !== reportedIndex
+            || match.width_px !== reported.width_px
+            || match.height_px !== reported.height_px
+          ) {
             repo.updateDisplay(match.id, {
+              name: reported.name,
+              index: reportedIndex,
               width_px: reported.width_px,
               height_px: reported.height_px,
             } as any);
           }
         } else {
           // New display — create it
-          repo.createDisplayForKiosk(kiosk.id, {
+          const created = repo.createDisplayForKiosk(kiosk.id, {
             name: reported.name,
+            index: reportedIndex,
             width_px: reported.width_px,
             height_px: reported.height_px,
           });
+          seenDisplayIds.add(created.id);
         }
+      }
+      for (const display of existing) {
+        if (seenDisplayIds.has(display.id) || !display.is_enabled) continue;
+        if (!display.name.endsWith(" HDMI-0")) continue;
+        if (repo.listLayoutsForDisplay(display.id).length > 0) continue;
+        repo.updateDisplay(display.id, { is_enabled: false } as any);
       }
     }
 

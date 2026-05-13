@@ -373,8 +373,7 @@ export class Repository {
     width_px?: number;
     height_px?: number;
   }): Display {
-    // Find next available index
-    const idx = input.index ?? this.nextDisplayIndex();
+    const idx = input.index ?? this.nextDisplayIndexForKiosk(kioskId);
     const result = this.prep(
       `INSERT INTO displays (name, "index", is_primary, kiosk_id, width_px, height_px)
        VALUES (?, ?, 0, ?, ?, ?)`,
@@ -399,8 +398,8 @@ export class Repository {
     return rs.map((r) => rowToDisplay(r as Record<string, unknown>));
   }
 
-  private nextDisplayIndex(): number {
-    const r = this.prep('SELECT MAX("index") AS m FROM displays').get() as { m: number | null } | undefined;
+  private nextDisplayIndexForKiosk(kioskId: number): number {
+    const r = this.prep('SELECT MAX("index") AS m FROM displays WHERE kiosk_id = ?').get(kioskId) as { m: number | null } | undefined;
     return (r?.m ?? -1) + 1;
   }
 

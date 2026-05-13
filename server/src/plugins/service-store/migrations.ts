@@ -657,4 +657,56 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
   (db: DatabaseSync) => {
     addColumnIfNotExists(db, "displays", "is_enabled", "INTEGER NOT NULL DEFAULT 1");
   },
+
+  // ---- displays.index is local to the kiosk, not globally unique -------------
+  (db: DatabaseSync) => {
+    const row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'displays'")
+      .get() as { sql?: string } | undefined;
+    if (!row?.sql || !row.sql.includes('"index" INTEGER NOT NULL UNIQUE')) return;
+
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec(`
+      CREATE TABLE displays_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        "index" INTEGER NOT NULL,
+        is_primary INTEGER NOT NULL DEFAULT 0,
+        width_px INTEGER NOT NULL DEFAULT 1920,
+        height_px INTEGER NOT NULL DEFAULT 1080,
+        default_layout_id INTEGER,
+        idle_timeout_seconds INTEGER NOT NULL DEFAULT 600,
+        sleep_timeout_seconds INTEGER NOT NULL DEFAULT 1800,
+        cec_enabled INTEGER NOT NULL DEFAULT 1,
+        cec_device_path TEXT,
+        cec_logical_address INTEGER,
+        desired_power_state TEXT NOT NULL DEFAULT 'follow_layout'
+          CHECK(desired_power_state IN ('follow_layout', 'on', 'standby')),
+        state_check_enabled INTEGER NOT NULL DEFAULT 0,
+        state_check_interval_seconds INTEGER NOT NULL DEFAULT 60,
+        kiosk_id INTEGER REFERENCES kiosks(id) ON DELETE SET NULL,
+        is_enabled INTEGER NOT NULL DEFAULT 1
+      ) STRICT;
+
+      INSERT INTO displays_new (
+        id, name, "index", is_primary, width_px, height_px, default_layout_id,
+        idle_timeout_seconds, sleep_timeout_seconds, cec_enabled, cec_device_path,
+        cec_logical_address, desired_power_state, state_check_enabled,
+        state_check_interval_seconds, kiosk_id, is_enabled
+      )
+      SELECT
+        id, name, "index", is_primary, width_px, height_px, default_layout_id,
+        idle_timeout_seconds, sleep_timeout_seconds, cec_enabled, cec_device_path,
+        cec_logical_address, desired_power_state, state_check_enabled,
+        state_check_interval_seconds, kiosk_id, is_enabled
+      FROM displays;
+
+      DROP TABLE displays;
+      ALTER TABLE displays_new RENAME TO displays;
+      CREATE INDEX IF NOT EXISTS idx_displays_kiosk ON displays(kiosk_id);
+      CREATE INDEX IF NOT EXISTS idx_displays_kiosk_index
+        ON displays(kiosk_id, "index");
+    `);
+    db.exec("PRAGMA foreign_keys = ON");
+  },
 ];

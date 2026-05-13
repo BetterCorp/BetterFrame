@@ -200,8 +200,8 @@ pub fn heartbeat(
     hw: &crate::hwmon::HwInfo,
 ) {
     let client = reqwest::blocking::Client::new();
-    let display_info: Vec<_> = displays.iter().map(|(name, w, h)| {
-        serde_json::json!({ "name": name, "width_px": w, "height_px": h })
+    let display_info: Vec<_> = displays.iter().enumerate().map(|(index, (name, w, h))| {
+        serde_json::json!({ "index": index, "name": name, "width_px": w, "height_px": h })
     }).collect();
     let _ = client
         .post(format!("{server}/api/kiosk/heartbeat"))

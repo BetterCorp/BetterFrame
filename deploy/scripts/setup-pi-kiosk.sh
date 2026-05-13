@@ -164,7 +164,9 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
   if ! id -u bfkiosk >/dev/null 2>&1; then
     useradd -m -s /usr/sbin/nologin bfkiosk
   fi
-  for grp in video render input audio seat; do
+  # Debian's seatd uses -g video (no separate 'seat' group) — only join groups
+  # that actually exist on this system.
+  for grp in video render input audio; do
     if getent group "$grp" >/dev/null; then
       usermod -a -G "$grp" bfkiosk
     fi

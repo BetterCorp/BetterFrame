@@ -111,7 +111,8 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
     libwebkitgtk-6.0-dev pkg-config build-essential \
     gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
     gstreamer1.0-plugins-bad gstreamer1.0-libav \
-    v4l-utils wlr-randr
+    v4l-utils wlr-randr \
+    plymouth plymouth-themes librsvg2-bin
 
   systemctl enable --now seatd
 fi
@@ -192,6 +193,43 @@ EOF
   systemctl enable betterframe-kiosk.service
   # Restart picks up new binary on re-run.
   systemctl restart betterframe-kiosk.service || true
+
+  # --------------------------------------------------------------------------
+  # 9. Plymouth boot splash — hide kernel text + Pi rainbow, show BF logo
+  # --------------------------------------------------------------------------
+  echo "==> Installing BetterFrame plymouth theme"
+  THEME_DIR="/usr/share/plymouth/themes/betterframe"
+  install -d -m 755 "${THEME_DIR}"
+  install -m 644 "${REPO_ROOT}/deploy/plymouth/betterframe/betterframe.plymouth" "${THEME_DIR}/"
+  install -m 644 "${REPO_ROOT}/deploy/plymouth/betterframe/betterframe.script"   "${THEME_DIR}/"
+  rsvg-convert -w 480 "${REPO_ROOT}/server/src/web-static/betterframe-logo.svg" \
+    -o "${THEME_DIR}/logo.png"
+  plymouth-set-default-theme -R betterframe
+
+  # Find the boot config / cmdline file. Bookworm uses /boot/firmware/, older
+  # Pi images use /boot/.
+  if [ -f /boot/firmware/cmdline.txt ]; then
+    BOOT_DIR=/boot/firmware
+  else
+    BOOT_DIR=/boot
+  fi
+  CMDLINE="${BOOT_DIR}/cmdline.txt"
+  CONFIG="${BOOT_DIR}/config.txt"
+
+  if [ -f "${CMDLINE}" ]; then
+    # cmdline.txt is a single line. Append missing flags only.
+    for flag in quiet splash plymouth.ignore-serial-consoles "loglevel=0" "vt.global_cursor_default=0" logo.nologo; do
+      if ! grep -qw -- "${flag}" "${CMDLINE}"; then
+        sed -i "s|\$| ${flag}|" "${CMDLINE}"
+      fi
+    done
+  fi
+  if [ -f "${CONFIG}" ]; then
+    # Pi firmware rainbow splash off.
+    if ! grep -q "^disable_splash=1" "${CONFIG}"; then
+      printf '\n# BetterFrame: disable firmware rainbow splash\ndisable_splash=1\n' >> "${CONFIG}"
+    fi
+  fi
 fi
 
 echo "==> Done."

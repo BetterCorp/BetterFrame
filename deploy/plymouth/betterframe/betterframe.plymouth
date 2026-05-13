@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=BetterFrame
+Description=BetterFrame boot splash
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/betterframe
+ScriptFile=/usr/share/plymouth/themes/betterframe/betterframe.script

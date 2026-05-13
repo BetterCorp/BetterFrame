@@ -265,6 +265,9 @@ fn install_idle_watchdog() {
     if WATCHDOG_INSTALLED.with(|c| c.get()) { return; }
     WATCHDOG_INSTALLED.with(|c| c.set(true));
     gtk::glib::timeout_add_local(Duration::from_secs(1), move || {
+        // Drop any pipelines whose cooling window has elapsed.
+        expire_cooling_pipelines();
+
         let bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
         let Some(bundle) = bundle else { return gtk::glib::ControlFlow::Continue };
 
@@ -412,41 +415,10 @@ fn render_bundle(
         }
     }
 
-    // Compute warm vs hot camera sets per the CLAUDE.md model.
-    // Warm = cameras in the currently-active layout (cells + preload) of any display.
-    // Hot  = cameras referenced by ANY layout with priority=hot (kept warm always).
-    // Anything previously cached but in neither set transitions to Cooling.
-    let mut warm_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    let mut hot_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    let mut max_cooling_secs: u32 = 0;
-    for (i, bd) in displays.iter().enumerate() {
-        let target_id = pick_initial_layout(bd);
-        if let Some(target_id) = target_id {
-            if let Some(layout) = bd.layouts.iter().find(|l| l.id == target_id) {
-                for cell in &layout.cells {
-                    if cell.content_type == "camera" {
-                        if let Some(id) = cell.camera_id { warm_set.insert(id); }
-                    }
-                }
-                for id in &layout.preload_camera_ids { warm_set.insert(*id); }
-                if let Some(t) = layout.cooling_timeout_seconds { max_cooling_secs = max_cooling_secs.max(t); }
-            }
-        }
-        // Hot layouts keep their cameras warm even when not active.
-        for layout in &bd.layouts {
-            if layout.priority == "hot" {
-                for cell in &layout.cells {
-                    if cell.content_type == "camera" {
-                        if let Some(id) = cell.camera_id { hot_set.insert(id); }
-                    }
-                }
-                for id in &layout.preload_camera_ids { hot_set.insert(*id); }
-            }
-        }
-        let _ = gdk_monitors.get(i);
-    }
-
-    recompute_pool_states(&warm_set, &hot_set, max_cooling_secs);
+    // Note: hot/warm/cooling pool recompute is deferred to the per-display
+    // render_layout() calls below — each one calls recompute_global_state()
+    // after installing its current_layout_id, so the union across all
+    // displays is correct once the loop finishes.
 
     // Build/reuse window per bundle display, then render its initial layout.
     let mut new_state: HashMap<u32, DisplayState> = HashMap::new();
@@ -578,7 +550,7 @@ fn render_layout(display_id: u32, layout_id: u32) {
 
     if layout.cells.is_empty() {
         warn!("layout has no cells");
-        recompute_warm_cameras(&bundle);
+        recompute_global_state();
         DISPLAYS.with(|ds| {
             if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
                 show_logo(&st.window);
@@ -587,9 +559,10 @@ fn render_layout(display_id: u32, layout_id: u32) {
         return;
     }
 
-    // Recompute warm-camera set across ALL displays (the union), then drop
-    // pipelines no longer needed anywhere.
-    recompute_warm_cameras(&bundle);
+    // Recompute hot/warm/cooling pool state across ALL displays' current
+    // layouts. Pipelines no longer needed transition to Cooling and are
+    // dropped by the watchdog tick after cooling_timeout_seconds.
+    recompute_global_state();
 
     let server_url = server_url.as_str();
     let kiosk_key = kiosk_key.as_str();
@@ -695,34 +668,138 @@ fn render_layout(display_id: u32, layout_id: u32) {
     });
 }
 
-/// Compute the union of cameras needed across all displays' current layouts +
-/// preload sets, then drop any warm pipelines outside that set.
-fn recompute_warm_cameras(bundle: &KioskBundle) {
-    let mut needed: std::collections::HashSet<u32> = std::collections::HashSet::new();
+/// Default cooling timeout when a layout doesn't specify one (or specifies 0).
+const DEFAULT_COOLING_SECS: u32 = 30;
+
+/// Walk all displays' currently-active layouts (plus any priority=hot layouts)
+/// and recompute the warm/hot pool. Cameras dropped from active layouts
+/// transition to Cooling; new entries are NOT added here — `ensure_warm` does
+/// that when the layout actually renders.
+fn recompute_global_state() {
+    let bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
+    let Some(bundle) = bundle else { return };
     let displays = bundle.normalized_displays();
-    DISPLAYS.with(|ds| {
-        for (display_id, st) in ds.borrow().iter() {
-            let Some(bd) = displays.iter().find(|d| d.id == *display_id) else { continue };
-            let Some(cur_id) = st.current_layout_id else { continue };
-            let Some(layout) = bd.layouts.iter().find(|l| l.id == cur_id) else { continue };
-            for cell in &layout.cells {
-                if cell.content_type == "camera" {
-                    if let Some(id) = cell.camera_id { needed.insert(id); }
-                }
-            }
-            for id in &layout.preload_camera_ids { needed.insert(*id); }
-        }
+
+    let mut warm_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut hot_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut max_cooling_secs: u32 = 0;
+
+    // Snapshot per-display active layout id outside any borrow of WARM_CAMERAS.
+    let active: Vec<(u32, Option<u32>)> = DISPLAYS.with(|ds| {
+        ds.borrow().iter().map(|(id, st)| (*id, st.current_layout_id)).collect()
     });
+
+    for bd in &displays {
+        // Find this display's active layout (if any) and harvest its cameras.
+        let active_id = active.iter().find(|(id, _)| *id == bd.id).and_then(|(_, l)| *l);
+        if let Some(cur_id) = active_id {
+            if let Some(layout) = bd.layouts.iter().find(|l| l.id == cur_id) {
+                for cell in &layout.cells {
+                    if cell.content_type == "camera" {
+                        if let Some(id) = cell.camera_id { warm_set.insert(id); }
+                    }
+                }
+                for id in &layout.preload_camera_ids { warm_set.insert(*id); }
+                let t = layout.cooling_timeout_seconds.unwrap_or(0);
+                let t = if t == 0 { DEFAULT_COOLING_SECS } else { t };
+                max_cooling_secs = max_cooling_secs.max(t);
+            }
+        }
+        // Hot layouts keep their cameras warm even when not active.
+        for layout in &bd.layouts {
+            if layout.priority == "hot" {
+                for cell in &layout.cells {
+                    if cell.content_type == "camera" {
+                        if let Some(id) = cell.camera_id { hot_set.insert(id); }
+                    }
+                }
+                for id in &layout.preload_camera_ids { hot_set.insert(*id); }
+            }
+        }
+    }
+
+    if max_cooling_secs == 0 { max_cooling_secs = DEFAULT_COOLING_SECS; }
+    recompute_pool_states(&warm_set, &hot_set, max_cooling_secs);
+}
+
+/// Apply the hot/warm/cooling/cold state machine to the existing WARM_CAMERAS
+/// pool. Does NOT create new entries — `ensure_warm` handles that.
+///
+/// - cam in hot_set        → Hot   (clear cooling)
+/// - cam in warm_set       → Warm  (clear cooling)
+/// - cam in neither & was Cooling → keep cooling_until unchanged
+/// - cam in neither & not yet cooling → transition to Cooling
+///   - if max_cooling_secs == 0, remove immediately (Cold)
+fn recompute_pool_states(
+    warm_set: &std::collections::HashSet<u32>,
+    hot_set: &std::collections::HashSet<u32>,
+    max_cooling_secs: u32,
+) {
+    let mut to_remove: Vec<u32> = Vec::new();
+    let mut to_stop: Vec<gstreamer::Pipeline> = Vec::new();
+
     WARM_CAMERAS.with(|w| {
         let mut warm = w.borrow_mut();
-        let stale: Vec<u32> = warm.keys().filter(|id| !needed.contains(id)).copied().collect();
-        for id in stale {
-            if let Some((pipe, _, _)) = warm.remove(&id) {
-                info!("stopping pipeline for camera {id} (no longer needed)");
-                pipeline::stop(&pipe);
+        for (cam_id, entry) in warm.iter_mut() {
+            if hot_set.contains(cam_id) {
+                entry.state = WarmthState::Hot;
+                entry.cooling_until = None;
+            } else if warm_set.contains(cam_id) {
+                entry.state = WarmthState::Warm;
+                entry.cooling_until = None;
+            } else {
+                // Was hot/warm, no longer needed.
+                if entry.state == WarmthState::Cooling {
+                    // Already cooling — leave cooling_until alone.
+                    continue;
+                }
+                if max_cooling_secs == 0 {
+                    to_remove.push(*cam_id);
+                    to_stop.push(entry.pipeline.clone());
+                } else {
+                    entry.state = WarmthState::Cooling;
+                    entry.cooling_until = Some(
+                        Instant::now() + Duration::from_secs(max_cooling_secs as u64),
+                    );
+                    info!(
+                        "camera {cam_id}: cooling for {max_cooling_secs}s before drop"
+                    );
+                }
+            }
+        }
+        for id in &to_remove { warm.remove(id); }
+    });
+
+    for pipe in to_stop {
+        pipeline::stop(&pipe);
+    }
+}
+
+/// Drop any Cooling entries whose timer has expired. Called from the
+/// 1s watchdog tick.
+fn expire_cooling_pipelines() {
+    let now = Instant::now();
+    let mut expired: Vec<(u32, gstreamer::Pipeline)> = Vec::new();
+    WARM_CAMERAS.with(|w| {
+        let mut warm = w.borrow_mut();
+        let ids: Vec<u32> = warm
+            .iter()
+            .filter(|(_, e)| {
+                e.state == WarmthState::Cooling
+                    && e.cooling_until.is_some_and(|t| now >= t)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            if let Some(e) = warm.remove(&id) {
+                expired.push((id, e.pipeline));
             }
         }
     });
+    for (id, pipe) in expired {
+        info!("camera {id}: cooling expired → stopping pipeline");
+        pipeline::stop(&pipe);
+    }
 }
 
 fn load_webview_url(webview: &webkit6::WebView, url: &str, server_url: &str, kiosk_key: &str) {
@@ -764,10 +841,20 @@ fn ensure_warm(
     let (uri, desired_badge) = cam.pick_stream(selector, area_fraction)?;
 
     let cached = WARM_CAMERAS.with(|w| {
-        w.borrow().get(&cam_id).map(|(p, paint, b)| (p.clone(), paint.clone(), *b))
+        w.borrow().get(&cam_id).map(|e| (e.pipeline.clone(), e.paintable.clone(), e.badge))
     });
     if let Some((pipe, paintable, badge)) = cached {
         if badge == desired_badge {
+            // Promote out of Cooling if we're rendering it again.
+            WARM_CAMERAS.with(|w| {
+                if let Some(e) = w.borrow_mut().get_mut(&cam_id) {
+                    if e.state == WarmthState::Cooling {
+                        info!("camera {cam_id}: rescued from cooling → warm");
+                        e.state = WarmthState::Warm;
+                        e.cooling_until = None;
+                    }
+                }
+            });
             return Some((paintable, badge));
         }
         info!("camera {cam_id}: stream change {badge} → {desired_badge}, swapping");
@@ -779,7 +866,13 @@ fn ensure_warm(
     let paintable = sink.property::<gtk::gdk::Paintable>("paintable");
     pipeline::play(&pipe);
     WARM_CAMERAS.with(|w| {
-        w.borrow_mut().insert(cam_id, (pipe, paintable.clone(), desired_badge));
+        w.borrow_mut().insert(cam_id, PipelineEntry {
+            pipeline: pipe,
+            paintable: paintable.clone(),
+            badge: desired_badge,
+            state: WarmthState::Warm,
+            cooling_until: None,
+        });
     });
     info!("warmed pipeline for camera {cam_id} (stream: {desired_badge})");
     Some((paintable, desired_badge))

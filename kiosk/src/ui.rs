@@ -201,12 +201,14 @@ fn activate(app: &Application) {
             }
         });
 
-        // Heartbeat loop — reports display geometry + hwmon
+        // Heartbeat loop — reports display geometry + hwmon. Fire once
+        // immediately so admin "Hardware" panel populates without waiting a
+        // full minute after boot/pair.
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(60));
             let displays = query_displays();
             let hw = hwmon::read();
             server::heartbeat(&server, &key, &displays, &hw);
+            std::thread::sleep(std::time::Duration::from_secs(60));
         }
     });
 
@@ -369,6 +371,7 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
     vbox.append(&title);
     vbox.append(&code_label);
     vbox.append(&hint);
+    vbox.append(&spinner(28));
     window.set_child(Some(&vbox));
 }
 
@@ -890,13 +893,23 @@ fn hide_cursor_on(window: &ApplicationWindow) {
 }
 
 fn show_logo(window: &ApplicationWindow) {
-    let vbox = GtkBox::new(Orientation::Vertical, 0);
+    let vbox = GtkBox::new(Orientation::Vertical, 24);
     vbox.set_valign(gtk::Align::Center);
     vbox.set_halign(gtk::Align::Center);
     vbox.set_vexpand(true);
     vbox.set_hexpand(true);
     vbox.append(&logo_picture(BETTERFRAME_LOGO_SVG, 480, 118, "idle-logo"));
+    vbox.append(&spinner(36));
     window.set_child(Some(&vbox));
+}
+
+/// A centered GTK spinner sized at `px` pixels. Already spinning.
+fn spinner(px: i32) -> gtk::Spinner {
+    let s = gtk::Spinner::new();
+    s.set_size_request(px, px);
+    s.set_halign(gtk::Align::Center);
+    s.start();
+    s
 }
 
 fn none_cell() -> gtk::Widget {

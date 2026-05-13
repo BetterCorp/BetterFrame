@@ -62,10 +62,6 @@ BIN_DST_DIR="/opt/betterframe/kiosk"
 BIN_DST="${BIN_DST_DIR}/betterframe-kiosk"
 
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
-  if ! command -v cargo >/dev/null 2>&1; then
-    echo "error: cargo not found. Install rustup or set SKIP_BUILD=1." >&2
-    exit 1
-  fi
   apt-get install -y --no-install-recommends \
     libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
     libwebkitgtk-6.0-dev pkg-config build-essential \
@@ -73,10 +69,11 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
     gstreamer1.0-plugins-bad gstreamer1.0-libav
 
   # Build as the invoking user (typically the dev/admin user), not root,
-  # so cargo registry caches stay in their home.
+  # so cargo registry caches stay in their home and rustup PATH applies.
+  # -i runs a login shell so ~/.cargo/env gets sourced from .profile/.bashrc.
   BUILD_USER="${SUDO_USER:-root}"
   echo "    building as ${BUILD_USER}"
-  sudo -u "${BUILD_USER}" cargo build --release --manifest-path "${REPO_ROOT}/kiosk/Cargo.toml"
+  sudo -u "${BUILD_USER}" -i sh -c "cd '${REPO_ROOT}' && cargo build --release --manifest-path kiosk/Cargo.toml"
 fi
 
 if [ ! -f "${BIN_SRC}" ]; then

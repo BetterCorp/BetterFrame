@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
-# Provision a Raspberry Pi (Bookworm or later) as a BetterFrame kiosk.
+# Single-host BetterFrame installer/updater for Raspberry Pi 5 (Bookworm+).
 #
-#   - Creates the unprivileged `bfkiosk` user
-#   - Installs `cage` (single-app Wayland compositor) and `seatd`
-#   - Disables any installed display manager and sets multi-user.target
-#   - Disables getty on tty1 (cage owns the tty)
-#   - Installs the betterframe-kiosk system unit + PAM stack
-#   - Enables + starts the service
+# What it does (every step idempotent — safe to re-run for updates):
+#   1. clone or `git pull` the BetterFrame repo into the invoking user's home
+#   2. install OS deps: Docker + compose, GTK4/GStreamer/WebKit dev libs,
+#      cage + seatd, rust toolchain (via rustup) if missing
+#   3. bring up the Docker stack (server + Angie proxy + Node-RED) via
+#      `docker compose up -d --build`
+#   4. build the Rust kiosk binary as the invoking user, install to
+#      /opt/betterframe/kiosk/betterframe-kiosk
+#   5. provision the unprivileged `bfkiosk` user + cage PAM stack + systemd
+#      unit, disable any display manager, set multi-user.target as default
+#   6. enable + start the kiosk service
 #
-# Re-run safely: every step is idempotent.
-#
-# By default the script builds the kiosk Rust binary (cargo build --release)
-# and installs it at /opt/betterframe/kiosk/betterframe-kiosk. Set
-# SKIP_BUILD=1 to skip the build step (expects the binary already present
-# at kiosk/target/release/betterframe-kiosk in the repo).
+# Re-run after every git change to pull + rebuild + redeploy.
 #
 # Usage:  sudo ./deploy/scripts/setup-pi-kiosk.sh
-#         sudo SKIP_BUILD=1 ./deploy/scripts/setup-pi-kiosk.sh
+#
+# Env overrides:
+#   BF_HOME=/path/to/repo          override repo location (default: $HOME/betterframe)
+#   BF_REPO_URL=git@…              override clone URL (default: github)
+#   SKIP_BUILD=1                   skip kiosk cargo build (expects existing binary)
+#   SKIP_DOCKER=1                  skip `docker compose up -d --build`
+#   SKIP_KIOSK=1                   server-only host (no kiosk service / cage / tty1)
+#   SKIP_SERVER=1                  kiosk-only host (no Docker stack)
 
 set -euo pipefail
 
@@ -25,80 +32,160 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-
-echo "==> Installing cage + seatd"
-apt-get update
-apt-get install -y --no-install-recommends cage seatd
-
-echo "==> Enabling seatd"
-systemctl enable --now seatd
-
-echo "==> Ensuring bfkiosk user exists"
-if ! id -u bfkiosk >/dev/null 2>&1; then
-  useradd -m -s /usr/sbin/nologin bfkiosk
+REPO_URL="${BF_REPO_URL:-https://github.com/BetterCorp/BetterFrame.git}"
+BUILD_USER="${SUDO_USER:-$(id -un)}"
+if [ "${BUILD_USER}" = "root" ]; then
+  echo "error: refuses to run as root without SUDO_USER set. Use 'sudo ...' from a normal user." >&2
+  exit 1
 fi
-# nologin shell means no interactive login. The systemd unit launches cage
-# directly so a shell is not needed. The user joins the hardware-access
-# groups required by GStreamer/GTK/cage.
-for grp in video render input audio seat; do
-  if getent group "$grp" >/dev/null; then
-    usermod -a -G "$grp" bfkiosk
+USER_HOME="$(getent passwd "${BUILD_USER}" | cut -d: -f6)"
+BF_HOME="${BF_HOME:-${USER_HOME}/betterframe}"
+
+run_as_user() {
+  # Run in a login shell so ~/.cargo/env, ~/.profile etc. are sourced.
+  sudo -u "${BUILD_USER}" -H -i sh -c "$1"
+}
+
+# ----------------------------------------------------------------------------
+# 1. Base packages
+# ----------------------------------------------------------------------------
+echo "==> Installing base packages"
+apt-get update
+apt-get install -y --no-install-recommends \
+  git ca-certificates curl gnupg lsb-release sudo
+
+# ----------------------------------------------------------------------------
+# 2. Clone or update repo
+# ----------------------------------------------------------------------------
+if [ -d "${BF_HOME}/.git" ]; then
+  echo "==> Updating repo at ${BF_HOME}"
+  run_as_user "git -C '${BF_HOME}' fetch --prune origin && git -C '${BF_HOME}' pull --ff-only"
+else
+  echo "==> Cloning ${REPO_URL} → ${BF_HOME}"
+  install -d -o "${BUILD_USER}" -g "${BUILD_USER}" "$(dirname "${BF_HOME}")"
+  run_as_user "git clone '${REPO_URL}' '${BF_HOME}'"
+fi
+REPO_ROOT="${BF_HOME}"
+
+# ----------------------------------------------------------------------------
+# 3. Docker engine + compose plugin
+# ----------------------------------------------------------------------------
+if [ "${SKIP_SERVER:-0}" != "1" ] && [ "${SKIP_DOCKER:-0}" != "1" ]; then
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "==> Installing Docker (via convenience script)"
+    curl -fsSL https://get.docker.com | sh
+  else
+    echo "==> Docker already installed: $(docker --version)"
   fi
-done
+  if ! docker compose version >/dev/null 2>&1; then
+    apt-get install -y --no-install-recommends docker-compose-plugin
+  fi
+  # Let BUILD_USER use docker without sudo (idempotent).
+  if ! id -nG "${BUILD_USER}" | tr ' ' '\n' | grep -qx docker; then
+    usermod -aG docker "${BUILD_USER}"
+    echo "    added ${BUILD_USER} to docker group (re-login required for that user)"
+  fi
+  systemctl enable --now docker
+fi
 
-echo "==> Disabling any display manager"
-for dm in lightdm gdm gdm3 sddm; do
-  systemctl disable --now "${dm}.service" 2>/dev/null || true
-done
-systemctl set-default multi-user.target
-
-echo "==> Disabling getty on tty1 (cage owns it)"
-systemctl disable --now getty@tty1.service 2>/dev/null || true
-
-echo "==> Building + installing kiosk binary"
-BIN_SRC="${REPO_ROOT}/kiosk/target/release/betterframe-kiosk"
-BIN_DST_DIR="/opt/betterframe/kiosk"
-BIN_DST="${BIN_DST_DIR}/betterframe-kiosk"
-
-if [ "${SKIP_BUILD:-0}" != "1" ]; then
+# ----------------------------------------------------------------------------
+# 4. Kiosk runtime deps (GTK/GStreamer/WebKit + cage + seatd)
+# ----------------------------------------------------------------------------
+if [ "${SKIP_KIOSK:-0}" != "1" ]; then
+  echo "==> Installing kiosk runtime deps"
   apt-get install -y --no-install-recommends \
+    cage seatd \
     libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
     libwebkitgtk-6.0-dev pkg-config build-essential \
     gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-    gstreamer1.0-plugins-bad gstreamer1.0-libav
+    gstreamer1.0-plugins-bad gstreamer1.0-libav \
+    v4l-utils wlr-randr
 
-  # Build as the invoking user (typically the dev/admin user), not root,
-  # so cargo registry caches stay in their home and rustup PATH applies.
-  # -i runs a login shell so ~/.cargo/env gets sourced from .profile/.bashrc.
-  BUILD_USER="${SUDO_USER:-root}"
-  echo "    building as ${BUILD_USER}"
-  sudo -u "${BUILD_USER}" -i sh -c "cd '${REPO_ROOT}' && cargo build --release --manifest-path kiosk/Cargo.toml"
+  systemctl enable --now seatd
 fi
 
-if [ ! -f "${BIN_SRC}" ]; then
-  echo "error: kiosk binary not found at ${BIN_SRC}." >&2
-  echo "       Run with SKIP_BUILD=0 (default) or build manually first." >&2
-  exit 1
+# ----------------------------------------------------------------------------
+# 5. Rust toolchain (kiosk build prerequisite)
+# ----------------------------------------------------------------------------
+if [ "${SKIP_KIOSK:-0}" != "1" ] && [ "${SKIP_BUILD:-0}" != "1" ]; then
+  if ! run_as_user "command -v cargo >/dev/null 2>&1"; then
+    echo "==> Installing rustup as ${BUILD_USER}"
+    run_as_user "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal"
+  fi
 fi
 
-install -d -m 755 "${BIN_DST_DIR}"
-install -m 755 "${BIN_SRC}" "${BIN_DST}"
-echo "    installed → ${BIN_DST}"
+# ----------------------------------------------------------------------------
+# 6. Build + start Docker stack
+# ----------------------------------------------------------------------------
+if [ "${SKIP_SERVER:-0}" != "1" ] && [ "${SKIP_DOCKER:-0}" != "1" ]; then
+  echo "==> Building + starting Docker stack"
+  run_as_user "cd '${REPO_ROOT}' && docker compose -f deploy/docker/docker-compose.yml up -d --build"
+fi
 
-echo "==> Installing PAM stack and systemd unit"
-install -m 644 "${REPO_ROOT}/deploy/pam.d/cage" /etc/pam.d/cage
-install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-kiosk.service" \
-  /etc/systemd/system/betterframe-kiosk.service
+# ----------------------------------------------------------------------------
+# 7. Build + install kiosk binary
+# ----------------------------------------------------------------------------
+if [ "${SKIP_KIOSK:-0}" != "1" ]; then
+  BIN_SRC="${REPO_ROOT}/kiosk/target/release/betterframe-kiosk"
+  BIN_DST_DIR="/opt/betterframe/kiosk"
+  BIN_DST="${BIN_DST_DIR}/betterframe-kiosk"
 
-if [ ! -e /etc/default/betterframe-kiosk ]; then
-  cat > /etc/default/betterframe-kiosk <<'EOF'
+  if [ "${SKIP_BUILD:-0}" != "1" ]; then
+    echo "==> Building kiosk binary (release)"
+    run_as_user "cd '${REPO_ROOT}' && cargo build --release --manifest-path kiosk/Cargo.toml"
+  fi
+
+  if [ ! -f "${BIN_SRC}" ]; then
+    echo "error: kiosk binary not found at ${BIN_SRC}." >&2
+    exit 1
+  fi
+
+  install -d -m 755 "${BIN_DST_DIR}"
+  install -m 755 "${BIN_SRC}" "${BIN_DST}"
+  echo "    installed → ${BIN_DST}"
+
+  # --------------------------------------------------------------------------
+  # 8. bfkiosk user + PAM + systemd unit
+  # --------------------------------------------------------------------------
+  echo "==> Provisioning bfkiosk user"
+  if ! id -u bfkiosk >/dev/null 2>&1; then
+    useradd -m -s /usr/sbin/nologin bfkiosk
+  fi
+  for grp in video render input audio seat; do
+    if getent group "$grp" >/dev/null; then
+      usermod -a -G "$grp" bfkiosk
+    fi
+  done
+
+  echo "==> Disabling display managers + getty@tty1"
+  for dm in lightdm gdm gdm3 sddm; do
+    systemctl disable --now "${dm}.service" 2>/dev/null || true
+  done
+  systemctl set-default multi-user.target
+  systemctl disable --now getty@tty1.service 2>/dev/null || true
+
+  echo "==> Installing PAM + systemd unit"
+  install -m 644 "${REPO_ROOT}/deploy/pam.d/cage" /etc/pam.d/cage
+  install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-kiosk.service" \
+    /etc/systemd/system/betterframe-kiosk.service
+
+  if [ ! -e /etc/default/betterframe-kiosk ]; then
+    cat > /etc/default/betterframe-kiosk <<'EOF'
 # Runtime env for betterframe-kiosk. Edit and `systemctl restart betterframe-kiosk`.
 # BETTERFRAME_SERVER=http://192.168.1.10
 EOF
+  fi
+
+  systemctl daemon-reload
+  systemctl enable betterframe-kiosk.service
+  # Restart picks up new binary on re-run.
+  systemctl restart betterframe-kiosk.service || true
 fi
 
-systemctl daemon-reload
-systemctl enable betterframe-kiosk.service
-
-echo "==> Done. Reboot to take effect, or 'systemctl start betterframe-kiosk' now."
+echo "==> Done."
+if [ "${SKIP_SERVER:-0}" != "1" ] && [ "${SKIP_DOCKER:-0}" != "1" ]; then
+  echo "    Server stack: http://$(hostname -I | awk '{print $1}')/"
+fi
+if [ "${SKIP_KIOSK:-0}" != "1" ]; then
+  echo "    Kiosk service: systemctl status betterframe-kiosk"
+fi

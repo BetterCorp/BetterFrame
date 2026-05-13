@@ -5,6 +5,9 @@ After=systemd-user-sessions.service plymouth-quit-wait.service network-online.ta
 Wants=network-online.target
 Conflicts=getty@tty1.service
 After=getty@tty1.service
+# After 10 fast restarts in 60s, back off so a broken binary doesn't burn CPU.
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -30,9 +33,6 @@ Environment=BETTERFRAME_SERVER=http://localhost
 ExecStart=/usr/bin/cage -s -- /opt/betterframe/kiosk/betterframe-kiosk
 Restart=always
 RestartSec=2
-# After 10 fast restarts, back off for 30s so a broken binary doesn't burn the CPU.
-StartLimitIntervalSec=60
-StartLimitBurst=10
 
 [Install]
 WantedBy=multi-user.target

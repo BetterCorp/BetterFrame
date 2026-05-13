@@ -4,4 +4,6 @@ module.exports = {
   httpAdminRoot: "/nrdp",
   httpNodeRoot: "/",
   functionGlobalContext: {},
+  // Extra search paths for custom nodes. BF nodes baked into image at this path.
+  nodesDir: ["/usr/src/betterframe-nodes"],
 };

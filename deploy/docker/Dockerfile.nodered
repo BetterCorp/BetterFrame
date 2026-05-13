@@ -1,21 +1,19 @@
 # BetterFrame Node-RED image with bundled BF nodes preinstalled.
 #
 # Extends official nodered/node-red, installs the workspace nodered/
-# package into Node-RED's module tree. Rebuilding the image
-# (docker compose up --build) picks up any node changes.
+# package at /usr/src/betterframe-nodes. settings.js points nodesDir
+# there so Node-RED scans it on boot. Survives /data volume mount.
 
 FROM nodered/node-red:latest
 
 USER root
 
-# Copy our nodes into a build dir
-COPY nodered /tmp/betterframe-nodes
+# Copy our nodes into a path outside /data (which is volume-mounted)
+COPY nodered /usr/src/betterframe-nodes
 
-# Install into Node-RED's own node_modules so they're found at runtime.
-# Survives /data volume mounts because /usr/src/node-red is image-level.
-RUN cd /usr/src/node-red && \
-    npm install --omit=dev /tmp/betterframe-nodes && \
-    rm -rf /tmp/betterframe-nodes && \
-    chown -R node-red:root /usr/src/node-red/node_modules
+# Install deps for the nodes
+RUN cd /usr/src/betterframe-nodes && \
+    npm install --omit=dev && \
+    chown -R node-red:root /usr/src/betterframe-nodes
 
 USER node-red

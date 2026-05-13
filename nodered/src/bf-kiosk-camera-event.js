@@ -1,61 +1,73 @@
 /**
- * bf-kiosk-camera-event — fire a flow whenever a BetterFrame kiosk camera
- * event matching a topic pattern arrives. Defaults to `camera.*` (ONVIF
- * motion, object detection, line crossing, etc.).
+ * bf-kiosk-camera-event — fires on kiosk-originated camera events forwarded
+ * from the BetterFrame server (ONVIF motion, object detection, line crossing,
+ * GPIO pulse tagged to a camera, etc.).
  *
- * Two delivery paths can land here:
- *   1. The BF server has forwarded an authenticated kiosk event via the
- *      `/in/kiosk/<topic>` ingest endpoint. The flow operator wires an
- *      `http in` node on that path and connects it to this node — we just
- *      filter by topic.
- *   2. A separate flow injects msg.topic + msg.payload directly.
+ * The server's api-http `/api/kiosk/events` endpoint persists each kiosk
+ * event then calls `nodered.forward(topic, payload)` which POSTs to
+ * `${noderedUrl}/in/<topic>`. This node self-registers a POST handler at a
+ * fixed route — no upstream `http in` node required.
  *
- * This is a pure filter/router. It does NOT itself subscribe to the BF
- * server; that wiring is done with stock Node-RED http-in or websocket
- * nodes upstream.
+ * Optional config:
+ *   - camera_id: only fire for that camera id
  *
- * Renamed from `bf-event-in` — kept the same envelope shape for backward
- * compatibility with flows that consume the output message.
+ * Output msg shape (kept compatible with the previous filter version):
+ *   { topic, kiosk_id, camera_id, source_type, payload }
  */
 module.exports = function (RED) {
+  // Fixed ingest route. Server-side forwarders that want this node to receive
+  // their event should POST to /in/camera.event. (Previous releases used a
+  // glob-pattern filter over upstream http-in messages; that path is gone.)
+  const TOPIC = "camera.event";
+  const ROUTE = "/api/internal/" + TOPIC;
+
   function BfKioskCameraEventNode(config) {
     RED.nodes.createNode(this, config);
     const node = this;
-    const pattern = (config.topic_pattern || "camera.*").trim();
+    const filterIdRaw = (config.camera_id || "").toString().trim();
+    const filterId = filterIdRaw && !isNaN(Number(filterIdRaw)) ? Number(filterIdRaw) : null;
 
-    // Convert glob-ish pattern to RegExp: `camera.*` → /^camera\..*$/
-    function toRegex(p) {
-      if (!p) return null;
-      const escaped = p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
-      return new RegExp("^" + escaped + "$");
-    }
-    const re = toRegex(pattern);
-
-    node.on("input", function (msg, send, done) {
-      // Common BF envelope shape:
-      //   { topic, kiosk_id, camera_id, source_type, payload }
-      // We accept either a fully-formed msg or one where the body lives in
-      // msg.payload (typical for Node-RED http-in).
-      const body = (msg && msg.payload && typeof msg.payload === "object") ? msg.payload : {};
-      const topic = msg.topic || body.topic || "";
-      if (!topic) {
-        node.status({ fill: "yellow", shape: "ring", text: "no topic" });
-        return done && done();
-      }
-      if (re && !re.test(String(topic))) {
-        // Filter miss — drop silently.
-        return done && done();
+    function handler(req, res) {
+      const body = (req.body && typeof req.body === "object") ? req.body : {};
+      const kioskId = body.kiosk_id !== undefined ? body.kiosk_id
+        : body.source_kiosk_id !== undefined ? body.source_kiosk_id
+        : null;
+      const cameraId = body.camera_id !== undefined ? body.camera_id
+        : body.source_camera_id !== undefined ? body.source_camera_id
+        : null;
+      if (filterId !== null && Number(cameraId) !== filterId) {
+        return res.status(200).end();
       }
       const out = {
-        topic: String(topic),
-        kiosk_id: msg.kiosk_id || body.kiosk_id || body.source_kiosk_id || null,
-        camera_id: msg.camera_id || body.camera_id || body.source_camera_id || null,
+        topic: body.topic ? String(body.topic) : TOPIC,
+        kiosk_id: kioskId,
+        camera_id: cameraId,
         source_type: body.source_type || null,
         payload: body.payload !== undefined ? body.payload : body,
       };
       node.status({ fill: "green", shape: "dot", text: out.topic });
-      send(out);
-      done && done();
+      node.send(out);
+      res.status(200).end();
+    }
+
+    RED.httpNode.post(ROUTE, handler);
+
+    node.on("close", function (done) {
+      const stack = RED.httpNode && RED.httpNode._router && RED.httpNode._router.stack;
+      if (stack) {
+        for (let i = stack.length - 1; i >= 0; i--) {
+          const layer = stack[i];
+          if (!layer || !layer.route || layer.route.path !== ROUTE) continue;
+          const inner = layer.route.stack;
+          if (Array.isArray(inner)) {
+            for (let j = inner.length - 1; j >= 0; j--) {
+              if (inner[j] && inner[j].handle === handler) inner.splice(j, 1);
+            }
+            if (inner.length === 0) stack.splice(i, 1);
+          }
+        }
+      }
+      done();
     });
   }
   RED.nodes.registerType("bf-kiosk-camera-event", BfKioskCameraEventNode);

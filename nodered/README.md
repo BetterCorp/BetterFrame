@@ -31,12 +31,40 @@ Configure once on a `bf-server-config` node and reference it from the others.
 
 ## Event ingest path
 
-Trigger nodes are pure filters — they do not subscribe to the BF server.
-Wire an upstream `http in` node on `/in/kiosk/<topic>` (BetterFrame's
-authenticated kiosk-ingest endpoint, surfaced by the Angie proxy with
-`auth_request` gating) and feed its `msg.payload` into the matching
-`bf-trigger-*` node. The server emits these topics from coordinator-ws
-(kiosk WS lifecycle) and the admin routes (layout/power/camera mutations).
+Trigger nodes are **self-contained** — each one registers its own
+`POST /in/<topic>` handler on Node-RED's user-facing HTTP server (via
+`RED.httpNode.post`) when the flow is deployed. You do **not** need to wire
+an upstream `http in` node anymore.
+
+The BetterFrame server's `nodered-bridge.forward(topic, payload)` posts
+events directly to `http://<nodered-host>:1880/in/<topic>`. Each trigger
+node listens on its own fixed topic:
+
+| Node | Internal route |
+| --- | --- |
+| `bf-trigger-display-power` | `POST /in/display.power.changed` |
+| `bf-trigger-layout-changed` | `POST /in/layout.changed` |
+| `bf-trigger-kiosk-changed` | `POST /in/kiosk.changed` |
+| `bf-trigger-camera-changed` | `POST /in/camera.changed` |
+| `bf-trigger-status` | `POST /in/kiosk.status` |
+| `bf-kiosk-camera-event` | `POST /in/camera.event` |
+
+The server emits these topics from coordinator-ws (kiosk WS lifecycle) and
+the admin routes (layout/power/camera mutations). Multiple instances of the
+same trigger node on the same canvas are fine — Express runs all matching
+handlers in registration order.
+
+If the Angie proxy fronts Node-RED, the otherwise-unmatched root paths
+(public HTTP-in URLs) and the `/in/kiosk/<topic>` (kiosk-key gated) /
+`/in/public/<topic>` (public, rate-limited) routes are still available
+for user-authored flows that use stock `http in` nodes — those layers
+strip the prefix before proxying. The trigger nodes' fixed
+`/in/<topic>` routes are reserved for internal server-to-Node-RED
+delivery and are not exposed through the proxy's gated surfaces by
+default.
+
+Each trigger node also offers an optional ID filter (display_id / kiosk_id /
+camera_id) so you can drop one node per entity without a downstream switch.
 
 ## Installation
 

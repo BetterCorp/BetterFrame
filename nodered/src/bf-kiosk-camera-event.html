@@ -4,13 +4,13 @@
     color: "#a6d4ff",
     defaults: {
       name: { value: "" },
-      topic_pattern: { value: "camera.*" },
+      camera_id: { value: "" },
     },
-    inputs: 1,
+    inputs: 0,
     outputs: 1,
     icon: "betterframe.svg",
     label: function () {
-      return this.name || this.topic_pattern || "kiosk camera event";
+      return this.name || "kiosk camera event";
     },
     paletteLabel: "Kiosk Camera Event",
   });
@@ -22,14 +22,26 @@
     <input type="text" id="node-input-name" placeholder="(optional)" />
   </div>
   <div class="form-row">
-    <label for="node-input-topic_pattern"><i class="fa fa-filter"></i> Topic</label>
-    <input type="text" id="node-input-topic_pattern" placeholder="camera.*" />
+    <label for="node-input-camera_id"><i class="fa fa-video-camera"></i> Camera ID</label>
+    <input type="number" id="node-input-camera_id" placeholder="(blank = all cameras)" />
   </div>
   <div class="form-tips">
-    Filter incoming kiosk camera events by topic. <code>*</code> is a wildcard.
-    Defaults to <code>camera.*</code> (ONVIF motion, object detection, etc.).
-    Wire an upstream <b>http in</b> on <code>/in/kiosk/&lt;topic&gt;</code> to feed it.
-    On match the message becomes
-    <code>{topic, kiosk_id, camera_id, source_type, payload}</code>.
+    Fires on kiosk-forwarded camera events (ONVIF motion, line crossing, GPIO pulses
+    tagged to a camera, etc.).
+    Listens on <code>POST /in/camera.event</code> internally — no upstream
+    <code>http in</code> node required.
+    Emits <code>msg = {topic, kiosk_id, camera_id, source_type, payload}</code>.
+    Leave Camera ID blank to receive events from all cameras.
   </div>
+</script>
+
+<script type="text/html" data-help-name="bf-kiosk-camera-event">
+  <p>Fires on kiosk-originated camera events that the BetterFrame server has
+  authenticated and forwarded. Listens on <code>POST /in/camera.event</code>
+  internally — no upstream <code>http in</code> node needed.</p>
+  <p>Optional <b>Camera ID</b> filter limits this node to a single camera.
+  Further filtering on payload fields can be done with downstream switch nodes.</p>
+  <p>Previous releases used a glob-pattern (<code>camera.*</code>) over upstream
+  <code>http in</code> messages. That filter has been removed in favor of a single
+  fixed ingest topic.</p>
 </script>

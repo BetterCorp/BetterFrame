@@ -2,8 +2,12 @@
  * bf-trigger-kiosk-changed — fires on kiosk state changes (connect, disconnect,
  * heartbeat with hardware telemetry).
  *
- * Topic filter: `kiosk.changed`. Server emits these from the coordinator-ws
- * plugin on WS connect/disconnect and from heartbeat status messages.
+ * Topic filter: `kiosk.changed`. Server's nodered-bridge POSTs to
+ * `${noderedUrl}/in/kiosk.changed` directly. This node self-registers its
+ * own POST handler — no upstream `http in` node required.
+ *
+ * Optional config:
+ *   - kiosk_id: only fire for that kiosk id
  *
  * Output msg.payload:
  *   { kiosk_id, kiosk_name,
@@ -11,20 +15,25 @@
  *     cpu_temp_c?: number, fan_rpm?: number, fan_pwm?: number }
  */
 module.exports = function (RED) {
+  const TOPIC = "kiosk.changed";
+  const ROUTE = "/api/internal/" + TOPIC;
+
   function BfTriggerKioskChangedNode(config) {
     RED.nodes.createNode(this, config);
     const node = this;
+    const filterIdRaw = (config.kiosk_id || "").toString().trim();
+    const filterId = filterIdRaw && !isNaN(Number(filterIdRaw)) ? Number(filterIdRaw) : null;
 
-    node.on("input", function (msg, send, done) {
-      const body = (msg && msg.payload && typeof msg.payload === "object") ? msg.payload : {};
-      const topic = msg.topic || body.topic || "kiosk.changed";
-      if (String(topic) !== "kiosk.changed") {
-        return done && done();
+    function handler(req, res) {
+      const body = (req.body && typeof req.body === "object") ? req.body : {};
+      const kioskId = body.kiosk_id !== undefined ? body.kiosk_id : null;
+      if (filterId !== null && Number(kioskId) !== filterId) {
+        return res.status(200).end();
       }
       const out = {
-        topic: "kiosk.changed",
+        topic: TOPIC,
         payload: {
-          kiosk_id: body.kiosk_id !== undefined ? body.kiosk_id : null,
+          kiosk_id: kioskId,
           kiosk_name: body.kiosk_name || null,
           event: body.event || null,
           cpu_temp_c: body.cpu_temp_c !== undefined ? body.cpu_temp_c : null,
@@ -37,8 +46,28 @@ module.exports = function (RED) {
         shape: "dot",
         text: (out.payload.kiosk_name || String(out.payload.kiosk_id || "")) + " " + (out.payload.event || ""),
       });
-      send(out);
-      done && done();
+      node.send(out);
+      res.status(200).end();
+    }
+
+    RED.httpNode.post(ROUTE, handler);
+
+    node.on("close", function (done) {
+      const stack = RED.httpNode && RED.httpNode._router && RED.httpNode._router.stack;
+      if (stack) {
+        for (let i = stack.length - 1; i >= 0; i--) {
+          const layer = stack[i];
+          if (!layer || !layer.route || layer.route.path !== ROUTE) continue;
+          const inner = layer.route.stack;
+          if (Array.isArray(inner)) {
+            for (let j = inner.length - 1; j >= 0; j--) {
+              if (inner[j] && inner[j].handle === handler) inner.splice(j, 1);
+            }
+            if (inner.length === 0) stack.splice(i, 1);
+          }
+        }
+      }
+      done();
     });
   }
   RED.nodes.registerType("bf-trigger-kiosk-changed", BfTriggerKioskChangedNode);

@@ -4,8 +4,9 @@
     color: "#a6d4ff",
     defaults: {
       name: { value: "" },
+      camera_id: { value: "" },
     },
-    inputs: 1,
+    inputs: 0,
     outputs: 1,
     icon: "betterframe.svg",
     label: function () {
@@ -20,9 +21,23 @@
     <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
     <input type="text" id="node-input-name" placeholder="(optional)" />
   </div>
+  <div class="form-row">
+    <label for="node-input-camera_id"><i class="fa fa-video-camera"></i> Camera ID</label>
+    <input type="number" id="node-input-camera_id" placeholder="(blank = all cameras)" />
+  </div>
   <div class="form-tips">
     Triggers when a camera is created, updated, or deleted in admin.
-    Wire <code>http in POST /in/kiosk/camera.changed</code> in front of this node.
+    Listens on <code>POST /in/camera.changed</code> internally — no upstream
+    <code>http in</code> node required.
     Emits <code>msg.payload = {camera_id, event}</code>.
+    Leave Camera ID blank to receive events from all cameras.
   </div>
+</script>
+
+<script type="text/html" data-help-name="bf-trigger-camera-changed">
+  <p>Fires when a camera entity is created, updated, or deleted in admin
+  (manual create, ONVIF import, edit, delete, enable/disable).</p>
+  <p>Listens on <code>POST /in/camera.changed</code> internally — no upstream
+  <code>http in</code> node needed.</p>
+  <p>Optional <b>Camera ID</b> filter limits this node to a single camera.</p>
 </script>

@@ -1,35 +1,34 @@
 /**
  * bf-trigger-status — fires on kiosk heartbeat telemetry.
  *
- * Topic filter: `kiosk.status`. Server emits this from coordinator-ws each
- * time a kiosk pushes a status frame over the WS channel, separate from
- * the connect/disconnect/heartbeat envelope on `kiosk.changed`. Listening
- * here gives you a pure telemetry stream (no connect/disconnect noise).
+ * Topic filter: `kiosk.status`. Server's nodered-bridge POSTs to
+ * `${noderedUrl}/in/kiosk.status` directly. This node self-registers its
+ * own POST handler — no upstream `http in` node required.
  *
- * Optional config.kiosk_id filter — when set, only fires for that kiosk.
+ * Optional config:
+ *   - kiosk_id: only fire for that kiosk id
  *
  * Output msg.payload:
  *   { kiosk_id, kiosk_name, cpu_temp_c, fan_rpm, fan_pwm }
  */
 module.exports = function (RED) {
+  const TOPIC = "kiosk.status";
+  const ROUTE = "/api/internal/" + TOPIC;
+
   function BfTriggerStatusNode(config) {
     RED.nodes.createNode(this, config);
     const node = this;
     const filterIdRaw = (config.kiosk_id || "").toString().trim();
-    const filterId = filterIdRaw ? Number(filterIdRaw) : null;
+    const filterId = filterIdRaw && !isNaN(Number(filterIdRaw)) ? Number(filterIdRaw) : null;
 
-    node.on("input", function (msg, send, done) {
-      const body = (msg && msg.payload && typeof msg.payload === "object") ? msg.payload : {};
-      const topic = msg.topic || body.topic || "kiosk.status";
-      if (String(topic) !== "kiosk.status") {
-        return done && done();
-      }
+    function handler(req, res) {
+      const body = (req.body && typeof req.body === "object") ? req.body : {};
       const kioskId = body.kiosk_id !== undefined ? body.kiosk_id : null;
       if (filterId !== null && Number(kioskId) !== filterId) {
-        return done && done();
+        return res.status(200).end();
       }
       const out = {
-        topic: "kiosk.status",
+        topic: TOPIC,
         payload: {
           kiosk_id: kioskId,
           kiosk_name: body.kiosk_name || null,
@@ -44,8 +43,28 @@ module.exports = function (RED) {
         shape: "dot",
         text: (out.payload.kiosk_name || String(out.payload.kiosk_id || "")) + " " + tempStr,
       });
-      send(out);
-      done && done();
+      node.send(out);
+      res.status(200).end();
+    }
+
+    RED.httpNode.post(ROUTE, handler);
+
+    node.on("close", function (done) {
+      const stack = RED.httpNode && RED.httpNode._router && RED.httpNode._router.stack;
+      if (stack) {
+        for (let i = stack.length - 1; i >= 0; i--) {
+          const layer = stack[i];
+          if (!layer || !layer.route || layer.route.path !== ROUTE) continue;
+          const inner = layer.route.stack;
+          if (Array.isArray(inner)) {
+            for (let j = inner.length - 1; j >= 0; j--) {
+              if (inner[j] && inner[j].handle === handler) inner.splice(j, 1);
+            }
+            if (inner.length === 0) stack.splice(i, 1);
+          }
+        }
+      }
+      done();
     });
   }
   RED.nodes.registerType("bf-trigger-status", BfTriggerStatusNode);

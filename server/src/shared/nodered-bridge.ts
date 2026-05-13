@@ -84,7 +84,10 @@ export function initNoderedBridge(config: NoderedConfig, log: NoderedLog): Noder
 
       // Internal server-to-Node-RED delivery for events the backend already
       // authenticated, such as kiosk ONVIF/GPIO ingest.
-      const url = `${base}/in/${encodeURIComponent(topic)}`;
+      // Use /api/internal/ — Angie returns 404 for any /api/* not whitelisted,
+      // so external requests cannot trigger BF nodes. Server bridge bypasses
+      // Angie (direct to nodered container).
+      const url = `${base}/api/internal/${encodeURIComponent(topic)}`;
       fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },

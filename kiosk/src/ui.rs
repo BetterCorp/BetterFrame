@@ -27,12 +27,30 @@ struct DisplayState {
     is_asleep: bool,
 }
 
+/// Pipeline lifecycle states (CLAUDE.md hot/warm/cooling/cold model):
+/// - Hot: belongs to a priority=hot layout — keep warm forever
+/// - Warm: actively rendered OR in active layout's preload list — decoding live
+/// - Cooling: was warm, now not needed, kept alive until cooling_until
+/// - Cold: removed from pool (no entry)
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum WarmthState {
+    Hot,
+    Warm,
+    Cooling,
+}
+
+struct PipelineEntry {
+    pipeline: gstreamer::Pipeline,
+    paintable: gtk::gdk::Paintable,
+    badge: char,
+    state: WarmthState,
+    cooling_until: Option<Instant>,
+}
+
 thread_local! {
-    /// camera_id → (pipeline, paintable, badge). Pipelines stay warm across
-    /// layout swaps for cameras still referenced or in preload_camera_ids.
-    /// Shared across ALL displays — if two displays use the same camera the
-    /// pipeline is reused. The paintable can be attached to multiple Pictures.
-    static WARM_CAMERAS: RefCell<HashMap<u32, (gstreamer::Pipeline, gtk::gdk::Paintable, char)>>
+    /// camera_id → PipelineEntry. Pool shared across all displays.
+    /// State machine: see WarmthState. Entries dropped when state goes Cold.
+    static WARM_CAMERAS: RefCell<HashMap<u32, PipelineEntry>>
         = RefCell::new(HashMap::new());
 
     /// Most recently rendered bundle. Used for layout-switch + idle revert.
@@ -394,35 +412,41 @@ fn render_bundle(
         }
     }
 
-    // Compute global warm-camera set: union across all displays' current/needed cameras.
-    let mut globally_needed: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    // Compute warm vs hot camera sets per the CLAUDE.md model.
+    // Warm = cameras in the currently-active layout (cells + preload) of any display.
+    // Hot  = cameras referenced by ANY layout with priority=hot (kept warm always).
+    // Anything previously cached but in neither set transitions to Cooling.
+    let mut warm_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut hot_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut max_cooling_secs: u32 = 0;
     for (i, bd) in displays.iter().enumerate() {
         let target_id = pick_initial_layout(bd);
         if let Some(target_id) = target_id {
             if let Some(layout) = bd.layouts.iter().find(|l| l.id == target_id) {
                 for cell in &layout.cells {
                     if cell.content_type == "camera" {
-                        if let Some(id) = cell.camera_id { globally_needed.insert(id); }
+                        if let Some(id) = cell.camera_id { warm_set.insert(id); }
                     }
                 }
-                for id in &layout.preload_camera_ids { globally_needed.insert(*id); }
+                for id in &layout.preload_camera_ids { warm_set.insert(*id); }
+                if let Some(t) = layout.cooling_timeout_seconds { max_cooling_secs = max_cooling_secs.max(t); }
             }
         }
-        // Pre-touch the monitor binding to silence warnings about unused var.
+        // Hot layouts keep their cameras warm even when not active.
+        for layout in &bd.layouts {
+            if layout.priority == "hot" {
+                for cell in &layout.cells {
+                    if cell.content_type == "camera" {
+                        if let Some(id) = cell.camera_id { hot_set.insert(id); }
+                    }
+                }
+                for id in &layout.preload_camera_ids { hot_set.insert(*id); }
+            }
+        }
         let _ = gdk_monitors.get(i);
     }
 
-    // Stop pipelines for cameras no longer needed by any display.
-    WARM_CAMERAS.with(|w| {
-        let mut warm = w.borrow_mut();
-        let stale: Vec<u32> = warm.keys().filter(|id| !globally_needed.contains(id)).copied().collect();
-        for id in stale {
-            if let Some((pipe, _, _)) = warm.remove(&id) {
-                info!("stopping pipeline for camera {id} (no longer needed by any display)");
-                pipeline::stop(&pipe);
-            }
-        }
-    });
+    recompute_pool_states(&warm_set, &hot_set, max_cooling_secs);
 
     // Build/reuse window per bundle display, then render its initial layout.
     let mut new_state: HashMap<u32, DisplayState> = HashMap::new();

@@ -6,7 +6,7 @@
       name: { value: "" },
       kiosk_id: { value: "" },
     },
-    inputs: 1,
+    inputs: 0,
     outputs: 1,
     icon: "betterframe.svg",
     label: function () {
@@ -27,8 +27,17 @@
   </div>
   <div class="form-tips">
     Fires on <code>kiosk.status</code> heartbeats with hardware telemetry.
-    Wire <code>http in POST /in/kiosk/kiosk.status</code> in front of this node.
+    Listens on <code>POST /in/kiosk.status</code> internally — no upstream
+    <code>http in</code> node required.
     Emits <code>msg.payload = {kiosk_id, kiosk_name, cpu_temp_c, fan_rpm, fan_pwm}</code>.
     Leave Kiosk ID blank to receive heartbeats from all kiosks.
   </div>
+</script>
+
+<script type="text/html" data-help-name="bf-trigger-status">
+  <p>Pure telemetry stream from kiosk WS heartbeats — separate from the
+  connect/disconnect envelope on <code>kiosk.changed</code>.</p>
+  <p>Listens on <code>POST /in/kiosk.status</code> internally — no upstream
+  <code>http in</code> node needed.</p>
+  <p>Optional <b>Kiosk ID</b> filter limits this node to a single kiosk.</p>
 </script>

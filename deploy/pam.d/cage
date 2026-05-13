@@ -1,0 +1,8 @@
+# PAM stack for cage when invoked via systemd's PAMName=cage.
+# Permissive auth (no password) because the session is launched by systemd as
+# bfkiosk after auto-login at the multi-user target. pam_systemd sets up the
+# XDG_RUNTIME_DIR + session, pam_loginuid wires the audit id.
+auth      required  pam_permit.so
+account   required  pam_permit.so
+session   required  pam_loginuid.so
+session   required  pam_systemd.so

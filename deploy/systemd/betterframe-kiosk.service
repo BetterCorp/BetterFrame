@@ -1,22 +1,38 @@
 [Unit]
-Description=BetterFrame Kiosk
+Description=BetterFrame Kiosk (cage + betterframe-kiosk)
 Documentation=https://github.com/BetterCorp/BetterFrame
-After=graphical-session.target network-online.target
+After=systemd-user-sessions.service plymouth-quit-wait.service network-online.target seatd.service
 Wants=network-online.target
-PartOf=graphical-session.target
+Conflicts=getty@tty1.service
+After=getty@tty1.service
 
 [Service]
 Type=simple
-WorkingDirectory=%h/.betterframe-kiosk
-Environment=XDG_RUNTIME_DIR=/run/user/%U
-Environment=WAYLAND_DISPLAY=wayland-0
-Environment=NO_AT_BRIDGE=1
-Environment=GST_DEBUG=1
-ExecStart=/opt/betterframe/kiosk/betterframe-kiosk
-Restart=on-failure
-RestartSec=3
+User=bfkiosk
+Group=bfkiosk
+SupplementaryGroups=video render input audio seat
+PAMName=cage
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
 StandardOutput=journal
 StandardError=journal
+UtmpIdentifier=tty1
+UtmpMode=user
+WorkingDirectory=/home/bfkiosk
+EnvironmentFile=-/etc/default/betterframe-kiosk
+Environment=XDG_SESSION_TYPE=wayland
+Environment=XDG_SESSION_CLASS=user
+Environment=GST_DEBUG=1
+Environment=BETTERFRAME_SERVER=http://localhost
+ExecStart=/usr/bin/cage -s -- /opt/betterframe/kiosk/betterframe-kiosk
+Restart=always
+RestartSec=2
+# After 10 fast restarts, back off for 30s so a broken binary doesn't burn the CPU.
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=multi-user.target

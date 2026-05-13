@@ -1388,8 +1388,20 @@ export class Repository {
   }
 
   deleteKiosk(id: number): void {
-    this.db.prepare(`DELETE FROM kiosk_labels WHERE kiosk_id = ?`).run(id);
-    this.db.prepare(`DELETE FROM kiosks WHERE id = ?`).run(id);
+    const displays = this.listDisplaysForKiosk(id);
+    this.transact(() => {
+      for (const display of displays) {
+        this.db.prepare(`DELETE FROM display_layouts WHERE display_id = ?`).run(display.id);
+      }
+      this.db.prepare(`DELETE FROM displays WHERE kiosk_id = ?`).run(id);
+      this.db.prepare(`DELETE FROM kiosk_labels WHERE kiosk_id = ?`).run(id);
+      this.db.prepare(`DELETE FROM kiosk_gpio_bindings WHERE kiosk_id = ?`).run(id);
+      this.db.prepare(`DELETE FROM kiosks WHERE id = ?`).run(id);
+    });
+    for (const display of displays) {
+      void this.notify("display_layouts", "delete", display.id);
+      void this.notify("displays", "delete", display.id);
+    }
     void this.notify("kiosks", "delete", id);
   }
 

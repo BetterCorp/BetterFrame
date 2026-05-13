@@ -93,6 +93,7 @@ fn activate(app: &Application) {
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
 
+    hide_cursor_on(&pairing_window);
     show_logo(&pairing_window);
     pairing_window.present();
 
@@ -439,6 +440,7 @@ fn render_bundle(
                     &provider,
                     gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
                 );
+                hide_cursor_on(&w);
                 w.present();
                 if let Some(monitor) = gdk_monitors.get(i) {
                     w.fullscreen_on_monitor(monitor);
@@ -876,6 +878,15 @@ fn ensure_warm(
     });
     info!("warmed pipeline for camera {cam_id} (stream: {desired_badge})");
     Some((paintable, desired_badge))
+}
+
+/// Hide the mouse pointer on a window. Kiosks have no input device the user
+/// should see — the cursor is just visual noise sitting in the middle of the
+/// content. GDK's "none" cursor name maps to a hidden cursor on Wayland.
+fn hide_cursor_on(window: &ApplicationWindow) {
+    if let Some(cursor) = gtk::gdk::Cursor::from_name("none", None) {
+        window.set_cursor(Some(&cursor));
+    }
 }
 
 fn show_logo(window: &ApplicationWindow) {

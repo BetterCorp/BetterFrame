@@ -15,15 +15,15 @@
 #
 # Re-run after every git change to pull + rebuild + redeploy.
 #
-# Usage:  sudo ./deploy/scripts/setup-pi-kiosk.sh
+# Usage:  sudo ./deploy/scripts/setup-pi-kiosk.sh [client|server|both]
+#         client = kiosk-only host (Rust binary + cage + systemd unit)
+#         server = headless server host (Docker stack only, no kiosk)
+#         both   = single-box install of both (default)
 #
 # Env overrides:
 #   BF_HOME=/path/to/repo          override repo location (default: $HOME/betterframe)
 #   BF_REPO_URL=git@…              override clone URL (default: github)
 #   SKIP_BUILD=1                   skip kiosk cargo build (expects existing binary)
-#   SKIP_DOCKER=1                  skip `docker compose up -d --build`
-#   SKIP_KIOSK=1                   server-only host (no kiosk service / cage / tty1)
-#   SKIP_SERVER=1                  kiosk-only host (no Docker stack)
 
 set -euo pipefail
 
@@ -31,6 +31,18 @@ if [ "$EUID" -ne 0 ]; then
   echo "error: must run as root (sudo $0)" >&2
   exit 1
 fi
+
+MODE="${1:-both}"
+case "${MODE}" in
+  client) INSTALL_KIOSK=1; INSTALL_SERVER=0 ;;
+  server) INSTALL_KIOSK=0; INSTALL_SERVER=1 ;;
+  both)   INSTALL_KIOSK=1; INSTALL_SERVER=1 ;;
+  *)
+    echo "error: unknown mode '${MODE}'. Use client | server | both." >&2
+    exit 1
+    ;;
+esac
+echo "==> Mode: ${MODE}"
 
 REPO_URL="${BF_REPO_URL:-https://github.com/BetterCorp/BetterFrame.git}"
 BUILD_USER="${SUDO_USER:-$(id -un)}"
@@ -70,7 +82,7 @@ REPO_ROOT="${BF_HOME}"
 # ----------------------------------------------------------------------------
 # 3. Docker engine + compose plugin
 # ----------------------------------------------------------------------------
-if [ "${SKIP_SERVER:-0}" != "1" ] && [ "${SKIP_DOCKER:-0}" != "1" ]; then
+if [ "${INSTALL_SERVER}" = "1" ]; then
   if ! command -v docker >/dev/null 2>&1; then
     echo "==> Installing Docker (via convenience script)"
     curl -fsSL https://get.docker.com | sh
@@ -91,7 +103,7 @@ fi
 # ----------------------------------------------------------------------------
 # 4. Kiosk runtime deps (GTK/GStreamer/WebKit + cage + seatd)
 # ----------------------------------------------------------------------------
-if [ "${SKIP_KIOSK:-0}" != "1" ]; then
+if [ "${INSTALL_KIOSK}" = "1" ]; then
   echo "==> Installing kiosk runtime deps"
   apt-get install -y --no-install-recommends \
     cage seatd \
@@ -107,7 +119,7 @@ fi
 # ----------------------------------------------------------------------------
 # 5. Rust toolchain (kiosk build prerequisite)
 # ----------------------------------------------------------------------------
-if [ "${SKIP_KIOSK:-0}" != "1" ] && [ "${SKIP_BUILD:-0}" != "1" ]; then
+if [ "${INSTALL_KIOSK}" = "1" ] && [ "${SKIP_BUILD:-0}" != "1" ]; then
   if ! run_as_user "command -v cargo >/dev/null 2>&1"; then
     echo "==> Installing rustup as ${BUILD_USER}"
     run_as_user "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal"
@@ -117,7 +129,7 @@ fi
 # ----------------------------------------------------------------------------
 # 6. Build + start Docker stack
 # ----------------------------------------------------------------------------
-if [ "${SKIP_SERVER:-0}" != "1" ] && [ "${SKIP_DOCKER:-0}" != "1" ]; then
+if [ "${INSTALL_SERVER}" = "1" ]; then
   echo "==> Building + starting Docker stack"
   run_as_user "cd '${REPO_ROOT}' && docker compose -f deploy/docker/docker-compose.yml up -d --build"
 fi
@@ -125,7 +137,7 @@ fi
 # ----------------------------------------------------------------------------
 # 7. Build + install kiosk binary
 # ----------------------------------------------------------------------------
-if [ "${SKIP_KIOSK:-0}" != "1" ]; then
+if [ "${INSTALL_KIOSK}" = "1" ]; then
   BIN_SRC="${REPO_ROOT}/kiosk/target/release/betterframe-kiosk"
   BIN_DST_DIR="/opt/betterframe/kiosk"
   BIN_DST="${BIN_DST_DIR}/betterframe-kiosk"
@@ -183,9 +195,9 @@ EOF
 fi
 
 echo "==> Done."
-if [ "${SKIP_SERVER:-0}" != "1" ] && [ "${SKIP_DOCKER:-0}" != "1" ]; then
+if [ "${INSTALL_SERVER}" = "1" ]; then
   echo "    Server stack: http://$(hostname -I | awk '{print $1}')/"
 fi
-if [ "${SKIP_KIOSK:-0}" != "1" ]; then
+if [ "${INSTALL_KIOSK}" = "1" ]; then
   echo "    Kiosk service: systemctl status betterframe-kiosk"
 fi

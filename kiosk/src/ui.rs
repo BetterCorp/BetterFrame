@@ -59,6 +59,9 @@ thread_local! {
     /// Server URL + kiosk key for re-rendering on layout-switch.
     static CURRENT_AUTH: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
 
+    /// Local time when the currently-rendered bundle was received by the UI.
+    static CURRENT_SYNC_LABEL: RefCell<String> = RefCell::new(String::from("unknown"));
+
     /// Per-display state, keyed by bundle display id.
     static DISPLAYS: RefCell<HashMap<u32, DisplayState>> = RefCell::new(HashMap::new());
 
@@ -395,6 +398,7 @@ fn render_bundle(
 ) {
     CURRENT_BUNDLE.with(|b| *b.borrow_mut() = Some(bundle.clone()));
     CURRENT_AUTH.with(|a| *a.borrow_mut() = Some((server_url.to_string(), kiosk_key.to_string())));
+    CURRENT_SYNC_LABEL.with(|s| *s.borrow_mut() = format_current_local_time());
 
     // Restart GPIO workers (always — even if list is empty, this drops the old set).
     gpio::start_workers(&bundle.gpio_bindings, server_url, kiosk_key);
@@ -483,7 +487,7 @@ fn render_bundle(
             warn!("display {} has no default layout", bd.id);
             DISPLAYS.with(|ds| {
                 if let Some(st) = ds.borrow_mut().get_mut(&bd.id) {
-                    show_logo(&st.window);
+                    show_empty_display_reference(&st.window, &bundle, bd);
                     st.current_layout_id = None;
                 }
             });
@@ -544,7 +548,7 @@ fn render_layout(display_id: u32, layout_id: u32) {
         warn!("render_layout: no usable layout on display {display_id}");
         DISPLAYS.with(|ds| {
             if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
-                show_logo(&st.window);
+                show_empty_display_reference(&st.window, &bundle, bd);
                 st.current_layout_id = None;
             }
         });
@@ -910,6 +914,50 @@ fn show_logo(window: &ApplicationWindow) {
     vbox.append(&logo_picture(BETTERFRAME_LOGO_SVG, 480, 118, "idle-logo"));
     vbox.append(&spinner(36));
     window.set_child(Some(&vbox));
+}
+
+fn show_empty_display_reference(
+    window: &ApplicationWindow,
+    bundle: &KioskBundle,
+    display: &BundleDisplayWithLayouts,
+) {
+    let overlay = gtk::Overlay::new();
+    overlay.set_vexpand(true);
+    overlay.set_hexpand(true);
+
+    let vbox = GtkBox::new(Orientation::Vertical, 24);
+    vbox.set_valign(gtk::Align::Center);
+    vbox.set_halign(gtk::Align::Center);
+    vbox.set_vexpand(true);
+    vbox.set_hexpand(true);
+    vbox.append(&logo_picture(BETTERFRAME_LOGO_SVG, 480, 118, "idle-logo"));
+    overlay.set_child(Some(&vbox));
+
+    let last_sync = CURRENT_SYNC_LABEL.with(|s| s.borrow().clone());
+    let info = Label::new(Some(&format!(
+        "Kiosk: {}\nDisplay: {}\nLast sync: {}",
+        bundle.kiosk_name, display.name, last_sync,
+    )));
+    info.set_halign(gtk::Align::Start);
+    info.set_valign(gtk::Align::End);
+    info.set_margin_start(24);
+    info.set_margin_bottom(20);
+    info.set_xalign(0.0);
+    add_css(
+        &info,
+        ".empty-reference { color: #8a8a8a; font-size: 13px; font-family: monospace; }",
+    );
+    info.add_css_class("empty-reference");
+    overlay.add_overlay(&info);
+
+    window.set_child(Some(&overlay));
+}
+
+fn format_current_local_time() -> String {
+    gtk::glib::DateTime::now_local()
+        .and_then(|dt| dt.format("%Y-%m-%d %H:%M:%S"))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|_| "unknown".to_string())
 }
 
 /// A centered GTK spinner sized at `px` pixels. Already spinning.

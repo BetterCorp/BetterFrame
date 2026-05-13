@@ -19,6 +19,7 @@ import { getRepo } from "../../shared/plugin-registry.js";
 import { initSecrets, type SecretsApi } from "../../shared/secrets.js";
 import { createAuth, type AuthApi } from "../../shared/auth.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
+import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
 import type { Repository } from "../service-store/repository.js";
 
 import { registerMiddleware } from "./middleware.js";
@@ -26,6 +27,7 @@ import { registerSetupRoutes } from "./routes-setup.js";
 import { registerAuthRoutes } from "./routes-auth.js";
 import { registerAdminRoutes } from "./routes-admin.js";
 import { registerAccountRoutes } from "./routes-account.js";
+import { registerFirmwareRoutes } from "./routes-firmware.js";
 import { registerStaticRoutes } from "./routes-static.js";
 
 // ---- Config -----------------------------------------------------------------
@@ -80,6 +82,7 @@ export interface AdminDeps {
   secrets: SecretsApi;
   cookieName: string;
   nodered: NoderedBridge;
+  firmware: FirmwareApi;
 }
 
 // ---- Plugin -----------------------------------------------------------------
@@ -123,12 +126,18 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
 
+    const firmware = initFirmware(
+      { dataDir: this.config.dataDir },
+      { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
+    );
+
     const deps: AdminDeps = {
       repo,
       auth,
       secrets,
       cookieName: this.config.cookieName,
       nodered,
+      firmware,
     };
 
     const app = new H3();
@@ -139,6 +148,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     registerAuthRoutes(app, deps);
     registerAdminRoutes(app, deps);
     registerAccountRoutes(app, deps);
+    registerFirmwareRoutes(app, deps);
 
     // Auth-check endpoint for Angie auth_request subrequest.
     // Returns 200 if session cookie is valid + admin role, 401 otherwise.

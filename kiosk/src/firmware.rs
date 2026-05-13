@@ -1,0 +1,221 @@
+//! Kiosk-side OTA update flow.
+//!
+//! 1. `check(server, key, arch, current_version)` → asks BF server if there's
+//!    a newer release for this kiosk's channel/pin.
+//! 2. `apply(server, key, info)` → downloads, verifies sha256 +
+//!    Ed25519 signature (server's firmware-signing pubkey, PEM, embedded in
+//!    the check response), atomically swaps the running binary, reports
+//!    outcome, and exits so systemd's `Restart=always` brings up the new
+//!    binary.
+//!
+//! Binary location: `/opt/betterframe/kiosk/betterframe-kiosk` (production
+//! deploy via `deploy/scripts/setup-pi-kiosk.sh`). Override with env
+//! `BF_KIOSK_BINARY`.
+//!
+//! Rollback: the previous binary is kept at `<bin>.prev` before the swap.
+//! systemd's StartLimitBurst=10 catches a broken binary; an out-of-band
+//! script (`/usr/local/bin/bf-rollback-firmware`, future) handles the
+//! restore. For now this module only does forward updates.
+
+use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use base64::Engine as _;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use tracing::{info, warn};
+
+/// Build-time arch string baked into the binary so `check` can ask for the
+/// right target. Falls back to "aarch64-unknown-linux-gnu" when not provided
+/// (matches Pi5 default).
+pub const ARCH: &str = match option_env!("BF_BUILD_ARCH") {
+    Some(s) => s,
+    None => "aarch64-unknown-linux-gnu",
+};
+
+const DEFAULT_BIN_PATH: &str = "/opt/betterframe/kiosk/betterframe-kiosk";
+
+fn binary_path() -> PathBuf {
+    std::env::var("BF_KIOSK_BINARY")
+        .unwrap_or_else(|_| DEFAULT_BIN_PATH.to_string())
+        .into()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CheckResponse {
+    pub up_to_date: bool,
+    pub update: Option<UpdateInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateInfo {
+    pub release_id: String,
+    pub version: String,
+    pub channel: String,
+    pub sha256: String,
+    pub signature: String,
+    pub size_bytes: u64,
+    pub download_url: String,
+    pub public_key_pem: String,
+}
+
+/// Hit `/api/kiosk/firmware/check` and return the update info if one is
+/// available. Returns `None` on up-to-date / network error / unparsable
+/// response — never panics.
+pub fn check(server: &str, key: &str, current_version: &str) -> Option<UpdateInfo> {
+    let client = reqwest::blocking::Client::new();
+    // current_version is semver-shaped (already URL-safe). Empty string is
+    // fine — server treats it as "unknown" and offers any release.
+    let url = format!(
+        "{server}/api/kiosk/firmware/check?arch={arch}&current={cur}",
+        arch = ARCH,
+        cur = current_version,
+    );
+    let resp = match client
+        .get(&url)
+        .header("Authorization", format!("Bearer {key}"))
+        .timeout(Duration::from_secs(10))
+        .send()
+    {
+        Ok(r) => r,
+        Err(err) => {
+            warn!("firmware check: request failed: {err}");
+            return None;
+        }
+    };
+    if !resp.status().is_success() {
+        warn!("firmware check: HTTP {}", resp.status());
+        return None;
+    }
+    match resp.json::<CheckResponse>() {
+        Ok(c) if !c.up_to_date => c.update,
+        Ok(_) => None,
+        Err(err) => {
+            warn!("firmware check: parse failed: {err}");
+            None
+        }
+    }
+}
+
+/// Download + verify + swap. Reports outcome to the server. On success the
+/// process exits with code 0 so systemd's Restart=always picks up the new
+/// binary. On failure the function returns Err and the kiosk keeps running.
+pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
+    info!("firmware: applying {} ({} bytes)", info.version, info.size_bytes);
+
+    // 1. Download
+    let url = format!("{}{}", server, info.download_url);
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {key}"))
+        .timeout(Duration::from_secs(300))
+        .send()
+        .map_err(|e| format!("download request: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("download HTTP {}", resp.status()));
+    }
+    let bytes = resp.bytes().map_err(|e| format!("download body: {e}"))?;
+    if bytes.len() as u64 != info.size_bytes {
+        return Err(format!(
+            "size mismatch: expected {}, got {}",
+            info.size_bytes,
+            bytes.len()
+        ));
+    }
+
+    // 2. sha256
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let digest = hasher.finalize();
+    let got_sha = hex_lower(&digest);
+    if got_sha != info.sha256 {
+        return Err(format!("sha256 mismatch: expected {}, got {}", info.sha256, got_sha));
+    }
+
+    // 3. Ed25519 signature verify (sig is over the hex-encoded sha256 string)
+    verify_signature(&info.public_key_pem, &info.sha256, &info.signature)
+        .map_err(|e| format!("signature verify: {e}"))?;
+
+    // 4. Atomic swap
+    let bin = binary_path();
+    let new_path = bin.with_extension("new");
+    let prev_path = bin.with_extension("prev");
+
+    {
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode_for_unix(0o755)
+            .open(&new_path)
+            .map_err(|e| format!("open {}: {e}", new_path.display()))?;
+        f.write_all(&bytes).map_err(|e| format!("write {}: {e}", new_path.display()))?;
+        f.sync_all().ok();
+    }
+
+    // Save current binary as .prev so an out-of-band rollback can restore it.
+    if bin.exists() {
+        let _ = fs::remove_file(&prev_path);
+        if let Err(e) = fs::rename(&bin, &prev_path) {
+            warn!("firmware: could not stash previous binary: {e}");
+        }
+    }
+    fs::rename(&new_path, &bin).map_err(|e| format!("rename → {}: {e}", bin.display()))?;
+
+    // 5. Tell the server we're about to apply.
+    let _ = client
+        .post(format!("{server}/api/kiosk/firmware/applied"))
+        .header("Authorization", format!("Bearer {key}"))
+        .json(&serde_json::json!({ "version": info.version }))
+        .timeout(Duration::from_secs(5))
+        .send();
+
+    info!("firmware: swap complete → exiting for systemd to relaunch");
+    // systemd Restart=always picks up the new binary on next start.
+    std::process::exit(0);
+}
+
+fn verify_signature(public_key_pem: &str, sha256_hex: &str, sig_b64url: &str) -> Result<(), String> {
+    let vk = VerifyingKey::from_public_key_pem(public_key_pem)
+        .map_err(|e| format!("parse pubkey: {e}"))?;
+    let sig_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(sig_b64url.trim_end_matches('='))
+        .map_err(|e| format!("decode signature: {e}"))?;
+    let sig = Signature::from_slice(&sig_bytes).map_err(|e| format!("signature shape: {e}"))?;
+    vk.verify(sha256_hex.as_bytes(), &sig)
+        .map_err(|e| format!("verify: {e}"))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    s
+}
+
+// Helper trait so OpenOptions.mode_for_unix(0o755) compiles cross-platform.
+// On non-unix we no-op the mode bits — kiosk doesn't run on Windows in prod
+// but the unit tests / IDE check on dev machines need to compile.
+trait OpenOptionsModeExt {
+    fn mode_for_unix(&mut self, mode: u32) -> &mut Self;
+}
+
+#[cfg(unix)]
+impl OpenOptionsModeExt for fs::OpenOptions {
+    fn mode_for_unix(&mut self, mode: u32) -> &mut Self {
+        use std::os::unix::fs::OpenOptionsExt;
+        self.mode(mode)
+    }
+}
+
+#[cfg(not(unix))]
+impl OpenOptionsModeExt for fs::OpenOptions {
+    fn mode_for_unix(&mut self, _mode: u32) -> &mut Self { self }
+}

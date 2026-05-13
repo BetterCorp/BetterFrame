@@ -105,6 +105,13 @@ export interface PairingConfirmInput {
   code: string;
   nameOverride?: string;
   initialLabels?: string[];
+  /**
+   * If set, rekey this existing kiosk instead of creating a new one. Display
+   * assignments, labels, GPIO bindings, and layout references all stay
+   * pointed at the same kiosk id — only credentials + hardware metadata roll.
+   * When set, nameOverride and initialLabels are ignored.
+   */
+  replaceKioskId?: number;
 }
 
 export async function confirmPairing(
@@ -118,52 +125,67 @@ export async function confirmPairing(
   if (pc.consumed_at) throw new Error("pairing code already used");
   if (new Date(pc.expires_at) < new Date()) throw new Error("pairing code expired");
 
-  const baseName = input.nameOverride || pc.kiosk_proposed_name || `kiosk-${input.code.toLowerCase()}`;
-  // Auto-suffix if name collides (kiosks.name is UNIQUE)
-  let kioskName = baseName;
-  let suffix = 2;
-  while (repo.getKioskByName(kioskName)) {
-    kioskName = `${baseName}-${suffix}`;
-    suffix++;
-    if (suffix > 100) throw new Error("could not generate unique kiosk name");
-  }
-
   const kioskKeyPlaintext = `bf-${randomBytes(24).toString("base64url")}`;
   const kioskKeyHash = await auth.hashPassword(kioskKeyPlaintext);
   const kioskKeyPrefix = kioskKeyPlaintext.slice(0, 8);
 
-  const kiosk = repo.createKiosk({
-    name: kioskName,
-    key_hash: kioskKeyHash,
-    key_prefix: kioskKeyPrefix,
-    capabilities: pc.kiosk_capabilities,
-    hardware_model: pc.kiosk_hardware_model,
-  });
+  let kioskId: number;
+  let kioskName: string;
 
-  // Create a default display for this kiosk (HDMI-0)
-  repo.createDisplayForKiosk(kiosk.id, {
-    name: `${kioskName} HDMI-0`,
-  });
-
-  // Attach initial labels
-  if (input.initialLabels?.length) {
-    for (const labelName of input.initialLabels) {
-      const trimmed = labelName.trim().toLowerCase();
-      if (!trimmed) continue;
-      const label = repo.ensureLabel(trimmed);
-      repo.attachKioskLabel(kiosk.id, label.id, "consume");
+  if (input.replaceKioskId != null) {
+    const existing = repo.getKioskById(input.replaceKioskId);
+    if (!existing) throw new Error("replacement target kiosk not found");
+    repo.replaceKioskKey(existing.id, {
+      key_hash: kioskKeyHash,
+      key_prefix: kioskKeyPrefix,
+      capabilities: pc.kiosk_capabilities,
+      hardware_model: pc.kiosk_hardware_model,
+    });
+    kioskId = existing.id;
+    kioskName = existing.name;
+  } else {
+    const baseName = input.nameOverride || pc.kiosk_proposed_name || `kiosk-${input.code.toLowerCase()}`;
+    let candidate = baseName;
+    let suffix = 2;
+    while (repo.getKioskByName(candidate)) {
+      candidate = `${baseName}-${suffix}`;
+      suffix++;
+      if (suffix > 100) throw new Error("could not generate unique kiosk name");
     }
+
+    const kiosk = repo.createKiosk({
+      name: candidate,
+      key_hash: kioskKeyHash,
+      key_prefix: kioskKeyPrefix,
+      capabilities: pc.kiosk_capabilities,
+      hardware_model: pc.kiosk_hardware_model,
+    });
+
+    repo.createDisplayForKiosk(kiosk.id, {
+      name: `${candidate} HDMI-0`,
+    });
+
+    if (input.initialLabels?.length) {
+      for (const labelName of input.initialLabels) {
+        const trimmed = labelName.trim().toLowerCase();
+        if (!trimmed) continue;
+        const label = repo.ensureLabel(trimmed);
+        repo.attachKioskLabel(kiosk.id, label.id, "consume");
+      }
+    }
+
+    kioskId = kiosk.id;
+    kioskName = candidate;
   }
 
-  // Get cluster key for kiosk
+  // Cluster key delivery (shared across pair + replace)
   const clusterKeyEncrypted = repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
   const clusterKey = clusterKeyEncrypted ? secrets.decryptString(clusterKeyEncrypted, "cluster") : undefined;
 
-  // Store plaintext kiosk_key + cluster_key in extras for kiosk to claim once
-  repo.markPairingCodeClaimed(input.code, kiosk.id, {
+  repo.markPairingCodeClaimed(input.code, kioskId, {
     kiosk_key_plaintext: kioskKeyPlaintext,
     cluster_key: clusterKey,
   });
 
-  return { kioskId: kiosk.id, kioskName };
+  return { kioskId, kioskName };
 }

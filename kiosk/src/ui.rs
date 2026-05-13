@@ -11,6 +11,7 @@ use tracing::{info, warn};
 use crate::bundle::{BundleDisplayWithLayouts, KioskBundle};
 use crate::cec;
 use crate::gpio;
+use crate::firmware;
 use crate::hwmon;
 use crate::pipeline;
 use crate::server;
@@ -229,15 +230,18 @@ fn activate(app: &Application) {
                     ServerMsg::SwitchLayout(id) => {
                         let _ = tx_for_reload.send(WorkerMsg::SwitchLayout(id));
                     }
+                    ServerMsg::FirmwareCheck => {
+                        maybe_apply_firmware_update(&server_for_reload, &key_for_reload);
+                    }
                 }
             }
         });
 
-        // Heartbeat loop — reports display geometry + hwmon. Fire once
-        // immediately so admin "Hardware" panel populates without waiting a
-        // full minute after boot/pair.
+        // Heartbeat loop — reports display geometry + hwmon, also checks for
+        // firmware updates so kiosks pick up new builds without admin push.
         loop {
             send_heartbeat_now(&server, &key);
+            maybe_apply_firmware_update(&server, &key);
             std::thread::sleep(std::time::Duration::from_secs(60));
         }
     });
@@ -296,6 +300,24 @@ fn send_heartbeat_now(server_url: &str, kiosk_key: &str) {
     let displays = query_displays();
     let hw = hwmon::read();
     server::heartbeat(server_url, kiosk_key, &displays, &hw);
+}
+
+/// Ask the server whether an update is available. On hit, download + verify
+/// + swap + report + exit (systemd brings up the new binary). On miss or
+/// error: log + keep running. Designed to be safe to call from any thread.
+fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str) {
+    let current = env!("CARGO_PKG_VERSION");
+    let Some(info) = firmware::check(server_url, kiosk_key, current) else { return };
+    info!("firmware: update {} → {} available", current, info.version);
+    if let Err(err) = firmware::apply(server_url, kiosk_key, &info) {
+        warn!("firmware: apply failed: {err}");
+        let _ = reqwest::blocking::Client::new()
+            .post(format!("{server_url}/api/kiosk/firmware/applied"))
+            .header("Authorization", format!("Bearer {kiosk_key}"))
+            .json(&serde_json::json!({ "version": info.version, "error": err }))
+            .timeout(std::time::Duration::from_secs(5))
+            .send();
+    }
 }
 
 /// Install the once-per-second watchdog that enforces idle/sleep timeouts

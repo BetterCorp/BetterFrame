@@ -22,6 +22,10 @@ import type {
   EntityType,
   EventLog,
   EventSourceType,
+  FirmwareChannel,
+  FirmwareRelease,
+  FirmwareRollout,
+  FirmwareRolloutState,
   GpioDirection,
   GpioEdge,
   GpioPull,
@@ -48,6 +52,8 @@ import {
   rowToDisplay,
   rowToEntity,
   rowToEventLog,
+  rowToFirmwareRelease,
+  rowToFirmwareRollout,
   rowToKiosk,
   rowToKioskGpioBinding,
   rowToLabel,
@@ -981,6 +987,47 @@ export class Repository {
     return k;
   }
 
+  /**
+   * Rekey an existing kiosk for a replacement device. Preserves identity
+   * (id, name) and downstream references (display_id, labels, gpio bindings,
+   * layouts that mention it), but issues fresh credentials + capabilities and
+   * resets transient runtime state so the old hardware can't reconnect.
+   */
+  replaceKioskKey(
+    id: number,
+    input: {
+      key_hash: string;
+      key_prefix: string;
+      capabilities?: string[];
+      hardware_model?: string | null;
+    },
+  ): void {
+    this.prep(
+      `UPDATE kiosks SET
+         key_hash = ?,
+         key_prefix = ?,
+         capabilities = ?,
+         hardware_model = ?,
+         paired_at = ?,
+         last_seen_at = NULL,
+         last_bundle_version = NULL,
+         kiosk_app_version = NULL,
+         os_version = NULL,
+         cpu_temp_c = NULL,
+         fan_rpm = NULL,
+         fan_pwm = NULL
+       WHERE id = ?`,
+    ).run(
+      input.key_hash,
+      input.key_prefix,
+      J(input.capabilities ?? []),
+      input.hardware_model ?? null,
+      isoNow(),
+      id,
+    );
+    void this.notify("kiosks", "update", id);
+  }
+
   touchKiosk(
     id: number,
     patch: {
@@ -1012,6 +1059,172 @@ export class Repository {
       patch.fan_pwm ?? null,
       id,
     );
+  }
+
+  // ===========================================================================
+  // firmware_releases + firmware_rollouts
+  // ===========================================================================
+
+  createFirmwareRelease(input: {
+    id: string;
+    version: string;
+    channel: FirmwareChannel;
+    arch: string;
+    artifact_path: string;
+    size_bytes: number;
+    sha256: string;
+    signature: string;
+    release_notes: string | null;
+    uploaded_by: number | null;
+  }): FirmwareRelease {
+    this.prep(
+      `INSERT INTO firmware_releases
+         (id, version, channel, arch, artifact_path, size_bytes, sha256,
+          signature, release_notes, uploaded_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.id,
+      input.version,
+      input.channel,
+      input.arch,
+      input.artifact_path,
+      input.size_bytes,
+      input.sha256,
+      input.signature,
+      input.release_notes,
+      input.uploaded_by,
+    );
+    void this.notify("firmware_releases", "create", input.id);
+    const r = this.getFirmwareRelease(input.id);
+    if (!r) throw new Error("firmware release vanished after insert");
+    return r;
+  }
+
+  getFirmwareRelease(id: string): FirmwareRelease | null {
+    const r = this.prep("SELECT * FROM firmware_releases WHERE id = ?").get(id);
+    return r ? rowToFirmwareRelease(r as Record<string, unknown>) : null;
+  }
+
+  getFirmwareReleaseByVersionArch(version: string, arch: string): FirmwareRelease | null {
+    const r = this.prep(
+      "SELECT * FROM firmware_releases WHERE version = ? AND arch = ?",
+    ).get(version, arch);
+    return r ? rowToFirmwareRelease(r as Record<string, unknown>) : null;
+  }
+
+  /** Latest non-yanked release for a (channel, arch) pair. */
+  getLatestFirmwareRelease(channel: FirmwareChannel, arch: string): FirmwareRelease | null {
+    const r = this.prep(
+      `SELECT * FROM firmware_releases
+         WHERE channel = ? AND arch = ? AND yanked_at IS NULL
+         ORDER BY uploaded_at DESC
+         LIMIT 1`,
+    ).get(channel, arch);
+    return r ? rowToFirmwareRelease(r as Record<string, unknown>) : null;
+  }
+
+  listFirmwareReleases(): FirmwareRelease[] {
+    const rs = this.prep(
+      "SELECT * FROM firmware_releases ORDER BY uploaded_at DESC",
+    ).all();
+    return rs.map((r) => rowToFirmwareRelease(r as Record<string, unknown>));
+  }
+
+  yankFirmwareRelease(id: string): void {
+    this.prep("UPDATE firmware_releases SET yanked_at = ? WHERE id = ?").run(isoNow(), id);
+    void this.notify("firmware_releases", "update", id);
+  }
+
+  /** Mark the per-kiosk firmware attempt state (called from /api/kiosk/firmware/applied). */
+  recordKioskFirmwareAttempt(
+    kioskId: number,
+    version: string,
+    error: string | null,
+  ): void {
+    this.prep(
+      `UPDATE kiosks SET
+         firmware_last_attempt_at = ?,
+         firmware_last_attempt_version = ?,
+         firmware_last_error = ?
+       WHERE id = ?`,
+    ).run(isoNow(), version, error, kioskId);
+    void this.notify("kiosks", "update", kioskId);
+  }
+
+  /** Set the per-kiosk update channel + optional explicit version pin. */
+  setKioskFirmwarePref(
+    kioskId: number,
+    patch: { channel?: FirmwareChannel; target_version?: string | null },
+  ): void {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (patch.channel !== undefined) {
+      sets.push("firmware_channel = ?");
+      vals.push(patch.channel);
+    }
+    if (patch.target_version !== undefined) {
+      sets.push("firmware_target_version = ?");
+      vals.push(patch.target_version);
+    }
+    if (sets.length === 0) return;
+    vals.push(kioskId);
+    this.db.prepare(`UPDATE kiosks SET ${sets.join(", ")} WHERE id = ?`).run(...(vals as any[]));
+    void this.notify("kiosks", "update", kioskId);
+  }
+
+  createFirmwareRollout(input: {
+    id: string;
+    release_id: string;
+    target_kiosk_ids: number[];
+    percentage: number;
+    created_by: number | null;
+  }): FirmwareRollout {
+    this.prep(
+      `INSERT INTO firmware_rollouts
+         (id, release_id, target_kiosk_ids, percentage, created_by, state)
+       VALUES (?, ?, ?, ?, ?, 'queued')`,
+    ).run(
+      input.id,
+      input.release_id,
+      J(input.target_kiosk_ids),
+      input.percentage,
+      input.created_by,
+    );
+    void this.notify("firmware_rollouts", "create", input.id);
+    const r = this.getFirmwareRollout(input.id);
+    if (!r) throw new Error("rollout vanished after insert");
+    return r;
+  }
+
+  getFirmwareRollout(id: string): FirmwareRollout | null {
+    const r = this.prep("SELECT * FROM firmware_rollouts WHERE id = ?").get(id);
+    return r ? rowToFirmwareRollout(r as Record<string, unknown>) : null;
+  }
+
+  listFirmwareRollouts(): FirmwareRollout[] {
+    const rs = this.prep(
+      "SELECT * FROM firmware_rollouts ORDER BY created_at DESC",
+    ).all();
+    return rs.map((r) => rowToFirmwareRollout(r as Record<string, unknown>));
+  }
+
+  updateFirmwareRolloutState(
+    id: string,
+    state: FirmwareRolloutState,
+  ): void {
+    const now = isoNow();
+    if (state === "active") {
+      this.prep(
+        `UPDATE firmware_rollouts SET state = ?, started_at = COALESCE(started_at, ?) WHERE id = ?`,
+      ).run(state, now, id);
+    } else if (state === "complete") {
+      this.prep(
+        `UPDATE firmware_rollouts SET state = ?, finished_at = ? WHERE id = ?`,
+      ).run(state, now, id);
+    } else {
+      this.prep(`UPDATE firmware_rollouts SET state = ? WHERE id = ?`).run(state, id);
+    }
+    void this.notify("firmware_rollouts", "update", id);
   }
 
   // ===========================================================================

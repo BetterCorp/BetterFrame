@@ -7,6 +7,7 @@ import type {
   Camera,
   Display,
   Entity,
+  FirmwareRelease,
   Kiosk,
   KioskGpioBinding,
   Label,
@@ -873,11 +874,24 @@ export function KiosksPage(props: KiosksProps) {
                 <div class="form-hint">8-character code shown on kiosk screen.</div>
               </div>
               <div class="form-group">
-                <label for="name_override">Name Override (optional)</label>
+                <label for="replace_kiosk_id">Replacing existing kiosk?</label>
+                <select id="replace_kiosk_id" name="replace_kiosk_id" class="form-input">
+                  <option value="">-- No, this is a new kiosk --</option>
+                  {props.kiosks.map((k) => (
+                    <option value={String(k.id)}>{k.name}{k.last_seen_at ? ` (last seen ${formatTime(k.last_seen_at)})` : " (never seen)"}</option>
+                  ))}
+                </select>
+                <div class="form-hint">
+                  Pick the kiosk this device replaces. Display, layouts, labels, and GPIO
+                  bindings stay; only the device credentials roll. Old kiosk's key is revoked.
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="name_override">Name Override (new kiosks only)</label>
                 <input id="name_override" name="name_override" type="text" class="form-input" />
               </div>
               <div class="form-group">
-                <label for="initial_labels">Initial Labels (optional)</label>
+                <label for="initial_labels">Initial Labels (new kiosks only)</label>
                 <input id="initial_labels" name="initial_labels" type="text" class="form-input" placeholder="lobby, floor-1" />
                 <div class="form-hint">Comma-separated label names.</div>
               </div>
@@ -1287,6 +1301,7 @@ interface KioskEditProps {
   displays?: Display[];
   switchableLayouts?: LayoutType[];
   gpioBindings?: KioskGpioBinding[];
+  firmwareReleases?: FirmwareRelease[];
   error?: string;
   success?: string;
 }
@@ -1506,6 +1521,10 @@ export function KioskEditPage(props: KioskEditProps) {
             <p style="color:#999">No displays associated with this kiosk</p>
           )}
         </div>
+
+        {props.firmwareReleases && (
+          KioskFirmwarePanel({ kiosk: props.kiosk, releases: props.firmwareReleases })
+        )}
 
         {/* GPIO bindings */}
         <div class="card" style="margin-bottom:1.5rem">
@@ -2639,5 +2658,185 @@ export function SystemHealthPage(props: SystemHealthPageProps) {
         </table>
       </div>
     </Layout>
+  );
+}
+
+// ---- Firmware ---------------------------------------------------------------
+
+interface FirmwarePageProps {
+  user: string;
+  releases: FirmwareRelease[];
+  publicKeyPem: string;
+}
+
+export function FirmwarePage(props: FirmwarePageProps) {
+  return (
+    <Layout title="Firmware" user={props.user} activeNav="kiosks">
+      <p style="color:#666; margin-bottom:1rem">
+        Signed kiosk firmware artifacts. Uploaded binaries are hashed +
+        Ed25519-signed by the server before kiosks can install them.
+      </p>
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="margin:0 0 1rem; font-size:1.1rem">Upload release</h2>
+        <form
+          method="post"
+          action="/admin/firmware/upload"
+          enctype="multipart/form-data"
+          style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem"
+        >
+          <div class="form-group" style="grid-column:1/-1">
+            <label for="artifact">Binary</label>
+            <input id="artifact" name="artifact" type="file" required class="form-input" />
+            <div class="form-hint">Stripped release binary, no archive wrapper.</div>
+          </div>
+          <div class="form-group">
+            <label for="version">Version</label>
+            <input id="version" name="version" type="text" required class="form-input" placeholder="0.4.2" />
+          </div>
+          <div class="form-group">
+            <label for="channel">Channel</label>
+            <select id="channel" name="channel" class="form-input">
+              <option value="stable">stable</option>
+              <option value="beta">beta</option>
+              <option value="dev">dev</option>
+            </select>
+          </div>
+          <div class="form-group" style="grid-column:1/-1">
+            <label for="arch">Arch</label>
+            <select id="arch" name="arch" class="form-input">
+              <option value="aarch64-unknown-linux-gnu">aarch64 (Pi5)</option>
+              <option value="x86_64-unknown-linux-gnu">x86_64</option>
+              <option value="armv7-unknown-linux-gnueabihf">armv7</option>
+            </select>
+          </div>
+          <div class="form-group" style="grid-column:1/-1">
+            <label for="release_notes">Release notes</label>
+            <textarea id="release_notes" name="release_notes" class="form-input" rows="3" />
+          </div>
+          <button type="submit" class="btn btn-primary" style="grid-column:1/-1">Upload + sign</button>
+        </form>
+      </div>
+
+      <div class="table-wrap" style="margin-bottom:1.5rem">
+        <table>
+          <thead>
+            <tr>
+              <th>Version</th>
+              <th>Channel</th>
+              <th>Arch</th>
+              <th>Size</th>
+              <th>SHA256</th>
+              <th>Uploaded</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {props.releases.length === 0 ? (
+              <tr><td colspan="7" style="text-align:center; color:#999; padding:2rem">No firmware releases yet.</td></tr>
+            ) : (
+              props.releases.map((r) => (
+                <tr style={r.yanked_at ? "opacity:0.4" : ""}>
+                  <td><strong>{r.version}</strong></td>
+                  <td><span class={`badge ${r.channel === "stable" ? "badge-green" : r.channel === "beta" ? "badge-yellow" : "badge-gray"}`}>{r.channel}</span></td>
+                  <td style="font-family:monospace; font-size:0.8rem">{r.arch}</td>
+                  <td style="font-size:0.85rem">{Math.round(r.size_bytes / 1024)} KiB</td>
+                  <td style="font-family:monospace; font-size:0.75rem">{r.sha256.slice(0, 12)}…</td>
+                  <td style="font-size:0.85rem; white-space:nowrap">{formatTime(r.uploaded_at)}</td>
+                  <td>
+                    {r.yanked_at ? (
+                      <span style="color:#999; font-size:0.8rem">yanked</span>
+                    ) : (
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-danger"
+                        {...{
+                          "hx-post": `/admin/firmware/${r.id}/yank`,
+                          "hx-confirm": "Yank this release? Devices already running it stay, but no new devices will pick it up.",
+                          "hx-swap": "none",
+                          "hx-on::after-request": "location.reload()",
+                        }}
+                      >Yank</button>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <details class="card" style="font-size:0.85rem">
+        <summary style="cursor:pointer; font-weight:600">Signing public key</summary>
+        <p style="color:#666; margin:0.5rem 0">
+          Ed25519 public key kiosks pin during pairing. Safe to share. Kept here for backup.
+        </p>
+        <pre style="background:#fafafa; padding:0.75rem; overflow:auto; font-size:0.75rem">{props.publicKeyPem}</pre>
+      </details>
+    </Layout>
+  );
+}
+
+interface KioskFirmwarePanelProps {
+  kiosk: Kiosk;
+  releases: FirmwareRelease[];
+}
+
+export function KioskFirmwarePanel(props: KioskFirmwarePanelProps) {
+  const k = props.kiosk;
+  const current = k.kiosk_app_version ?? "unknown";
+  return (
+    <div id={`kiosk-firmware-${String(k.id)}`} class="card" style="margin-bottom:1.5rem">
+      <h3 style="margin:0 0 0.75rem; font-size:1rem">Firmware</h3>
+      <div style="font-size:0.85rem; color:#666; margin-bottom:0.75rem">
+        <div>Running: <code>{current}</code></div>
+        {k.firmware_last_attempt_version && (
+          <div>
+            Last attempt: <code>{k.firmware_last_attempt_version}</code>
+            {k.firmware_last_attempt_at && <span> at {formatTime(k.firmware_last_attempt_at)}</span>}
+            {k.firmware_last_error && <span style="color:#a00"> — {k.firmware_last_error}</span>}
+          </div>
+        )}
+      </div>
+      <form
+        {...{
+          "hx-post": `/admin/kiosks/${String(k.id)}/firmware`,
+          "hx-target": `#kiosk-firmware-${String(k.id)}`,
+          "hx-swap": "outerHTML",
+        }}
+        style="display:grid; grid-template-columns:1fr 1fr; gap:0.5rem; align-items:end"
+      >
+        <div class="form-group">
+          <label for={`channel-${String(k.id)}`}>Channel</label>
+          <select id={`channel-${String(k.id)}`} name="channel" class="form-input">
+            {(["stable", "beta", "dev"] as const).map((c) => (
+              <option value={c} selected={k.firmware_channel === c}>{c}</option>
+            ))}
+          </select>
+        </div>
+        <div class="form-group">
+          <label for={`target-${String(k.id)}`}>Pin to version</label>
+          <select id={`target-${String(k.id)}`} name="target_version" class="form-input">
+            <option value="">-- follow channel --</option>
+            {props.releases.filter((r) => !r.yanked_at).map((r) => (
+              <option value={r.version} selected={k.firmware_target_version === r.version}>
+                {r.version} ({r.channel}, {r.arch})
+              </option>
+            ))}
+          </select>
+        </div>
+        <div style="grid-column:1/-1; display:flex; gap:0.5rem">
+          <button type="submit" class="btn btn-primary">Save</button>
+          <button
+            type="button"
+            class="btn"
+            {...{
+              "hx-post": `/admin/kiosks/${String(k.id)}/firmware/push`,
+              "hx-swap": "none",
+            }}
+          >Push update now</button>
+        </div>
+      </form>
+    </div>
   );
 }

@@ -56,6 +56,9 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
                                     } else {
                                         warn!("ws: layout-switch missing layout_id");
                                     }
+                                } else if text.contains("\"type\":\"firmware_check\"") {
+                                    info!("ws: firmware_check received");
+                                    let _ = tx.send(ServerMsg::FirmwareCheck);
                                 } else if text.contains("\"type\":\"fan\"") {
                                     info!("ws: fan received: {text}");
                                     let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) else {

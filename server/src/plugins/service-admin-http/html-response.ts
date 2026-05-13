@@ -11,6 +11,13 @@ export function htmlPage(markup: unknown): Response {
   });
 }
 
+/** Same as htmlPage — separate name for htmx fragment swaps to read clearly. */
+export function htmlFragment(markup: unknown): Response {
+  return new Response(String(markup), {
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
 /**
  * Build a redirect Response with optional Set-Cookie header.
  * Avoids h3's setCookie which doesn't play well with returning

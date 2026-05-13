@@ -617,12 +617,15 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const nameOverride = (body?.["name_override"] ?? "").trim() || undefined;
     const labelsStr = (body?.["initial_labels"] ?? "").trim();
     const initialLabels = labelsStr ? labelsStr.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+    const replaceIdRaw = (body?.["replace_kiosk_id"] ?? "").trim();
+    const replaceKioskId = replaceIdRaw && replaceIdRaw !== "0" ? Number(replaceIdRaw) : undefined;
 
     try {
       await confirmPairing(deps.repo, deps.auth, deps.secrets, {
         code,
         nameOverride,
         initialLabels,
+        replaceKioskId,
       });
     } catch (err) {
       const user = event.context.user!;
@@ -1171,6 +1174,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const firstDisplay = displays[0];
     const switchableLayouts = firstDisplay ? deps.repo.listLayoutsForDisplay(firstDisplay.id) : [];
     const gpioBindings = deps.repo.listGpioBindings(id);
+    const firmwareReleases = deps.repo.listFirmwareReleases();
     return htmlPage(KioskEditPage({
       user: user.username,
       kiosk,
@@ -1179,6 +1183,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       displays,
       switchableLayouts,
       gpioBindings,
+      firmwareReleases,
     }));
   });
 

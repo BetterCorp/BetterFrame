@@ -21,9 +21,11 @@ import { createAuth } from "../../shared/auth.js";
 import { initiatePairing, claimPairing } from "../../shared/pairing.js";
 import { generateBundle } from "../../shared/bundle.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
+import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
 import type { Repository } from "../service-store/repository.js";
 import type { AuthApi } from "../../shared/auth.js";
 import type { SecretsApi } from "../../shared/secrets.js";
+import type { FirmwareChannel } from "../../shared/types.js";
 
 // ---- Config -----------------------------------------------------------------
 
@@ -105,6 +107,10 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       { baseUrl: this.config.noderedUrl },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
+    const firmware = initFirmware(
+      { dataDir: this.config.dataDir },
+      { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
+    );
 
     const app = new H3();
 
@@ -134,7 +140,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     });
 
     registerPairingRoutes(app, repo, auth, secrets, codeTtl);
-    registerKioskRoutes(app, repo, auth, secrets, nodered);
+    registerKioskRoutes(app, repo, auth, secrets, nodered, firmware);
 
     this.server = serve(app, {
       port: this.config.port,
@@ -230,6 +236,7 @@ function registerKioskRoutes(
   auth: AuthApi,
   secrets: SecretsApi,
   nodered: NoderedBridge,
+  firmware: FirmwareApi,
 ): void {
   // Bundle delivery
   app.get("/api/kiosk/bundle", async (event) => {
@@ -378,5 +385,115 @@ function registerKioskRoutes(
     }
 
     return { ok: true, event_id: eventId };
+  });
+
+  // ---- Firmware: kiosk checks for + downloads its assigned release -------
+
+  /**
+   * Kiosk polls this on heartbeat (or after a `firmware_check` WS push).
+   * Decision tree:
+   *   1. If kiosk.firmware_target_version is set → look up that version on the
+   *      kiosk's arch; offer if it exists and isn't yanked.
+   *   2. Otherwise pick latest non-yanked release on the kiosk's channel + arch.
+   *   3. If chosen.version === current_version (reported via heartbeat) →
+   *      "up_to_date".
+   *
+   * `arch` is supplied by the kiosk because the server has no other way to
+   * know which build target the kiosk was built against.
+   */
+  app.get("/api/kiosk/firmware/check", async (event) => {
+    const token = extractBearerToken(event);
+    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
+    const verified = await auth.verifyKioskKey(token);
+    if (!verified) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    const kiosk = repo.getKioskById(verified.id);
+    if (!kiosk) throw createError({ statusCode: 404, statusMessage: "kiosk not found" });
+
+    const url = new URL(event.req.url);
+    const arch = url.searchParams.get("arch")?.trim();
+    if (!arch) {
+      throw createError({ statusCode: 400, statusMessage: "arch query param required" });
+    }
+    const currentVersion = url.searchParams.get("current")?.trim() ?? kiosk.kiosk_app_version ?? "";
+
+    let release = null;
+    if (kiosk.firmware_target_version) {
+      release = repo.getFirmwareReleaseByVersionArch(kiosk.firmware_target_version, arch);
+      if (release?.yanked_at) release = null;
+    }
+    if (!release) {
+      const channel = (kiosk.firmware_channel ?? "stable") as FirmwareChannel;
+      release = repo.getLatestFirmwareRelease(channel, arch);
+    }
+
+    if (!release || release.version === currentVersion) {
+      return { up_to_date: true };
+    }
+
+    return {
+      up_to_date: false,
+      update: {
+        release_id: release.id,
+        version: release.version,
+        channel: release.channel,
+        sha256: release.sha256,
+        signature: release.signature,
+        size_bytes: release.size_bytes,
+        download_url: `/api/kiosk/firmware/download/${release.id}`,
+        public_key_pem: firmware.publicKeyPem(),
+      },
+    };
+  });
+
+  /**
+   * Stream the signed binary. Bearer kiosk-key auth — internal access only,
+   * Angie will not pass this externally because /api/kiosk/* is in the
+   * kiosk-key location block.
+   */
+  app.get("/api/kiosk/firmware/download/:id", async (event) => {
+    const token = extractBearerToken(event);
+    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
+    const kiosk = await auth.verifyKioskKey(token);
+    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+
+    const id = (event.context as any).params?.id as string | undefined
+      ?? new URL(event.req.url).pathname.split("/").pop();
+    if (!id) throw createError({ statusCode: 400, statusMessage: "release id required" });
+
+    const release = repo.getFirmwareRelease(id);
+    if (!release || release.yanked_at) {
+      throw createError({ statusCode: 404, statusMessage: "release not found" });
+    }
+
+    const buf = await firmware.readBlob(release.artifact_path, release.sha256);
+    return new Response(buf, {
+      status: 200,
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": String(buf.length),
+        "x-bf-sha256": release.sha256,
+        "x-bf-signature": release.signature,
+        "x-bf-version": release.version,
+      },
+    });
+  });
+
+  /**
+   * Kiosk reports the outcome of an update attempt. On success it should
+   * also be sending its new kiosk_app_version on heartbeat. On failure
+   * the error string is surfaced on the admin kiosk page.
+   */
+  app.post("/api/kiosk/firmware/applied", async (event) => {
+    const token = extractBearerToken(event);
+    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
+    const kiosk = await auth.verifyKioskKey(token);
+    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+
+    const body = await readBody<{ version: string; error?: string }>(event);
+    if (!body?.version) {
+      throw createError({ statusCode: 400, statusMessage: "version required" });
+    }
+    repo.recordKioskFirmwareAttempt(kiosk.id, body.version, body.error ?? null);
+    return { ok: true };
   });
 }

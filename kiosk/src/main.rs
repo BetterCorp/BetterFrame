@@ -1,6 +1,7 @@
 mod server;
 mod bundle;
 mod cec;
+mod firmware;
 mod gpio;
 mod hwmon;
 mod pipeline;
@@ -15,6 +16,8 @@ pub enum ServerMsg {
     Fan(Option<u32>),
     /// Switch to a specific layout by ID (must be present in current bundle).
     SwitchLayout(u32),
+    /// Server-pushed "go check for a firmware update now".
+    FirmwareCheck,
 }
 
 use gtk4::prelude::{ApplicationExt, ApplicationExtManual};

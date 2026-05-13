@@ -18,6 +18,10 @@ import type {
   EntityType,
   EventLog,
   EventSourceType,
+  FirmwareChannel,
+  FirmwareRelease,
+  FirmwareRollout,
+  FirmwareRolloutState,
   GpioDirection,
   GpioEdge,
   GpioPull,
@@ -250,7 +254,43 @@ export function rowToKiosk(r: Row): Kiosk {
     cpu_temp_c: nn(r["cpu_temp_c"]),
     fan_rpm: nn(r["fan_rpm"]),
     fan_pwm: nn(r["fan_pwm"]),
+    firmware_channel: (s(r["firmware_channel"] ?? "stable")) as FirmwareChannel,
+    firmware_target_version: sn(r["firmware_target_version"]),
+    firmware_last_attempt_at: sn(r["firmware_last_attempt_at"]),
+    firmware_last_attempt_version: sn(r["firmware_last_attempt_version"]),
+    firmware_last_error: sn(r["firmware_last_error"]),
     created_at: s(r["created_at"]),
+  };
+}
+
+export function rowToFirmwareRelease(r: Row): FirmwareRelease {
+  return {
+    id: s(r["id"]),
+    version: s(r["version"]),
+    channel: s(r["channel"]) as FirmwareChannel,
+    arch: s(r["arch"]),
+    artifact_path: s(r["artifact_path"]),
+    size_bytes: n(r["size_bytes"]),
+    sha256: s(r["sha256"]),
+    signature: s(r["signature"]),
+    release_notes: sn(r["release_notes"]),
+    uploaded_at: s(r["uploaded_at"]),
+    uploaded_by: nn(r["uploaded_by"]),
+    yanked_at: sn(r["yanked_at"]),
+  };
+}
+
+export function rowToFirmwareRollout(r: Row): FirmwareRollout {
+  return {
+    id: s(r["id"]),
+    release_id: s(r["release_id"]),
+    target_kiosk_ids: j<number[]>(r["target_kiosk_ids"], []),
+    state: s(r["state"]) as FirmwareRolloutState,
+    percentage: n(r["percentage"]),
+    started_at: sn(r["started_at"]),
+    finished_at: sn(r["finished_at"]),
+    created_at: s(r["created_at"]),
+    created_by: nn(r["created_by"]),
   };
 }
 

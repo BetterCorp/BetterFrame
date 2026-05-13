@@ -211,7 +211,42 @@ export interface Kiosk {
   cpu_temp_c: number | null;
   fan_rpm: number | null;
   fan_pwm: number | null;
+  firmware_channel: FirmwareChannel;
+  firmware_target_version: string | null;
+  firmware_last_attempt_at: string | null;
+  firmware_last_attempt_version: string | null;
+  firmware_last_error: string | null;
   created_at: string;
+}
+
+export type FirmwareChannel = "stable" | "beta" | "dev";
+export type FirmwareRolloutState = "queued" | "active" | "paused" | "complete";
+
+export interface FirmwareRelease {
+  id: string;
+  version: string;
+  channel: FirmwareChannel;
+  arch: string;
+  artifact_path: string;
+  size_bytes: number;
+  sha256: string;
+  signature: string;
+  release_notes: string | null;
+  uploaded_at: string;
+  uploaded_by: number | null;
+  yanked_at: string | null;
+}
+
+export interface FirmwareRollout {
+  id: string;
+  release_id: string;
+  target_kiosk_ids: number[];
+  state: FirmwareRolloutState;
+  percentage: number;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  created_by: number | null;
 }
 
 export interface Label {

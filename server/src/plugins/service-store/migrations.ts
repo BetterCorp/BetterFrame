@@ -709,4 +709,48 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     `);
     db.exec("PRAGMA foreign_keys = ON");
   },
+
+  // ---- firmware OTA --------------------------------------------------------
+  // One row per signed kiosk binary. arch lets us hold images for
+  // aarch64-pi5 + x86_64 + future targets side by side. signature is
+  // Ed25519(sha256(binary)) by the server's firmware-signing key — kiosk
+  // verifies before swap.
+  `CREATE TABLE IF NOT EXISTS firmware_releases (
+    id TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    channel TEXT NOT NULL CHECK(channel IN ('stable', 'beta', 'dev')),
+    arch TEXT NOT NULL,
+    artifact_path TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    release_notes TEXT,
+    uploaded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    yanked_at TEXT
+  ) STRICT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_firmware_releases_version_arch ON firmware_releases(version, arch)`,
+  `CREATE INDEX IF NOT EXISTS idx_firmware_releases_channel ON firmware_releases(channel, arch, uploaded_at DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS firmware_rollouts (
+    id TEXT PRIMARY KEY,
+    release_id TEXT NOT NULL REFERENCES firmware_releases(id) ON DELETE CASCADE,
+    target_kiosk_ids TEXT NOT NULL DEFAULT '[]',
+    state TEXT NOT NULL DEFAULT 'queued' CHECK(state IN ('queued', 'active', 'paused', 'complete')),
+    percentage INTEGER NOT NULL DEFAULT 100 CHECK(percentage BETWEEN 1 AND 100),
+    started_at TEXT,
+    finished_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_firmware_rollouts_state ON firmware_rollouts(state)`,
+
+  // Per-kiosk firmware preferences + update tracking.
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "kiosks", "firmware_channel", "TEXT NOT NULL DEFAULT 'stable'");
+    addColumnIfNotExists(db, "kiosks", "firmware_target_version", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "firmware_last_attempt_at", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "firmware_last_attempt_version", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "firmware_last_error", "TEXT");
+  },
 ];

@@ -34,3 +34,8 @@ futures-util = "0.3"
 url = "2"
 webkit6 = "0.4"
 gpiod = "0.3"
+
+# OTA firmware update: sha256 + Ed25519 signature verify
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["pem"] }
+base64 = "0.22"

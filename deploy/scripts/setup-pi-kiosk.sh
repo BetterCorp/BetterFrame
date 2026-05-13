@@ -172,12 +172,27 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
     fi
   done
 
-  echo "==> Disabling display managers + getty@tty1"
-  for dm in lightdm gdm gdm3 sddm; do
+  echo "==> Disabling + masking display managers, removing Pi first-run wizard"
+  # Mask (not just disable) so nothing — apt upgrades, dependencies — can
+  # re-enable a display manager later.
+  for dm in lightdm gdm gdm3 sddm display-manager; do
     systemctl disable --now "${dm}.service" 2>/dev/null || true
+    systemctl mask "${dm}.service" 2>/dev/null || true
   done
   systemctl set-default multi-user.target
   systemctl disable --now getty@tty1.service 2>/dev/null || true
+
+  # piwiz = "Welcome to Raspberry Pi" first-run wizard. userconf-pi runs at
+  # first boot if no user is configured. Purge both so they can't fire.
+  DEBIAN_FRONTEND=noninteractive apt-get purge -y piwiz userconf-pi 2>/dev/null || true
+  rm -f /etc/xdg/autostart/piwiz.desktop
+  systemctl disable --now userconf.service userconf-pi.service 2>/dev/null || true
+  systemctl mask userconf.service userconf-pi.service 2>/dev/null || true
+
+  # Suppress the Debian/Pi console motd and /etc/issue text on tty.
+  : > /etc/motd
+  printf 'BetterFrame Kiosk\n\n' > /etc/issue
+  rm -f /etc/update-motd.d/10-uname /etc/update-motd.d/* 2>/dev/null || true
 
   echo "==> Installing PAM + systemd unit"
   install -m 644 "${REPO_ROOT}/deploy/pam.d/cage" /etc/pam.d/cage

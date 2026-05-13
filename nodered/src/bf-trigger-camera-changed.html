@@ -1,0 +1,28 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-trigger-camera-changed", {
+    category: "BetterFrame Triggers",
+    color: "#a6d4ff",
+    defaults: {
+      name: { value: "" },
+    },
+    inputs: 1,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      return this.name || "camera changed";
+    },
+    paletteLabel: "Camera Changed Trigger",
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-trigger-camera-changed">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" placeholder="(optional)" />
+  </div>
+  <div class="form-tips">
+    Triggers when a camera is created, updated, or deleted in admin.
+    Wire <code>http in POST /in/kiosk/camera.changed</code> in front of this node.
+    Emits <code>msg.payload = {camera_id, event}</code>.
+  </div>
+</script>

@@ -10,12 +10,18 @@
   "node-red": {
     "version": ">=3.0.0",
     "nodes": {
-      "bf-config": "src/bf-config.js",
-      "bf-event-in": "src/bf-event-in.js",
+      "bf-server-config": "src/bf-server-config.js",
+      "bf-kiosk-camera-event": "src/bf-kiosk-camera-event.js",
+      "bf-trigger-display-power": "src/bf-trigger-display-power.js",
+      "bf-trigger-layout-changed": "src/bf-trigger-layout-changed.js",
+      "bf-trigger-kiosk-changed": "src/bf-trigger-kiosk-changed.js",
+      "bf-trigger-camera-changed": "src/bf-trigger-camera-changed.js",
       "bf-layout-switch": "src/bf-layout-switch.js",
       "bf-power": "src/bf-power.js",
       "bf-fan": "src/bf-fan.js",
-      "bf-cameras": "src/bf-cameras.js"
+      "bf-cameras": "src/bf-cameras.js",
+      "bf-config-get": "src/bf-config-get.js",
+      "bf-config-set": "src/bf-config-set.js"
     },
     "icons": [
       "icons"

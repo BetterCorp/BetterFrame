@@ -1,6 +1,7 @@
 /**
- * bf-event-in — fire a flow whenever a BetterFrame kiosk event matching a
- * topic pattern arrives.
+ * bf-kiosk-camera-event — fire a flow whenever a BetterFrame kiosk camera
+ * event matching a topic pattern arrives. Defaults to `camera.*` (ONVIF
+ * motion, object detection, line crossing, etc.).
  *
  * Two delivery paths can land here:
  *   1. The BF server has forwarded an authenticated kiosk event via the
@@ -9,17 +10,20 @@
  *      filter by topic.
  *   2. A separate flow injects msg.topic + msg.payload directly.
  *
- * In other words, bf-event-in is a pure filter/router. It does NOT itself
- * subscribe to the BF server; that wiring is done with stock Node-RED http-in
- * or websocket nodes upstream.
+ * This is a pure filter/router. It does NOT itself subscribe to the BF
+ * server; that wiring is done with stock Node-RED http-in or websocket
+ * nodes upstream.
+ *
+ * Renamed from `bf-event-in` — kept the same envelope shape for backward
+ * compatibility with flows that consume the output message.
  */
 module.exports = function (RED) {
-  function BfEventInNode(config) {
+  function BfKioskCameraEventNode(config) {
     RED.nodes.createNode(this, config);
     const node = this;
-    const pattern = (config.topic_pattern || "").trim();
+    const pattern = (config.topic_pattern || "camera.*").trim();
 
-    // Convert glob-ish pattern to RegExp: `gpio.button.*` → /^gpio\.button\..*$/
+    // Convert glob-ish pattern to RegExp: `camera.*` → /^camera\..*$/
     function toRegex(p) {
       if (!p) return null;
       const escaped = p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
@@ -54,5 +58,5 @@ module.exports = function (RED) {
       done && done();
     });
   }
-  RED.nodes.registerType("bf-event-in", BfEventInNode);
+  RED.nodes.registerType("bf-kiosk-camera-event", BfKioskCameraEventNode);
 };

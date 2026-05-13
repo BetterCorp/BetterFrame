@@ -16,8 +16,8 @@ module.exports = function (RED) {
 
     node.on("input", async (msg, send, done) => {
       if (!cfg || !cfg.server_url || !cfg.api_key) {
-        node.status({ fill: "red", shape: "ring", text: "missing bf-config" });
-        return done(new Error("bf-config server_url + api_key required"));
+        node.status({ fill: "red", shape: "ring", text: "missing bf-server-config" });
+        return done(new Error("bf-server-config server_url + api_key required"));
       }
       const filterLabel = (msg.label || config.label || "").trim().toLowerCase();
       const url = cfg.server_url + "/api/admin/cameras";

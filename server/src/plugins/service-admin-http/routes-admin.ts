@@ -35,6 +35,7 @@ import {
 import { discover as onvifDiscover } from "../../shared/onvif.js";
 import { generateBundle } from "../../shared/bundle.js";
 import { captureSnapshot } from "../../shared/snapshot.js";
+import { stripSecrets } from "../../shared/strip-secrets.js";
 
 interface DiscoverAddStream {
   profile_name: string;
@@ -54,6 +55,13 @@ type FormValue = string | string[] | undefined;
 function htmlFragment(markup: unknown): Response {
   return new Response(String(markup), {
     headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
+function jsonResponse(value: unknown, status: number = 200): Response {
+  return new Response(JSON.stringify(stripSecrets(value)), {
+    status,
+    headers: { "content-type": "application/json" },
   });
 }
 
@@ -123,8 +131,8 @@ function importDiscoveredCamera(
   username: string,
   password: string,
   streams: DiscoverAddStream[],
-): void {
-  if (streams.length === 0) return;
+): number | null {
+  if (streams.length === 0) return null;
   const main = streams.find((s) => s.role === "main") ?? streams[0]!;
   const mainRtspUrl = rtspWithCredentials(main.stream_uri, username, password);
   const name = uniqueCameraName(deps, rawName || "ONVIF camera");
@@ -151,6 +159,7 @@ function importDiscoveredCamera(
       is_discovered: true,
     });
   }
+  return cam.id;
 }
 
 function rangesOverlap(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
@@ -363,6 +372,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       });
     }
     notifyKiosks();
+    deps.nodered.forward("camera.changed", { camera_id: cam.id, event: "created" });
 
     return new Response(null, {
       status: 302,
@@ -423,14 +433,20 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         const rawName = formValue(body?.[`camera_${idx}_name`]).trim() || "ONVIF camera";
         const streams = parseDiscoveredStreams(formValue(body?.[`camera_${idx}_streams_json`]));
         if (streams.length === 0) continue;
-        importDiscoveredCamera(deps, rawName, username, password, streams);
+        const camId = importDiscoveredCamera(deps, rawName, username, password, streams);
+        if (camId != null) {
+          deps.nodered.forward("camera.changed", { camera_id: camId, event: "created" });
+        }
         imported += 1;
       }
     } else {
       const rawName = formValue(body?.["name"]).trim() || "ONVIF camera";
       const streams = parseDiscoveredStreams(formValue(body?.["streams_json"]));
       if (streams.length > 0) {
-        importDiscoveredCamera(deps, rawName, username, password, streams);
+        const camId = importDiscoveredCamera(deps, rawName, username, password, streams);
+        if (camId != null) {
+          deps.nodered.forward("camera.changed", { camera_id: camId, event: "created" });
+        }
         imported += 1;
       }
     }
@@ -1093,6 +1109,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       }
     }
     notifyKiosks();
+    deps.nodered.forward("camera.changed", { camera_id: id, event: "updated" });
 
     return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
   });
@@ -1131,6 +1148,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = Number(getRouterParam(event, "id"));
     deps.repo.deleteCamera(id);
     notifyKiosks();
+    deps.nodered.forward("camera.changed", { camera_id: id, event: "deleted" });
     return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
   });
 
@@ -1259,11 +1277,23 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // ---- Layout switch ----------------------------------------------------
+  const emitLayoutChanged = (displayId: number | null, kioskId: number | null, layoutId: number) => {
+    const layout = deps.repo.getLayoutById(layoutId);
+    deps.nodered.forward("layout.changed", {
+      display_id: displayId,
+      kiosk_id: kioskId,
+      layout_id: layoutId,
+      layout_name: layout?.name ?? null,
+    });
+  };
+
   const kioskLayoutSwitch = (event: any) => {
     const id = Number(getRouterParam(event, "id"));
     const layoutId = Number(getRouterParam(event, "layoutId"));
     if (Number.isFinite(id) && Number.isFinite(layoutId)) {
       getCoordinator().sendToKiosk(id, { type: "layout-switch", layout_id: layoutId });
+      const displays = deps.repo.listDisplaysForKiosk(id);
+      emitLayoutChanged(displays[0]?.id ?? null, id, layoutId);
     }
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   };
@@ -1282,6 +1312,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
           layout_id: layoutId,
         });
       }
+      emitLayoutChanged(displayId, display?.kiosk_id ?? null, layoutId);
     }
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${displayId}` } });
   };
@@ -1295,15 +1326,27 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // ---- CEC power commands -----------------------------------------------
+  const emitDisplayPower = (kioskId: number, state: "on" | "standby") => {
+    const displays = deps.repo.listDisplaysForKiosk(kioskId);
+    const displayId = displays[0]?.id ?? null;
+    deps.nodered.forward("display.power.changed", {
+      display_id: displayId,
+      kiosk_id: kioskId,
+      state,
+    });
+  };
+
   app.post("/admin/kiosks/:id/power/standby", (event) => {
     const id = Number(getRouterParam(event, "id"));
     getCoordinator().sendToKiosk(id, { type: "standby" });
+    emitDisplayPower(id, "standby");
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
   app.post("/admin/kiosks/:id/power/wake", (event) => {
     const id = Number(getRouterParam(event, "id"));
     getCoordinator().sendToKiosk(id, { type: "wake" });
+    emitDisplayPower(id, "on");
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
@@ -1321,7 +1364,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
-  // ---- JSON API (admin scope) — used by Node-RED bf-cameras node ----------
+  // ---- JSON API (admin scope) — used by Node-RED bf-* nodes ---------------
+  //
+  // All payloads run through `stripSecrets` so credential-bearing fields
+  // (key_hash, onvif_password, totp_secret_encrypted, etc.) never leak to
+  // automation clients. List shapes are kept thin (id/name/type/enabled +
+  // labels where useful); detail shapes return the full row minus secrets.
+
   app.get("/api/admin/cameras", (_event) => {
     const cameras = deps.repo.listCameras();
     const payload = cameras.map((c) => ({
@@ -1331,10 +1380,167 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       enabled: c.enabled,
       labels: deps.repo.cameraLabelNames(c.id),
     }));
-    return new Response(JSON.stringify({ cameras: payload }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
+    return jsonResponse({ cameras: payload });
+  });
+
+  app.get("/api/admin/cameras/:id", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const cam = deps.repo.getCameraById(id);
+    if (!cam) return jsonResponse({ error: "not_found" }, 404);
+    const streams = deps.repo.listCameraStreams(id);
+    return jsonResponse({
+      camera: { ...cam, labels: deps.repo.cameraLabelNames(id), streams },
     });
+  });
+
+  app.get("/api/admin/displays", (_event) => {
+    const displays = deps.repo.listDisplays();
+    return jsonResponse({ displays });
+  });
+
+  app.get("/api/admin/displays/:id", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const display = deps.repo.getDisplayById(id);
+    if (!display) return jsonResponse({ error: "not_found" }, 404);
+    const attachedLayouts = deps.repo.listLayoutsForDisplay(id);
+    return jsonResponse({ display: { ...display, attached_layouts: attachedLayouts } });
+  });
+
+  app.get("/api/admin/kiosks", (_event) => {
+    const kiosks = deps.repo.listKiosks();
+    const now = Date.now();
+    const payload = kiosks.map((k) => ({
+      id: k.id,
+      name: k.name,
+      enabled: k.enabled,
+      hardware_model: k.hardware_model,
+      last_seen_at: k.last_seen_at,
+      online: k.last_seen_at
+        ? now - new Date(k.last_seen_at).getTime() < 5 * 60 * 1000
+        : false,
+      cpu_temp_c: k.cpu_temp_c,
+      fan_rpm: k.fan_rpm,
+      fan_pwm: k.fan_pwm,
+    }));
+    return jsonResponse({ kiosks: payload });
+  });
+
+  app.get("/api/admin/kiosks/:id", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const kiosk = deps.repo.getKioskById(id);
+    if (!kiosk) return jsonResponse({ error: "not_found" }, 404);
+    const displays = deps.repo.listDisplaysForKiosk(id);
+    const labels = deps.repo.listKioskLabels(id).map((kl) => ({
+      label_id: kl.label_id,
+      name: kl.name,
+      role: kl.role,
+    }));
+    return jsonResponse({ kiosk: { ...kiosk, displays, labels } });
+  });
+
+  app.get("/api/admin/layouts", (_event) => {
+    const layouts = deps.repo.listLayouts();
+    return jsonResponse({ layouts });
+  });
+
+  app.get("/api/admin/layouts/:id", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const layout = deps.repo.getLayoutById(id);
+    if (!layout) return jsonResponse({ error: "not_found" }, 404);
+    const cells = deps.repo.layoutCells(id);
+    const displays = deps.repo.listDisplaysForLayout(id);
+    return jsonResponse({ layout: { ...layout, cells, displays } });
+  });
+
+  app.get("/api/admin/entities", (_event) => {
+    const entities = deps.repo.listEntities();
+    return jsonResponse({ entities });
+  });
+
+  app.get("/api/admin/entities/:id", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const entity = deps.repo.getEntityById(id);
+    if (!entity) return jsonResponse({ error: "not_found" }, 404);
+    return jsonResponse({ entity });
+  });
+
+  // ---- JSON mutation API — used by Node-RED bf-config-set node ------------
+  //
+  // Body shape: { value: <new value> } — keeps the wire format uniform
+  // across all set ops. Returns the post-mutation entity.
+
+  app.post("/api/admin/displays/:id/default-layout", async (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const body = (await readBody<Record<string, unknown>>(event)) ?? {};
+    const raw = body["value"] ?? body["default_layout_id"];
+    const layoutId = raw == null || raw === "" ? null : Number(raw);
+    if (raw != null && raw !== "" && !Number.isFinite(layoutId)) {
+      return jsonResponse({ error: "invalid_value" }, 400);
+    }
+    if (layoutId != null) {
+      const attached = deps.repo.listLayoutsForDisplay(id);
+      if (!attached.some((l) => l.id === layoutId)) {
+        return jsonResponse({ error: "layout_not_attached" }, 400);
+      }
+    }
+    deps.repo.updateDisplay(id, { default_layout_id: layoutId } as any);
+    notifyKiosks();
+    const display = deps.repo.getDisplayById(id);
+    return jsonResponse({ display });
+  });
+
+  app.post("/api/admin/kiosks/:id/enabled", async (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const body = (await readBody<Record<string, unknown>>(event)) ?? {};
+    const enabled = Boolean(body["value"] ?? body["enabled"]);
+    deps.repo.updateKiosk(id, { enabled } as any);
+    const kiosk = deps.repo.getKioskById(id);
+    if (!kiosk) return jsonResponse({ error: "not_found" }, 404);
+    return jsonResponse({ kiosk });
+  });
+
+  app.post("/api/admin/cameras/:id/enabled", async (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const body = (await readBody<Record<string, unknown>>(event)) ?? {};
+    const enabled = Boolean(body["value"] ?? body["enabled"]);
+    deps.repo.updateCamera(id, { enabled } as any);
+    notifyKiosks();
+    deps.nodered.forward("camera.changed", { camera_id: id, event: "updated" });
+    const camera = deps.repo.getCameraById(id);
+    if (!camera) return jsonResponse({ error: "not_found" }, 404);
+    return jsonResponse({ camera });
+  });
+
+  app.post("/api/admin/layouts/:id/priority", async (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const body = (await readBody<Record<string, unknown>>(event)) ?? {};
+    const value = String(body["value"] ?? body["priority"] ?? "").toLowerCase();
+    if (value !== "hot" && value !== "normal" && value !== "cold") {
+      return jsonResponse({ error: "invalid_priority" }, 400);
+    }
+    deps.repo.updateLayout(id, { priority: value } as any);
+    notifyKiosks();
+    const layout = deps.repo.getLayoutById(id);
+    if (!layout) return jsonResponse({ error: "not_found" }, 404);
+    return jsonResponse({ layout });
+  });
+
+  app.post("/api/admin/entities/:id/name", async (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const body = (await readBody<Record<string, unknown>>(event)) ?? {};
+    const name = String(body["value"] ?? body["name"] ?? "").trim();
+    if (!name || name.length > 128) {
+      return jsonResponse({ error: "invalid_name" }, 400);
+    }
+    const existing = deps.repo.getEntityByName(name);
+    if (existing && existing.id !== id) {
+      return jsonResponse({ error: "name_in_use" }, 400);
+    }
+    deps.repo.updateEntity(id, { name });
+    notifyKiosks();
+    const entity = deps.repo.getEntityById(id);
+    if (!entity) return jsonResponse({ error: "not_found" }, 404);
+    return jsonResponse({ entity });
   });
 
   // ---- Dashboard entity sync — pull tabs from Node-RED, mirror as entities --

@@ -1,0 +1,54 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-config-get", {
+    category: "BetterFrame",
+    color: "#a6d4ff",
+    defaults: {
+      name: { value: "" },
+      config: { value: "", type: "bf-server-config", required: true },
+      type: { value: "cameras", required: true },
+      id: { value: "" },
+    },
+    inputs: 1,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      return this.name || ("bf get " + (this.type || ""));
+    },
+    paletteLabel: "Get Config",
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-config-get">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-config"><i class="fa fa-cog"></i> BF</label>
+    <input type="text" id="node-input-config" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-type"><i class="fa fa-list"></i> Type</label>
+    <select id="node-input-type">
+      <option value="displays">displays</option>
+      <option value="kiosks">kiosks</option>
+      <option value="cameras">cameras</option>
+      <option value="layouts">layouts</option>
+      <option value="entities">entities</option>
+      <option value="display-by-id">display-by-id</option>
+      <option value="kiosk-by-id">kiosk-by-id</option>
+      <option value="camera-by-id">camera-by-id</option>
+      <option value="layout-by-id">layout-by-id</option>
+      <option value="entity-by-id">entity-by-id</option>
+    </select>
+  </div>
+  <div class="form-row">
+    <label for="node-input-id"><i class="fa fa-hashtag"></i> ID</label>
+    <input type="text" id="node-input-id" placeholder="(only for *-by-id)" />
+  </div>
+  <div class="form-tips">
+    Fetches BetterFrame state via admin API. Override <code>msg.type</code> or
+    <code>msg.id</code> per-message. Result lands on <code>msg.payload</code>.
+    Credential fields are stripped server-side.
+  </div>
+</script>

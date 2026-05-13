@@ -1,0 +1,56 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-config-set", {
+    category: "BetterFrame",
+    color: "#a6d4ff",
+    defaults: {
+      name: { value: "" },
+      config: { value: "", type: "bf-server-config", required: true },
+      type: { value: "kiosk.enabled", required: true },
+      id: { value: "" },
+      value: { value: "" },
+    },
+    inputs: 1,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      return this.name || ("bf set " + (this.type || ""));
+    },
+    paletteLabel: "Set Config",
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-config-set">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-config"><i class="fa fa-cog"></i> BF</label>
+    <input type="text" id="node-input-config" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-type"><i class="fa fa-list"></i> Type</label>
+    <select id="node-input-type">
+      <option value="display.default-layout">display.default-layout</option>
+      <option value="kiosk.enabled">kiosk.enabled</option>
+      <option value="camera.enabled">camera.enabled</option>
+      <option value="layout.priority">layout.priority</option>
+      <option value="entity.name">entity.name</option>
+    </select>
+  </div>
+  <div class="form-row">
+    <label for="node-input-id"><i class="fa fa-hashtag"></i> ID</label>
+    <input type="text" id="node-input-id" placeholder="entity id" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-value"><i class="fa fa-pencil"></i> Default value</label>
+    <input type="text" id="node-input-value" placeholder="(or use msg.payload)" />
+  </div>
+  <div class="form-tips">
+    Mutates BetterFrame state. Override <code>msg.type</code>, <code>msg.id</code>,
+    or <code>msg.payload</code> per-message. <code>msg.payload</code> is the new
+    value; the static <em>Default value</em> field is only used when payload is
+    absent. Response (updated entity, passwords stripped) replaces
+    <code>msg.payload</code>.
+  </div>
+</script>

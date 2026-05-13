@@ -1,0 +1,35 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-kiosk-camera-event", {
+    category: "BetterFrame Triggers",
+    color: "#a6d4ff",
+    defaults: {
+      name: { value: "" },
+      topic_pattern: { value: "camera.*" },
+    },
+    inputs: 1,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      return this.name || this.topic_pattern || "kiosk camera event";
+    },
+    paletteLabel: "Kiosk Camera Event",
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-kiosk-camera-event">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" placeholder="(optional)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-topic_pattern"><i class="fa fa-filter"></i> Topic</label>
+    <input type="text" id="node-input-topic_pattern" placeholder="camera.*" />
+  </div>
+  <div class="form-tips">
+    Filter incoming kiosk camera events by topic. <code>*</code> is a wildcard.
+    Defaults to <code>camera.*</code> (ONVIF motion, object detection, etc.).
+    Wire an upstream <b>http in</b> on <code>/in/kiosk/&lt;topic&gt;</code> to feed it.
+    On match the message becomes
+    <code>{topic, kiosk_id, camera_id, source_type, payload}</code>.
+  </div>
+</script>

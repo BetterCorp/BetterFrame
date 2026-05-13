@@ -5,27 +5,35 @@ BetterFrame admin REST API and kiosk event ingest.
 
 ## Nodes
 
-| Node | Type | Purpose |
+| Node | Category | Purpose |
 | --- | --- | --- |
-| `bf-config` | config | Shared server URL + admin API key |
-| `bf-event-in` | input  | Filter incoming kiosk events by topic glob |
-| `bf-layout-switch` | action | Switch a display's active layout |
-| `bf-power` | action | Wake / standby a kiosk display |
-| `bf-fan` | action | Set fan mode (auto/pwm) on a kiosk |
-| `bf-cameras` | query | Fetch the camera list |
+| `bf-server-config` | config | Shared server URL + admin API key |
+| `bf-kiosk-camera-event` | Triggers | Filter incoming kiosk camera events (default `camera.*`) |
+| `bf-trigger-display-power` | Triggers | Fires on `display.power.changed` |
+| `bf-trigger-layout-changed` | Triggers | Fires on `layout.changed` |
+| `bf-trigger-kiosk-changed` | Triggers | Fires on `kiosk.changed` (connect/disconnect/heartbeat) |
+| `bf-trigger-camera-changed` | Triggers | Fires on `camera.changed` (created/updated/deleted) |
+| `bf-layout-switch` | BetterFrame | Switch a display's active layout |
+| `bf-power` | BetterFrame | Wake / standby a kiosk display |
+| `bf-fan` | BetterFrame | Set fan mode (auto/pwm) on a kiosk |
+| `bf-cameras` | BetterFrame | Fetch the camera list |
+| `bf-config-get` | BetterFrame | Fetch BF state (displays/kiosks/cameras/layouts/entities, by id or full list) |
+| `bf-config-set` | BetterFrame | Mutate BF state (default layout, enabled, priority, name) |
 
 ## Authentication
 
 All action/query nodes use an **admin-scoped API key** created in the
 BetterFrame admin UI. The key is sent as `Authorization: Bearer bf-...`.
-Configure once on a `bf-config` node and reference it from the others.
+Configure once on a `bf-server-config` node and reference it from the others.
 
 ## Event ingest path
 
-`bf-event-in` is a pure filter — it does not subscribe to the BF server.
+Trigger nodes are pure filters — they do not subscribe to the BF server.
 Wire an upstream `http in` node on `/in/kiosk/<topic>` (BetterFrame's
 authenticated kiosk-ingest endpoint, surfaced by the Angie proxy with
-`auth_request` gating) and feed its `msg.payload` into `bf-event-in`.
+`auth_request` gating) and feed its `msg.payload` into the matching
+`bf-trigger-*` node. The server emits these topics from coordinator-ws
+(kiosk WS lifecycle) and the admin routes (layout/power/camera mutations).
 
 ## Installation
 

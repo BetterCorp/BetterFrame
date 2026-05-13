@@ -26,6 +26,7 @@ import { getRepo } from "../../shared/plugin-registry.js";
 import { initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
 import { setCoordinator } from "../../shared/coordinator-registry.js";
+import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 
 // ---- Config -----------------------------------------------------------------
 
@@ -104,6 +105,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   private httpServer?: HttpServer;
   private wss?: WebSocketServer;
   private pingInterval?: ReturnType<typeof setInterval>;
+  private nodered?: NoderedBridge;
 
   constructor(cfg: BSBServiceConstructor<InstanceType<typeof Config>, typeof EventSchemas>) {
     super(cfg);
@@ -115,6 +117,12 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       { dataDir: this.config.dataDir },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
+    const nodered = initNoderedBridge(
+      { baseUrl: this.config.noderedUrl },
+      { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
+    );
+    this.nodered = nodered;
+
     const auth = createAuth(repo, secrets, {
       sessionIdleSeconds: this.config.sessionIdleSeconds,
       sessionMaxSeconds: this.config.sessionMaxSeconds,
@@ -169,13 +177,29 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           connectedKiosks.set(kiosk.id, { id: kiosk.id, name: kioskData.name, ws });
           obs.log.info("kiosk connected: {name}", { name: kioskData.name });
           ws.send(JSON.stringify({ type: "connected", kiosk_id: kiosk.id }));
+          nodered.forward("kiosk.changed", {
+            kiosk_id: kiosk.id,
+            kiosk_name: kioskData.name,
+            event: "connected",
+          });
 
           ws.on("message", (data) => {
             try {
-              const msg = JSON.parse(data.toString());
-              if (msg.type === "pong") return;
-              if (msg.type === "status") {
+              const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+              if (msg["type"] === "pong") return;
+              if (msg["type"] === "status") {
                 obs.log.info("kiosk status: {data}", { data: data.toString() });
+                const cpu = typeof msg["cpu_temp_c"] === "number" ? msg["cpu_temp_c"] : null;
+                const fanRpm = typeof msg["fan_rpm"] === "number" ? msg["fan_rpm"] : null;
+                const fanPwm = typeof msg["fan_pwm"] === "number" ? msg["fan_pwm"] : null;
+                nodered.forward("kiosk.changed", {
+                  kiosk_id: kiosk.id,
+                  kiosk_name: kioskData.name,
+                  event: "heartbeat",
+                  cpu_temp_c: cpu,
+                  fan_rpm: fanRpm,
+                  fan_pwm: fanPwm,
+                });
               }
             } catch {
               // ignore malformed
@@ -185,6 +209,11 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           ws.on("close", () => {
             connectedKiosks.delete(kiosk.id);
             obs.log.info("kiosk disconnected: {name}", { name: kioskData.name });
+            nodered.forward("kiosk.changed", {
+              kiosk_id: kiosk.id,
+              kiosk_name: kioskData.name,
+              event: "disconnected",
+            });
           });
         });
       } catch (err) {

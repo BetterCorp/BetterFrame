@@ -24,6 +24,7 @@
 #   BF_HOME=/path/to/repo          override repo location (default: $HOME/betterframe)
 #   BF_REPO_URL=git@…              override clone URL (default: github)
 #   SKIP_BUILD=1                   skip kiosk cargo build (expects existing binary)
+#   BF_NO_REBOOT=1                 don't auto-reboot when boot-time files changed
 
 set -euo pipefail
 
@@ -67,8 +68,9 @@ apt-get install -y --no-install-recommends \
   git ca-certificates curl gnupg lsb-release sudo
 
 # ----------------------------------------------------------------------------
-# 2. Clone or update repo
+# 2. Clone or update repo (always — pull is safety-first)
 # ----------------------------------------------------------------------------
+SELF_HASH_BEFORE="$(sha256sum "$0" 2>/dev/null | cut -d' ' -f1 || true)"
 if [ -d "${BF_HOME}/.git" ]; then
   echo "==> Updating repo at ${BF_HOME}"
   run_as_user "git -C '${BF_HOME}' fetch --prune origin && git -C '${BF_HOME}' pull --ff-only"
@@ -78,6 +80,21 @@ else
   run_as_user "git clone '${REPO_URL}' '${BF_HOME}'"
 fi
 REPO_ROOT="${BF_HOME}"
+
+# If the setup script itself changed in the pull, re-exec the new version so
+# this run uses the latest logic. Otherwise the user has to re-run anyway.
+NEW_SELF="${REPO_ROOT}/deploy/scripts/setup-pi-kiosk.sh"
+if [ -f "${NEW_SELF}" ] && [ -n "${SELF_HASH_BEFORE}" ] && [ "${BF_REEXEC:-0}" != "1" ]; then
+  SELF_HASH_AFTER="$(sha256sum "${NEW_SELF}" | cut -d' ' -f1)"
+  if [ "${SELF_HASH_BEFORE}" != "${SELF_HASH_AFTER}" ]; then
+    echo "==> Installer changed in pull — re-executing newer version"
+    chmod +x "${NEW_SELF}"
+    exec env BF_REEXEC=1 "${NEW_SELF}" "${MODE}"
+  fi
+fi
+
+# Track whether anything we change requires a reboot to take effect.
+REBOOT_NEEDED=0
 
 # ----------------------------------------------------------------------------
 # 3. Docker engine + compose plugin
@@ -238,6 +255,7 @@ EOF
     for flag in quiet splash plymouth.ignore-serial-consoles "loglevel=0" "vt.global_cursor_default=0" logo.nologo; do
       if ! grep -qw -- "${flag}" "${CMDLINE}"; then
         sed -i "s|\$| ${flag}|" "${CMDLINE}"
+        REBOOT_NEEDED=1
       fi
     done
   fi
@@ -245,8 +263,14 @@ EOF
     # Pi firmware rainbow splash off.
     if ! grep -q "^disable_splash=1" "${CONFIG}"; then
       printf '\n# BetterFrame: disable firmware rainbow splash\ndisable_splash=1\n' >> "${CONFIG}"
+      REBOOT_NEEDED=1
     fi
   fi
+fi
+
+# apt creates this when a kernel / libc / linker update needs a reboot.
+if [ -f /var/run/reboot-required ]; then
+  REBOOT_NEEDED=1
 fi
 
 echo "==> Done."
@@ -255,4 +279,11 @@ if [ "${INSTALL_SERVER}" = "1" ]; then
 fi
 if [ "${INSTALL_KIOSK}" = "1" ]; then
   echo "    Kiosk service: systemctl status betterframe-kiosk"
+fi
+
+if [ "${REBOOT_NEEDED}" = "1" ] && [ "${BF_NO_REBOOT:-0}" != "1" ]; then
+  echo
+  echo "==> Reboot required to apply boot-time changes. Rebooting in 10s. Ctrl-C to cancel."
+  sleep 10
+  systemctl reboot
 fi

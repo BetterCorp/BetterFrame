@@ -652,4 +652,9 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS idx_kiosk_gpio_bindings_kiosk ON kiosk_gpio_bindings(kiosk_id)`,
+
+  // ---- displays.is_enabled — admin toggle to suppress window on a display ----
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "displays", "is_enabled", "INTEGER NOT NULL DEFAULT 1");
+  },
 ];

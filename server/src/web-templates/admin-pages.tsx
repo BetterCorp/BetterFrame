@@ -2329,6 +2329,21 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
             </div>
 
             <div class="form-group">
+              <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer">
+                <input
+                  type="checkbox"
+                  name="is_enabled"
+                  value="on"
+                  checked={d.is_enabled}
+                />
+                <span>Enabled</span>
+              </label>
+              <div class="form-hint">
+                When disabled, the kiosk will not open a window on this display. Display stays in the list so you can re-enable it later.
+              </div>
+            </div>
+
+            <div class="form-group">
               <label for="default_layout_id">Default Layout</label>
               <select id="default_layout_id" name="default_layout_id" class="form-input">
                 <option value="">-- None --</option>
@@ -2407,7 +2422,12 @@ export function DisplaysPage(props: DisplaysPageProps) {
             ) : (
               props.displays.map((d) => (
                 <tr>
-                  <td><a href={`/admin/displays/${d.id}`}><strong>{d.name}</strong></a></td>
+                  <td>
+                    <a href={`/admin/displays/${d.id}`}><strong>{d.name}</strong></a>
+                    {!d.is_enabled && (
+                      <span style="margin-left:0.5rem; padding:0.1rem 0.4rem; font-size:0.7rem; background:#fee; color:#a00; border-radius:3px">disabled</span>
+                    )}
+                  </td>
                   <td style="color:#666">{String(d.width_px)}x{String(d.height_px)} — index {String(d.index)}</td>
                 </tr>
               ))

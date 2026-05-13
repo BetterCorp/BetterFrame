@@ -99,6 +99,7 @@ export interface Display {
   desired_power_state: DesiredPowerState;
   state_check_enabled: boolean;
   state_check_interval_seconds: number;
+  is_enabled: boolean;
 }
 
 export interface Camera {

@@ -973,6 +973,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       default_layout_id: validatedDefault,
       idle_timeout_seconds: parseInt(body?.["idle_timeout_seconds"] ?? "0", 10),
       sleep_timeout_seconds: parseInt(body?.["sleep_timeout_seconds"] ?? "0", 10),
+      is_enabled: body?.["is_enabled"] === "on" || body?.["is_enabled"] === "1" ? 1 : 0,
     } as any);
     notifyKiosks();
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${id}` } });

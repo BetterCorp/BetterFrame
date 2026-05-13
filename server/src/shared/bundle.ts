@@ -116,10 +116,12 @@ export function generateBundle(
   // Find all displays for this kiosk (displays now point to kiosks via kiosk_id)
   const kioskDisplays = repo.listDisplaysForKiosk(kioskId);
   // Fall back to legacy kiosk.display_id if no displays point to this kiosk yet
-  const displays = kioskDisplays.length > 0
+  const allDisplays = kioskDisplays.length > 0
     ? kioskDisplays
     : (kiosk.display_id ? [repo.getDisplayById(kiosk.display_id)].filter((d): d is NonNullable<typeof d> => d != null) : []);
 
+  // Admin can disable a display — kiosk must never open a window on it.
+  const displays = allDisplays.filter((d) => d.is_enabled);
   if (displays.length === 0) return null;
 
   // Collect camera IDs across ALL displays' layouts (de-duped).

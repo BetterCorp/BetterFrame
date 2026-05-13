@@ -127,6 +127,7 @@ export function rowToDisplay(r: Row): Display {
     desired_power_state: s(r["desired_power_state"]) as DesiredPowerState,
     state_check_enabled: b(r["state_check_enabled"]),
     state_check_interval_seconds: n(r["state_check_interval_seconds"]),
+    is_enabled: b(r["is_enabled"]),
   };
 }
 

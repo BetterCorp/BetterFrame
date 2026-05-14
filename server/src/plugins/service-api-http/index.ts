@@ -24,6 +24,7 @@ import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-brid
 import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
 import { envStr } from "../../shared/env-overrides.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
+import { initMqttBridge, type MqttBridge } from "../../shared/mqtt-bridge.js";
 import { createHash } from "node:crypto";
 
 // Pairing initiation is unauth — guard it so a misbehaving kiosk or attacker
@@ -124,6 +125,10 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       { dataDir },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
+    const mqtt = initMqttBridge({
+      info: (m) => obs.log.info(m as any, {}),
+      warn: (m) => obs.log.warn(m as any, {}),
+    });
 
     const app = new H3();
 
@@ -153,7 +158,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     });
 
     registerPairingRoutes(app, repo, auth, secrets, codeTtl);
-    registerKioskRoutes(app, repo, auth, secrets, nodered, firmware);
+    registerKioskRoutes(app, repo, auth, secrets, nodered, firmware, mqtt);
 
     this.server = serve(app, {
       port: this.config.port,
@@ -264,6 +269,7 @@ function registerKioskRoutes(
   secrets: SecretsApi,
   nodered: NoderedBridge,
   firmware: FirmwareApi,
+  mqtt: MqttBridge,
 ): void {
   // Bundle delivery
   app.get("/api/kiosk/bundle", async (event) => {
@@ -316,6 +322,16 @@ function registerKioskRoutes(
       local_key: body?.local_key ?? null,
       local_port: body?.local_port ?? null,
       local_last_ip: remoteIp,
+    });
+
+    // Mirror to MQTT bridge (no-op when BF_MQTT_URL unset).
+    mqtt.publishTelemetry(kiosk.id, {
+      kiosk_app_version: body?.kiosk_app_version,
+      bundle_version: body?.bundle_version,
+      cpu_temp_c: body?.cpu_temp_c,
+      fan_rpm: body?.fan_rpm,
+      fan_pwm: body?.fan_pwm,
+      ip: remoteIp,
     });
 
     // Sync displays reported by the kiosk
@@ -406,12 +422,11 @@ function registerKioskRoutes(
       "camera.changed",
     ]);
     if (flatTopics.has(body.topic)) {
-      nodered.forward(body.topic, {
-        kiosk_id: kiosk.id,
-        ...(body.payload ?? {}),
-      });
+      const out = { kiosk_id: kiosk.id, ...(body.payload ?? {}) };
+      nodered.forward(body.topic, out);
+      mqtt.publishEvent(kiosk.id, body.topic, out);
     } else {
-      nodered.forward(body.topic, {
+      const out = {
         event_id: eventId,
         kiosk_id: kiosk.id,
         camera_id: body.camera_id ?? null,
@@ -419,7 +434,9 @@ function registerKioskRoutes(
         property_op: body.property_op ?? null,
         payload: body.payload ?? {},
         timestamp: new Date().toISOString(),
-      });
+      };
+      nodered.forward(body.topic, out);
+      mqtt.publishEvent(kiosk.id, body.topic, out);
     }
 
     return { ok: true, event_id: eventId };

@@ -28,6 +28,11 @@ services:
       - BF_SELF_URL=http://server:18080
       # Optional: paste Ed25519 PEM private key here for firmware signing.
       # - BF_FIRMWARE_SIGNING_KEY=
+      # Optional MQTT telemetry bridge (ThingsBoard / HA / Influx / etc).
+      # - BF_MQTT_URL=mqtt://broker:1883
+      # - BF_MQTT_USERNAME=
+      # - BF_MQTT_PASSWORD=
+      # - BF_MQTT_TOPIC_PREFIX=betterframe
     volumes:
       - betterframe-data:/var/lib/betterframe
       - ./sec-config.yaml:/app/server/sec-config.yaml:ro

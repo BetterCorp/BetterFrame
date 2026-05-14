@@ -760,4 +760,25 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "kiosks", "local_port", "INTEGER");
     addColumnIfNotExists(db, "kiosks", "local_last_ip", "TEXT");
   },
+
+  // ---- Audit log -----------------------------------------------------------
+  // Append-only record of security-relevant actions: logins, API key use,
+  // kiosk pair/replace, firmware upload/yank/rollout, admin CRUD of any
+  // resource. Read-only via admin UI, filterable.
+  `CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    actor_type TEXT NOT NULL CHECK(actor_type IN ('user', 'api_key', 'system', 'kiosk')),
+    actor_id INTEGER,
+    actor_label TEXT,
+    action TEXT NOT NULL,
+    resource_type TEXT,
+    resource_id TEXT,
+    ip TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    result TEXT NOT NULL DEFAULT 'ok' CHECK(result IN ('ok', 'failed'))
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action, ts DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_type, actor_id, ts DESC)`,
 ];

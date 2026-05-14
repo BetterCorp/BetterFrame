@@ -19,6 +19,7 @@ import {
   KioskFirmwarePanel,
 } from "../../web-templates/admin-pages.js";
 import { getCoordinator } from "../../shared/coordinator-registry.js";
+import { audit } from "../../shared/audit.js";
 import type { FirmwareChannel } from "../../shared/types.js";
 
 const ALLOWED_CHANNELS: ReadonlySet<FirmwareChannel> = new Set(["stable", "beta", "dev"]);
@@ -68,7 +69,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     const { sha256, signature } = deps.firmware.signBlob(buf);
     const artifactPath = await deps.firmware.storeBlob(buf, sha256);
 
-    deps.repo.createFirmwareRelease({
+    const release = deps.repo.createFirmwareRelease({
       id: randomUUID(),
       version,
       channel: channelRaw as FirmwareChannel,
@@ -79,6 +80,11 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
       signature,
       release_notes: releaseNotes,
       uploaded_by: user.id,
+    });
+    audit(deps.repo, event as any, "firmware.upload", {
+      resource_type: "firmware_release",
+      resource_id: release.id,
+      metadata: { version, channel: channelRaw, arch, sha256, size: buf.length },
     });
 
     return new Response(null, { status: 302, headers: { location: "/admin/firmware" } });
@@ -136,6 +142,10 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/firmware/:id/yank", (event) => {
     const id = String(getRouterParam(event, "id"));
     deps.repo.yankFirmwareRelease(id);
+    audit(deps.repo, event as any, "firmware.yank", {
+      resource_type: "firmware_release",
+      resource_id: id,
+    });
     return new Response(null, { status: 302, headers: { location: "/admin/firmware" } });
   });
 
@@ -207,6 +217,11 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
       created_by: user.id ?? null,
     });
     deps.repo.updateFirmwareRolloutState(rollout.id, "active");
+    audit(deps.repo, event as any, "firmware.rollout.create", {
+      resource_type: "firmware_rollout",
+      resource_id: rollout.id,
+      metadata: { release_id: releaseId, percentage, target_count: targets.length },
+    });
     // Bump every targeted kiosk to check now (best-effort over WS).
     const coord = getCoordinator();
     if (targets.length === 0) {

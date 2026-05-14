@@ -222,6 +222,23 @@ export interface Kiosk {
   created_at: string;
 }
 
+export type AuditActorType = "user" | "api_key" | "system" | "kiosk";
+export type AuditResult = "ok" | "failed";
+
+export interface AuditEntry {
+  id: number;
+  ts: string;
+  actor_type: AuditActorType;
+  actor_id: number | null;
+  actor_label: string | null;
+  action: string;
+  resource_type: string | null;
+  resource_id: string | null;
+  ip: string | null;
+  metadata: Record<string, unknown>;
+  result: AuditResult;
+}
+
 export type FirmwareChannel = "stable" | "beta" | "dev";
 export type FirmwareRolloutState = "queued" | "active" | "paused" | "complete";
 

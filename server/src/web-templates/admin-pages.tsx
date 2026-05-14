@@ -4,6 +4,7 @@
 import { js } from "jsx-htmx";
 import { Layout } from "./layout.js";
 import type {
+  AuditEntry,
   Camera,
   Display,
   Entity,
@@ -2974,6 +2975,69 @@ export function FirmwareRolloutsPage(props: FirmwareRolloutsPageProps) {
                   </tr>
                 );
               })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Layout>
+  );
+}
+
+// ---- Audit log -------------------------------------------------------------
+
+interface AuditLogPageProps {
+  user: string;
+  entries: AuditEntry[];
+  filterAction?: string;
+  filterActorType?: string;
+}
+
+export function AuditLogPage(props: AuditLogPageProps) {
+  return (
+    <Layout title="Audit log" user={props.user} activeNav="audit">
+      <p style="color:#666; margin-bottom:1rem">
+        Append-only record of admin + kiosk + system actions. Most recent first.
+      </p>
+      <form method="get" action="/admin/audit" style="display:flex; gap:0.5rem; margin-bottom:1rem">
+        <input type="text" name="action" placeholder="action prefix (e.g. firmware.)"
+               value={props.filterAction ?? ""} class="form-input" />
+        <select name="actor_type" class="form-input" style="max-width:200px">
+          <option value="" selected={!props.filterActorType}>any actor</option>
+          {(["user", "api_key", "kiosk", "system"] as const).map((t) => (
+            <option value={t} selected={props.filterActorType === t}>{t}</option>
+          ))}
+        </select>
+        <button type="submit" class="btn">Filter</button>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th><th>Actor</th><th>Action</th><th>Resource</th><th>IP</th><th>Result</th><th>Metadata</th>
+            </tr>
+          </thead>
+          <tbody>
+            {props.entries.length === 0 ? (
+              <tr><td colspan="7" style="text-align:center; color:#999; padding:2rem">No entries.</td></tr>
+            ) : (
+              props.entries.map((e) => (
+                <tr>
+                  <td style="font-size:0.8rem; white-space:nowrap">{formatTime(e.ts)}</td>
+                  <td style="font-size:0.85rem">
+                    <span class="badge badge-gray">{e.actor_type}</span>
+                    {e.actor_label && <span style="margin-left:0.25rem">{e.actor_label}</span>}
+                  </td>
+                  <td style="font-family:monospace; font-size:0.8rem">{e.action}</td>
+                  <td style="font-size:0.85rem">{e.resource_type ? `${e.resource_type}#${e.resource_id ?? ""}` : ""}</td>
+                  <td style="font-size:0.8rem">{e.ip ?? ""}</td>
+                  <td>
+                    <span class={`badge ${e.result === "ok" ? "badge-green" : "badge-red"}`}>{e.result}</span>
+                  </td>
+                  <td style="font-size:0.75rem; font-family:monospace; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title={JSON.stringify(e.metadata)}>
+                    {Object.keys(e.metadata).length === 0 ? "" : JSON.stringify(e.metadata)}
+                  </td>
+                </tr>
+              ))
             )}
           </tbody>
         </table>

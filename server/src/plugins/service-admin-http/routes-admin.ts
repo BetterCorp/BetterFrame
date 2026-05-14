@@ -12,6 +12,7 @@ import {
   CameraNewPage,
   CameraEditPage,
   CameraDiscoverPage,
+  AuditLogPage,
   CameraDiscoverResultsPage,
   EntitiesPage,
   EntityNewPage,
@@ -37,6 +38,7 @@ import { discover as onvifDiscover } from "../../shared/onvif.js";
 import { generateBundle } from "../../shared/bundle.js";
 import { captureSnapshot } from "../../shared/snapshot.js";
 import { stripSecrets } from "../../shared/strip-secrets.js";
+import { audit } from "../../shared/audit.js";
 
 interface DiscoverAddStream {
   profile_name: string;
@@ -267,6 +269,21 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // Redirect /admin to /admin/
   app.get("/admin", () => {
     return new Response(null, { status: 301, headers: { location: "/admin/" } });
+  });
+
+  // ---- Audit log ------------------------------------------------------------
+
+  app.get("/admin/audit", (event) => {
+    const user = event.context.user!;
+    const url = new URL(event.req.url);
+    const filterAction = url.searchParams.get("action")?.trim() || undefined;
+    const filterActorType = url.searchParams.get("actor_type")?.trim() || undefined;
+    const entries = deps.repo.listAudit({
+      limit: 300,
+      action_prefix: filterAction,
+      actor_type: filterActorType as any || undefined,
+    });
+    return htmlPage(AuditLogPage({ user: user.username, entries, filterAction, filterActorType }));
   });
 
   // ---- System Health --------------------------------------------------------
@@ -621,11 +638,16 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const replaceKioskId = replaceIdRaw && replaceIdRaw !== "0" ? Number(replaceIdRaw) : undefined;
 
     try {
-      await confirmPairing(deps.repo, deps.auth, deps.secrets, {
+      const result = await confirmPairing(deps.repo, deps.auth, deps.secrets, {
         code,
         nameOverride,
         initialLabels,
         replaceKioskId,
+      });
+      audit(deps.repo, event as any, replaceKioskId ? "kiosk.replace" : "kiosk.pair", {
+        resource_type: "kiosk",
+        resource_id: result.kioskId,
+        metadata: { name: result.kioskName, code, replaced: !!replaceKioskId },
       });
     } catch (err) {
       const user = event.context.user!;

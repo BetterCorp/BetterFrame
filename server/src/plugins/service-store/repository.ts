@@ -14,6 +14,9 @@ import { randomBytes } from "node:crypto";
 import type {
   ApiKey,
   ApiKeyScope,
+  AuditActorType,
+  AuditEntry,
+  AuditResult,
   Camera,
   CameraStream,
   CameraType,
@@ -47,6 +50,7 @@ import type {
 } from "../../shared/types.js";
 import {
   rowToApiKey,
+  rowToAuditEntry,
   rowToCamera,
   rowToCameraStream,
   rowToDisplay,
@@ -1068,6 +1072,61 @@ export class Repository {
       patch.local_last_ip ?? null,
       id,
     );
+  }
+
+  // ===========================================================================
+  // audit_log
+  // ===========================================================================
+
+  insertAudit(input: {
+    actor_type: AuditActorType;
+    actor_id: number | null;
+    actor_label: string | null;
+    action: string;
+    resource_type: string | null;
+    resource_id: string | null;
+    ip: string | null;
+    metadata: Record<string, unknown>;
+    result: AuditResult;
+  }): void {
+    this.prep(
+      `INSERT INTO audit_log
+         (actor_type, actor_id, actor_label, action, resource_type,
+          resource_id, ip, metadata, result)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.actor_type,
+      input.actor_id,
+      input.actor_label,
+      input.action,
+      input.resource_type,
+      input.resource_id,
+      input.ip,
+      J(input.metadata),
+      input.result,
+    );
+  }
+
+  listAudit(opts: {
+    limit?: number;
+    actor_type?: AuditActorType;
+    action_prefix?: string;
+  } = {}): AuditEntry[] {
+    const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000);
+    const where: string[] = [];
+    const args: unknown[] = [];
+    if (opts.actor_type) {
+      where.push("actor_type = ?");
+      args.push(opts.actor_type);
+    }
+    if (opts.action_prefix) {
+      where.push("action LIKE ?");
+      args.push(`${opts.action_prefix}%`);
+    }
+    const sql = `SELECT * FROM audit_log ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY ts DESC LIMIT ?`;
+    args.push(limit);
+    const rs = this.db.prepare(sql).all(...(args as any[]));
+    return rs.map((r) => rowToAuditEntry(r as Record<string, unknown>));
   }
 
   // ===========================================================================

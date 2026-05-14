@@ -8,6 +8,9 @@
 import type {
   ApiKey,
   ApiKeyScope,
+  AuditActorType,
+  AuditEntry,
+  AuditResult,
   Camera,
   CameraStream,
   CameraType,
@@ -263,6 +266,22 @@ export function rowToKiosk(r: Row): Kiosk {
     local_port: nn(r["local_port"]),
     local_last_ip: sn(r["local_last_ip"]),
     created_at: s(r["created_at"]),
+  };
+}
+
+export function rowToAuditEntry(r: Row): AuditEntry {
+  return {
+    id: n(r["id"]),
+    ts: s(r["ts"]),
+    actor_type: s(r["actor_type"]) as AuditActorType,
+    actor_id: nn(r["actor_id"]),
+    actor_label: sn(r["actor_label"]),
+    action: s(r["action"]),
+    resource_type: sn(r["resource_type"]),
+    resource_id: sn(r["resource_id"]),
+    ip: sn(r["ip"]),
+    metadata: j<Record<string, unknown>>(r["metadata"], {}),
+    result: s(r["result"]) as AuditResult,
   };
 }
 

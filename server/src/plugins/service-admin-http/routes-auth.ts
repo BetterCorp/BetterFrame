@@ -5,6 +5,7 @@ import { type H3, readBody, getCookie, getQuery, getRequestHeader } from "h3";
 import { htmlPage, redirectWithCookie, redirectClearCookie } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { LoginPage, TotpPage, RecoveryPage } from "../../web-templates/auth-pages.js";
+import { audit } from "../../shared/audit.js";
 
 
 export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
@@ -45,6 +46,12 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
         patch["locked_until"] = new Date(Date.now() + deps.auth.config.loginLockoutSeconds * 1000).toISOString();
       }
       deps.repo.updateUser(user.id, patch);
+      audit(deps.repo, event as any, "user.login", {
+        result: "failed",
+        actor_type: "system",
+        actor_label: username,
+        metadata: { failed_count: count, locked: count >= deps.auth.config.loginLockoutThreshold },
+      });
       return htmlPage(LoginPage({ error: "Invalid credentials.", username }));
     }
 
@@ -52,6 +59,13 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       failed_login_count: 0,
       locked_until: null,
       last_login_at: new Date().toISOString(),
+    });
+
+    audit(deps.repo, event as any, "user.login", {
+      actor_type: "user",
+      actor_id: user.id,
+      actor_label: user.username,
+      metadata: { totp_pending: user.totp_enabled },
     });
 
     const totpPending = user.totp_enabled;

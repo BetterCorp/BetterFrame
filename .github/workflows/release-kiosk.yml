@@ -2,17 +2,14 @@
 # each as a GitHub Release asset, and optionally auto-import into a running
 # BetterFrame server via /api/admin/firmware/import.
 #
-# Blacksmith runners are used for the heavy GTK/GStreamer/WebKit deps. The
-# host arch matches the target so cargo can build natively (no cross).
+# Build environment is debian:bookworm-slim (matches Raspberry Pi OS Bookworm
+# the kiosk deploys to). Building on Ubuntu would link against a newer glibc
+# than the Pi ships → `GLIBC_2.38 not found` at runtime. Runner host distro
+# doesn't matter; we run all steps inside the bookworm container.
 #
 # Required secrets:
 #   BF_AUTOIMPORT_URL       e.g. https://bf.example.com  (optional)
 #   BF_AUTOIMPORT_API_KEY   admin-scope API key for the BF server (optional)
-#
-# Tagging:
-#   git tag v0.4.2          → channel = stable
-#   git tag v0.4.2-beta.1   → channel = beta
-#   workflow_dispatch       → channel = dev (one-off builds)
 
 name: release-kiosk
 
@@ -37,7 +34,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Need 24.04 (noble) — libwebkitgtk-6.0-dev is not packaged on jammy.
           - target: aarch64-unknown-linux-gnu
             runs-on: blacksmith-2vcpu-ubuntu-2404-arm
             arch_label: "aarch64 (Pi5)"
@@ -47,7 +43,19 @@ jobs:
 
     runs-on: ${{ matrix.runs-on }}
 
+    # Lock glibc + APT package set to Bookworm — matches RPi OS Bookworm
+    # (Debian 12) which kiosks run. Raspbian is Debian; same packages.
+    container:
+      image: debian:bookworm-slim
+
     steps:
+      - name: Bootstrap apt + git (container has none preinstalled)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config \
+            jq sudo
+
       - uses: actions/checkout@v4
 
       - name: Determine channel + version
@@ -66,12 +74,11 @@ jobs:
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Install build deps
+      - name: Install GTK/GStreamer/WebKit build deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          apt-get install -y --no-install-recommends \
             libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libwebkitgtk-6.0-dev pkg-config build-essential
+            libwebkitgtk-6.0-dev libssl-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

@@ -1429,6 +1429,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = Number(getRouterParam(event, "id"));
     getCoordinator().sendToKiosk(id, { type: "standby" });
     emitDisplayPower(id, "standby");
+    audit(deps.repo, event as any, "display.standby", { resource_type: "kiosk", resource_id: id });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
@@ -1436,6 +1437,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = Number(getRouterParam(event, "id"));
     getCoordinator().sendToKiosk(id, { type: "wake" });
     emitDisplayPower(id, "on");
+    audit(deps.repo, event as any, "display.wake", { resource_type: "kiosk", resource_id: id });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 

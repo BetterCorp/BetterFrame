@@ -8,12 +8,12 @@ import { LoginPage, TotpPage, RecoveryPage } from "../../web-templates/auth-page
 import { audit } from "../../shared/audit.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
 
-// 8 attempts per 60s per IP — paired with the user-account lockout already in
-// place via deps.auth.config.loginLockoutThreshold to defeat enumeration.
-const loginGuard = createRateLimiter({ windowMs: 60_000, max: 8 });
-
 
 export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
+  // 8 attempts per 60s per IP. Paired with the user-account lockout already
+  // wired via deps.auth.config.loginLockoutThreshold. In-function so the BSB
+  // schema extractor doesn't evaluate at module load.
+  const loginGuard = createRateLimiter({ windowMs: 60_000, max: 8 });
   // ---- Login ----------------------------------------------------------------
 
   app.get("/auth/login", (event) => {

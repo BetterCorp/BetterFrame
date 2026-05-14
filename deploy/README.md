@@ -1,5 +1,49 @@
 # BetterFrame deployment
 
+## Deployment shapes
+
+BetterFrame ships as **two artifacts**, deployable in any combination:
+
+| Variant      | What it runs                              | Where it runs                |
+|--------------|-------------------------------------------|------------------------------|
+| **bf-server**| Docker compose (server + Angie + Node-RED)| Coolify / VM / on-prem box   |
+| **bf-client**| Rust kiosk binary + cage + plymouth       | Pi 5 (LAN-attached)          |
+| *bf-aio*     | Both, single Pi                            | **Demo / single-site only**  |
+
+The `bf-aio` mode (server + kiosk colocated on one Pi) is the simplest install
+but couples failure domains — when the Pi dies, you lose both the displays it
+drives AND the management plane for any other kiosks. Use for demos or a
+single-display site. For anything else, run `bf-server` separately and have
+`bf-client` Pis point at it.
+
+### bf-server (Docker compose, Coolify-friendly)
+
+Pull the repo on the host. Configure via env (overrides `sec-config.yaml`):
+
+```
+BF_DATA_DIR=/var/lib/betterframe
+BF_SQLITE_PATH=/var/lib/betterframe/betterframe.db
+BF_NODERED_URL=http://nodered:1880
+BF_SELF_URL=http://server:18080
+BF_FIRMWARE_SIGNING_KEY=        # paste Ed25519 PEM for stable signing key
+BF_MQTT_URL=                     # optional MQTT telemetry export
+```
+
+In Coolify: create a Docker compose stack from `deploy/docker/docker-compose.yml`,
+inject the env vars, set a domain on the `angie` service. Backups via the admin
+UI (`/admin/backup`) — Coolify's S3 hook can pull these on a schedule.
+
+### bf-client (kiosk Pi)
+
+```bash
+sudo apt install -y git
+git clone https://github.com/BetterCorp/BetterFrame.git ~/betterframe
+sudo ~/betterframe/deploy/scripts/setup-pi-kiosk.sh client
+```
+
+Pairs with whichever `bf-server` is set in `/etc/default/betterframe-kiosk`
+(`BETTERFRAME_SERVER=http://<server-host>`).
+
 ## Recommended: Docker services + native kiosk
 
 Run server, Angie/nginx, and Node-RED in Docker Compose. Only Angie publishes a

@@ -26,11 +26,6 @@ import { envStr } from "../../shared/env-overrides.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
 import { initMqttBridge, type MqttBridge } from "../../shared/mqtt-bridge.js";
 import { createHash } from "node:crypto";
-
-// Pairing initiation is unauth — guard it so a misbehaving kiosk or attacker
-// can't spam codes. 20 per minute per IP is generous for legit retries.
-const pairingGuard = createRateLimiter({ windowMs: 60_000, max: 20 });
-const claimGuard = createRateLimiter({ windowMs: 60_000, max: 60 });
 import type { Repository } from "../service-store/repository.js";
 import type { AuthApi } from "../../shared/auth.js";
 import type { SecretsApi } from "../../shared/secrets.js";
@@ -203,6 +198,10 @@ function registerPairingRoutes(
   secrets: SecretsApi,
   codeTtl: number,
 ): void {
+  // Constructed in-function so the BSB schema extractor (which evaluates the
+  // module statically) doesn't see a top-level createRateLimiter call.
+  const pairingGuard = createRateLimiter({ windowMs: 60_000, max: 20 });
+  const claimGuard = createRateLimiter({ windowMs: 60_000, max: 60 });
   // Kiosk initiates pairing — no auth required
   app.post("/api/pair/initiate", async (event) => {
     const ip = getRequestHeader(event, "x-real-ip")

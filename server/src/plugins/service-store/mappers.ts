@@ -259,6 +259,9 @@ export function rowToKiosk(r: Row): Kiosk {
     firmware_last_attempt_at: sn(r["firmware_last_attempt_at"]),
     firmware_last_attempt_version: sn(r["firmware_last_attempt_version"]),
     firmware_last_error: sn(r["firmware_last_error"]),
+    local_key: sn(r["local_key"]),
+    local_port: nn(r["local_port"]),
+    local_last_ip: sn(r["local_last_ip"]),
     created_at: s(r["created_at"]),
   };
 }

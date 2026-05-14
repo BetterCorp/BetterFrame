@@ -1037,6 +1037,9 @@ export class Repository {
       cpu_temp_c?: number | null;
       fan_rpm?: number | null;
       fan_pwm?: number | null;
+      local_key?: string | null;
+      local_port?: number | null;
+      local_last_ip?: string | null;
     },
   ): void {
     this.prep(
@@ -1047,7 +1050,10 @@ export class Repository {
          os_version = COALESCE(?, os_version),
          cpu_temp_c = ?,
          fan_rpm = ?,
-         fan_pwm = ?
+         fan_pwm = ?,
+         local_key = COALESCE(?, local_key),
+         local_port = COALESCE(?, local_port),
+         local_last_ip = COALESCE(?, local_last_ip)
        WHERE id = ?`,
     ).run(
       isoNow(),
@@ -1057,6 +1063,9 @@ export class Repository {
       patch.cpu_temp_c ?? null,
       patch.fan_rpm ?? null,
       patch.fan_pwm ?? null,
+      patch.local_key ?? null,
+      patch.local_port ?? null,
+      patch.local_last_ip ?? null,
       id,
     );
   }

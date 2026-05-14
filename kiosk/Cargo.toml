@@ -39,3 +39,9 @@ gpiod = "0.3"
 sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["pem"] }
 base64 = "0.22"
+
+# Local HTTP server on kiosk (LAN GET-only layout switch + admin proxy)
+axum = "0.7"
+tower = "0.5"
+hex = "0.4"
+rand = "0.8"

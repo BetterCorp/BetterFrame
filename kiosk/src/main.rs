@@ -4,6 +4,7 @@ mod cec;
 mod firmware;
 mod gpio;
 mod hwmon;
+mod local_server;
 mod pipeline;
 mod ui;
 mod ws_client;

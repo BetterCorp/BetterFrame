@@ -13,6 +13,7 @@ use crate::cec;
 use crate::gpio;
 use crate::firmware;
 use crate::hwmon;
+use crate::local_server;
 use crate::pipeline;
 use crate::server;
 use crate::ws_client;
@@ -167,6 +168,18 @@ fn activate(app: &Application) {
         if let Some(bundle) = initial {
             let _ = tx.send(WorkerMsg::RenderBundle(bundle, server.clone(), key.clone()));
         }
+
+        // Start the LAN-side local server now that we have server URL + kiosk
+        // key. Reports the local key to the server on next heartbeat so admin
+        // can see it.
+        let local_key = server::load_or_create_local_key();
+        info!("local-server: kiosk_local_key prefix={}…", &local_key[..8]);
+        local_server::start(local_server::LocalServerState {
+            local_key,
+            server_url: server.clone(),
+            kiosk_key: key.clone(),
+            ui_tx: std::sync::Arc::new(std::sync::Mutex::new(Some(tx.clone()))),
+        });
 
         // Spawn WS client in a separate thread for live updates
         let server_ws = server.clone();

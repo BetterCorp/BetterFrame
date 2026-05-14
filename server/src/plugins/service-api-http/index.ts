@@ -269,7 +269,15 @@ function registerKioskRoutes(
       cpu_temp_c?: number | null;
       fan_rpm?: number | null;
       fan_pwm?: number | null;
+      local_key?: string | null;
+      local_port?: number | null;
     }>(event);
+
+    // Capture the kiosk's LAN-side IP from the heartbeat connection so admin
+    // can render a copy-paste URL even when the kiosk has no DNS name.
+    const remoteIp = getRequestHeader(event, "x-real-ip")
+      ?? getRequestHeader(event, "x-forwarded-for")?.split(",")[0]?.trim()
+      ?? null;
 
     repo.touchKiosk(kiosk.id, {
       bundle_version: body?.bundle_version ?? null,
@@ -278,6 +286,9 @@ function registerKioskRoutes(
       cpu_temp_c: body?.cpu_temp_c ?? null,
       fan_rpm: body?.fan_rpm ?? null,
       fan_pwm: body?.fan_pwm ?? null,
+      local_key: body?.local_key ?? null,
+      local_port: body?.local_port ?? null,
+      local_last_ip: remoteIp,
     });
 
     // Sync displays reported by the kiosk

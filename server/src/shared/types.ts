@@ -216,6 +216,9 @@ export interface Kiosk {
   firmware_last_attempt_at: string | null;
   firmware_last_attempt_version: string | null;
   firmware_last_error: string | null;
+  local_key: string | null;
+  local_port: number | null;
+  local_last_ip: string | null;
   created_at: string;
 }
 

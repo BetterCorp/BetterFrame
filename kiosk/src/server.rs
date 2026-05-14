@@ -17,6 +17,22 @@ fn state_dir() -> PathBuf {
 fn key_file() -> PathBuf { state_dir().join("kiosk.key") }
 fn server_file() -> PathBuf { state_dir().join("server.url") }
 fn bundle_cache_path() -> PathBuf { state_dir().join("bundle.json") }
+fn local_key_file() -> PathBuf { state_dir().join("local.key") }
+
+/// Load (or generate) the kiosk-local API key used by the LAN-side GET
+/// layout-switch endpoint. Persisted hex, 32 bytes random.
+pub fn load_or_create_local_key() -> String {
+    if let Ok(s) = fs::read_to_string(local_key_file()) {
+        let trimmed = s.trim().to_string();
+        if trimmed.len() >= 16 { return trimmed; }
+    }
+    use rand::RngCore;
+    let mut buf = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut buf);
+    let hex_key = hex::encode(buf);
+    let _ = fs::write(local_key_file(), &hex_key);
+    hex_key
+}
 
 /// Persist the latest bundle to disk for offline boot.
 pub fn save_bundle(bundle: &KioskBundle) {
@@ -231,6 +247,11 @@ pub fn heartbeat(
     let display_info: Vec<_> = displays.iter().enumerate().map(|(index, (name, w, h))| {
         serde_json::json!({ "index": index, "name": name, "width_px": w, "height_px": h })
     }).collect();
+    // Surface the LAN-side local key + port to admin so the UI can show a
+    // copy-paste URL for bookmark-style layout switches.
+    let local_key = load_or_create_local_key();
+    let local_port: u16 = std::env::var("BF_KIOSK_LOCAL_PORT")
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(18090);
     let _ = client
         .post(format!("{server}/api/kiosk/heartbeat"))
         .header("Authorization", format!("Bearer {key}"))
@@ -240,6 +261,8 @@ pub fn heartbeat(
             "cpu_temp_c": hw.cpu_temp_c,
             "fan_rpm": hw.fan_rpm,
             "fan_pwm": hw.fan_pwm,
+            "local_key": local_key,
+            "local_port": local_port,
         }))
         .timeout(Duration::from_secs(5))
         .send();

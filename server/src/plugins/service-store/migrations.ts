@@ -753,4 +753,11 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "kiosks", "firmware_last_attempt_version", "TEXT");
     addColumnIfNotExists(db, "kiosks", "firmware_last_error", "TEXT");
   },
+
+  // ---- Kiosk LAN-side local server: reported via heartbeat ------------------
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "kiosks", "local_key", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "local_port", "INTEGER");
+    addColumnIfNotExists(db, "kiosks", "local_last_ip", "TEXT");
+  },
 ];

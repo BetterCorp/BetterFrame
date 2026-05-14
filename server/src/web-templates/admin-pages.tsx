@@ -1526,6 +1526,8 @@ export function KioskEditPage(props: KioskEditProps) {
           KioskFirmwarePanel({ kiosk: props.kiosk, releases: props.firmwareReleases })
         )}
 
+        {(props.kiosk.local_key && props.kiosk.local_port) && KioskLocalPanel({ kiosk: props.kiosk })}
+
         {/* GPIO bindings */}
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">GPIO Bindings</h2>
@@ -2837,6 +2839,40 @@ export function KioskFirmwarePanel(props: KioskFirmwarePanelProps) {
           >Push update now</button>
         </div>
       </form>
+    </div>
+  );
+}
+
+// ---- Kiosk local-server panel (LAN GET API + admin proxy) ------------------
+
+interface KioskLocalPanelProps { kiosk: Kiosk }
+
+export function KioskLocalPanel(props: KioskLocalPanelProps) {
+  const k = props.kiosk;
+  if (!k.local_key || !k.local_port) return "";
+  const ip = k.local_last_ip || "<kiosk-ip>";
+  const base = `http://${ip}:${String(k.local_port)}`;
+  const sample = `${base}/local/layout/<layout_id>?key=${k.local_key}`;
+  const proxy = `${base}/proxy/admin/...`;
+  return (
+    <div class="card" style="margin-bottom:1.5rem">
+      <h3 style="margin:0 0 0.5rem; font-size:1rem">Local LAN endpoints</h3>
+      <p style="font-size:0.8rem; color:#666; margin:0 0 0.75rem">
+        Kiosk runs an HTTP listener on its own LAN address. Bookmark-friendly
+        GET URLs trigger layout switches without needing an admin session.
+      </p>
+      <div style="font-size:0.8rem; margin-bottom:0.5rem">
+        <strong>Layout switch (GET):</strong>
+        <pre style="background:#fafafa; padding:0.5rem; margin:0.25rem 0; font-size:0.75rem; white-space:pre-wrap; word-break:break-all">{sample}</pre>
+      </div>
+      <div style="font-size:0.8rem; margin-bottom:0.5rem">
+        <strong>Admin proxy (forwards your Bearer to server):</strong>
+        <pre style="background:#fafafa; padding:0.5rem; margin:0.25rem 0; font-size:0.75rem; white-space:pre-wrap">{proxy}</pre>
+      </div>
+      <div style="font-size:0.75rem; color:#999">
+        Last seen from IP: <code>{k.local_last_ip ?? "—"}</code>. Local key:
+        <code style="margin-left:0.25rem">{k.local_key.slice(0, 8)}…{k.local_key.slice(-4)}</code>
+      </div>
     </div>
   );
 }

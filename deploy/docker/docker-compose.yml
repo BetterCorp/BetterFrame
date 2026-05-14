@@ -19,6 +19,15 @@ services:
       dockerfile: deploy/docker/Dockerfile.server
     container_name: betterframe-server
     restart: unless-stopped
+    # Env overrides win over sec-config.yaml — Coolify / k8s inject these.
+    environment:
+      - TZ=UTC
+      - BF_DATA_DIR=/var/lib/betterframe
+      - BF_SQLITE_PATH=/var/lib/betterframe/betterframe.db
+      - BF_NODERED_URL=http://nodered:1880
+      - BF_SELF_URL=http://server:18080
+      # Optional: paste Ed25519 PEM private key here for firmware signing.
+      # - BF_FIRMWARE_SIGNING_KEY=
     volumes:
       - betterframe-data:/var/lib/betterframe
       - ./sec-config.yaml:/app/server/sec-config.yaml:ro
@@ -26,6 +35,12 @@ services:
       - "18080"
       - "18081"
       - "18082"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:18080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     networks:
       - betterframe
 
@@ -56,6 +71,12 @@ services:
       - ./nodered-settings.js:/data/settings.js:ro
     expose:
       - "1880"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:1880/nrdp/auth/login >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     networks:
       - betterframe
 

@@ -27,6 +27,7 @@ import { initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
 import { setCoordinator } from "../../shared/coordinator-registry.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
+import { envStr } from "../../shared/env-overrides.js";
 
 // ---- Config -----------------------------------------------------------------
 
@@ -112,13 +113,18 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   }
 
   async init(obs: Observable): Promise<void> {
+    const dataDir = envStr("BF_DATA_DIR", this.config.dataDir);
+    const noderedUrl = envStr("BF_NODERED_URL", this.config.noderedUrl);
+    const cookieName = envStr("BF_COOKIE_NAME", this.config.cookieName);
+    const totpIssuer = envStr("BF_TOTP_ISSUER", this.config.totpIssuer);
+
     const repo = getRepo();
     const secrets = initSecrets(
-      { dataDir: this.config.dataDir },
+      { dataDir },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
     const nodered = initNoderedBridge(
-      { baseUrl: this.config.noderedUrl },
+      { baseUrl: noderedUrl },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
     this.nodered = nodered;
@@ -131,8 +137,8 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       argon2Memory: this.config.argon2Memory,
       argon2TimeCost: this.config.argon2TimeCost,
       argon2Parallelism: this.config.argon2Parallelism,
-      totpIssuer: this.config.totpIssuer,
-      cookieName: this.config.cookieName,
+      totpIssuer,
+      cookieName,
     });
 
     const httpServer = createServer((req, res) => {

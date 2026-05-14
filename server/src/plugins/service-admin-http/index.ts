@@ -20,6 +20,7 @@ import { initSecrets, type SecretsApi } from "../../shared/secrets.js";
 import { createAuth, type AuthApi } from "../../shared/auth.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
+import { envStr } from "../../shared/env-overrides.js";
 import type { Repository } from "../service-store/repository.js";
 
 import { registerMiddleware } from "./middleware.js";
@@ -103,10 +104,17 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   }
 
   async init(obs: Observable): Promise<void> {
-    // Init shared modules — no inter-plugin wiring needed
+    // Init shared modules — no inter-plugin wiring needed.
+    // Env-var overrides for Coolify / 12-factor deploys (BF_* prefix).
+    const dataDir = envStr("BF_DATA_DIR", this.config.dataDir);
+    const noderedUrl = envStr("BF_NODERED_URL", this.config.noderedUrl);
+    const selfUrl = envStr("BF_SELF_URL", this.config.selfUrl);
+    const cookieName = envStr("BF_COOKIE_NAME", this.config.cookieName);
+    const totpIssuer = envStr("BF_TOTP_ISSUER", this.config.totpIssuer);
+
     const repo = getRepo();
     const secrets = initSecrets(
-      { dataDir: this.config.dataDir, systemdCredsName: this.config.systemdCredsName },
+      { dataDir, systemdCredsName: this.config.systemdCredsName },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
     const auth = createAuth(repo, secrets, {
@@ -117,17 +125,17 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       argon2Memory: this.config.argon2Memory,
       argon2TimeCost: this.config.argon2TimeCost,
       argon2Parallelism: this.config.argon2Parallelism,
-      totpIssuer: this.config.totpIssuer,
-      cookieName: this.config.cookieName,
+      totpIssuer,
+      cookieName,
     });
 
     const nodered = initNoderedBridge(
-      { baseUrl: this.config.noderedUrl },
+      { baseUrl: noderedUrl },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
 
     const firmware = initFirmware(
-      { dataDir: this.config.dataDir },
+      { dataDir },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
 
@@ -135,7 +143,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       repo,
       auth,
       secrets,
-      cookieName: this.config.cookieName,
+      cookieName,
       nodered,
       firmware,
     };
@@ -214,7 +222,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     // Auto-provision the Node-RED bf-server-config so the user doesn't have
     // to set server URL + API key manually. Best-effort with retries because
     // Node-RED may still be starting.
-    void this.provisionNoderedBridge(repo, secrets, auth, nodered, obs);
+    void this.provisionNoderedBridge(repo, secrets, auth, nodered, selfUrl, obs);
   }
 
   async run(_obs: Observable): Promise<void> {}
@@ -224,6 +232,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     secrets: SecretsApi,
     auth: AuthApi,
     nodered: NoderedBridge,
+    selfUrl: string,
     obs: Observable,
   ): Promise<void> {
     let plaintext: string;
@@ -241,12 +250,12 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       await new Promise((r) => setTimeout(r, delaysMs[attempt]));
       obs.log.info("nodered: provisioning attempt {n} → {url}", {
         n: attempt + 1,
-        url: this.config.selfUrl,
+        url: selfUrl,
       });
-      const result = await nodered.ensureServerConfig(this.config.selfUrl, plaintext);
+      const result = await nodered.ensureServerConfig(selfUrl, plaintext);
       if (result === "created") {
         obs.log.info("nodered: provisioned bf-server-config at {url}", {
-          url: this.config.selfUrl,
+          url: selfUrl,
         });
         return;
       }

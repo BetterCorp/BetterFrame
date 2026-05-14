@@ -35,6 +35,7 @@ import {
 import { MIGRATIONS } from "./migrations.js";
 import { Repository } from "./repository.js";
 import { registerRepo } from "../../shared/plugin-registry.js";
+import { envStr } from "../../shared/env-overrides.js";
 
 // ---- Config -----------------------------------------------------------------
 
@@ -99,7 +100,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   }
 
   async init(obs: Observable): Promise<void> {
-    const path = this.config.sqlitePath;
+    const path = envStr("BF_SQLITE_PATH", this.config.sqlitePath);
     obs.log.info("opening sqlite at {path}", { path });
 
     // Ensure parent dir exists (in dev BETTERFRAME_DATA_DIR may be in $HOME)

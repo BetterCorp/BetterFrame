@@ -6,6 +6,11 @@ import { htmlPage, redirectWithCookie, redirectClearCookie } from "./html-respon
 import type { AdminDeps } from "./index.js";
 import { LoginPage, TotpPage, RecoveryPage } from "../../web-templates/auth-pages.js";
 import { audit } from "../../shared/audit.js";
+import { createRateLimiter } from "../../shared/rate-limit.js";
+
+// 8 attempts per 60s per IP — paired with the user-account lockout already in
+// place via deps.auth.config.loginLockoutThreshold to defeat enumeration.
+const loginGuard = createRateLimiter({ windowMs: 60_000, max: 8 });
 
 
 export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
@@ -18,6 +23,20 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/auth/login", async (event) => {
+    const ip = getRequestHeader(event, "x-real-ip")
+      ?? getRequestHeader(event, "x-forwarded-for")?.split(",")[0]?.trim()
+      ?? "anon";
+    if (!loginGuard.take(`login:${ip}`)) {
+      audit(deps.repo, event as any, "user.login", {
+        result: "failed",
+        metadata: { reason: "rate_limited", ip },
+      });
+      return new Response("Too many login attempts. Try again in a minute.", {
+        status: 429,
+        headers: { "retry-after": "60", "content-type": "text/plain" },
+      });
+    }
+
     const body = await readBody<{ username?: string; password?: string }>(event);
     const username = (body?.username ?? "").trim();
     const password = body?.password ?? "";

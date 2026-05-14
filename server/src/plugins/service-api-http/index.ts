@@ -23,7 +23,13 @@ import { generateBundle } from "../../shared/bundle.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
 import { envStr } from "../../shared/env-overrides.js";
+import { createRateLimiter } from "../../shared/rate-limit.js";
 import { createHash } from "node:crypto";
+
+// Pairing initiation is unauth — guard it so a misbehaving kiosk or attacker
+// can't spam codes. 20 per minute per IP is generous for legit retries.
+const pairingGuard = createRateLimiter({ windowMs: 60_000, max: 20 });
+const claimGuard = createRateLimiter({ windowMs: 60_000, max: 60 });
 import type { Repository } from "../service-store/repository.js";
 import type { AuthApi } from "../../shared/auth.js";
 import type { SecretsApi } from "../../shared/secrets.js";
@@ -194,6 +200,13 @@ function registerPairingRoutes(
 ): void {
   // Kiosk initiates pairing — no auth required
   app.post("/api/pair/initiate", async (event) => {
+    const ip = getRequestHeader(event, "x-real-ip")
+      ?? getRequestHeader(event, "x-forwarded-for")?.split(",")[0]?.trim()
+      ?? "anon";
+    if (!pairingGuard.take(`pair:${ip}`)) {
+      throw createError({ statusCode: 429, statusMessage: "rate limited" });
+    }
+
     const body = await readBody<{
       proposed_name?: string;
       hardware_model?: string;
@@ -212,6 +225,13 @@ function registerPairingRoutes(
 
   // Kiosk polls for claim result — no auth required
   app.post("/api/pair/claim", async (event) => {
+    const ip = getRequestHeader(event, "x-real-ip")
+      ?? getRequestHeader(event, "x-forwarded-for")?.split(",")[0]?.trim()
+      ?? "anon";
+    if (!claimGuard.take(`claim:${ip}`)) {
+      throw createError({ statusCode: 429, statusMessage: "rate limited" });
+    }
+
     const body = await readBody<{ code?: string }>(event);
     const code = (body?.code ?? "").trim().toUpperCase();
     if (!code) throw createError({ statusCode: 400, statusMessage: "code required" });

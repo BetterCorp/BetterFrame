@@ -5,17 +5,35 @@
  * a string/object directly. This helper wraps JSX output in a
  * proper Response with text/html content type.
  */
+/**
+ * Baseline security headers. CSP keeps 'unsafe-inline' for scripts because
+ * jsx-htmx's js() helper emits inline <script> blocks and htmx uses inline
+ * event handler attributes; tightening this needs per-render nonces.
+ */
+const SECURITY_HEADERS = {
+  "content-type": "text/html; charset=utf-8",
+  "content-security-policy":
+    "default-src 'self'; " +
+    "img-src 'self' data: blob:; " +
+    "script-src 'self' 'unsafe-inline'; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "frame-src 'self'; " +
+    "frame-ancestors 'none'; " +
+    "base-uri 'self'; " +
+    "form-action 'self'",
+  "x-frame-options": "DENY",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  "strict-transport-security": "max-age=31536000; includeSubDomains",
+} as const;
+
 export function htmlPage(markup: unknown): Response {
-  return new Response(String(markup), {
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
+  return new Response(String(markup), { headers: SECURITY_HEADERS });
 }
 
 /** Same as htmlPage — separate name for htmx fragment swaps to read clearly. */
 export function htmlFragment(markup: unknown): Response {
-  return new Response(String(markup), {
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
+  return new Response(String(markup), { headers: SECURITY_HEADERS });
 }
 
 /**

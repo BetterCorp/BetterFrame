@@ -37,11 +37,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Need 24.04 (noble) — libwebkitgtk-6.0-dev is not packaged on jammy.
           - target: aarch64-unknown-linux-gnu
-            runs-on: blacksmith-2vcpu-ubuntu-2204-arm
+            runs-on: blacksmith-2vcpu-ubuntu-2404-arm
             arch_label: "aarch64 (Pi5)"
           - target: x86_64-unknown-linux-gnu
-            runs-on: blacksmith-4vcpu-ubuntu-2204
+            runs-on: blacksmith-4vcpu-ubuntu-2404
             arch_label: "x86_64"
 
     runs-on: ${{ matrix.runs-on }}

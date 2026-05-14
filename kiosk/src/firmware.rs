@@ -157,6 +157,21 @@ pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
         f.sync_all().ok();
     }
 
+    // Drop a marker file the systemd ExecStartPre script reads to detect a
+    // failed first boot of the new binary. We delete it after a clean boot
+    // (see `mark_firmware_applied()`). If we crash before that, next start
+    // sees a stale marker → restores .prev.
+    if let Some(dir) = bin.parent() {
+        let marker = dir.join("firmware-applying.json");
+        let payload = serde_json::json!({
+            "version": info.version,
+            "attempt_at": chrono_now_iso(),
+            "bin": bin.to_string_lossy(),
+            "prev": prev_path.to_string_lossy(),
+        });
+        let _ = fs::write(&marker, payload.to_string());
+    }
+
     // Save current binary as .prev so an out-of-band rollback can restore it.
     if bin.exists() {
         let _ = fs::remove_file(&prev_path);
@@ -188,6 +203,28 @@ fn verify_signature(public_key_pem: &str, sha256_hex: &str, sig_b64url: &str) ->
     let sig = Signature::from_slice(&sig_bytes).map_err(|e| format!("signature shape: {e}"))?;
     vk.verify(sha256_hex.as_bytes(), &sig)
         .map_err(|e| format!("verify: {e}"))
+}
+
+/// Clear the in-progress marker. Call after the kiosk has booted cleanly and
+/// reported back to the server — proves the new binary survives startup.
+pub fn mark_firmware_applied() {
+    let bin = binary_path();
+    if let Some(dir) = bin.parent() {
+        let marker = dir.join("firmware-applying.json");
+        if marker.exists() {
+            let _ = fs::remove_file(marker);
+        }
+    }
+}
+
+fn chrono_now_iso() -> String {
+    // Sidesteps adding a chrono dep — Unix epoch ms is enough for the
+    // ExecStartPre rollback check.
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{secs}")
 }
 
 fn hex_lower(bytes: &[u8]) -> String {

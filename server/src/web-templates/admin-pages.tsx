@@ -8,6 +8,7 @@ import type {
   Display,
   Entity,
   FirmwareRelease,
+  FirmwareRollout,
   Kiosk,
   KioskGpioBinding,
   Label,
@@ -2673,10 +2674,11 @@ interface FirmwarePageProps {
 
 export function FirmwarePage(props: FirmwarePageProps) {
   return (
-    <Layout title="Firmware" user={props.user} activeNav="kiosks">
+    <Layout title="Firmware" user={props.user} activeNav="firmware">
       <p style="color:#666; margin-bottom:1rem">
         Signed kiosk firmware artifacts. Uploaded binaries are hashed +
         Ed25519-signed by the server before kiosks can install them.
+        <a href="/admin/firmware/rollouts" style="margin-left:0.5rem">Rollouts →</a>
       </p>
 
       <div class="card" style="margin-bottom:1.5rem">
@@ -2874,5 +2876,108 @@ export function KioskLocalPanel(props: KioskLocalPanelProps) {
         <code style="margin-left:0.25rem">{k.local_key.slice(0, 8)}…{k.local_key.slice(-4)}</code>
       </div>
     </div>
+  );
+}
+
+// ---- Firmware rollouts -----------------------------------------------------
+
+interface FirmwareRolloutsPageProps {
+  user: string;
+  rollouts: FirmwareRollout[];
+  releases: FirmwareRelease[];
+  kiosks: Kiosk[];
+}
+
+export function FirmwareRolloutsPage(props: FirmwareRolloutsPageProps) {
+  const releaseById = new Map(props.releases.map((r) => [r.id, r]));
+  const kioskById = new Map(props.kiosks.map((k) => [k.id, k]));
+  return (
+    <Layout title="Firmware rollouts" user={props.user} activeNav="kiosks">
+      <p style="color:#666; margin-bottom:1rem">
+        Push a specific release to a slice of the fleet. <code>percentage</code>
+        buckets kiosks deterministically by id, so re-running a 50% rollout
+        with the same targets touches the same half.
+      </p>
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="margin:0 0 1rem; font-size:1.1rem">New rollout</h2>
+        <form method="post" action="/admin/firmware/rollouts/new"
+              style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem">
+          <div class="form-group">
+            <label for="release_id">Release</label>
+            <select id="release_id" name="release_id" class="form-input" required>
+              <option value="">--</option>
+              {props.releases.filter((r) => !r.yanked_at).map((r) => (
+                <option value={r.id}>{r.version} · {r.channel} · {r.arch}</option>
+              ))}
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="percentage">Percentage</label>
+            <input id="percentage" name="percentage" type="number" min="1" max="100" value="100" class="form-input" />
+          </div>
+          <div class="form-group" style="grid-column:1/-1">
+            <label for="target_kiosk_ids">Targets (leave empty = all kiosks on release channel)</label>
+            <select id="target_kiosk_ids" name="target_kiosk_ids" class="form-input" multiple size="6">
+              {props.kiosks.map((k) => (
+                <option value={String(k.id)}>{k.name} (#{String(k.id)})</option>
+              ))}
+            </select>
+            <div class="form-hint">Cmd/Ctrl-click to multi-select. Or post a comma-separated id list via API.</div>
+          </div>
+          <button type="submit" class="btn btn-primary" style="grid-column:1/-1">Create + activate</button>
+        </form>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Release</th>
+              <th>State</th>
+              <th>%</th>
+              <th>Targets</th>
+              <th>Created</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {props.rollouts.length === 0 ? (
+              <tr><td colspan="6" style="text-align:center; color:#999; padding:2rem">No rollouts yet.</td></tr>
+            ) : (
+              props.rollouts.map((r) => {
+                const rel = releaseById.get(r.release_id);
+                const targetCount = r.target_kiosk_ids.length;
+                const targetSummary = targetCount === 0
+                  ? "(all on channel)"
+                  : r.target_kiosk_ids.slice(0, 3).map((id) => kioskById.get(id)?.name ?? `#${String(id)}`).join(", ")
+                    + (targetCount > 3 ? ` +${String(targetCount - 3)} more` : "");
+                return (
+                  <tr>
+                    <td><strong>{rel?.version ?? r.release_id}</strong>{rel && <span style="color:#999"> ({rel.channel}/{rel.arch})</span>}</td>
+                    <td><span class={`badge ${r.state === "active" ? "badge-green" : r.state === "paused" ? "badge-yellow" : r.state === "complete" ? "badge-gray" : "badge-blue"}`}>{r.state}</span></td>
+                    <td>{String(r.percentage)}%</td>
+                    <td style="font-size:0.85rem">{targetSummary}</td>
+                    <td style="font-size:0.85rem; white-space:nowrap">{formatTime(r.created_at)}</td>
+                    <td>
+                      <form method="post" action={`/admin/firmware/rollouts/${r.id}/state`} style="display:inline">
+                        <input type="hidden" name="state" value={r.state === "paused" ? "active" : "paused"} />
+                        <button type="submit" class="btn btn-sm" style="margin-right:0.25rem">
+                          {r.state === "paused" ? "Resume" : "Pause"}
+                        </button>
+                      </form>
+                      <form method="post" action={`/admin/firmware/rollouts/${r.id}/state`} style="display:inline">
+                        <input type="hidden" name="state" value="complete" />
+                        <button type="submit" class="btn btn-sm btn-danger">Complete</button>
+                      </form>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Layout>
   );
 }

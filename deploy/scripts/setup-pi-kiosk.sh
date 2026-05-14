@@ -229,10 +229,12 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
   printf 'BetterFrame Kiosk\n\n' > /etc/issue
   rm -f /etc/update-motd.d/10-uname /etc/update-motd.d/* 2>/dev/null || true
 
-  echo "==> Installing PAM + systemd unit"
+  echo "==> Installing PAM + systemd unit + firmware rollback hook"
   install -m 644 "${REPO_ROOT}/deploy/pam.d/cage" /etc/pam.d/cage
   install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-kiosk.service" \
     /etc/systemd/system/betterframe-kiosk.service
+  install -m 755 "${REPO_ROOT}/deploy/systemd/betterframe-firmware-rollback.sh" \
+    /usr/local/sbin/betterframe-firmware-rollback.sh
 
   if [ ! -e /etc/default/betterframe-kiosk ]; then
     cat > /etc/default/betterframe-kiosk <<'EOF'

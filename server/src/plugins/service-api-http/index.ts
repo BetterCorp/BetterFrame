@@ -22,6 +22,7 @@ import { initiatePairing, claimPairing } from "../../shared/pairing.js";
 import { generateBundle } from "../../shared/bundle.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
+import { createHash } from "node:crypto";
 import type { Repository } from "../service-store/repository.js";
 import type { AuthApi } from "../../shared/auth.js";
 import type { SecretsApi } from "../../shared/secrets.js";
@@ -428,10 +429,24 @@ function registerKioskRoutes(
     const currentVersion = url.searchParams.get("current")?.trim() ?? kiosk.kiosk_app_version ?? "";
 
     let release = null;
+    // Explicit per-kiosk pin wins over all rollout / channel selection.
     if (kiosk.firmware_target_version) {
       release = repo.getFirmwareReleaseByVersionArch(kiosk.firmware_target_version, arch);
       if (release?.yanked_at) release = null;
     }
+    // Active rollouts: most-recent matching, with bucket eligibility.
+    if (!release) {
+      const rollouts = repo.listActiveRolloutsForKiosk(kiosk.id);
+      for (const rollout of rollouts) {
+        if (!isKioskInRolloutBucket(kiosk.id, rollout.id, rollout.percentage)) continue;
+        const r = repo.getFirmwareRelease(rollout.release_id);
+        if (!r || r.yanked_at) continue;
+        if (r.arch !== arch) continue;
+        release = r;
+        break;
+      }
+    }
+    // Channel-latest fallback.
     if (!release) {
       const channel = (kiosk.firmware_channel ?? "stable") as FirmwareChannel;
       release = repo.getLatestFirmwareRelease(channel, arch);
@@ -507,4 +522,20 @@ function registerKioskRoutes(
     repo.recordKioskFirmwareAttempt(kiosk.id, body.version, body.error ?? null);
     return { ok: true };
   });
+}
+
+/**
+ * Deterministic bucket assignment for gradual rollouts. Same (kioskId,
+ * rolloutId) always lands in the same bucket, so a 50% rollout consistently
+ * targets the same half of the fleet across re-checks. Switch from 50%→100%
+ * gracefully adds the previously-excluded half rather than reshuffling.
+ */
+function isKioskInRolloutBucket(kioskId: number, rolloutId: string, percentage: number): boolean {
+  if (percentage >= 100) return true;
+  if (percentage <= 0) return false;
+  const h = createHash("sha256")
+    .update(`${rolloutId}:${String(kioskId)}`)
+    .digest();
+  const bucket = h.readUInt32BE(0) % 100;
+  return bucket < percentage;
 }

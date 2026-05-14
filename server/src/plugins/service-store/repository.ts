@@ -1210,6 +1210,20 @@ export class Repository {
     return r ? rowToFirmwareRollout(r as Record<string, unknown>) : null;
   }
 
+  /**
+   * Active rollouts whose target list either includes this kiosk OR is
+   * empty (= "all kiosks on the release channel"). Ordered most-recent first
+   * so a newer rollout supersedes older ones.
+   */
+  listActiveRolloutsForKiosk(kioskId: number): FirmwareRollout[] {
+    const rs = this.prep(
+      `SELECT * FROM firmware_rollouts WHERE state = 'active' ORDER BY created_at DESC`,
+    ).all();
+    return rs
+      .map((r) => rowToFirmwareRollout(r as Record<string, unknown>))
+      .filter((r) => r.target_kiosk_ids.length === 0 || r.target_kiosk_ids.includes(kioskId));
+  }
+
   listFirmwareRollouts(): FirmwareRollout[] {
     const rs = this.prep(
       "SELECT * FROM firmware_rollouts ORDER BY created_at DESC",

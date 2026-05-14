@@ -15,6 +15,7 @@ import { htmlPage, htmlFragment } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import {
   FirmwarePage,
+  FirmwareRolloutsPage,
   KioskFirmwarePanel,
 } from "../../web-templates/admin-pages.js";
 import { getCoordinator } from "../../shared/coordinator-registry.js";
@@ -168,4 +169,68 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     const dispatched = getCoordinator().sendToKiosk(id, { type: "firmware_check" });
     return { ok: true, dispatched };
   });
+
+  // ---- Rollouts -----------------------------------------------------------
+
+  app.get("/admin/firmware/rollouts", (event) => {
+    const user = event.context.user!;
+    const rollouts = deps.repo.listFirmwareRollouts();
+    const releases = deps.repo.listFirmwareReleases();
+    const kiosks = deps.repo.listKiosks();
+    return htmlPage(FirmwareRolloutsPage({
+      user: user.username,
+      rollouts,
+      releases,
+      kiosks,
+    }));
+  });
+
+  app.post("/admin/firmware/rollouts/new", async (event) => {
+    const body = await readBody<Record<string, string | string[]>>(event);
+    const releaseId = String(body?.["release_id"] ?? "");
+    if (!releaseId) throw createError({ statusCode: 400, statusMessage: "release_id required" });
+    const release = deps.repo.getFirmwareRelease(releaseId);
+    if (!release) throw createError({ statusCode: 404, statusMessage: "release not found" });
+    const percentage = clamp(Number(body?.["percentage"] ?? 100), 1, 100);
+    const targetsRaw = body?.["target_kiosk_ids"];
+    const targets: number[] = Array.isArray(targetsRaw)
+      ? targetsRaw.map((s) => Number(s)).filter((n) => Number.isFinite(n))
+      : typeof targetsRaw === "string" && targetsRaw
+        ? targetsRaw.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n))
+        : [];
+    const user = event.context.user!;
+    const rollout = deps.repo.createFirmwareRollout({
+      id: randomUUID(),
+      release_id: releaseId,
+      target_kiosk_ids: targets,
+      percentage,
+      created_by: user.id ?? null,
+    });
+    deps.repo.updateFirmwareRolloutState(rollout.id, "active");
+    // Bump every targeted kiosk to check now (best-effort over WS).
+    const coord = getCoordinator();
+    if (targets.length === 0) {
+      const allKiosks = deps.repo.listKiosks();
+      for (const k of allKiosks) coord.sendToKiosk(k.id, { type: "firmware_check" });
+    } else {
+      for (const id of targets) coord.sendToKiosk(id, { type: "firmware_check" });
+    }
+    return new Response(null, { status: 302, headers: { location: "/admin/firmware/rollouts" } });
+  });
+
+  app.post("/admin/firmware/rollouts/:id/state", async (event) => {
+    const id = String(getRouterParam(event, "id"));
+    const body = await readBody<{ state: string }>(event);
+    const state = body?.state;
+    if (state !== "paused" && state !== "active" && state !== "complete") {
+      throw createError({ statusCode: 400, statusMessage: "invalid state" });
+    }
+    deps.repo.updateFirmwareRolloutState(id, state);
+    return new Response(null, { status: 302, headers: { location: "/admin/firmware/rollouts" } });
+  });
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  if (!Number.isFinite(n)) return lo;
+  return Math.max(lo, Math.min(hi, Math.floor(n)));
 }

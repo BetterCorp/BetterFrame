@@ -252,8 +252,16 @@ fn activate(app: &Application) {
 
         // Heartbeat loop — reports display geometry + hwmon, also checks for
         // firmware updates so kiosks pick up new builds without admin push.
+        let mut first_iter = true;
         loop {
             send_heartbeat_now(&server, &key);
+            if first_iter {
+                // Successfully heart-beat at least once → consider this boot a
+                // healthy one. Clears the rollback-pending marker so the next
+                // start doesn't try to roll back a healthy install.
+                firmware::mark_firmware_applied();
+                first_iter = false;
+            }
             maybe_apply_firmware_update(&server, &key);
             std::thread::sleep(std::time::Duration::from_secs(60));
         }

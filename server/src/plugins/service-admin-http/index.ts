@@ -84,6 +84,7 @@ export interface AdminDeps {
   cookieName: string;
   nodered: NoderedBridge;
   firmware: FirmwareApi;
+  dataDir: string;
 }
 
 // ---- Plugin -----------------------------------------------------------------
@@ -146,6 +147,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       cookieName,
       nodered,
       firmware,
+      dataDir,
     };
 
     const app = new H3();

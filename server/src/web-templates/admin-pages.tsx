@@ -3045,3 +3045,62 @@ export function AuditLogPage(props: AuditLogPageProps) {
     </Layout>
   );
 }
+
+// ---- Backup / restore -------------------------------------------------------
+
+interface BackupPageProps {
+  user: string;
+  error?: string;
+  success?: string;
+}
+
+export function BackupPage(props: BackupPageProps) {
+  return (
+    <Layout title="Backup & restore" user={props.user} activeNav="backup"
+      flash={
+        props.error ? { type: "error", message: props.error }
+        : props.success ? { type: "success", message: props.success }
+        : undefined
+      }
+    >
+      <p style="color:#666; margin-bottom:1rem">
+        Encrypted snapshot of the SQLite DB + master secret + firmware signing
+        key. Passphrase protects the file (AES-256-GCM, PBKDF2 200k). Lose
+        the passphrase = lose the backup. Firmware binaries are excluded.
+      </p>
+
+      <div class="two-col">
+        <div class="card">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Download backup</h2>
+          <form method="post" action="/admin/backup/download">
+            <div class="form-group">
+              <label for="dl_pass">Passphrase</label>
+              <input id="dl_pass" name="passphrase" type="password" minlength="8" required class="form-input" />
+              <div class="form-hint">Min 8 chars. Store somewhere safe.</div>
+            </div>
+            <button type="submit" class="btn btn-primary">Download .bfbak</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Restore from backup</h2>
+          <form method="post" action="/admin/backup/restore" enctype="multipart/form-data">
+            <div class="form-group">
+              <label for="blob">Backup file (.bfbak)</label>
+              <input id="blob" name="blob" type="file" required class="form-input" />
+            </div>
+            <div class="form-group">
+              <label for="rs_pass">Passphrase</label>
+              <input id="rs_pass" name="passphrase" type="password" required class="form-input" />
+            </div>
+            <div style="background:#fee; border:1px solid #fcc; padding:0.5rem; font-size:0.85rem; margin-bottom:0.75rem">
+              <strong>Warning:</strong> overwrites DB and master keys.
+              Restart the server immediately after restore.
+            </div>
+            <button type="submit" class="btn btn-danger">Restore</button>
+          </form>
+        </div>
+      </div>
+    </Layout>
+  );
+}

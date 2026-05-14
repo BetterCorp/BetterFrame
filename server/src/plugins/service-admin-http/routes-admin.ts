@@ -13,6 +13,7 @@ import {
   CameraEditPage,
   CameraDiscoverPage,
   AuditLogPage,
+  BackupPage,
   CameraDiscoverResultsPage,
   EntitiesPage,
   EntityNewPage,
@@ -39,6 +40,7 @@ import { generateBundle } from "../../shared/bundle.js";
 import { captureSnapshot } from "../../shared/snapshot.js";
 import { stripSecrets } from "../../shared/strip-secrets.js";
 import { audit } from "../../shared/audit.js";
+import { createBackup, restoreBackup } from "../../shared/backup.js";
 
 interface DiscoverAddStream {
   profile_name: string;
@@ -269,6 +271,63 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // Redirect /admin to /admin/
   app.get("/admin", () => {
     return new Response(null, { status: 301, headers: { location: "/admin/" } });
+  });
+
+  // ---- Backup / restore -----------------------------------------------------
+
+  app.get("/admin/backup", (event) => {
+    const user = event.context.user!;
+    return htmlPage(BackupPage({ user: user.username }));
+  });
+
+  app.post("/admin/backup/download", async (event) => {
+    const body = await readBody<Record<string, string>>(event);
+    const pass = body?.["passphrase"] ?? "";
+    let res;
+    try {
+      res = createBackup(deps.dataDir, pass);
+    } catch (err) {
+      audit(deps.repo, event as any, "backup.create", {
+        result: "failed", metadata: { error: (err as Error).message },
+      });
+      return htmlPage(BackupPage({ user: event.context.user!.username, error: (err as Error).message }));
+    }
+    audit(deps.repo, event as any, "backup.create", {
+      metadata: { file_count: res.fileCount, size: res.blob.length },
+    });
+    return new Response(new Uint8Array(res.blob), {
+      status: 200,
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-disposition": `attachment; filename="${res.filename}"`,
+        "content-length": String(res.blob.length),
+      },
+    });
+  });
+
+  app.post("/admin/backup/restore", async (event) => {
+    const form = await event.req.formData();
+    const file = form.get("blob");
+    const pass = String(form.get("passphrase") ?? "");
+    if (!(file instanceof File) || !pass) {
+      return htmlPage(BackupPage({ user: event.context.user!.username, error: "blob + passphrase required" }));
+    }
+    try {
+      const buf = Buffer.from(await file.arrayBuffer());
+      const res = restoreBackup(deps.dataDir, pass, buf);
+      audit(deps.repo, event as any, "backup.restore", {
+        metadata: { file_count: res.fileCount, files: res.files },
+      });
+      return htmlPage(BackupPage({
+        user: event.context.user!.username,
+        success: `Restored ${String(res.fileCount)} files: ${res.files.join(", ")}. RESTART THE SERVER NOW for changes to take effect.`,
+      }));
+    } catch (err) {
+      audit(deps.repo, event as any, "backup.restore", {
+        result: "failed", metadata: { error: (err as Error).message },
+      });
+      return htmlPage(BackupPage({ user: event.context.user!.username, error: (err as Error).message }));
+    }
   });
 
   // ---- Audit log ------------------------------------------------------------

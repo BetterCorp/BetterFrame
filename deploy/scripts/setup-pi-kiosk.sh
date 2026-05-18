@@ -167,7 +167,7 @@ fi
 # ----------------------------------------------------------------------------
 if [ "${INSTALL_SERVER}" = "1" ]; then
   echo "==> Building + starting Docker stack"
-  run_as_user "cd '${REPO_ROOT}' && docker compose -f deploy/docker/docker-compose.yml up -d --build"
+  run_as_user "cd '${REPO_ROOT}' && docker compose up -d --build"
 fi
 
 # ----------------------------------------------------------------------------

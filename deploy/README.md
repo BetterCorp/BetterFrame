@@ -29,9 +29,10 @@ BF_FIRMWARE_SIGNING_KEY=        # paste Ed25519 PEM for stable signing key
 BF_MQTT_URL=                     # optional MQTT telemetry export
 ```
 
-In Coolify: create a Docker compose stack from `deploy/docker/docker-compose.yml`,
-inject the env vars, set a domain on the `angie` service. Backups via the admin
-UI (`/admin/backup`) — Coolify's S3 hook can pull these on a schedule.
+In Coolify: create a Docker compose stack pointing at the repo's
+`docker-compose.yml` (repo root), inject the env vars, set a domain on the
+`angie` service. Backups via the admin UI (`/admin/backup`) — Coolify's S3
+hook can pull these on a schedule.
 
 ### bf-client (kiosk Pi)
 
@@ -53,7 +54,7 @@ proxy auth rules.
 
 ```bash
 cd /opt/betterframe
-docker compose -f deploy/docker/docker-compose.yml up -d --build
+docker compose up -d --build      # from repo root
 ```
 
 Published:

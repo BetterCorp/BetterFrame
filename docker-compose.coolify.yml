@@ -1,0 +1,87 @@
+# BetterFrame Coolify variant — Coolify's Traefik fronts the stack, so
+# no host port is published from the compose. Angie still receives traffic
+# from Traefik on container port 80 (via the betterframe network).
+#
+# Point Coolify resource at this file instead of docker-compose.yml.
+#
+# Same env / volume overrides as the standard compose:
+#   BF_DATA_VOLUME_NAME       default "betterframe-data"
+#   NODERED_DATA_VOLUME_NAME  default "nodered-data"
+#   BF_DATA_DIR, BF_SQLITE_PATH, BF_NODERED_URL, BF_SELF_URL,
+#   BF_FIRMWARE_SIGNING_KEY, BF_MQTT_*
+
+version: "3.8"
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.server
+    container_name: betterframe-server
+    restart: unless-stopped
+    environment:
+      - TZ=UTC
+      - BF_DATA_DIR=/var/lib/betterframe
+      - BF_SQLITE_PATH=/var/lib/betterframe/betterframe.db
+      - BF_NODERED_URL=http://nodered:1880
+      - BF_SELF_URL=http://server:18080
+    volumes:
+      - betterframe-data:/var/lib/betterframe
+    expose:
+      - "18080"
+      - "18081"
+      - "18082"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:18080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - betterframe
+
+  angie:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.angie
+    container_name: betterframe-angie
+    restart: unless-stopped
+    depends_on:
+      - server
+      - nodered
+    # No `ports:` — Coolify's Traefik routes ${SERVICE_FQDN_ANGIE_80} → 80.
+    expose:
+      - "80"
+    networks:
+      - betterframe
+
+  nodered:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.nodered
+    container_name: betterframe-nodered
+    restart: unless-stopped
+    environment:
+      - TZ=UTC
+    volumes:
+      - nodered-data:/data
+    expose:
+      - "1880"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:1880/nrdp/auth/login >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    networks:
+      - betterframe
+
+volumes:
+  betterframe-data:
+    name: ${BF_DATA_VOLUME_NAME:-betterframe-data}
+  nodered-data:
+    name: ${NODERED_DATA_VOLUME_NAME:-nodered-data}
+
+networks:
+  betterframe:
+    driver: bridge

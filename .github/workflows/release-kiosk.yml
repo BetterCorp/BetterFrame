@@ -55,6 +55,9 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates curl git build-essential pkg-config \
             jq sudo
+          # Container UID != workspace owner UID — git's CVE-2022-24765
+          # check refuses to operate. Whitelist before checkout runs git.
+          git config --global --add safe.directory '*'
 
       - uses: actions/checkout@v4
 

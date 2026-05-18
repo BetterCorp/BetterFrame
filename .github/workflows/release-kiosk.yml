@@ -78,8 +78,14 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install GTK/GStreamer/WebKit build deps
+        # gtk4-rs 0.9 + the v4_12 feature need libgtk-4-dev >= 4.12. Plain
+        # bookworm ships 4.8.3; backports ships 4.12+. Same arrangement we
+        # use on the Pi.
         run: |
-          apt-get install -y --no-install-recommends \
+          echo "deb http://deb.debian.org/debian bookworm-backports main" \
+            > /etc/apt/sources.list.d/bookworm-backports.list
+          apt-get update
+          apt-get install -y --no-install-recommends -t bookworm-backports \
             libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             libwebkitgtk-6.0-dev libssl-dev
 

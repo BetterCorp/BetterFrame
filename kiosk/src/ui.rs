@@ -687,6 +687,14 @@ fn render_layout(display_id: u32, layout_id: u32) {
     }
 
     for cell in &layout.cells {
+        let cell_key: Option<String> = match cell.content_type.as_str() {
+            "camera" => cell.camera_id.map(|id| {
+                format!("cam:{id}:{}", cell.stream_selector.as_deref().unwrap_or("auto"))
+            }),
+            "web" => cell.web_url.as_deref().map(|u| format!("web:{}", u.trim())),
+            "html" => cell.html_content.as_deref().filter(|h| !h.trim().is_empty()).map(html_key),
+            _ => None,
+        };
         let widget: gtk::Widget = match cell.content_type.as_str() {
             "camera" => {
                 if let Some(cam_id) = cell.camera_id {
@@ -747,6 +755,12 @@ fn render_layout(display_id: u32, layout_id: u32) {
             _ => placeholder(Some("Unknown content")),
         };
 
+        // Tag the cell widget with a stable key for the layout-swap animation
+        // (animate_layout_swap matches by widget_name across old + new grids).
+        if let Some(k) = &cell_key {
+            widget.set_widget_name(k);
+        }
+
         grid.attach(
             &widget,
             cell.col as i32,
@@ -758,8 +772,210 @@ fn render_layout(display_id: u32, layout_id: u32) {
 
     DISPLAYS.with(|ds| {
         if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
-            st.window.set_child(Some(&grid));
+            animate_layout_swap(&st.window, &grid);
         }
+    });
+}
+
+/// Swap the window's content to `new_grid` with a per-cell morph animation.
+///
+/// Matches cells by widget_name across old + new grids. Same-key cells slide +
+/// scale from their old screen position to the new one over 300ms (ease-out
+/// cubic). New cells fade in; removed cells fade out from their old spot.
+/// Cells with no widget_name (e.g. placeholders) just snap.
+const LAYOUT_ANIM_MS: u32 = 350;
+
+#[derive(Clone)]
+struct CellSnap {
+    paintable: gtk::gdk::Paintable,
+    bounds: gtk::graphene::Rect,
+}
+
+fn animate_layout_swap(window: &ApplicationWindow, new_grid: &gtk::Grid) {
+    // Capture old cell snapshots BEFORE we drop the existing window child.
+    let mut snaps: std::collections::HashMap<String, CellSnap> = std::collections::HashMap::new();
+    if let Some(old_child) = window.child() {
+        let mut child = old_child.first_child();
+        while let Some(c) = child {
+            let key = c.widget_name();
+            if !key.is_empty() {
+                if let Some(b) = c.compute_bounds(&old_child) {
+                    let paintable: gtk::gdk::Paintable =
+                        gtk::WidgetPaintable::new(Some(&c)).upcast();
+                    snaps.insert(key.to_string(), CellSnap { paintable, bounds: b });
+                }
+            }
+            child = c.next_sibling();
+        }
+    }
+
+    // Always wrap content in an Overlay so the ghost layer can sit on top of
+    // the new grid without disturbing GTK's main layout pass.
+    let overlay = gtk::Overlay::new();
+    overlay.set_vexpand(true);
+    overlay.set_hexpand(true);
+    overlay.set_child(Some(new_grid));
+    let ghost = gtk::Fixed::new();
+    ghost.set_can_target(false);
+    overlay.add_overlay(&ghost);
+
+    window.set_child(Some(&overlay));
+
+    if snaps.is_empty() {
+        // First render of this display — nothing to animate from. Skip the
+        // ghost layer entirely on the next idle tick to keep the tree clean.
+        let overlay_weak = overlay.downgrade();
+        let new_grid_weak = new_grid.downgrade();
+        let window_weak = window.downgrade();
+        gtk::glib::idle_add_local_once(move || {
+            // Swap back to plain grid as window child (drop the overlay).
+            if let (Some(grid), Some(win), Some(ov)) =
+                (new_grid_weak.upgrade(), window_weak.upgrade(), overlay_weak.upgrade())
+            {
+                if grid.parent().as_ref() == Some(ov.upcast_ref::<gtk::Widget>()) {
+                    ov.set_child(None::<&gtk::Widget>);
+                    win.set_child(Some(&grid));
+                }
+            }
+        });
+        return;
+    }
+
+    // Defer one idle tick so the new_grid has computed its allocations.
+    let new_grid_clone = new_grid.clone();
+    let ghost_clone = ghost.clone();
+    let overlay_clone = overlay.clone();
+    let window_clone = window.clone();
+    gtk::glib::idle_add_local_once(move || {
+        let mut pairs: Vec<(gtk::Widget, gtk::graphene::Rect, CellSnap)> = Vec::new();
+        let mut fresh: Vec<gtk::Widget> = Vec::new();
+        let mut child = new_grid_clone.first_child();
+        while let Some(c) = child {
+            let key = c.widget_name();
+            let new_bounds = c.compute_bounds(&new_grid_clone)
+                .unwrap_or_else(gtk::graphene::Rect::zero);
+            if !key.is_empty() {
+                if let Some(snap) = snaps.remove(key.as_str()) {
+                    pairs.push((c.clone(), new_bounds, snap));
+                } else {
+                    fresh.push(c.clone());
+                }
+            }
+            child = c.next_sibling();
+        }
+
+        // Anything left in `snaps` was removed by this swap — fade ghosts out
+        // in place so the transition visibly drops them.
+        for (_key, snap) in &snaps {
+            let pic = gtk::Picture::for_paintable(&snap.paintable);
+            pic.set_can_target(false);
+            pic.set_size_request(snap.bounds.width() as i32, snap.bounds.height() as i32);
+            ghost_clone.put(&pic, snap.bounds.x() as f64, snap.bounds.y() as f64);
+            fade_out_and_drop(&pic, &ghost_clone);
+        }
+
+        // Matched cells: hide real widget, animate ghost from old bounds → new.
+        for (target, new_bounds, snap) in pairs {
+            target.set_opacity(0.0);
+            let pic = gtk::Picture::for_paintable(&snap.paintable);
+            pic.set_can_target(false);
+            pic.set_size_request(snap.bounds.width() as i32, snap.bounds.height() as i32);
+            ghost_clone.put(&pic, snap.bounds.x() as f64, snap.bounds.y() as f64);
+            animate_picture_to_bounds(&pic, &target, &ghost_clone, snap.bounds, new_bounds);
+        }
+
+        // Fresh cells (no match in old layout): fade in.
+        for c in fresh {
+            c.set_opacity(0.0);
+            fade_in(&c);
+        }
+
+        // After animation window, drop the overlay so we return to plain grid.
+        let overlay_weak = overlay_clone.downgrade();
+        let grid_weak = new_grid_clone.downgrade();
+        let window_weak = window_clone.downgrade();
+        gtk::glib::timeout_add_local_once(
+            Duration::from_millis((LAYOUT_ANIM_MS + 50) as u64),
+            move || {
+                if let (Some(grid), Some(win), Some(ov)) =
+                    (grid_weak.upgrade(), window_weak.upgrade(), overlay_weak.upgrade())
+                {
+                    if grid.parent().as_ref() == Some(ov.upcast_ref::<gtk::Widget>()) {
+                        ov.set_child(None::<&gtk::Widget>);
+                        win.set_child(Some(&grid));
+                    }
+                }
+            },
+        );
+    });
+}
+
+fn ease_out_cubic(t: f64) -> f64 {
+    let inv = 1.0 - t.clamp(0.0, 1.0);
+    1.0 - inv * inv * inv
+}
+
+fn animate_picture_to_bounds(
+    pic: &gtk::Picture,
+    target: &gtk::Widget,
+    fixed: &gtk::Fixed,
+    from: gtk::graphene::Rect,
+    to: gtk::graphene::Rect,
+) {
+    let start = Instant::now();
+    let pic_weak = pic.downgrade();
+    let fixed_weak = fixed.downgrade();
+    let target_weak = target.downgrade();
+    pic.add_tick_callback(move |_, _| {
+        let Some(pic) = pic_weak.upgrade() else { return gtk::glib::ControlFlow::Break; };
+        let elapsed = start.elapsed().as_millis() as f64;
+        let t = (elapsed / LAYOUT_ANIM_MS as f64).min(1.0);
+        let e = ease_out_cubic(t);
+        let x = from.x() as f64 + (to.x() - from.x()) as f64 * e;
+        let y = from.y() as f64 + (to.y() - from.y()) as f64 * e;
+        let w = from.width() as f64 + (to.width() - from.width()) as f64 * e;
+        let h = from.height() as f64 + (to.height() - from.height()) as f64 * e;
+        if let Some(fixed) = fixed_weak.upgrade() {
+            fixed.move_(&pic, x, y);
+        }
+        pic.set_size_request(w as i32, h as i32);
+        if t >= 1.0 {
+            if let Some(target) = target_weak.upgrade() {
+                target.set_opacity(1.0);
+            }
+            pic.unparent();
+            return gtk::glib::ControlFlow::Break;
+        }
+        gtk::glib::ControlFlow::Continue
+    });
+}
+
+fn fade_in(widget: &gtk::Widget) {
+    let start = Instant::now();
+    let weak = widget.downgrade();
+    widget.add_tick_callback(move |_, _| {
+        let Some(w) = weak.upgrade() else { return gtk::glib::ControlFlow::Break; };
+        let elapsed = start.elapsed().as_millis() as f64;
+        let t = (elapsed / LAYOUT_ANIM_MS as f64).min(1.0);
+        w.set_opacity(t);
+        if t >= 1.0 { gtk::glib::ControlFlow::Break } else { gtk::glib::ControlFlow::Continue }
+    });
+}
+
+fn fade_out_and_drop(pic: &gtk::Picture, fixed: &gtk::Fixed) {
+    let start = Instant::now();
+    let pic_weak = pic.downgrade();
+    let fixed_weak = fixed.downgrade();
+    pic.add_tick_callback(move |_, _| {
+        let Some(p) = pic_weak.upgrade() else { return gtk::glib::ControlFlow::Break; };
+        let elapsed = start.elapsed().as_millis() as f64;
+        let t = (elapsed / LAYOUT_ANIM_MS as f64).min(1.0);
+        p.set_opacity(1.0 - t);
+        if t >= 1.0 {
+            if let Some(_f) = fixed_weak.upgrade() { p.unparent(); }
+            return gtk::glib::ControlFlow::Break;
+        }
+        gtk::glib::ControlFlow::Continue
     });
 }
 

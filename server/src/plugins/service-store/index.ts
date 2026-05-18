@@ -41,7 +41,12 @@ import { envStr } from "../../shared/env-overrides.js";
 
 const ConfigSchema = av.object(
   {
+    /** Backend selector. Override at runtime via BF_DB env. */
+    driver: av.enum_(["sqlite", "postgres"] as const).default("sqlite"),
+    /** sqlite-only: filesystem path to the .db file. */
     sqlitePath: av.string().minLength(1).default("/var/lib/betterframe/betterframe.db"),
+    /** postgres-only: full libpq URL. Override via BF_PG_URL env. */
+    pgUrl: av.string().default(""),
   },
   { unknownKeys: "strip" },
 );
@@ -100,6 +105,19 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   }
 
   async init(obs: Observable): Promise<void> {
+    const driver = envStr("BF_DB", this.config.driver) as "sqlite" | "postgres";
+    if (driver === "postgres") {
+      // Repository conversion to the async DbAdapter interface is in progress.
+      // Until that lands, refuse to start under postgres rather than corrupt
+      // data via half-converted code paths. See db-adapter.ts / pg-adapter.ts
+      // for the foundation already in place.
+      throw new Error(
+        "BF_DB=postgres: foundation present (pg-adapter.ts) but Repository " +
+          "is still on the sync sqlite path. Pending refactor — keep BF_DB " +
+          "unset (defaults to sqlite) or set BF_DB=sqlite explicitly.",
+      );
+    }
+
     const path = envStr("BF_SQLITE_PATH", this.config.sqlitePath);
     obs.log.info("opening sqlite at {path}", { path });
 

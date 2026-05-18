@@ -30,10 +30,13 @@
     "mqtt": "^5.10.4",
     "onvif": "^0.8.1",
     "otpauth": "^9.5.1",
+    "pg": "^8.13.1",
+    "uuidv7": "^1.0.2",
     "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/node": "^25.0.0",
+    "@types/pg": "^8.20.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
   },

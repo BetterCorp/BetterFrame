@@ -36,6 +36,10 @@ COPY --from=builder /app/server ./server
 COPY --from=builder /app/tsconfig.base.json ./
 COPY --from=builder /app/package.json ./
 
+# Default sec-config baked into image. BF_* env vars in compose override at
+# runtime (see shared/env-overrides.ts). No host bind mount needed.
+COPY deploy/docker/sec-config.yaml /app/server/sec-config.yaml
+
 RUN mkdir -p /var/lib/betterframe && chown betterframe:betterframe /var/lib/betterframe
 VOLUME /var/lib/betterframe
 

@@ -1,0 +1,8 @@
+# BetterFrame edge proxy. nginx:alpine + baked Angie/BF reverse-proxy conf.
+#
+# Built into the image rather than bind-mounted so Coolify deployments that
+# don't have the source repo on disk still get the right /etc/nginx/conf.d.
+
+FROM nginx:alpine
+
+COPY deploy/angie/betterframe.docker.conf /etc/nginx/conf.d/default.conf

@@ -131,7 +131,12 @@ jobs:
   image:
     if: ${{ inputs.build-image }}
     needs: binary
-    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
+    # GitHub's official native-arm64 runner. Blacksmith's arm64 kernel (6.5)
+    # doesn't ship binfmt_misc as a loadable module so pi-gen-action@v1's
+    # `modprobe binfmt_misc` errors out even though we don't need it on a
+    # native runner. ubuntu-24.04-arm has a kernel where it's modular and
+    # modprobe-able. Issue #179 confirms this is the intended path.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6
         with:
@@ -172,7 +177,7 @@ jobs:
           chmod +x deploy/pi-gen/stage-betterframe-client/01-install-kiosk/00-run-chroot.sh
 
       - name: Build Pi image (pi-gen)
-        uses: usimd/pi-gen-action@v1
+        uses: usimd/pi-gen-action@v1.11.0
         with:
           image-name: betterframe-client-${{ inputs.version }}
           stage-list: stage0 stage1 stage2 ./deploy/pi-gen/stage-betterframe-client

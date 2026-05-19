@@ -52,8 +52,10 @@ pub struct CheckResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateInfo {
+    #[allow(dead_code)] // surfaced for logging / future rollout coordination
     pub release_id: String,
     pub version: String,
+    #[allow(dead_code)] // surfaced for logging
     pub channel: String,
     pub sha256: String,
     pub signature: String,

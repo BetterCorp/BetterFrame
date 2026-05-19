@@ -38,6 +38,9 @@ use crate::WorkerMsg;
 pub struct LocalServerState {
     pub local_key: String,
     pub server_url: String,
+    /// Held for future kiosk-auth proxy paths (currently the proxy forwards
+    /// the caller's own Bearer, so kiosk_key isn't read on hot path).
+    #[allow(dead_code)]
     pub kiosk_key: String,
     /// Channel into the kiosk UI worker so layout-switch requests reach the
     /// GTK main loop. Wrapped in Mutex<Option<_>> so the state struct stays

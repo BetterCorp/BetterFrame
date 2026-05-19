@@ -173,7 +173,8 @@ jobs:
         with:
           image-name: betterframe-client-${{ inputs.version }}
           stage-list: stage0 stage1 stage2 ./deploy/pi-gen/stage-betterframe-client
-          release: trixie
+          # pi-gen default release is trixie (Debian 13). Leave unset so we
+          # always track upstream pi-gen's current target.
           enable-ssh: 1
           username: bfadmin
           password: betterframe
@@ -182,9 +183,12 @@ jobs:
           hostname: betterframe-kiosk
           compression: xz
 
+      - name: List pi-gen output
+        run: ls -la deploy/ || true
+
       - name: Upload image to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
           files: |
-            deploy/image-betterframe-client-${{ inputs.version }}-lite.img.xz
+            deploy/*.img.xz

@@ -200,9 +200,10 @@ jobs:
           timezone: Etc/UTC
           hostname: betterframe-kiosk
           compression: xz
-          # Install qemu inside the pi-gen container so its chroot's arm64
-          # binaries can exec. Documented input in v1.11.
-          extra-host-dependencies: qemu-user-static binfmt-support
+          # No extra-host-dependencies — tonistiigi/binfmt already
+          # registered qemu-aarch64 with the F flag (POCF), which loads
+          # the static QEMU into kernel memory so chroot exec works
+          # without needing the binary in the chroot.
 
       - name: List pi-gen output
         run: ls -la deploy/ || true

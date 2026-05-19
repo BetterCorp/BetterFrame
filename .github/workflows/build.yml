@@ -195,11 +195,12 @@ jobs:
           timezone: Etc/UTC
           hostname: betterframe-kiosk
           compression: xz
-          verbose-output: true
+          # Surface pi-gen's stdout/stderr inside the action log.
+          enable-debug: true
+          # Skip earlier stages' image exports — only ship our customised one.
+          export-last-stage-only: true
           # Inject qemu-user-static + binfmt-support INTO the pi-gen build
-          # container so its binfmt_misc check finds qemu-aarch64. The host
-          # tonistiigi/binfmt registration alone doesn't propagate into
-          # pi-gen's nested mount namespace.
+          # container so its binfmt_misc check finds qemu-aarch64.
           extra-host-dependencies: qemu-user-static binfmt-support
 
       - name: List pi-gen output

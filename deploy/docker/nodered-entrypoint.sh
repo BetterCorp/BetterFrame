@@ -26,6 +26,6 @@ fi
 # Ensure the volume + seeded file are owned by node-red.
 chown -R node-red:root "$DATA" 2>/dev/null || true
 
-# Drop to the node-red user before launching. nodered/node-red is Debian
-# based; we installed gosu in the Dockerfile for this.
-exec gosu node-red:node-red npm start --cache /data/.npm -- --userDir /data "$@"
+# Drop to the node-red user before launching. nodered/node-red is Alpine
+# based; the Dockerfile installs su-exec for this.
+exec su-exec node-red:node-red npm start --cache /data/.npm -- --userDir /data "$@"

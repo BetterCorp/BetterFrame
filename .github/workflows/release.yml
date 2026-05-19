@@ -79,9 +79,10 @@ jobs:
             version="${MAJ}.${MIN}.${PAT}-dev.${short}"
             tag="v${version}"
             channel=dev
-            # Skip image build for master pushes — too slow. Image happens on
-            # tags or when workflow_dispatch.bump=true.
-            build_image=${{ inputs.bump == true || 'false' }}
+            # Every release — including dev — ships the flashable .img.xz.
+            # Public repo = unlimited Actions minutes, so the 30-60 min image
+            # bake on every master push costs nothing.
+            build_image=true
           fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"

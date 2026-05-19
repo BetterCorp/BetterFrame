@@ -1,0 +1,104 @@
+# Build burnable Raspberry Pi OS images for the BetterFrame kiosk on tag push.
+#
+# Output: betterframe-client-<version>-aarch64.img.xz attached to the GitHub
+# Release. Burn with rpi-imager / dd, boot the Pi, kiosk discovers a BF server
+# on the LAN or falls through to the cloud (frame-eu.betterportal.net).
+#
+# Image source: official Raspberry Pi OS Trixie (Lite) base with a custom
+# pi-gen stage (`deploy/pi-gen/stage-betterframe-client/`) layered on top.
+#
+# Heavy build (~30-60 min). Tag-push only — too slow for every master commit.
+
+name: release-image
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      kiosk_artifact_tag:
+        description: "Existing release tag whose kiosk binary to bake in (e.g. v0.4.2). Empty = same tag as this run."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve kiosk binary source
+        id: src
+        shell: bash
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          else
+            tag="${{ inputs.kiosk_artifact_tag }}"
+            [ -z "$tag" ] && { echo "kiosk_artifact_tag input required for workflow_dispatch"; exit 1; }
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download kiosk aarch64 binary from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.src.outputs.tag }}
+        run: |
+          mkdir -p staging
+          gh release download "$TAG" \
+            --pattern "betterframe-kiosk-*-aarch64-unknown-linux-gnu" \
+            --output staging/betterframe-kiosk \
+            --repo "$GITHUB_REPOSITORY"
+          chmod +x staging/betterframe-kiosk
+          # Render BF logo for plymouth (rsvg-convert is in the runner).
+          sudo apt-get -y update
+          sudo apt-get -y install --no-install-recommends librsvg2-bin
+          rsvg-convert -w 480 server/src/web-static/betterframe-logo.svg -o staging/logo.png
+
+      - name: Stage files for pi-gen
+        run: |
+          mkdir -p deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files
+          cp staging/betterframe-kiosk \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp staging/logo.png \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/systemd/betterframe-kiosk.service \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/systemd/betterframe-firmware-rollback.sh \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/pam.d/cage \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/cage.pam
+          cp deploy/plymouth/betterframe/betterframe.plymouth \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/plymouth/betterframe/betterframe.script \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          chmod +x deploy/pi-gen/stage-betterframe-client/01-install-kiosk/00-run-chroot.sh
+
+      - name: Build Pi image (pi-gen)
+        uses: usimd/pi-gen-action@v1
+        with:
+          image-name: betterframe-client-${{ steps.src.outputs.version }}
+          # Lite base, no desktop. Plus our custom stage.
+          stage-list: stage0 stage1 stage2 ./deploy/pi-gen/stage-betterframe-client
+          release: trixie
+          enable-ssh: 1
+          # Bake a default user — operator can change later. Pi-imager-style
+          # first-run wizard is purged inside our stage anyway.
+          username: bfadmin
+          password: betterframe
+          locale: en_US.UTF-8
+          timezone: Etc/UTC
+          hostname: betterframe-kiosk
+          compression: xz
+
+      - name: Upload image to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            deploy/image-betterframe-client-${{ steps.src.outputs.version }}-lite.img.xz

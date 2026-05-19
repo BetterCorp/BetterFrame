@@ -73,10 +73,14 @@ pub fn discover_server(override_url: Option<&str>) -> String {
         }
     }
 
+    // Probe order: on-device → LAN mDNS → BetterCorp managed cloud.
+    // Single image works for aio (server beside kiosk on same Pi), on-prem
+    // (server on the LAN, discoverable by mDNS), and client-only (no local
+    // server — falls through to the cloud).
     let candidates = [
         "http://localhost",
         "http://betterframe.local",
-        "https://frame.betterportal.cloud",
+        "https://frame-eu.betterportal.net",
     ];
 
     for url in candidates {

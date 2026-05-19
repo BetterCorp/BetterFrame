@@ -182,6 +182,8 @@ jobs:
           timezone: Etc/UTC
           hostname: betterframe-kiosk
           compression: xz
+          # Surface pi-gen's stdout/stderr so failures show their real cause.
+          verbose-output: true
 
       - name: List pi-gen output
         run: ls -la deploy/ || true

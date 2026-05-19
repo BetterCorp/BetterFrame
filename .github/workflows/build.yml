@@ -169,18 +169,18 @@ jobs:
           chmod +x deploy/pi-gen/stage-betterframe-client/01-install-kiosk/00-run-chroot.sh
 
       # x86 runner can't natively execute the arm64 binaries pi-gen drops
-      # into the chroot. Install qemu-user-static + binfmt-support so the
-      # kernel routes arm64 ELFs through QEMU. docker/setup-qemu-action
-      # registers via a privileged container which pi-gen's own nested
-      # container doesn't pick up — apt path is what pi-gen documents.
+      # into the chroot. tonistiigi/binfmt registers QEMU with the F flag
+      # (kernel preloads the static binary), making it visible inside
+      # pi-gen's nested container kernel-namespace-share. This is what
+      # docker/setup-qemu-action wraps, called directly here so we control
+      # the flags + can sanity-check after.
       - name: Register QEMU binfmt for arm64
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qemu-user-static binfmt-support
-          sudo update-binfmts --enable qemu-aarch64
-          # Sanity check — pi-gen looks for this exact file.
-          ls -la /proc/sys/fs/binfmt_misc/qemu-aarch64
+          docker run --rm --privileged tonistiigi/binfmt --install arm64
+          echo "--- binfmt_misc registrations ---"
+          ls -la /proc/sys/fs/binfmt_misc/ || true
+          echo "--- qemu-aarch64 details ---"
+          cat /proc/sys/fs/binfmt_misc/qemu-aarch64 || true
 
       - name: Build Pi image (pi-gen)
         uses: usimd/pi-gen-action@v1

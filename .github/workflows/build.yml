@@ -187,8 +187,7 @@ jobs:
         with:
           image-name: betterframe-client-${{ inputs.version }}
           stage-list: stage0 stage1 stage2 ./deploy/pi-gen/stage-betterframe-client
-          # pi-gen default release is trixie (Debian 13). Leave unset so we
-          # always track upstream pi-gen's current target.
+          # pi-gen default release is trixie (Debian 13).
           enable-ssh: 1
           username: bfadmin
           password: betterframe
@@ -196,8 +195,12 @@ jobs:
           timezone: Etc/UTC
           hostname: betterframe-kiosk
           compression: xz
-          # Surface pi-gen's stdout/stderr so failures show their real cause.
           verbose-output: true
+          # Inject qemu-user-static + binfmt-support INTO the pi-gen build
+          # container so its binfmt_misc check finds qemu-aarch64. The host
+          # tonistiigi/binfmt registration alone doesn't propagate into
+          # pi-gen's nested mount namespace.
+          extra-host-dependencies: qemu-user-static binfmt-support
 
       - name: List pi-gen output
         run: ls -la deploy/ || true

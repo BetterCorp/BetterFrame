@@ -175,17 +175,24 @@ jobs:
       # docker/setup-qemu-action wraps, called directly here so we control
       # the flags + can sanity-check after.
       - name: Register QEMU binfmt for arm64
-        # tonistiigi/binfmt --install arm64 sets the F (fix-binary) flag,
-        # so the kernel preloads qemu-aarch64-static into kernel memory at
-        # registration time. The qemu emulation then works inside pi-gen's
-        # nested container without needing /usr/bin/qemu-aarch64-static to
-        # be present in the chroot.
+        # Host-install qemu-user-static (Debian/Ubuntu package). It auto-
+        # registers binfmt_misc entries pointing at
+        # /usr/bin/qemu-aarch64-static. The Debian post-install also sets
+        # the F (fix-binary) flag so the kernel preloads the static binary
+        # bytes — meaning the chroot inside pi-gen doesn't need a copy.
+        # tonistiigi/binfmt only ships /usr/bin/qemu-aarch64 (dynamic),
+        # which fails inside a chroot at exec time when ld.so + libs are
+        # missing. Pi-gen specifically wants the -static path.
         run: |
-          docker run --rm --privileged tonistiigi/binfmt --install arm64
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user-static binfmt-support
+          sudo update-binfmts --enable qemu-aarch64
           echo "--- binfmt_misc registrations ---"
           ls -la /proc/sys/fs/binfmt_misc/ || true
-          echo "--- qemu-aarch64 detail (look for 'flags: F') ---"
+          echo "--- qemu-aarch64 detail (interpreter should be -static) ---"
           cat /proc/sys/fs/binfmt_misc/qemu-aarch64 || true
+          file /usr/bin/qemu-aarch64-static || true
 
       - name: Build Pi image (pi-gen)
         uses: usimd/pi-gen-action@v1

@@ -2,10 +2,10 @@
 # each as a GitHub Release asset, and optionally auto-import into a running
 # BetterFrame server via /api/admin/firmware/import.
 #
-# Build environment is debian:bookworm-slim (matches Raspberry Pi OS Bookworm
-# the kiosk deploys to). Building on Ubuntu would link against a newer glibc
-# than the Pi ships → `GLIBC_2.38 not found` at runtime. Runner host distro
-# doesn't matter; we run all steps inside the bookworm container.
+# Build environment is debian:trixie-slim (matches Raspberry Pi OS Trixie
+# the kiosk deploys to). Trixie ships gtk4 4.14 + libwebkitgtk-6.0 natively,
+# no backports needed. glibc matches Pi OS Trixie → no runtime symbol drift.
+# Runner host distro doesn't matter; everything runs inside the container.
 #
 # Required secrets:
 #   BF_AUTOIMPORT_URL       e.g. https://bf.example.com  (optional)
@@ -43,10 +43,10 @@ jobs:
 
     runs-on: ${{ matrix.runs-on }}
 
-    # Lock glibc + APT package set to Bookworm — matches RPi OS Bookworm
-    # (Debian 12) which kiosks run. Raspbian is Debian; same packages.
+    # Lock glibc + APT package set to Trixie — matches RPi OS Trixie
+    # (Debian 13) which kiosks run. Raspbian is Debian; same packages.
     container:
-      image: debian:bookworm-slim
+      image: debian:trixie-slim
 
     steps:
       - name: Bootstrap apt + git (container has none preinstalled)
@@ -78,8 +78,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install GTK/GStreamer/WebKit build deps
-        # gtk4-rs 0.9 with the v4_8 feature builds against bookworm's stock
-        # libgtk-4-dev 4.8.3 — same version that ships on Pi OS Bookworm.
+        # Trixie stock: gtk4 4.14 + libwebkitgtk-6.0 — no backports needed.
         run: |
           apt-get install -y --no-install-recommends \
             libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \

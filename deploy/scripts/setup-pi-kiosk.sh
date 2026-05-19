@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Single-host BetterFrame installer/updater for Raspberry Pi 5 (Bookworm+).
+# Single-host BetterFrame installer/updater for Raspberry Pi 5 (Trixie+).
 #
 # What it does (every step idempotent — safe to re-run for updates):
 #   1. clone or `git pull` the BetterFrame repo into the invoking user's home
@@ -260,7 +260,7 @@ EOF
     -o "${THEME_DIR}/logo.png"
   plymouth-set-default-theme -R betterframe
 
-  # Find the boot config / cmdline file. Bookworm uses /boot/firmware/, older
+  # Find the boot config / cmdline file. Bookworm/Trixie use /boot/firmware/, older
   # Pi images use /boot/.
   if [ -f /boot/firmware/cmdline.txt ]; then
     BOOT_DIR=/boot/firmware

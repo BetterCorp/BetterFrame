@@ -6,10 +6,9 @@ description = "BetterFrame kiosk — multi-camera display with GTK4 + GStreamer"
 license = "AGPL-3.0-only OR Commercial"
 
 [dependencies]
-# GTK4 for windowing/layout. v4_8 = Pi OS Bookworm's libgtk-4 version. We
-# don't use any 4.12+ APIs; bumping the feature gate would force pulling
-# from backports for no functional gain.
-gtk4 = { version = "0.9", features = ["v4_8"] }
+# GTK4 for windowing/layout. v4_14 = Debian Trixie / Pi OS Trixie stock
+# libgtk-4-dev — keeps us on latest-stable without backports.
+gtk4 = { version = "0.9", features = ["v4_14"] }
 
 # GStreamer for RTSP decode
 gstreamer = "0.23"

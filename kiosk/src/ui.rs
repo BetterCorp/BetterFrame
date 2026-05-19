@@ -296,7 +296,7 @@ fn activate(app: &Application) {
     });
 }
 
-enum WorkerMsg {
+pub enum WorkerMsg {
     ShowPairingCode(String),
     RenderBundle(KioskBundle, String, String),
     SwitchLayout(u32),

@@ -9,6 +9,8 @@ mod pipeline;
 mod ui;
 mod ws_client;
 
+pub use ui::WorkerMsg;
+
 pub enum ServerMsg {
     ReloadBundle,
     Standby,

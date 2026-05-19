@@ -15,6 +15,8 @@ name: release-kiosk
 
 on:
   push:
+    branches:
+      - master
     tags:
       - "v*"
   workflow_dispatch:
@@ -24,6 +26,12 @@ on:
         type: choice
         options: ["dev", "beta", "stable"]
         default: "dev"
+
+# Cancel an in-flight run when a newer commit lands on the same branch —
+# dev channel only needs the latest.
+concurrency:
+  group: release-kiosk-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
   contents: write
@@ -68,11 +76,15 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             channel="${{ inputs.channel }}"
             version="0.0.0-dev.$(git rev-parse --short HEAD)"
-          else
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             tag="${GITHUB_REF#refs/tags/v}"
             version="$tag"
             if [[ "$tag" == *"-beta."* ]]; then channel="beta";
             else channel="stable"; fi
+          else
+            # Push to master → auto dev channel build.
+            channel="dev"
+            version="0.0.0-dev.$(git rev-parse --short HEAD)"
           fi
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"

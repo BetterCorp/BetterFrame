@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use base64::Engine as _;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey, pkcs8::DecodePublicKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};

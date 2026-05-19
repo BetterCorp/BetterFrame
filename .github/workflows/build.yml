@@ -62,7 +62,7 @@ jobs:
             ca-certificates curl git build-essential pkg-config jq sudo
           git config --global --add safe.directory '*'
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref }}
 
@@ -91,7 +91,7 @@ jobs:
              betterframe-kiosk-${{ inputs.version }}-${{ matrix.target }}
 
       - name: Upload to GitHub Release (binary)
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag }}
           files: kiosk/betterframe-kiosk-${{ inputs.version }}-${{ matrix.target }}
@@ -118,7 +118,7 @@ jobs:
             "${BF_AUTOIMPORT_URL}/api/admin/firmware/import"
 
       - name: Upload artifact (always)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: betterframe-kiosk-${{ matrix.target }}
           path: kiosk/betterframe-kiosk-${{ inputs.version }}-${{ matrix.target }}
@@ -130,12 +130,12 @@ jobs:
     needs: binary
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref }}
 
       - name: Pull kiosk aarch64 binary from this run's artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: betterframe-kiosk-aarch64-unknown-linux-gnu
           path: staging/
@@ -168,6 +168,14 @@ jobs:
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           chmod +x deploy/pi-gen/stage-betterframe-client/01-install-kiosk/00-run-chroot.sh
 
+      # x86 runner can't natively execute the arm64 binaries pi-gen drops
+      # into the chroot. Register QEMU binfmt_misc handlers so the chroot's
+      # arm64 dpkg / apt-get / etc work transparently.
+      - name: Register QEMU binfmt for arm64
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
       - name: Build Pi image (pi-gen)
         uses: usimd/pi-gen-action@v1
         with:
@@ -189,7 +197,7 @@ jobs:
         run: ls -la deploy/ || true
 
       - name: Upload image to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag }}
           files: |

@@ -43,7 +43,7 @@ jobs:
       ref:     ${{ steps.compute.outputs.ref }}
       build_image: ${{ steps.compute.outputs.build_image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0   # need tags for git describe
 

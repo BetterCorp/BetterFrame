@@ -8,6 +8,12 @@ FROM nodered/node-red:latest
 
 USER root
 
+# gosu lets the entrypoint drop from root to node-red after fixing /data
+# perms. nodered/node-red is Debian-slim based so apt is the right channel.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gosu \
+ && rm -rf /var/lib/apt/lists/*
+
 # Copy our nodes into a path outside /data (which is volume-mounted)
 COPY nodered /usr/src/betterframe-nodes
 

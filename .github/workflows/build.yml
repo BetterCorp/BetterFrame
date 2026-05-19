@@ -175,11 +175,16 @@ jobs:
       # docker/setup-qemu-action wraps, called directly here so we control
       # the flags + can sanity-check after.
       - name: Register QEMU binfmt for arm64
+        # tonistiigi/binfmt --install arm64 sets the F (fix-binary) flag,
+        # so the kernel preloads qemu-aarch64-static into kernel memory at
+        # registration time. The qemu emulation then works inside pi-gen's
+        # nested container without needing /usr/bin/qemu-aarch64-static to
+        # be present in the chroot.
         run: |
           docker run --rm --privileged tonistiigi/binfmt --install arm64
           echo "--- binfmt_misc registrations ---"
           ls -la /proc/sys/fs/binfmt_misc/ || true
-          echo "--- qemu-aarch64 details ---"
+          echo "--- qemu-aarch64 detail (look for 'flags: F') ---"
           cat /proc/sys/fs/binfmt_misc/qemu-aarch64 || true
 
       - name: Build Pi image (pi-gen)
@@ -195,6 +200,9 @@ jobs:
           timezone: Etc/UTC
           hostname: betterframe-kiosk
           compression: xz
+          # Install qemu inside the pi-gen container so its chroot's arm64
+          # binaries can exec. Documented input in v1.11.
+          extra-host-dependencies: qemu-user-static binfmt-support
 
       - name: List pi-gen output
         run: ls -la deploy/ || true

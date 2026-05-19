@@ -200,10 +200,8 @@ jobs:
           timezone: Etc/UTC
           hostname: betterframe-kiosk
           compression: xz
-          # No extra-host-dependencies — tonistiigi/binfmt already
-          # registered qemu-aarch64 with the F flag (POCF), which loads
-          # the static QEMU into kernel memory so chroot exec works
-          # without needing the binary in the chroot.
+          # Surface pi-gen's stdout/stderr (default suppressed).
+          verbose-output: true
 
       - name: List pi-gen output
         run: ls -la deploy/ || true

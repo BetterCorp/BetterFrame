@@ -1,16 +1,30 @@
 #!/usr/bin/env sh
-# Seed /data/settings.js with our BF defaults on first boot.
-# /data is volume-mounted, so the COPY in the Dockerfile gets hidden
-# unless we plant a copy after the mount comes up.
+# Seed /data/settings.js on first boot. The /data named volume overlays
+# anything we COPY into /data during image build, so the file has to be
+# planted after the volume mounts.
+#
+# Runs as root, fixes /data ownership + any stale directories left by
+# previous bind-mount attempts, then drops to the node-red user.
 set -eu
 
 DATA=/data
 TPL=/usr/src/bf-settings.js
+TARGET="$DATA/settings.js"
 
-if [ ! -f "$DATA/settings.js" ]; then
-  echo "[bf-nodered] seeding $DATA/settings.js from $TPL"
-  cp "$TPL" "$DATA/settings.js"
+# Clear stale path if a previous broken bind-mount left a directory where
+# we expect a file.
+if [ -d "$TARGET" ]; then
+  echo "[bf-nodered] $TARGET is a directory (stale bind mount?). Removing."
+  rm -rf "$TARGET"
 fi
 
-# Exec the upstream nodered entrypoint args verbatim.
-exec npm start --cache /data/.npm -- --userDir /data "$@"
+if [ ! -f "$TARGET" ]; then
+  echo "[bf-nodered] seeding $TARGET from $TPL"
+  cp "$TPL" "$TARGET"
+fi
+
+# Ensure the volume + seeded file are owned by node-red.
+chown -R node-red:root "$DATA" 2>/dev/null || true
+
+# Drop to the node-red user before launching. The base image ships su-exec.
+exec su-exec node-red:node-red npm start --cache /data/.npm -- --userDir /data "$@"

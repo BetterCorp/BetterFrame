@@ -23,7 +23,10 @@ RUN cd /usr/src/betterframe-nodes && \
     npm install --omit=dev && \
     chown -R node-red:root /usr/src/betterframe-nodes /usr/src/bf-settings.js
 
-USER node-red
+# Run entrypoint as root so it can fix stale /data state (e.g. /data/settings.js
+# left as a directory by a previous broken bind mount). Entrypoint drops to
+# node-red via su-exec before launching the actual server.
+USER root
 
 ENTRYPOINT ["/usr/local/bin/bf-nodered-entrypoint"]
 CMD []

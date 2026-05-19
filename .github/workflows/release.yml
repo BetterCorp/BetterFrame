@@ -1,0 +1,131 @@
+# Single entrypoint for release automation.
+#
+# Triggers:
+#   - push to master       → auto-tag (semver patch bump + -dev.<sha>),
+#                            create prerelease, invoke build.yml
+#   - push of v* tag       → use tag as-is, create release (or update),
+#                            invoke build.yml; channel = stable / beta
+#
+# Build steps live in build.yml (reusable). This file only owns versioning
+# + release creation. Skip the heavy image build for dev runs (binary only)
+# so master pushes don't take 30 min; tag pushes do the full image.
+
+name: release
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Force a tagged dev release (one-off)."
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+permissions:
+  contents: write
+
+jobs:
+  # ---- Tag + release record -------------------------------------------------
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      tag:     ${{ steps.compute.outputs.tag }}
+      channel: ${{ steps.compute.outputs.channel }}
+      ref:     ${{ steps.compute.outputs.ref }}
+      build_image: ${{ steps.compute.outputs.build_image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need tags for git describe
+
+      - name: Compute version / channel / tag
+        id: compute
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          short=$(git rev-parse --short HEAD)
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            version="${tag#v}"
+            if [[ "$version" == *"-beta."* ]]; then
+              channel=beta
+            elif [[ "$version" == *"-dev."* ]]; then
+              channel=dev
+            else
+              channel=stable
+            fi
+            build_image=true
+          else
+            # Master push (or workflow_dispatch). Find latest stable tag,
+            # bump patch, append -dev.<sha>. Prerelease.
+            latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
+              | grep -v '-' | head -1 || true)
+            if [ -z "$latest" ]; then latest="v0.0.0"; fi
+            base="${latest#v}"
+            IFS=. read -r MAJ MIN PAT <<< "$base"
+            PAT=$((PAT + 1))
+            version="${MAJ}.${MIN}.${PAT}-dev.${short}"
+            tag="v${version}"
+            channel=dev
+            # Skip image build for master pushes — too slow. Image happens on
+            # tags or when workflow_dispatch.bump=true.
+            build_image=${{ inputs.bump == true || 'false' }}
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag"           >> "$GITHUB_OUTPUT"
+          echo "channel=$channel"   >> "$GITHUB_OUTPUT"
+          echo "ref=$GITHUB_SHA"    >> "$GITHUB_OUTPUT"
+          echo "build_image=$build_image" >> "$GITHUB_OUTPUT"
+
+      - name: Create / ensure release record (lightweight tag for master pushes)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG:     ${{ steps.compute.outputs.tag }}
+          CHANNEL: ${{ steps.compute.outputs.channel }}
+        run: |
+          set -e
+          # For master / dispatch we need to create the tag ourselves.
+          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            git config user.email "actions@github.com"
+            git config user.name  "github-actions[bot]"
+            git tag -a "$TAG" -m "Auto-tag $TAG ($CHANNEL)"
+            git push origin "$TAG"
+          fi
+          # Create release if missing. Mark dev/beta as prerelease.
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            extra=""
+            [[ "$CHANNEL" != "stable" ]] && extra="--prerelease"
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --target "$GITHUB_SHA" \
+              --notes "Channel: ${CHANNEL}. Commit ${GITHUB_SHA}." \
+              $extra
+          fi
+
+  # ---- Build assets ---------------------------------------------------------
+  build:
+    needs: meta
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.meta.outputs.version }}
+      tag:     ${{ needs.meta.outputs.tag }}
+      channel: ${{ needs.meta.outputs.channel }}
+      ref:     ${{ needs.meta.outputs.ref }}
+      build-image: ${{ needs.meta.outputs.build_image == 'true' }}
+    secrets:
+      BF_AUTOIMPORT_URL:     ${{ secrets.BF_AUTOIMPORT_URL }}
+      BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}

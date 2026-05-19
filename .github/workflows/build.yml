@@ -1,0 +1,188 @@
+# Reusable build workflow. Invoked by release.yml on every master push (dev
+# release) and every v* tag push (stable / beta). Produces:
+#   - betterframe-kiosk-<version>-<arch>           (Linux ELF, no extension)
+#   - betterframe-client-<version>-<arch>.img.xz   (flashable Pi OS image)
+# All assets attached to the GitHub Release at ${{ inputs.tag }}.
+
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Semver without leading v (0.4.2 or 0.4.2-dev.abcdef0)"
+        required: true
+        type: string
+      channel:
+        description: "stable | beta | dev"
+        required: true
+        type: string
+      tag:
+        description: "Git tag (with leading v)"
+        required: true
+        type: string
+      ref:
+        description: "Git ref to check out (commit sha or tag name)"
+        required: true
+        type: string
+      build-image:
+        description: "Also build the flashable .img.xz (slow; skip for fast dev builds)"
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      BF_AUTOIMPORT_URL:
+        required: false
+      BF_AUTOIMPORT_API_KEY:
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  # ---- Per-arch kiosk binary ------------------------------------------------
+  binary:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+          - target: x86_64-unknown-linux-gnu
+            runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ matrix.runs-on }}
+    # Trixie container matches Pi OS Trixie's glibc + apt packages.
+    container:
+      image: debian:trixie-slim
+    steps:
+      - name: Bootstrap apt + git (container has none preinstalled)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config jq sudo
+          git config --global --add safe.directory '*'
+
+      - uses: actions/checkout@v4
+        with: { ref: ${{ inputs.ref }} }
+
+      - name: Install GTK/GStreamer/WebKit build deps
+        run: |
+          apt-get install -y --no-install-recommends \
+            libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libwebkitgtk-6.0-dev libssl-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: cargo build --release
+        working-directory: kiosk
+        env:
+          BF_BUILD_ARCH: ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Strip + rename
+        working-directory: kiosk
+        run: |
+          strip target/${{ matrix.target }}/release/betterframe-kiosk
+          cp target/${{ matrix.target }}/release/betterframe-kiosk \
+             betterframe-kiosk-${{ inputs.version }}-${{ matrix.target }}
+
+      - name: Upload to GitHub Release (binary)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: kiosk/betterframe-kiosk-${{ inputs.version }}-${{ matrix.target }}
+
+      - name: Auto-import into BF server
+        if: env.BF_AUTOIMPORT_URL != '' && env.BF_AUTOIMPORT_API_KEY != ''
+        env:
+          BF_AUTOIMPORT_URL: ${{ secrets.BF_AUTOIMPORT_URL }}
+          BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}
+        working-directory: kiosk
+        run: |
+          bin="betterframe-kiosk-${{ inputs.version }}-${{ matrix.target }}"
+          content_b64=$(base64 -w 0 "$bin")
+          curl -sSf -X POST \
+            -H "Authorization: Bearer ${BF_AUTOIMPORT_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -nc \
+                  --arg v "${{ inputs.version }}" \
+                  --arg c "${{ inputs.channel }}" \
+                  --arg a "${{ matrix.target }}" \
+                  --arg n "GitHub Actions build of ${{ inputs.tag }} (${{ github.sha }})" \
+                  --arg b "$content_b64" \
+                  '{version:$v, channel:$c, arch:$a, release_notes:$n, content_b64:$b}')" \
+            "${BF_AUTOIMPORT_URL}/api/admin/firmware/import"
+
+      - name: Upload artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: betterframe-kiosk-${{ matrix.target }}
+          path: kiosk/betterframe-kiosk-${{ inputs.version }}-${{ matrix.target }}
+          retention-days: 14
+
+  # ---- Flashable Pi OS Trixie image (aarch64 only) -------------------------
+  image:
+    if: ${{ inputs.build-image }}
+    needs: binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: ${{ inputs.ref }} }
+
+      - name: Pull kiosk aarch64 binary from this run's artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: betterframe-kiosk-aarch64-unknown-linux-gnu
+          path: staging/
+
+      - name: Render BF logo for plymouth
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install --no-install-recommends librsvg2-bin
+          mv staging/betterframe-kiosk-${{ inputs.version }}-aarch64-unknown-linux-gnu \
+             staging/betterframe-kiosk
+          chmod +x staging/betterframe-kiosk
+          rsvg-convert -w 480 server/src/web-static/betterframe-logo.svg -o staging/logo.png
+
+      - name: Stage files for pi-gen
+        run: |
+          mkdir -p deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files
+          cp staging/betterframe-kiosk \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp staging/logo.png \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/systemd/betterframe-kiosk.service \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/systemd/betterframe-firmware-rollback.sh \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/pam.d/cage \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/cage.pam
+          cp deploy/plymouth/betterframe/betterframe.plymouth \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/plymouth/betterframe/betterframe.script \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          chmod +x deploy/pi-gen/stage-betterframe-client/01-install-kiosk/00-run-chroot.sh
+
+      - name: Build Pi image (pi-gen)
+        uses: usimd/pi-gen-action@v1
+        with:
+          image-name: betterframe-client-${{ inputs.version }}
+          stage-list: stage0 stage1 stage2 ./deploy/pi-gen/stage-betterframe-client
+          release: trixie
+          enable-ssh: 1
+          username: bfadmin
+          password: betterframe
+          locale: en_US.UTF-8
+          timezone: Etc/UTC
+          hostname: betterframe-kiosk
+          compression: xz
+
+      - name: Upload image to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            deploy/image-betterframe-client-${{ inputs.version }}-lite.img.xz

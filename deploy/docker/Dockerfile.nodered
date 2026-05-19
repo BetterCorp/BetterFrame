@@ -11,9 +11,12 @@ USER root
 # Copy our nodes into a path outside /data (which is volume-mounted)
 COPY nodered /usr/src/betterframe-nodes
 
-# Settings file at a non-/data path so the nodered-data volume doesn't
-# overlay it. CMD passes --settings to point Node-RED at it.
+# Settings template + entrypoint that seeds /data/settings.js on first boot
+# (the /data named volume hides anything we COPY directly there, so we have
+# to plant the file after the volume mount comes up).
 COPY deploy/docker/nodered-settings.js /usr/src/bf-settings.js
+COPY deploy/docker/nodered-entrypoint.sh /usr/local/bin/bf-nodered-entrypoint
+RUN chmod +x /usr/local/bin/bf-nodered-entrypoint
 
 # Install deps for the nodes
 RUN cd /usr/src/betterframe-nodes && \
@@ -22,5 +25,5 @@ RUN cd /usr/src/betterframe-nodes && \
 
 USER node-red
 
-# Override the default CMD to use the baked settings.js.
-CMD ["npm", "start", "--cache", "/data/.npm", "--", "--userDir", "/data", "--settings", "/usr/src/bf-settings.js"]
+ENTRYPOINT ["/usr/local/bin/bf-nodered-entrypoint"]
+CMD []

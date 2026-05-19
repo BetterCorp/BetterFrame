@@ -63,7 +63,8 @@ jobs:
           git config --global --add safe.directory '*'
 
       - uses: actions/checkout@v4
-        with: { ref: ${{ inputs.ref }} }
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install GTK/GStreamer/WebKit build deps
         run: |
@@ -130,7 +131,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { ref: ${{ inputs.ref }} }
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Pull kiosk aarch64 binary from this run's artifact
         uses: actions/download-artifact@v4

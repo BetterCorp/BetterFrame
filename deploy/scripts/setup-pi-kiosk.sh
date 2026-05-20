@@ -235,6 +235,13 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
     /etc/systemd/system/betterframe-kiosk.service
   install -m 755 "${REPO_ROOT}/deploy/systemd/betterframe-firmware-rollback.sh" \
     /usr/local/sbin/betterframe-firmware-rollback.sh
+  install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-rauc-mark-good.service" \
+    /etc/systemd/system/betterframe-rauc-mark-good.service
+  install -m 755 "${REPO_ROOT}/deploy/systemd/betterframe-rauc-mark-good.sh" \
+    /usr/local/sbin/betterframe-rauc-mark-good.sh
+  install -d -m 755 /etc/tmpfiles.d
+  install -m 644 "${REPO_ROOT}/deploy/tmpfiles/betterframe-kiosk.conf" \
+    /etc/tmpfiles.d/betterframe-kiosk.conf
 
   if [ ! -e /etc/default/betterframe-kiosk ]; then
     cat > /etc/default/betterframe-kiosk <<'EOF'
@@ -245,6 +252,7 @@ EOF
 
   systemctl daemon-reload
   systemctl enable betterframe-kiosk.service
+  systemctl enable betterframe-rauc-mark-good.service
   # Restart picks up new binary on re-run.
   systemctl restart betterframe-kiosk.service || true
 

@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::fs;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -254,12 +255,13 @@ fn activate(app: &Application) {
         // firmware updates so kiosks pick up new builds without admin push.
         let mut first_iter = true;
         loop {
-            send_heartbeat_now(&server, &key);
-            if first_iter {
+            let heartbeat_ok = send_heartbeat_now(&server, &key);
+            if first_iter && heartbeat_ok {
                 // Successfully heart-beat at least once → consider this boot a
                 // healthy one. Clears the rollback-pending marker so the next
                 // start doesn't try to roll back a healthy install.
                 firmware::mark_firmware_applied();
+                mark_kiosk_healthy();
                 first_iter = false;
             }
             maybe_apply_firmware_update(&server, &key);
@@ -317,16 +319,26 @@ fn mark_activity(display_id: u32) {
     });
 }
 
-fn send_heartbeat_now(server_url: &str, kiosk_key: &str) {
+fn send_heartbeat_now(server_url: &str, kiosk_key: &str) -> bool {
     let displays = query_displays();
     let hw = hwmon::read();
-    server::heartbeat(server_url, kiosk_key, &displays, &hw);
+    server::heartbeat(server_url, kiosk_key, &displays, &hw)
+}
+
+fn mark_kiosk_healthy() {
+    let _ = fs::create_dir_all("/run/betterframe");
+    if let Err(err) = fs::write("/run/betterframe/kiosk-healthy", b"ok\n") {
+        warn!("failed to write health marker: {err}");
+    }
 }
 
 /// Ask the server whether an update is available. On hit, download + verify
 /// + swap + report + exit (systemd brings up the new binary). On miss or
 /// error: log + keep running. Designed to be safe to call from any thread.
 fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str) {
+    if std::env::var("BF_ENABLE_APP_OTA").as_deref() != Ok("1") {
+        return;
+    }
     let current = env!("CARGO_PKG_VERSION");
     let Some(info) = firmware::check(server_url, kiosk_key, current) else { return };
     info!("firmware: update {} → {} available", current, info.version);

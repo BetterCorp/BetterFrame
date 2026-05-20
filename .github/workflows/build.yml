@@ -168,6 +168,12 @@ jobs:
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/systemd/betterframe-firmware-rollback.sh \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/systemd/betterframe-rauc-mark-good.service \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/systemd/betterframe-rauc-mark-good.sh \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/tmpfiles/betterframe-kiosk.conf \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/pam.d/cage \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/cage.pam
           cp deploy/plymouth/betterframe/betterframe.plymouth \

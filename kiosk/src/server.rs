@@ -246,7 +246,7 @@ pub fn heartbeat(
     key: &str,
     displays: &[(String, u32, u32)],
     hw: &crate::hwmon::HwInfo,
-) {
+) -> bool {
     let client = reqwest::blocking::Client::new();
     let display_info: Vec<_> = displays.iter().enumerate().map(|(index, (name, w, h))| {
         serde_json::json!({ "index": index, "name": name, "width_px": w, "height_px": h })
@@ -256,7 +256,7 @@ pub fn heartbeat(
     let local_key = load_or_create_local_key();
     let local_port: u16 = std::env::var("BF_KIOSK_LOCAL_PORT")
         .ok().and_then(|s| s.parse().ok()).unwrap_or(18090);
-    let _ = client
+    client
         .post(format!("{server}/api/kiosk/heartbeat"))
         .header("Authorization", format!("Bearer {key}"))
         .json(&serde_json::json!({
@@ -269,5 +269,7 @@ pub fn heartbeat(
             "local_port": local_port,
         }))
         .timeout(Duration::from_secs(5))
-        .send();
+        .send()
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
 }

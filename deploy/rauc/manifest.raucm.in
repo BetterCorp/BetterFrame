@@ -1,0 +1,16 @@
+[update]
+compatible=betterframe-rpi5-aarch64
+version=@VERSION@
+description=BetterFrame OS @VERSION@
+build=@GIT_SHA@
+
+[bundle]
+format=verity
+
+[image.bootfs]
+filename=bootfs.vfat
+type=image
+
+[image.rootfs]
+filename=rootfs.ext4
+type=image

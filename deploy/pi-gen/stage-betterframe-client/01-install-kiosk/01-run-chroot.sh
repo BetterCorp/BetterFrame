@@ -22,6 +22,12 @@ install -m 644 /tmp/bf-files/betterframe-kiosk.service /etc/systemd/system/bette
 install -m 644 /tmp/bf-files/cage.pam                  /etc/pam.d/cage
 install -m 755 /tmp/bf-files/betterframe-firmware-rollback.sh \
   /usr/local/sbin/betterframe-firmware-rollback.sh
+install -m 644 /tmp/bf-files/betterframe-rauc-mark-good.service \
+  /etc/systemd/system/betterframe-rauc-mark-good.service
+install -m 755 /tmp/bf-files/betterframe-rauc-mark-good.sh \
+  /usr/local/sbin/betterframe-rauc-mark-good.sh
+install -d -m 755 /etc/tmpfiles.d
+install -m 644 /tmp/bf-files/betterframe-kiosk.conf /etc/tmpfiles.d/betterframe-kiosk.conf
 
 # Default env file — operator may edit on first boot to point at their server.
 cat > /etc/default/betterframe-kiosk <<'EOF'
@@ -41,6 +47,7 @@ plymouth-set-default-theme betterframe || true
 # --- Enable services, disable noise ---
 systemctl enable seatd
 systemctl enable betterframe-kiosk.service
+systemctl enable betterframe-rauc-mark-good.service
 
 # Boot to multi-user, no display manager, no welcome wizard, no getty on tty1.
 systemctl set-default multi-user.target

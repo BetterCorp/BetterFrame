@@ -1,0 +1,15 @@
+[Unit]
+Description=Mark BetterFrame RAUC slot good after kiosk heartbeat
+Documentation=https://github.com/BetterCorp/BetterFrame
+After=betterframe-kiosk.service network-online.target
+Wants=betterframe-kiosk.service network-online.target
+ConditionPathExists=/etc/rauc/system.conf
+ConditionPathExists=/usr/bin/rauc
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/betterframe-rauc-mark-good.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

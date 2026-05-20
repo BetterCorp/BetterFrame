@@ -174,7 +174,9 @@ jobs:
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/plymouth/betterframe/betterframe.script \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
-          chmod +x deploy/pi-gen/stage-betterframe-client/01-install-kiosk/00-run-chroot.sh
+          chmod +x deploy/pi-gen/stage-betterframe-client/01-install-kiosk/00-run.sh \
+                   deploy/pi-gen/stage-betterframe-client/01-install-kiosk/01-run-chroot.sh \
+                   deploy/pi-gen/stage-betterframe-client/prerun.sh
 
       - name: Build Pi image (pi-gen)
         uses: usimd/pi-gen-action@v1.11.0

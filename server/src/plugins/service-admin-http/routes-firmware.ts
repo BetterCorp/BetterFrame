@@ -3,10 +3,11 @@
  *
  * Upload path supports:
  *   - browser multipart form ("upload from your machine")
- *   - CI auto-import via API key (header X-BetterFrame-API-Key: bf-…)
+ *   - CI auto-import via Authorization: Bearer <token>. The token may be a
+ *     DB-backed admin API key or the single-purpose BF_FIRMWARE_IMPORT_API_KEY.
  *     POST /api/admin/firmware/import with JSON {version, channel, arch,
- *     signature, sha256, release_notes, content_b64} so GitHub Actions can
- *     publish releases without a session.
+ *     release_notes, content_b64} so GitHub Actions can publish releases
+ *     without a session.
  */
 import { type H3, getRouterParam, readBody, createError } from "h3";
 import { randomUUID } from "node:crypto";

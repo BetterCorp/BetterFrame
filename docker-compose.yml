@@ -38,6 +38,10 @@ services:
       - BF_SELF_URL=http://server:18080
       # Optional: paste Ed25519 PEM private key here for firmware signing.
       # - BF_FIRMWARE_SIGNING_KEY=
+      # Optional: single-purpose Bearer token for GitHub Actions firmware import.
+      # Set GitHub's BF_AUTOIMPORT_API_KEY secret to the same value.
+      # Generate with: openssl rand -base64 32
+      # - BF_FIRMWARE_IMPORT_API_KEY=
       # Optional MQTT telemetry bridge (ThingsBoard / HA / Influx / etc).
       # - BF_MQTT_URL=mqtt://broker:1883
       # - BF_MQTT_USERNAME=

@@ -6,6 +6,7 @@
  * record so downstream handlers (which always read `event.context.user`)
  * keep working unchanged.
  */
+import { createHash, timingSafeEqual } from "node:crypto";
 import { type H3, getCookie, getRequestPath } from "h3";
 import type { AdminDeps } from "./index.js";
 import type { User, Session } from "../../shared/types.js";
@@ -34,6 +35,14 @@ function syntheticApiKeyUser(keyPrefix: string): User {
     last_login_at: null,
     created_at: new Date(0).toISOString(),
   };
+}
+
+function tokenMatchesEnv(token: string, envName: string): boolean {
+  const expected = process.env[envName]?.trim();
+  if (!expected || expected.length < 32 || token.length < 32) return false;
+  const a = createHash("sha256").update(token).digest();
+  const b = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(a, b);
 }
 
 export function registerMiddleware(app: H3, deps: AdminDeps): void {
@@ -70,6 +79,15 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
       const authz = event.req.headers.get("authorization");
       if (authz && authz.startsWith("Bearer ")) {
         const token = authz.slice(7);
+        if (
+          path === "/api/admin/firmware/import" &&
+          tokenMatchesEnv(token, "BF_FIRMWARE_IMPORT_API_KEY")
+        ) {
+          event.context.user = syntheticApiKeyUser("fw-import");
+          event.context.apiKeyPrefix = "fw-import";
+          return;
+        }
+
         const key = await deps.auth.verifyApiKey(token, event.req.headers.get("x-real-ip"));
         if (!key || !key.scopes.includes("admin")) {
           return new Response(null, { status: 401 });

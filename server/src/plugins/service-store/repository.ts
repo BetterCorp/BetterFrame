@@ -40,6 +40,9 @@ import type {
   Layout,
   LayoutCell,
   LayoutTemplate,
+  OsUpdateRelease,
+  OsUpdateRollout,
+  OsUpdateRolloutState,
   PairingCode,
   Session,
   SetupState,
@@ -64,6 +67,8 @@ import {
   rowToLayout,
   rowToLayoutCell,
   rowToLayoutTemplate,
+  rowToOsUpdateRelease,
+  rowToOsUpdateRollout,
   rowToPairingCode,
   rowToSession,
   rowToSetupState,
@@ -1309,6 +1314,176 @@ export class Repository {
       this.prep(`UPDATE firmware_rollouts SET state = ? WHERE id = ?`).run(state, id);
     }
     void this.notify("firmware_rollouts", "update", id);
+  }
+
+  // ===========================================================================
+  // os_update_releases + os_update_rollouts
+  // ===========================================================================
+
+  createOsUpdateRelease(input: {
+    id: string;
+    version: string;
+    channel: FirmwareChannel;
+    compatibility: string;
+    artifact_path: string;
+    size_bytes: number;
+    sha256: string;
+    release_notes: string | null;
+    uploaded_by: number | null;
+  }): OsUpdateRelease {
+    this.prep(
+      `INSERT INTO os_update_releases
+         (id, version, channel, compatibility, artifact_path, size_bytes, sha256,
+          bundle_format, release_notes, uploaded_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'raucb', ?, ?)`,
+    ).run(
+      input.id,
+      input.version,
+      input.channel,
+      input.compatibility,
+      input.artifact_path,
+      input.size_bytes,
+      input.sha256,
+      input.release_notes,
+      input.uploaded_by,
+    );
+    void this.notify("os_update_releases", "create", input.id);
+    const r = this.getOsUpdateRelease(input.id);
+    if (!r) throw new Error("OS update release vanished after insert");
+    return r;
+  }
+
+  getOsUpdateRelease(id: string): OsUpdateRelease | null {
+    const r = this.prep("SELECT * FROM os_update_releases WHERE id = ?").get(id);
+    return r ? rowToOsUpdateRelease(r as Record<string, unknown>) : null;
+  }
+
+  getOsUpdateReleaseByVersionCompatibility(version: string, compatibility: string): OsUpdateRelease | null {
+    const r = this.prep(
+      "SELECT * FROM os_update_releases WHERE version = ? AND compatibility = ?",
+    ).get(version, compatibility);
+    return r ? rowToOsUpdateRelease(r as Record<string, unknown>) : null;
+  }
+
+  getLatestOsUpdateRelease(channel: FirmwareChannel, compatibility: string): OsUpdateRelease | null {
+    const r = this.prep(
+      `SELECT * FROM os_update_releases
+         WHERE channel = ? AND compatibility = ? AND yanked_at IS NULL
+         ORDER BY uploaded_at DESC
+         LIMIT 1`,
+    ).get(channel, compatibility);
+    return r ? rowToOsUpdateRelease(r as Record<string, unknown>) : null;
+  }
+
+  listOsUpdateReleases(): OsUpdateRelease[] {
+    const rs = this.prep(
+      "SELECT * FROM os_update_releases ORDER BY uploaded_at DESC",
+    ).all();
+    return rs.map((r) => rowToOsUpdateRelease(r as Record<string, unknown>));
+  }
+
+  yankOsUpdateRelease(id: string): void {
+    this.prep("UPDATE os_update_releases SET yanked_at = ? WHERE id = ?").run(isoNow(), id);
+    void this.notify("os_update_releases", "update", id);
+  }
+
+  recordKioskOsUpdateAttempt(
+    kioskId: number,
+    version: string,
+    error: string | null,
+  ): void {
+    this.prep(
+      `UPDATE kiosks SET
+         os_update_last_attempt_at = ?,
+         os_update_last_attempt_version = ?,
+         os_update_last_error = ?
+       WHERE id = ?`,
+    ).run(isoNow(), version, error, kioskId);
+    void this.notify("kiosks", "update", kioskId);
+  }
+
+  setKioskOsUpdatePref(
+    kioskId: number,
+    patch: { channel?: FirmwareChannel; target_version?: string | null },
+  ): void {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (patch.channel !== undefined) {
+      sets.push("os_update_channel = ?");
+      vals.push(patch.channel);
+    }
+    if (patch.target_version !== undefined) {
+      sets.push("os_update_target_version = ?");
+      vals.push(patch.target_version);
+    }
+    if (sets.length === 0) return;
+    vals.push(kioskId);
+    this.db.prepare(`UPDATE kiosks SET ${sets.join(", ")} WHERE id = ?`).run(...(vals as any[]));
+    void this.notify("kiosks", "update", kioskId);
+  }
+
+  createOsUpdateRollout(input: {
+    id: string;
+    release_id: string;
+    target_kiosk_ids: number[];
+    percentage: number;
+    created_by: number | null;
+  }): OsUpdateRollout {
+    this.prep(
+      `INSERT INTO os_update_rollouts
+         (id, release_id, target_kiosk_ids, percentage, created_by, state)
+       VALUES (?, ?, ?, ?, ?, 'queued')`,
+    ).run(
+      input.id,
+      input.release_id,
+      J(input.target_kiosk_ids),
+      input.percentage,
+      input.created_by,
+    );
+    void this.notify("os_update_rollouts", "create", input.id);
+    const r = this.getOsUpdateRollout(input.id);
+    if (!r) throw new Error("OS update rollout vanished after insert");
+    return r;
+  }
+
+  getOsUpdateRollout(id: string): OsUpdateRollout | null {
+    const r = this.prep("SELECT * FROM os_update_rollouts WHERE id = ?").get(id);
+    return r ? rowToOsUpdateRollout(r as Record<string, unknown>) : null;
+  }
+
+  listActiveOsUpdateRolloutsForKiosk(kioskId: number): OsUpdateRollout[] {
+    const rs = this.prep(
+      `SELECT * FROM os_update_rollouts WHERE state = 'active' ORDER BY created_at DESC`,
+    ).all();
+    return rs
+      .map((r) => rowToOsUpdateRollout(r as Record<string, unknown>))
+      .filter((r) => r.target_kiosk_ids.length === 0 || r.target_kiosk_ids.includes(kioskId));
+  }
+
+  listOsUpdateRollouts(): OsUpdateRollout[] {
+    const rs = this.prep(
+      "SELECT * FROM os_update_rollouts ORDER BY created_at DESC",
+    ).all();
+    return rs.map((r) => rowToOsUpdateRollout(r as Record<string, unknown>));
+  }
+
+  updateOsUpdateRolloutState(
+    id: string,
+    state: OsUpdateRolloutState,
+  ): void {
+    const now = isoNow();
+    if (state === "active") {
+      this.prep(
+        `UPDATE os_update_rollouts SET state = ?, started_at = COALESCE(started_at, ?) WHERE id = ?`,
+      ).run(state, now, id);
+    } else if (state === "complete") {
+      this.prep(
+        `UPDATE os_update_rollouts SET state = ?, finished_at = ? WHERE id = ?`,
+      ).run(state, now, id);
+    } else {
+      this.prep(`UPDATE os_update_rollouts SET state = ? WHERE id = ?`).run(state, id);
+    }
+    void this.notify("os_update_rollouts", "update", id);
   }
 
   // ===========================================================================

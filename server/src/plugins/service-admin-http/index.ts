@@ -20,6 +20,7 @@ import { initSecrets, type SecretsApi } from "../../shared/secrets.js";
 import { createAuth, type AuthApi } from "../../shared/auth.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
+import { initOsUpdates, type OsUpdateApi } from "../../shared/os-updates.js";
 import { envStr } from "../../shared/env-overrides.js";
 import type { Repository } from "../service-store/repository.js";
 
@@ -29,6 +30,7 @@ import { registerAuthRoutes } from "./routes-auth.js";
 import { registerAdminRoutes } from "./routes-admin.js";
 import { registerAccountRoutes } from "./routes-account.js";
 import { registerFirmwareRoutes } from "./routes-firmware.js";
+import { registerOsUpdateRoutes } from "./routes-os-updates.js";
 import { registerStaticRoutes } from "./routes-static.js";
 
 // ---- Config -----------------------------------------------------------------
@@ -84,6 +86,7 @@ export interface AdminDeps {
   cookieName: string;
   nodered: NoderedBridge;
   firmware: FirmwareApi;
+  osUpdates: OsUpdateApi;
   dataDir: string;
 }
 
@@ -139,6 +142,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       { dataDir },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
+    const osUpdates = initOsUpdates({ dataDir });
 
     const deps: AdminDeps = {
       repo,
@@ -147,6 +151,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       cookieName,
       nodered,
       firmware,
+      osUpdates,
       dataDir,
     };
 
@@ -159,6 +164,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     registerAdminRoutes(app, deps);
     registerAccountRoutes(app, deps);
     registerFirmwareRoutes(app, deps);
+    registerOsUpdateRoutes(app, deps);
 
     // Auth-check endpoint for Angie auth_request subrequest.
     // Returns 200 if session cookie is valid + admin role, 401 otherwise.

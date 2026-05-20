@@ -22,6 +22,7 @@ import { initiatePairing, claimPairing } from "../../shared/pairing.js";
 import { generateBundle } from "../../shared/bundle.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
+import { initOsUpdates, type OsUpdateApi } from "../../shared/os-updates.js";
 import { envStr } from "../../shared/env-overrides.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
 import { initMqttBridge, type MqttBridge } from "../../shared/mqtt-bridge.js";
@@ -120,6 +121,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       { dataDir },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
+    const osUpdates = initOsUpdates({ dataDir });
     const mqtt = initMqttBridge({
       info: (m) => obs.log.info(m as any, {}),
       warn: (m) => obs.log.warn(m as any, {}),
@@ -153,7 +155,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     });
 
     registerPairingRoutes(app, repo, auth, secrets, codeTtl);
-    registerKioskRoutes(app, repo, auth, secrets, nodered, firmware, mqtt);
+    registerKioskRoutes(app, repo, auth, secrets, nodered, firmware, osUpdates, mqtt);
 
     this.server = serve(app, {
       port: this.config.port,
@@ -270,6 +272,7 @@ function registerKioskRoutes(
   secrets: SecretsApi,
   nodered: NoderedBridge,
   firmware: FirmwareApi,
+  osUpdates: OsUpdateApi,
   mqtt: MqttBridge,
 ): void {
   // Bundle delivery
@@ -609,6 +612,108 @@ function registerKioskRoutes(
       throw createError({ statusCode: 400, statusMessage: "version required" });
     }
     repo.recordKioskFirmwareAttempt(kiosk.id, body.version, body.error ?? null);
+    return { ok: true };
+  });
+
+  /**
+   * Full OS OTA check. `compatibility` is the RAUC compatible string baked
+   * into the image, e.g. betterframe-rpi5-aarch64. The kiosk-side installer
+   * will hand the downloaded bundle to `rauc install`.
+   */
+  app.get("/api/kiosk/os/check", async (event) => {
+    const token = extractBearerToken(event);
+    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
+    const verified = await auth.verifyKioskKey(token);
+    if (!verified) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    const kiosk = repo.getKioskById(verified.id);
+    if (!kiosk) throw createError({ statusCode: 404, statusMessage: "kiosk not found" });
+
+    const url = new URL(event.req.url);
+    const compatibility = url.searchParams.get("compatibility")?.trim();
+    if (!compatibility) {
+      throw createError({ statusCode: 400, statusMessage: "compatibility query param required" });
+    }
+    const currentVersion = url.searchParams.get("current")?.trim() ?? kiosk.os_version ?? "";
+
+    let release = null;
+    if (kiosk.os_update_target_version) {
+      release = repo.getOsUpdateReleaseByVersionCompatibility(kiosk.os_update_target_version, compatibility);
+      if (release?.yanked_at) release = null;
+    }
+    if (!release) {
+      const rollouts = repo.listActiveOsUpdateRolloutsForKiosk(kiosk.id);
+      for (const rollout of rollouts) {
+        if (!isKioskInRolloutBucket(kiosk.id, rollout.id, rollout.percentage)) continue;
+        const r = repo.getOsUpdateRelease(rollout.release_id);
+        if (!r || r.yanked_at) continue;
+        if (r.compatibility !== compatibility) continue;
+        release = r;
+        break;
+      }
+    }
+    if (!release) {
+      const channel = (kiosk.os_update_channel ?? "stable") as FirmwareChannel;
+      release = repo.getLatestOsUpdateRelease(channel, compatibility);
+    }
+
+    if (!release || release.version === currentVersion) {
+      return { up_to_date: true };
+    }
+
+    return {
+      up_to_date: false,
+      update: {
+        release_id: release.id,
+        version: release.version,
+        channel: release.channel,
+        compatibility: release.compatibility,
+        sha256: release.sha256,
+        size_bytes: release.size_bytes,
+        bundle_format: release.bundle_format,
+        download_url: `/api/kiosk/os/download/${release.id}`,
+      },
+    };
+  });
+
+  app.get("/api/kiosk/os/download/:id", async (event) => {
+    const token = extractBearerToken(event);
+    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
+    const kiosk = await auth.verifyKioskKey(token);
+    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+
+    const id = (event.context as any).params?.id as string | undefined
+      ?? new URL(event.req.url).pathname.split("/").pop();
+    if (!id) throw createError({ statusCode: 400, statusMessage: "release id required" });
+
+    const release = repo.getOsUpdateRelease(id);
+    if (!release || release.yanked_at) {
+      throw createError({ statusCode: 404, statusMessage: "release not found" });
+    }
+
+    const bundle = await osUpdates.streamBundle(release.artifact_path);
+    return new Response(bundle.body, {
+      status: 200,
+      headers: {
+        "content-type": "application/vnd.rauc",
+        "content-length": String(bundle.size),
+        "x-bf-sha256": release.sha256,
+        "x-bf-version": release.version,
+        "x-bf-compatibility": release.compatibility,
+      },
+    });
+  });
+
+  app.post("/api/kiosk/os/applied", async (event) => {
+    const token = extractBearerToken(event);
+    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
+    const kiosk = await auth.verifyKioskKey(token);
+    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+
+    const body = await readBody<{ version: string; error?: string }>(event);
+    if (!body?.version) {
+      throw createError({ statusCode: 400, statusMessage: "version required" });
+    }
+    repo.recordKioskOsUpdateAttempt(kiosk.id, body.version, body.error ?? null);
     return { ok: true };
   });
 }

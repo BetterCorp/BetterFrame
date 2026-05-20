@@ -216,6 +216,11 @@ export interface Kiosk {
   firmware_last_attempt_at: string | null;
   firmware_last_attempt_version: string | null;
   firmware_last_error: string | null;
+  os_update_channel: FirmwareChannel;
+  os_update_target_version: string | null;
+  os_update_last_attempt_at: string | null;
+  os_update_last_attempt_version: string | null;
+  os_update_last_error: string | null;
   local_key: string | null;
   local_port: number | null;
   local_last_ip: string | null;
@@ -249,6 +254,7 @@ export interface AuditEntry {
 
 export type FirmwareChannel = "stable" | "beta" | "dev";
 export type FirmwareRolloutState = "queued" | "active" | "paused" | "complete";
+export type OsUpdateRolloutState = FirmwareRolloutState;
 
 export interface FirmwareRelease {
   id: string;
@@ -270,6 +276,33 @@ export interface FirmwareRollout {
   release_id: string;
   target_kiosk_ids: number[];
   state: FirmwareRolloutState;
+  percentage: number;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  created_by: number | null;
+}
+
+export interface OsUpdateRelease {
+  id: string;
+  version: string;
+  channel: FirmwareChannel;
+  compatibility: string;
+  artifact_path: string;
+  size_bytes: number;
+  sha256: string;
+  bundle_format: "raucb";
+  release_notes: string | null;
+  uploaded_at: string;
+  uploaded_by: number | null;
+  yanked_at: string | null;
+}
+
+export interface OsUpdateRollout {
+  id: string;
+  release_id: string;
+  target_kiosk_ids: number[];
+  state: OsUpdateRolloutState;
   percentage: number;
   started_at: string | null;
   finished_at: string | null;

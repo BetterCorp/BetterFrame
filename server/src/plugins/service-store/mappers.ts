@@ -38,6 +38,9 @@ import type {
   LayoutPriority,
   LayoutRegion,
   LayoutTemplate,
+  OsUpdateRelease,
+  OsUpdateRollout,
+  OsUpdateRolloutState,
   PairingCode,
   Session,
   SetupState,
@@ -262,6 +265,11 @@ export function rowToKiosk(r: Row): Kiosk {
     firmware_last_attempt_at: sn(r["firmware_last_attempt_at"]),
     firmware_last_attempt_version: sn(r["firmware_last_attempt_version"]),
     firmware_last_error: sn(r["firmware_last_error"]),
+    os_update_channel: (s(r["os_update_channel"] ?? "stable")) as FirmwareChannel,
+    os_update_target_version: sn(r["os_update_target_version"]),
+    os_update_last_attempt_at: sn(r["os_update_last_attempt_at"]),
+    os_update_last_attempt_version: sn(r["os_update_last_attempt_version"]),
+    os_update_last_error: sn(r["os_update_last_error"]),
     local_key: sn(r["local_key"]),
     local_port: nn(r["local_port"]),
     local_last_ip: sn(r["local_last_ip"]),
@@ -314,6 +322,37 @@ export function rowToFirmwareRollout(r: Row): FirmwareRollout {
     release_id: s(r["release_id"]),
     target_kiosk_ids: j<number[]>(r["target_kiosk_ids"], []),
     state: s(r["state"]) as FirmwareRolloutState,
+    percentage: n(r["percentage"]),
+    started_at: sn(r["started_at"]),
+    finished_at: sn(r["finished_at"]),
+    created_at: s(r["created_at"]),
+    created_by: nn(r["created_by"]),
+  };
+}
+
+export function rowToOsUpdateRelease(r: Row): OsUpdateRelease {
+  return {
+    id: s(r["id"]),
+    version: s(r["version"]),
+    channel: s(r["channel"]) as FirmwareChannel,
+    compatibility: s(r["compatibility"]),
+    artifact_path: s(r["artifact_path"]),
+    size_bytes: n(r["size_bytes"]),
+    sha256: s(r["sha256"]),
+    bundle_format: "raucb",
+    release_notes: sn(r["release_notes"]),
+    uploaded_at: s(r["uploaded_at"]),
+    uploaded_by: nn(r["uploaded_by"]),
+    yanked_at: sn(r["yanked_at"]),
+  };
+}
+
+export function rowToOsUpdateRollout(r: Row): OsUpdateRollout {
+  return {
+    id: s(r["id"]),
+    release_id: s(r["release_id"]),
+    target_kiosk_ids: j<number[]>(r["target_kiosk_ids"], []),
+    state: s(r["state"]) as OsUpdateRolloutState,
     percentage: n(r["percentage"]),
     started_at: sn(r["started_at"]),
     finished_at: sn(r["finished_at"]),

@@ -80,11 +80,12 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
       if (authz && authz.startsWith("Bearer ")) {
         const token = authz.slice(7);
         if (
-          path === "/api/admin/firmware/import" &&
-          tokenMatchesEnv(token, "BF_FIRMWARE_IMPORT_API_KEY")
+          (path === "/api/admin/firmware/import" || path === "/api/admin/os/import") &&
+          (tokenMatchesEnv(token, "BF_FIRMWARE_IMPORT_API_KEY") || tokenMatchesEnv(token, "BF_OTA_IMPORT_API_KEY"))
         ) {
-          event.context.user = syntheticApiKeyUser("fw-import");
-          event.context.apiKeyPrefix = "fw-import";
+          const label = path === "/api/admin/os/import" ? "ota-import" : "fw-import";
+          event.context.user = syntheticApiKeyUser(label);
+          event.context.apiKeyPrefix = label;
           return;
         }
 

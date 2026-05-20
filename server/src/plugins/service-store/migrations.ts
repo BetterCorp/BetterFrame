@@ -745,6 +745,39 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS idx_firmware_rollouts_state ON firmware_rollouts(state)`,
 
+  // ---- full OS OTA ---------------------------------------------------------
+  // One row per signed RAUC bundle. compatibility must match the kiosk's RAUC
+  // compatible string (for example betterframe-rpi5-aarch64).
+  `CREATE TABLE IF NOT EXISTS os_update_releases (
+    id TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    channel TEXT NOT NULL CHECK(channel IN ('stable', 'beta', 'dev')),
+    compatibility TEXT NOT NULL,
+    artifact_path TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    bundle_format TEXT NOT NULL DEFAULT 'raucb' CHECK(bundle_format = 'raucb'),
+    release_notes TEXT,
+    uploaded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    yanked_at TEXT
+  ) STRICT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_os_update_releases_version_compat ON os_update_releases(version, compatibility)`,
+  `CREATE INDEX IF NOT EXISTS idx_os_update_releases_channel ON os_update_releases(channel, compatibility, uploaded_at DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS os_update_rollouts (
+    id TEXT PRIMARY KEY,
+    release_id TEXT NOT NULL REFERENCES os_update_releases(id) ON DELETE CASCADE,
+    target_kiosk_ids TEXT NOT NULL DEFAULT '[]',
+    state TEXT NOT NULL DEFAULT 'queued' CHECK(state IN ('queued', 'active', 'paused', 'complete')),
+    percentage INTEGER NOT NULL DEFAULT 100 CHECK(percentage BETWEEN 1 AND 100),
+    started_at TEXT,
+    finished_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_os_update_rollouts_state ON os_update_rollouts(state)`,
+
   // Per-kiosk firmware preferences + update tracking.
   (db: DatabaseSync) => {
     addColumnIfNotExists(db, "kiosks", "firmware_channel", "TEXT NOT NULL DEFAULT 'stable'");
@@ -752,6 +785,11 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "kiosks", "firmware_last_attempt_at", "TEXT");
     addColumnIfNotExists(db, "kiosks", "firmware_last_attempt_version", "TEXT");
     addColumnIfNotExists(db, "kiosks", "firmware_last_error", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "os_update_channel", "TEXT NOT NULL DEFAULT 'stable'");
+    addColumnIfNotExists(db, "kiosks", "os_update_target_version", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "os_update_last_attempt_at", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "os_update_last_attempt_version", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "os_update_last_error", "TEXT");
   },
 
   // ---- Kiosk LAN-side local server: reported via heartbeat ------------------

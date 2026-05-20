@@ -1318,6 +1318,81 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
+  // Managed-image device config — admin pushes hostname/timezone/network/wifi
+  // for kiosks running our pre-built Pi image. Builds a ManagedConfig object,
+  // encrypts the wifi PSK with the cluster key (so it can be stored at rest
+  // and delivered as ciphertext that the kiosk decrypts on-device with the
+  // cluster key it received at pairing), then bumps managed_config_version
+  // so the next heartbeat ships it to the kiosk.
+  app.post("/admin/kiosks/:id/managed-config", async (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const kiosk = deps.repo.getKioskById(id);
+    if (!kiosk) throw new Error("kiosk not found");
+    if (!kiosk.managed_image) throw new Error("kiosk is not running a managed image");
+    const body = await readBody<Record<string, string>>(event);
+
+    const trim = (v: string | undefined) => (v ?? "").trim();
+    const cfg: Record<string, unknown> = {};
+    const hostname = trim(body?.["hostname"]);
+    if (hostname) cfg["hostname"] = hostname;
+    const timezone = trim(body?.["timezone"]);
+    if (timezone) cfg["timezone"] = timezone;
+
+    const netMode = trim(body?.["network_mode"]);
+    if (netMode === "dhcp" || netMode === "static") {
+      const net: Record<string, unknown> = { mode: netMode };
+      const iface = trim(body?.["network_interface"]);
+      if (iface) net["interface"] = iface;
+      if (netMode === "static") {
+        const ipCidr = trim(body?.["network_ip_cidr"]);
+        if (ipCidr) net["ip_cidr"] = ipCidr;
+        const gw = trim(body?.["network_gateway"]);
+        if (gw) net["gateway"] = gw;
+        const dnsRaw = trim(body?.["network_dns"]);
+        if (dnsRaw) {
+          net["dns"] = dnsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+        }
+      }
+      const vlanRaw = trim(body?.["network_vlan_id"]);
+      if (vlanRaw) {
+        const vlanId = Number(vlanRaw);
+        if (Number.isInteger(vlanId) && vlanId >= 1 && vlanId <= 4094) {
+          net["vlan_id"] = vlanId;
+        }
+      }
+      cfg["network"] = net;
+    }
+
+    // Wifi: load existing first so blank PSK = "keep current". Re-encrypt PSK
+    // only when the operator actually typed one.
+    const ssid = trim(body?.["wifi_ssid"]);
+    const pskPlaintext = body?.["wifi_psk"] ?? "";
+    if (ssid) {
+      const prev = kiosk.managed_config_json ? JSON.parse(kiosk.managed_config_json) : null;
+      let pskCiphertext: string | null = prev?.wifi?.psk_ciphertext ?? null;
+      if (pskPlaintext) {
+        pskCiphertext = deps.secrets.encryptString(pskPlaintext, "cluster");
+      }
+      if (pskCiphertext) {
+        cfg["wifi"] = { ssid, psk_ciphertext: pskCiphertext };
+      }
+    }
+
+    deps.repo.updateKiosk(id, {
+      managed_config_json: JSON.stringify(cfg),
+      managed_config_version: kiosk.managed_config_version + 1,
+      managed_config_error: null,
+    } as any);
+
+    audit(deps.repo, event as any, "kiosk.managed_config.update", {
+      resource_type: "kiosk",
+      resource_id: String(id),
+      metadata: { version: kiosk.managed_config_version + 1 },
+    });
+
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+  });
+
   app.post("/admin/kiosks/:id/labels", async (event) => {
     const kioskId = Number(getRouterParam(event, "id"));
     const body = await readBody<Record<string, string>>(event);

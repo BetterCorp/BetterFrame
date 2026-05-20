@@ -971,11 +971,12 @@ export class Repository {
     key_prefix: string;
     capabilities?: string[];
     hardware_model?: string | null;
+    managed_image?: boolean;
   }): Kiosk {
     const result = this.prep(
       `INSERT INTO kiosks
-        (name, key_hash, key_prefix, capabilities, hardware_model, paired_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+        (name, key_hash, key_prefix, capabilities, hardware_model, paired_at, managed_image)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.name,
       input.key_hash,
@@ -983,6 +984,7 @@ export class Repository {
       J(input.capabilities ?? []),
       input.hardware_model ?? null,
       isoNow(),
+      input.managed_image ? 1 : 0,
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("kiosks", "create", id);

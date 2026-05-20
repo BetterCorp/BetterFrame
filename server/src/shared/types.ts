@@ -219,6 +219,14 @@ export interface Kiosk {
   local_key: string | null;
   local_port: number | null;
   local_last_ip: string | null;
+  // Managed-image device config. Only meaningful when managed_image=true; for
+  // BYO-OS kiosks these fields stay at defaults and the admin UI hides them.
+  managed_image: boolean;
+  managed_config_json: string | null; // serialized ManagedConfig payload
+  managed_config_version: number; // server-side, bumps on each save
+  managed_config_applied_version: number; // echoed by kiosk after successful apply
+  managed_config_applied_at: string | null;
+  managed_config_error: string | null;
   created_at: string;
 }
 

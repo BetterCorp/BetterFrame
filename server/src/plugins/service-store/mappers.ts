@@ -265,6 +265,12 @@ export function rowToKiosk(r: Row): Kiosk {
     local_key: sn(r["local_key"]),
     local_port: nn(r["local_port"]),
     local_last_ip: sn(r["local_last_ip"]),
+    managed_image: b(r["managed_image"]),
+    managed_config_json: sn(r["managed_config_json"]),
+    managed_config_version: n(r["managed_config_version"] ?? 0),
+    managed_config_applied_version: n(r["managed_config_applied_version"] ?? 0),
+    managed_config_applied_at: sn(r["managed_config_applied_at"]),
+    managed_config_error: sn(r["managed_config_error"]),
     created_at: s(r["created_at"]),
   };
 }

@@ -1375,6 +1375,116 @@ export function renderKioskLabels(
   );
 }
 
+/**
+ * Managed-image device config editor. Only rendered when the kiosk reported
+ * managed_image=true at pairing. Server pushes the resulting JSON on the
+ * next heartbeat; kiosk applies it and echoes the version back, so we show
+ * "version N applied at …" plus the last error (if any) so the operator can
+ * see whether their change actually landed.
+ */
+function ManagedConfigCard(props: { kiosk: Kiosk }) {
+  const k = props.kiosk;
+  let cfg: {
+    hostname?: string;
+    timezone?: string;
+    network?: {
+      mode?: string;
+      interface?: string;
+      ip_cidr?: string;
+      gateway?: string;
+      dns?: string[];
+      vlan_id?: number;
+    };
+    wifi?: { ssid?: string };
+  } = {};
+  if (k.managed_config_json) {
+    try { cfg = JSON.parse(k.managed_config_json); } catch { /* ignore */ }
+  }
+  const net = cfg.network ?? {};
+  const wifi = cfg.wifi ?? {};
+  const pending = k.managed_config_version > k.managed_config_applied_version;
+  return (
+    <div class="card" style="margin-bottom:1.5rem">
+      <h2 style="margin:0 0 1rem; font-size:1.1rem">Managed Config (Pi image)</h2>
+      <div style="font-size:0.85rem; color:#666; margin-bottom:0.75rem">
+        <div>
+          Version: {String(k.managed_config_version)}
+          {" · Applied: "}{String(k.managed_config_applied_version)}
+          {k.managed_config_applied_at ? <> ({formatTime(k.managed_config_applied_at)})</> : null}
+          {pending ? <span style="color:#b06; margin-left:0.5rem">pending push…</span> : null}
+        </div>
+        {k.managed_config_error
+          ? <div style="color:#b00; margin-top:0.25rem">Last error: {k.managed_config_error}</div>
+          : null}
+      </div>
+      <form method="post" action={`/admin/kiosks/${k.id}/managed-config`}>
+        <div class="form-group">
+          <label for="mc_hostname">Hostname</label>
+          <input id="mc_hostname" name="hostname" type="text" class="form-input"
+            value={cfg.hostname ?? ""} placeholder="betterframe-kiosk" />
+        </div>
+        <div class="form-group">
+          <label for="mc_timezone">Timezone</label>
+          <input id="mc_timezone" name="timezone" type="text" class="form-input"
+            value={cfg.timezone ?? ""} placeholder="Etc/UTC" />
+        </div>
+
+        <h3 style="margin:1rem 0 0.5rem; font-size:0.95rem">Network</h3>
+        <div class="form-group">
+          <label for="mc_net_mode">Mode</label>
+          <select id="mc_net_mode" name="network_mode" class="form-input">
+            <option value="" selected={!net.mode}>—</option>
+            <option value="dhcp" selected={net.mode === "dhcp"}>DHCP</option>
+            <option value="static" selected={net.mode === "static"}>Static</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="mc_net_iface">Interface</label>
+          <input id="mc_net_iface" name="network_interface" type="text" class="form-input"
+            value={net.interface ?? ""} placeholder="eth0" />
+        </div>
+        <div class="form-group">
+          <label for="mc_net_ip">Static IP (CIDR)</label>
+          <input id="mc_net_ip" name="network_ip_cidr" type="text" class="form-input"
+            value={net.ip_cidr ?? ""} placeholder="192.168.1.50/24" />
+        </div>
+        <div class="form-group">
+          <label for="mc_net_gw">Gateway</label>
+          <input id="mc_net_gw" name="network_gateway" type="text" class="form-input"
+            value={net.gateway ?? ""} placeholder="192.168.1.1" />
+        </div>
+        <div class="form-group">
+          <label for="mc_net_dns">DNS (comma-separated)</label>
+          <input id="mc_net_dns" name="network_dns" type="text" class="form-input"
+            value={(net.dns ?? []).join(", ")} placeholder="1.1.1.1, 8.8.8.8" />
+        </div>
+        <div class="form-group">
+          <label for="mc_net_vlan">VLAN ID</label>
+          <input id="mc_net_vlan" name="network_vlan_id" type="number" min="1" max="4094"
+            class="form-input" value={net.vlan_id != null ? String(net.vlan_id) : ""} />
+        </div>
+
+        <h3 style="margin:1rem 0 0.5rem; font-size:0.95rem">Wi-Fi (optional)</h3>
+        <div class="form-group">
+          <label for="mc_wifi_ssid">SSID</label>
+          <input id="mc_wifi_ssid" name="wifi_ssid" type="text" class="form-input"
+            value={wifi.ssid ?? ""} />
+        </div>
+        <div class="form-group">
+          <label for="mc_wifi_psk">PSK</label>
+          <input id="mc_wifi_psk" name="wifi_psk" type="password" class="form-input"
+            placeholder={wifi.ssid ? "(unchanged — leave blank to keep)" : ""} />
+          <div style="font-size:0.75rem; color:#999; margin-top:0.2rem">
+            Encrypted with cluster key before storage. Leave blank to keep existing PSK.
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary">Save &amp; Push</button>
+      </form>
+    </div>
+  );
+}
+
 export function KioskEditPage(props: KioskEditProps) {
   const k = props.kiosk;
   return (
@@ -1630,6 +1740,8 @@ export function KioskEditPage(props: KioskEditProps) {
             {renderKioskLabels(k.id, props.labels, props.allLabels)}
           </div>
         </div>
+
+        {k.managed_image ? <ManagedConfigCard kiosk={k} /> : null}
 
         <form method="post" action={`/admin/kiosks/${k.id}/delete`} style="margin-top:1rem">
           <button type="submit" class="btn btn-danger" {...{"onclick": "return confirm('Delete this kiosk?')"}}>Delete Kiosk</button>

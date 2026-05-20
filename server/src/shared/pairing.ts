@@ -28,6 +28,8 @@ export interface PairingInitiateInput {
   proposedName: string | null;
   hardwareModel: string | null;
   capabilities: string[];
+  /** True iff kiosk runs our pre-built Pi image with the apply-config helper. */
+  managedImage?: boolean;
   codeTtlSeconds: number;
 }
 
@@ -56,7 +58,7 @@ export function initiatePairing(
     kiosk_hardware_model: input.hardwareModel,
     kiosk_capabilities: input.capabilities,
     expires_at: expiresAt,
-    extras: {},
+    extras: input.managedImage ? { managed_image: true } : {},
   });
 
   return { code, expiresAt };
@@ -159,6 +161,7 @@ export async function confirmPairing(
       key_prefix: kioskKeyPrefix,
       capabilities: pc.kiosk_capabilities,
       hardware_model: pc.kiosk_hardware_model,
+      managed_image: pc.extras?.["managed_image"] === true,
     });
 
     repo.createDisplayForKiosk(kiosk.id, {

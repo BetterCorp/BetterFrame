@@ -781,4 +781,18 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
   `CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action, ts DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_type, actor_id, ts DESC)`,
+
+  // ---- Managed-image device config -----------------------------------------
+  // For kiosks running our pre-built Pi image (managed_image=1), admins can
+  // push hostname / timezone / network / wifi config. Kiosk pulls on heartbeat
+  // when server's version > applied_version, applies via a privileged helper,
+  // echoes applied_version back. managed_config_error captures last failure.
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "kiosks", "managed_image", "INTEGER NOT NULL DEFAULT 0");
+    addColumnIfNotExists(db, "kiosks", "managed_config_json", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "managed_config_version", "INTEGER NOT NULL DEFAULT 0");
+    addColumnIfNotExists(db, "kiosks", "managed_config_applied_version", "INTEGER NOT NULL DEFAULT 0");
+    addColumnIfNotExists(db, "kiosks", "managed_config_applied_at", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "managed_config_error", "TEXT");
+  },
 ];

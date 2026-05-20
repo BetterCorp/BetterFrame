@@ -27,6 +27,9 @@ export const pairInitiateRequest = av.object(
     capabilities: av.array(av.enum_(KIOSK_CAPABILITIES)),
     os_version: av.optional(av.string().maxLength(128)),
     kiosk_app_version: av.optional(av.string().maxLength(64)),
+    // True iff the kiosk runs our pre-built Pi OS image and ships the
+    // betterframe-apply-config helper. Gates the admin Managed Config UI.
+    managed_image: av.optional(av.bool()),
   },
   { unknownKeys: "reject" },
 );

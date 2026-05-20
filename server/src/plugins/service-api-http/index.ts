@@ -215,12 +215,14 @@ function registerPairingRoutes(
       proposed_name?: string;
       hardware_model?: string;
       capabilities?: string[];
+      managed_image?: boolean;
     }>(event);
 
     const result = initiatePairing(repo, {
       proposedName: body?.proposed_name ?? null,
       hardwareModel: body?.hardware_model ?? null,
       capabilities: body?.capabilities ?? [],
+      managedImage: body?.managed_image === true,
       codeTtlSeconds: codeTtl,
     });
 
@@ -303,6 +305,11 @@ function registerKioskRoutes(
       fan_pwm?: number | null;
       local_key?: string | null;
       local_port?: number | null;
+      // Managed-image kiosk echoes back the version it last applied, and the
+      // last apply error (if any). Server uses these to decide whether to
+      // include pending_config in the response.
+      managed_config_applied_version?: number;
+      managed_config_error?: string | null;
     }>(event);
 
     // Capture the kiosk's LAN-side IP from the heartbeat connection so admin
@@ -322,6 +329,22 @@ function registerKioskRoutes(
       local_port: body?.local_port ?? null,
       local_last_ip: remoteIp,
     });
+
+    // Managed-config echo: kiosk reports the version it has successfully
+    // applied. Persist for the admin UI to render. Error string clears on a
+    // successful apply (kiosk omits it). verifyKioskKey returns just {id};
+    // re-read the full row to check the managed_image flag.
+    const kioskFull = repo.getKioskById(kiosk.id);
+    if (kioskFull?.managed_image && typeof body?.managed_config_applied_version === "number") {
+      const patch: Record<string, unknown> = {
+        managed_config_applied_version: body.managed_config_applied_version,
+        managed_config_applied_at: new Date().toISOString(),
+      };
+      if (body.managed_config_error !== undefined) {
+        patch["managed_config_error"] = body.managed_config_error ?? null;
+      }
+      repo.updateKiosk(kiosk.id, patch as any);
+    }
 
     // Mirror to MQTT bridge (no-op when BF_MQTT_URL unset).
     mqtt.publishTelemetry(kiosk.id, {
@@ -377,7 +400,31 @@ function registerKioskRoutes(
       }
     }
 
-    return { ok: true, now: new Date().toISOString() };
+    // Re-read kiosk so we see the freshly-persisted applied_version above when
+    // computing whether the server still has a newer config to deliver.
+    const fresh = repo.getKioskById(kiosk.id);
+    let pendingConfig: { version: number; config: unknown } | undefined;
+    if (
+      fresh?.managed_image
+      && fresh.managed_config_version > fresh.managed_config_applied_version
+      && fresh.managed_config_json
+    ) {
+      try {
+        pendingConfig = {
+          version: fresh.managed_config_version,
+          config: JSON.parse(fresh.managed_config_json),
+        };
+      } catch {
+        // Corrupt JSON — leave pendingConfig undefined; admin UI will show
+        // the error. Don't break heartbeat.
+      }
+    }
+
+    return {
+      ok: true,
+      now: new Date().toISOString(),
+      ...(pendingConfig ? { pending_config: pendingConfig } : {}),
+    };
   });
 
   // Event forwarding

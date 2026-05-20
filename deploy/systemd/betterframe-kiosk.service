@@ -29,7 +29,6 @@ EnvironmentFile=-/etc/default/betterframe-kiosk
 Environment=XDG_SESSION_TYPE=wayland
 Environment=XDG_SESSION_CLASS=user
 Environment=GST_DEBUG=1
-Environment=BETTERFRAME_SERVER=http://localhost
 # Let the unprivileged kiosk process control the Pi fan PWM sysfs files.
 ExecStartPre=+/bin/sh -c 'for d in /sys/class/hwmon/hwmon*; do [ -e "$d/pwm1" ] || continue; chgrp bfkiosk "$d/pwm1" "$d/pwm1_enable" 2>/dev/null || true; chmod g+w "$d/pwm1" "$d/pwm1_enable" 2>/dev/null || true; done'
 ExecStartPre=+/usr/local/sbin/betterframe-firmware-rollback.sh

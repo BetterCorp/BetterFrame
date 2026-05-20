@@ -228,6 +228,7 @@ export function CameraNewPage(props: CameraNewProps) {
 
 interface CameraDiscoverProps {
   user: string;
+  kiosks: Kiosk[];
   error?: string;
   values?: Record<string, string>;
 }
@@ -254,6 +255,20 @@ export function CameraDiscoverPage(props: CameraDiscoverProps) {
           <div class="form-group">
             <label for="port">Port</label>
             <input id="port" name="port" type="number" class="form-input" value={v["port"] ?? "80"} />
+          </div>
+          <div class="form-group">
+            <label for="discovery_runner">Run discovery from</label>
+            <select id="discovery_runner" name="discovery_runner" class="form-input">
+              <option value="server" selected={(v["discovery_runner"] ?? "server") === "server"}>Server</option>
+              {props.kiosks.map((k) => (
+                <option
+                  value={`kiosk:${String(k.id)}`}
+                  selected={v["discovery_runner"] === `kiosk:${String(k.id)}`}
+                >
+                  {k.name}{k.local_last_ip ? ` (${k.local_last_ip})` : ""}
+                </option>
+              )).join("")}
+            </select>
           </div>
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem">
             <div class="form-group">

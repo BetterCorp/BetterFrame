@@ -4,6 +4,7 @@
  */
 export interface CoordinatorApi {
   sendToKiosk(kioskId: number, message: object): boolean;
+  requestKiosk<T = unknown>(kioskId: number, message: object, timeoutMs?: number): Promise<T>;
   broadcastAll(message: object): void;
   notifyBundleChanged(): void;
   notifyKioskBundleChanged(kioskId: number): void;
@@ -11,6 +12,7 @@ export interface CoordinatorApi {
 
 const noop: CoordinatorApi = {
   sendToKiosk: () => false,
+  requestKiosk: async () => { throw new Error("kiosk is not connected"); },
   broadcastAll: () => {},
   notifyBundleChanged: () => {},
   notifyKioskBundleChanged: () => {},

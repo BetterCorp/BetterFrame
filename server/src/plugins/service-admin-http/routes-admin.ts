@@ -121,6 +121,35 @@ function formValues(v: FormValue): string[] {
   return v ? [v] : [];
 }
 
+function kioskOnvifSoapTransport(kioskId: number) {
+  return async (url: string, action: string, body: string, timeoutMs: number): Promise<string> => {
+    if (!Number.isInteger(kioskId) || kioskId <= 0) {
+      throw new Error("invalid kiosk selected for discovery");
+    }
+    const response = await getCoordinator().requestKiosk<{
+      type?: string;
+      request_id?: string;
+      status?: number;
+      body?: string;
+      error?: string;
+    }>(kioskId, {
+      type: "onvif-soap-request",
+      url,
+      action,
+      body,
+      timeout_ms: timeoutMs,
+    }, timeoutMs + 3000);
+
+    if (response.error) throw new Error(response.error);
+    const status = Number(response.status ?? 0);
+    const text = response.body ?? "";
+    if (status < 200 || status >= 300) {
+      throw new Error(`ONVIF ${action} via kiosk ${String(kioskId)} HTTP ${String(status)}: ${text.slice(0, 300)}`);
+    }
+    return text;
+  };
+}
+
 function parseDiscoveredStreams(raw: string): DiscoverAddStream[] {
   try {
     const parsed = JSON.parse(raw) as DiscoverAddStream[];
@@ -461,7 +490,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/cameras/discover", (event) => {
     const user = event.context.user!;
-    return htmlPage(CameraDiscoverPage({ user: user.username }));
+    return htmlPage(CameraDiscoverPage({
+      user: user.username,
+      kiosks: deps.repo.listKiosks(),
+    }));
   });
 
   app.post("/admin/cameras/discover", async (event) => {
@@ -471,17 +503,22 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const port = parseInt(body?.["port"] ?? "80", 10) || 80;
     const username = (body?.["username"] ?? "").trim();
     const password = body?.["password"] ?? "";
+    const runner = (body?.["discovery_runner"] ?? "server").trim();
 
     if (!host) {
       return htmlPage(CameraDiscoverPage({
         user: user.username,
+        kiosks: deps.repo.listKiosks(),
         error: "Host required.",
         values: body,
       }));
     }
 
     try {
-      const cameras = await onvifDiscover({ host, port, username, password });
+      const soapTransport = runner.startsWith("kiosk:")
+        ? kioskOnvifSoapTransport(Number(runner.slice("kiosk:".length)))
+        : undefined;
+      const cameras = await onvifDiscover({ host, port, username, password, soapTransport });
       return htmlPage(CameraDiscoverResultsPage({
         user: user.username,
         host,
@@ -492,6 +529,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     } catch (err) {
       return htmlPage(CameraDiscoverPage({
         user: user.username,
+        kiosks: deps.repo.listKiosks(),
         error: `Discovery failed: ${(err as Error).message}`,
         values: body,
       }));

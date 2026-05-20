@@ -2,10 +2,20 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{info, warn};
 
 use crate::ServerMsg;
+
+#[derive(Deserialize)]
+struct OnvifSoapRequest {
+    request_id: String,
+    url: String,
+    action: String,
+    body: String,
+    timeout_ms: Option<u64>,
+}
 
 /// Run the WebSocket client in a tokio runtime. Blocks the calling thread.
 /// Reconnects on disconnect with exponential backoff.
@@ -37,6 +47,17 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
                             Ok(Message::Text(text)) => {
                                 if text.contains("\"type\":\"ping\"") {
                                     let _ = ws.send(Message::Text(r#"{"type":"pong"}"#.to_string())).await;
+                                } else if text.contains("\"type\":\"onvif-soap-request\"") {
+                                    let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) else {
+                                        warn!("ws: onvif request was not valid JSON");
+                                        continue;
+                                    };
+                                    let Ok(req) = serde_json::from_value::<OnvifSoapRequest>(msg) else {
+                                        warn!("ws: onvif request missing fields");
+                                        continue;
+                                    };
+                                    let response = perform_onvif_soap(req).await;
+                                    let _ = ws.send(Message::Text(response)).await;
                                 } else if text.contains("\"type\":\"reload-bundle\"") {
                                     info!("ws: reload-bundle received");
                                     let _ = tx.send(ServerMsg::ReloadBundle);
@@ -100,6 +121,71 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
             backoff = (backoff * 2).min(60);
         }
     });
+}
+
+async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
+    let timeout = Duration::from_millis(req.timeout_ms.unwrap_or(8000).clamp(1000, 30000));
+    let client = match reqwest::Client::builder().timeout(timeout).build() {
+        Ok(client) => client,
+        Err(err) => {
+            return serde_json::json!({
+                "type": "onvif-soap-response",
+                "request_id": req.request_id,
+                "error": format!("kiosk ONVIF client init failed: {err}"),
+            }).to_string();
+        }
+    };
+
+    let parsed = match req.url.parse::<url::Url>() {
+        Ok(url) => url,
+        Err(err) => {
+            return serde_json::json!({
+                "type": "onvif-soap-response",
+                "request_id": req.request_id,
+                "error": format!("invalid ONVIF URL: {err}"),
+            }).to_string();
+        }
+    };
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return serde_json::json!({
+            "type": "onvif-soap-response",
+            "request_id": req.request_id,
+            "error": "ONVIF URL must use http or https",
+        }).to_string();
+    }
+
+    let result = client
+        .post(parsed)
+        .header("Content-Type", format!("application/soap+xml; charset=utf-8; action=\"{}\"", req.action))
+        .header("SOAPAction", req.action)
+        .body(req.body)
+        .send()
+        .await;
+
+    match result {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            match resp.text().await {
+                Ok(body) => serde_json::json!({
+                    "type": "onvif-soap-response",
+                    "request_id": req.request_id,
+                    "status": status,
+                    "body": body,
+                }).to_string(),
+                Err(err) => serde_json::json!({
+                    "type": "onvif-soap-response",
+                    "request_id": req.request_id,
+                    "status": status,
+                    "error": format!("kiosk ONVIF response read failed: {err}"),
+                }).to_string(),
+            }
+        }
+        Err(err) => serde_json::json!({
+            "type": "onvif-soap-response",
+            "request_id": req.request_id,
+            "error": format!("kiosk ONVIF request failed: {err}"),
+        }).to_string(),
+    }
 }
 
 fn build_ws_url(http_url: &str, token: &str) -> String {

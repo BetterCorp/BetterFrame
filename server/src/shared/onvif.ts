@@ -39,7 +39,15 @@ interface DiscoverInput {
   mediaPath?: string;
   /** Optional timeout in ms (default 8s). */
   timeoutMs?: number;
+  soapTransport?: SoapTransport;
 }
+
+export type SoapTransport = (
+  url: string,
+  action: string,
+  body: string,
+  timeoutMs: number,
+) => Promise<string>;
 
 interface EndpointParts {
   origin: string;
@@ -82,7 +90,15 @@ function escapeXml(s: string): string {
     .replace(/'/g, "&apos;");
 }
 
-async function soap(url: string, action: string, body: string, timeoutMs: number): Promise<string> {
+async function soap(
+  url: string,
+  action: string,
+  body: string,
+  timeoutMs: number,
+  transport?: SoapTransport,
+): Promise<string> {
+  if (transport) return transport(url, action, body, timeoutMs);
+
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -100,14 +116,25 @@ async function soap(url: string, action: string, body: string, timeoutMs: number
       throw new Error(`ONVIF ${action} HTTP ${String(res.status)}: ${text.slice(0, 300)}`);
     }
     return text;
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      throw new Error(`ONVIF ${action} timed out after ${String(timeoutMs)}ms`);
+    }
+    throw err;
   } finally {
     clearTimeout(t);
   }
 }
 
-async function trySoap(url: string, action: string, body: string, timeoutMs: number): Promise<string | null> {
+async function trySoap(
+  url: string,
+  action: string,
+  body: string,
+  timeoutMs: number,
+  transport?: SoapTransport,
+): Promise<string | null> {
   try {
-    return await soap(url, action, body, timeoutMs);
+    return await soap(url, action, body, timeoutMs, transport);
   } catch {
     return null;
   }
@@ -176,7 +203,12 @@ function normalizeEndpoint(input: DiscoverInput): EndpointParts {
   };
 }
 
-async function discoverMediaUrl(input: DiscoverInput, endpoint: EndpointParts, timeoutMs: number): Promise<string> {
+async function discoverMediaUrl(
+  input: DiscoverInput,
+  endpoint: EndpointParts,
+  timeoutMs: number,
+  transport?: SoapTransport,
+): Promise<string> {
   if (input.mediaPath) {
     return `${endpoint.origin}${input.mediaPath.startsWith("/") ? input.mediaPath : `/${input.mediaPath}`}`;
   }
@@ -197,6 +229,7 @@ async function discoverMediaUrl(input: DiscoverInput, endpoint: EndpointParts, t
     "http://www.onvif.org/ver10/device/wsdl/GetCapabilities",
     capabilitiesEnv,
     timeoutMs,
+    transport,
   );
   if (capabilitiesXml) {
     const mediaXAddr = pickFirstXAddr(capabilitiesXml, "Media");
@@ -279,7 +312,7 @@ function groupProfiles(host: string, profiles: DiscoveredProfile[]): DiscoveredC
 export async function discover(input: DiscoverInput): Promise<DiscoveredCamera[]> {
   const timeoutMs = input.timeoutMs ?? 8000;
   const endpoint = normalizeEndpoint(input);
-  const mediaUrl = await discoverMediaUrl(input, endpoint, timeoutMs);
+  const mediaUrl = await discoverMediaUrl(input, endpoint, timeoutMs, input.soapTransport);
 
   const header = wsseHeader(input.username, input.password);
 
@@ -290,6 +323,7 @@ export async function discover(input: DiscoverInput): Promise<DiscoveredCamera[]
     "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
     profilesEnv,
     timeoutMs,
+    input.soapTransport,
   );
 
   const profileBlocks = splitProfiles(profilesXml);
@@ -330,6 +364,7 @@ export async function discover(input: DiscoverInput): Promise<DiscoveredCamera[]
         "http://www.onvif.org/ver10/media/wsdl/GetStreamUri",
         streamEnv,
         timeoutMs,
+        input.soapTransport,
       );
     } catch {
       continue; // skip profiles we can't get a stream uri for
@@ -347,6 +382,7 @@ export async function discover(input: DiscoverInput): Promise<DiscoveredCamera[]
         "http://www.onvif.org/ver10/media/wsdl/GetSnapshotUri",
         snapshotEnv,
         timeoutMs,
+        input.soapTransport,
       );
       snapshotUri = pickAll(snapshotXml, "Uri")[0] ?? null;
     } catch {

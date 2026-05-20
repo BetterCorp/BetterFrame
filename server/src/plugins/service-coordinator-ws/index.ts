@@ -20,6 +20,7 @@ import {
   type Observable,
 } from "@bsb/base";
 import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 
 import { getRepo } from "../../shared/plugin-registry.js";
@@ -77,12 +78,40 @@ interface ConnectedKiosk {
 }
 
 const connectedKiosks = new Map<number, ConnectedKiosk>();
+const pendingRequests = new Map<string, {
+  kioskId: number;
+  resolve: (value: unknown) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}>();
 
 function sendToKiosk(kioskId: number, message: object): boolean {
   const k = connectedKiosks.get(kioskId);
   if (!k || k.ws.readyState !== WebSocket.OPEN) return false;
   k.ws.send(JSON.stringify(message));
   return true;
+}
+
+function requestKiosk<T = unknown>(kioskId: number, message: object, timeoutMs = 10000): Promise<T> {
+  const requestId = randomUUID();
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingRequests.delete(requestId);
+      reject(new Error("kiosk request timed out"));
+    }, timeoutMs);
+    pendingRequests.set(requestId, {
+      kioskId,
+      resolve: (value) => resolve(value as T),
+      reject,
+      timer,
+    });
+    const sent = sendToKiosk(kioskId, { ...message, request_id: requestId });
+    if (!sent) {
+      clearTimeout(timer);
+      pendingRequests.delete(requestId);
+      reject(new Error("kiosk is not connected"));
+    }
+  });
 }
 
 function broadcastAll(message: object): void {
@@ -193,6 +222,20 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
             try {
               const msg = JSON.parse(data.toString()) as Record<string, unknown>;
               if (msg["type"] === "pong") return;
+              if (msg["type"] === "onvif-soap-response") {
+                const requestId = typeof msg["request_id"] === "string" ? msg["request_id"] : "";
+                const pending = pendingRequests.get(requestId);
+                if (!pending || pending.kioskId !== kiosk.id) return;
+                pendingRequests.delete(requestId);
+                clearTimeout(pending.timer);
+                const error = typeof msg["error"] === "string" ? msg["error"] : "";
+                if (error) {
+                  pending.reject(new Error(error));
+                } else {
+                  pending.resolve(msg);
+                }
+                return;
+              }
               if (msg["type"] === "status") {
                 obs.log.info("kiosk status: {data}", { data: data.toString() });
                 const cpu = typeof msg["cpu_temp_c"] === "number" ? msg["cpu_temp_c"] : null;
@@ -221,6 +264,12 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
           ws.on("close", () => {
             connectedKiosks.delete(kiosk.id);
+            for (const [requestId, pending] of pendingRequests) {
+              if (pending.kioskId !== kiosk.id) continue;
+              pendingRequests.delete(requestId);
+              clearTimeout(pending.timer);
+              pending.reject(new Error("kiosk disconnected"));
+            }
             obs.log.info("kiosk disconnected: {name}", { name: kioskData.name });
             nodered.forward("kiosk.changed", {
               kiosk_id: kiosk.id,
@@ -245,6 +294,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     // Register coordinator API for other plugins to use
     setCoordinator({
       sendToKiosk,
+      requestKiosk,
       broadcastAll,
       notifyBundleChanged: () => broadcastAll({ type: "reload-bundle" }),
       notifyKioskBundleChanged: (kioskId: number) =>

@@ -28,6 +28,8 @@ install -m 755 /tmp/bf-files/betterframe-rauc-mark-good.sh \
   /usr/local/sbin/betterframe-rauc-mark-good.sh
 install -d -m 755 /etc/tmpfiles.d
 install -m 644 /tmp/bf-files/betterframe-kiosk.conf /etc/tmpfiles.d/betterframe-kiosk.conf
+install -d -m 755 /etc/udev/rules.d
+install -m 644 /tmp/bf-files/90-betterframe-no-hid.rules /etc/udev/rules.d/90-betterframe-no-hid.rules
 
 # Default env file — operator may edit on first boot to point at their server.
 cat > /etc/default/betterframe-kiosk <<'EOF'
@@ -56,6 +58,11 @@ for dm in lightdm gdm gdm3 sddm; do
   systemctl mask    "${dm}.service" 2>/dev/null || true
 done
 systemctl disable getty@tty1.service 2>/dev/null || true
+systemctl mask getty@tty1.service ctrl-alt-del.target 2>/dev/null || true
+systemctl disable ssh.service ssh.socket 2>/dev/null || true
+systemctl mask ssh.service ssh.socket 2>/dev/null || true
+systemctl disable bluetooth.service hciuart.service 2>/dev/null || true
+systemctl mask bluetooth.service hciuart.service 2>/dev/null || true
 
 # piwiz first-run wizard + userconf-pi → out.
 apt-get -y purge piwiz userconf-pi 2>/dev/null || true

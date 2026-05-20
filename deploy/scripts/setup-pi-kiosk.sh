@@ -216,6 +216,11 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
   done
   systemctl set-default multi-user.target
   systemctl disable --now getty@tty1.service 2>/dev/null || true
+  systemctl mask getty@tty1.service ctrl-alt-del.target 2>/dev/null || true
+  systemctl disable --now ssh.service ssh.socket 2>/dev/null || true
+  systemctl mask ssh.service ssh.socket 2>/dev/null || true
+  systemctl disable --now bluetooth.service hciuart.service 2>/dev/null || true
+  systemctl mask bluetooth.service hciuart.service 2>/dev/null || true
 
   # piwiz = "Welcome to Raspberry Pi" first-run wizard. userconf-pi runs at
   # first boot if no user is configured. Purge both so they can't fire.
@@ -242,6 +247,9 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
   install -d -m 755 /etc/tmpfiles.d
   install -m 644 "${REPO_ROOT}/deploy/tmpfiles/betterframe-kiosk.conf" \
     /etc/tmpfiles.d/betterframe-kiosk.conf
+  install -d -m 755 /etc/udev/rules.d
+  install -m 644 "${REPO_ROOT}/deploy/udev/90-betterframe-no-hid.rules" \
+    /etc/udev/rules.d/90-betterframe-no-hid.rules
 
   if [ ! -e /etc/default/betterframe-kiosk ]; then
     cat > /etc/default/betterframe-kiosk <<'EOF'

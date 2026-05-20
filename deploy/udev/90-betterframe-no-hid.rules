@@ -1,0 +1,7 @@
+# BetterFrame field kiosks are appliances, not interactive desktops.
+# Block userspace access to keyboard/mouse event devices by default. Future
+# controlled input should arrive as authenticated high-level kiosk commands,
+# not raw HID events.
+KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", MODE="0000", GROUP="root"
+KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", MODE="0000", GROUP="root"
+KERNEL=="event*", ENV{ID_INPUT_TOUCHPAD}=="1", MODE="0000", GROUP="root"

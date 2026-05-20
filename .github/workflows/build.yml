@@ -104,17 +104,19 @@ jobs:
         working-directory: kiosk
         run: |
           bin="betterframe-kiosk-${{ inputs.version }}-${{ matrix.target }}"
-          content_b64=$(base64 -w 0 "$bin")
+          base64 -w 0 "$bin" > "${bin}.b64"
+          jq -nc \
+            --arg v "${{ inputs.version }}" \
+            --arg c "${{ inputs.channel }}" \
+            --arg a "${{ matrix.target }}" \
+            --arg n "GitHub Actions build of ${{ inputs.tag }} (${{ github.sha }})" \
+            --rawfile b "${bin}.b64" \
+            '{version:$v, channel:$c, arch:$a, release_notes:$n, content_b64:$b}' \
+            > "${bin}.import.json"
           curl -sSf -X POST \
             -H "Authorization: Bearer ${BF_AUTOIMPORT_API_KEY}" \
             -H "Content-Type: application/json" \
-            -d "$(jq -nc \
-                  --arg v "${{ inputs.version }}" \
-                  --arg c "${{ inputs.channel }}" \
-                  --arg a "${{ matrix.target }}" \
-                  --arg n "GitHub Actions build of ${{ inputs.tag }} (${{ github.sha }})" \
-                  --arg b "$content_b64" \
-                  '{version:$v, channel:$c, arch:$a, release_notes:$n, content_b64:$b}')" \
+            --data-binary @"${bin}.import.json" \
             "${BF_AUTOIMPORT_URL}/api/admin/firmware/import"
 
       - name: Upload artifact (always)

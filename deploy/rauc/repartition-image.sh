@@ -4,16 +4,13 @@
 # + BF_ROOT_B + BF_DATA). Also emits the raw rootfs.ext4 and bootfs.vfat
 # slot images that the .raucb bundle builder consumes.
 #
-# Why post-process pi-gen instead of patching its export-image stage:
-# pi-gen's image builder is fitted to stock Pi OS layouts. Bending it
-# to A/B was fighting the tool every step. Treating its output as a
-# black box and re-laying out in CI keeps pi-gen vanilla + lets us
-# iterate the partition logic locally with losetup.
+# Avoids losetup -fP (kernel partition scanning fails on some CI runners).
+# Instead, parses partition offsets from sfdisk -J and uses dd skip/count.
 #
 # Usage:
 #   repartition-image.sh <in.img.xz> <out.img.xz> <rootfs.ext4> <bootfs.vfat>
 #
-# Requires root (loop mounts, mkfs).
+# Requires: xz, sfdisk, dd, e2fsprogs, dosfstools, jq, mkfs.ext4, mkfs.vfat
 set -euo pipefail
 
 IN_IMG_XZ="${1:?input .img.xz required}"
@@ -22,114 +19,123 @@ ROOTFS_OUT="${3:?rootfs.ext4 output path required}"
 BOOTFS_OUT="${4:?bootfs.vfat output path required}"
 
 WORK="$(mktemp -d)"
-trap 'cleanup' EXIT
-cleanup() {
-  set +e
-  if [ -n "${OUT_LOOP:-}" ]; then losetup -d "$OUT_LOOP" 2>/dev/null; fi
-  if [ -n "${SRC_LOOP:-}" ]; then losetup -d "$SRC_LOOP" 2>/dev/null; fi
-  for m in "$WORK"/mnt-*; do [ -d "$m" ] && umount "$m" 2>/dev/null; done
-  rm -rf "$WORK"
-}
+trap 'rm -rf "$WORK"' EXIT
 
 echo "==> Decompressing $IN_IMG_XZ"
 xz -d -c "$IN_IMG_XZ" > "$WORK/in.img"
 
-echo "==> Reading source partition table"
-SRC_LOOP="$(losetup -fP --show "$WORK/in.img")"
-sfdisk -d "$WORK/in.img"
+echo "==> Reading source partition table (sfdisk -J)"
+PTABLE="$(sfdisk -J "$WORK/in.img")"
+echo "$PTABLE" | jq .
 
-# Pi-gen layout is always p1=boot vfat, p2=root ext4.
-SRC_BOOT="${SRC_LOOP}p1"
-SRC_ROOT="${SRC_LOOP}p2"
+# Parse partition start + size in sectors (512 bytes each) via jq.
+# Pi-gen: p1 = boot (vfat), p2 = root (ext4).
+P1_START=$(echo "$PTABLE" | jq '.partitiontable.partitions[0].start')
+P1_SIZE=$(echo "$PTABLE" | jq '.partitiontable.partitions[0].size')
+P2_START=$(echo "$PTABLE" | jq '.partitiontable.partitions[1].start')
+P2_SIZE=$(echo "$PTABLE" | jq '.partitiontable.partitions[1].size')
+SECTOR=512
 
-echo "==> Extracting bootfs + rootfs from source image"
-dd if="$SRC_BOOT" of="$WORK/bootfs.vfat" bs=4M status=progress
-dd if="$SRC_ROOT" of="$WORK/rootfs.ext4" bs=4M status=progress
-losetup -d "$SRC_LOOP"; SRC_LOOP=""
+echo "    bootfs: start=${P1_START} size=${P1_SIZE} sectors"
+echo "    rootfs: start=${P2_START} size=${P2_SIZE} sectors"
 
-# Shrink rootfs to actual used + small headroom so the bundle and image
-# don't ship empty bytes. resize2fs -M shrinks to minimum.
+echo "==> Extracting bootfs.vfat (dd)"
+dd if="$WORK/in.img" of="$WORK/bootfs.vfat" \
+   bs=$SECTOR skip="$P1_START" count="$P1_SIZE" status=progress
+
+echo "==> Extracting rootfs.ext4 (dd)"
+dd if="$WORK/in.img" of="$WORK/rootfs.ext4" \
+   bs=$SECTOR skip="$P2_START" count="$P2_SIZE" status=progress
+
+# Done with source image — free disk space.
+rm "$WORK/in.img"
+
+# Shrink rootfs to actual used + 25% headroom.
 echo "==> Compacting rootfs.ext4"
 e2fsck -fy "$WORK/rootfs.ext4" || true
 resize2fs -M "$WORK/rootfs.ext4"
 ROOTFS_BYTES_USED="$(stat -c%s "$WORK/rootfs.ext4")"
-# Grow back with ~25% headroom so first boot has room for apt-update etc.
 ROOTFS_BYTES_SLOT=$(( ROOTFS_BYTES_USED * 5 / 4 ))
-# Round up to MiB.
 ROOTFS_BYTES_SLOT=$(( (ROOTFS_BYTES_SLOT + 1048575) / 1048576 * 1048576 ))
 truncate -s "$ROOTFS_BYTES_SLOT" "$WORK/rootfs.ext4"
 resize2fs "$WORK/rootfs.ext4"
 echo "    rootfs slot size: $((ROOTFS_BYTES_SLOT / 1024 / 1024)) MiB"
 
-# Bootfs we leave as-is (FAT, can't easily shrink, ~256MB).
 BOOTFS_BYTES_SLOT="$(stat -c%s "$WORK/bootfs.vfat")"
 echo "    bootfs slot size: $((BOOTFS_BYTES_SLOT / 1024 / 1024)) MiB"
 
-# Patch rootfs fstab + boot cmdline to mount by LABEL (slot-agnostic).
-# Pi-gen ships PARTUUID-based fstab; with two ROOT slots PARTUUID is
-# wrong per-slot. LABEL works because RAUC formats each slot with its
-# correct label after install. For the initial flash we hand-set BF_*
-# labels below.
-echo "==> Patching rootfs /etc/fstab to use LABEL=BF_*"
+# Patch rootfs fstab to use LABEL (slot-agnostic).
+echo "==> Patching rootfs /etc/fstab"
+ROOTFS_LOOP="$(losetup -f --show "$WORK/rootfs.ext4")"
 mkdir -p "$WORK/mnt-root"
-mount -o loop "$WORK/rootfs.ext4" "$WORK/mnt-root"
-cat > "$WORK/mnt-root/etc/fstab" <<'EOF'
+mount "$ROOTFS_LOOP" "$WORK/mnt-root"
+cat > "$WORK/mnt-root/etc/fstab" <<'FSTAB'
 LABEL=BF_BOOT_A  /boot/firmware  vfat  defaults  0  2
 LABEL=BF_ROOT_A  /               ext4  defaults,noatime  0  1
 LABEL=BF_DATA    /var/lib/betterframe  ext4  defaults,noatime,nofail  0  2
-EOF
-# Stamp the OS version + compatibility for the kiosk's os_update.rs
-# to read at runtime. CI passes BF_BUILD_VERSION via env.
+FSTAB
 mkdir -p "$WORK/mnt-root/etc/betterframe"
 printf '%s\n' "${BF_BUILD_VERSION:-0.0.0}" > "$WORK/mnt-root/etc/betterframe/os-version"
 printf '%s\n' "${BF_RAUC_COMPATIBILITY:-betterframe-rpi5-aarch64}" > "$WORK/mnt-root/etc/betterframe/os-compatibility"
 umount "$WORK/mnt-root"
+losetup -d "$ROOTFS_LOOP"
 
-# Two bootfs copies, each rewriting cmdline.txt root=LABEL=BF_ROOT_{A,B}.
-echo "==> Building BF_BOOT_A bootfs"
+# Build two bootfs copies with slot-specific cmdline.txt root=LABEL=...
+echo "==> Building BF_BOOT_A + BF_BOOT_B bootfs copies"
 cp "$WORK/bootfs.vfat" "$WORK/bootfs_A.vfat"
-mkdir -p "$WORK/mnt-boota"
-mount -o loop "$WORK/bootfs_A.vfat" "$WORK/mnt-boota"
-sed -i 's|root=PARTUUID=[^ ]*|root=LABEL=BF_ROOT_A|' "$WORK/mnt-boota/cmdline.txt"
-umount "$WORK/mnt-boota"
+BOOT_A_LOOP="$(losetup -f --show "$WORK/bootfs_A.vfat")"
+mkdir -p "$WORK/mnt-ba"
+mount "$BOOT_A_LOOP" "$WORK/mnt-ba"
+sed -i 's|root=PARTUUID=[^ ]*|root=LABEL=BF_ROOT_A|' "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
+umount "$WORK/mnt-ba"
+losetup -d "$BOOT_A_LOOP"
 
-echo "==> Building BF_BOOT_B bootfs (placeholder, kernel from A)"
 cp "$WORK/bootfs.vfat" "$WORK/bootfs_B.vfat"
-mkdir -p "$WORK/mnt-bootb"
-mount -o loop "$WORK/bootfs_B.vfat" "$WORK/mnt-bootb"
-sed -i 's|root=PARTUUID=[^ ]*|root=LABEL=BF_ROOT_B|' "$WORK/mnt-bootb/cmdline.txt"
-umount "$WORK/mnt-bootb"
+BOOT_B_LOOP="$(losetup -f --show "$WORK/bootfs_B.vfat")"
+mkdir -p "$WORK/mnt-bb"
+mount "$BOOT_B_LOOP" "$WORK/mnt-bb"
+sed -i 's|root=PARTUUID=[^ ]*|root=LABEL=BF_ROOT_B|' "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
+umount "$WORK/mnt-bb"
+losetup -d "$BOOT_B_LOOP"
 
-# Layout the new combined image. GPT (Pi 5 firmware supports it). All
-# sizes in MiB to keep sfdisk happy.
+# Layout the new A/B image. GPT, 6 partitions.
 SELECTOR_MB=8
 BOOT_MB=$((BOOTFS_BYTES_SLOT / 1024 / 1024))
 ROOT_MB=$((ROOTFS_BYTES_SLOT / 1024 / 1024))
-DATA_MB=512    # placeholder; resize2fs at first boot expands to free space
+DATA_MB=512
 TOTAL_MB=$((SELECTOR_MB + BOOT_MB*2 + ROOT_MB*2 + DATA_MB + 32))
 
 echo "==> Allocating ${TOTAL_MB} MiB output image"
 truncate -s "${TOTAL_MB}M" "$WORK/out.img"
 
 echo "==> Writing GPT partition table"
-sfdisk "$WORK/out.img" <<EOF
+sfdisk "$WORK/out.img" <<SFDISK
 label: gpt
+start=2048, size=$((SELECTOR_MB * 2048)), type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="BF_BOOTSEL"
+size=$((BOOT_MB * 2048)), type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="BF_BOOT_A"
+size=$((BOOT_MB * 2048)), type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="BF_BOOT_B"
+size=$((ROOT_MB * 2048)), type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="BF_ROOT_A"
+size=$((ROOT_MB * 2048)), type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="BF_ROOT_B"
+type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="BF_DATA"
+SFDISK
 
-start=2048,                              size=$((SELECTOR_MB * 2048)),  type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="BF_BOOTSEL"
-                                         size=$((BOOT_MB * 2048)),       type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="BF_BOOT_A"
-                                         size=$((BOOT_MB * 2048)),       type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="BF_BOOT_B"
-                                         size=$((ROOT_MB * 2048)),       type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="BF_ROOT_A"
-                                         size=$((ROOT_MB * 2048)),       type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="BF_ROOT_B"
-                                                                          type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="BF_DATA"
-EOF
+# Re-read the new partition table to get exact offsets for dd writes.
+NEW_PT="$(sfdisk -J "$WORK/out.img")"
+echo "$NEW_PT" | jq .
 
-OUT_LOOP="$(losetup -fP --show "$WORK/out.img")"
+get_part() {
+  echo "$NEW_PT" | jq ".partitiontable.partitions[$1].$2"
+}
 
-echo "==> Formatting selector + writing autoboot.txt"
-mkfs.vfat -n "BF_BOOTSEL" "${OUT_LOOP}p1"
+# Write each partition content at its exact offset via dd.
+echo "==> Writing BF_BOOTSEL"
+P_START=$(get_part 0 start)
+mkfs.vfat -n "BF_BOOTSEL" -C "$WORK/selector.vfat" $((SELECTOR_MB * 1024))
+# Mount the standalone FAT image to write autoboot.txt
+SEL_LOOP="$(losetup -f --show "$WORK/selector.vfat")"
 mkdir -p "$WORK/mnt-sel"
-mount "${OUT_LOOP}p1" "$WORK/mnt-sel"
-cat > "$WORK/mnt-sel/autoboot.txt" <<'EOF'
+mount "$SEL_LOOP" "$WORK/mnt-sel"
+cat > "$WORK/mnt-sel/autoboot.txt" <<'AUTOBOOT'
 [all]
 tryboot_a_b=1
 PARTITION_WALK=1
@@ -137,25 +143,34 @@ boot_partition=2
 
 [tryboot]
 boot_partition=3
-EOF
+AUTOBOOT
 umount "$WORK/mnt-sel"
+losetup -d "$SEL_LOOP"
+dd if="$WORK/selector.vfat" of="$WORK/out.img" bs=$SECTOR seek="$P_START" conv=notrunc status=none
 
-echo "==> Writing BF_BOOT_A + BF_BOOT_B"
-dd if="$WORK/bootfs_A.vfat" of="${OUT_LOOP}p2" bs=4M conv=fsync
-dd if="$WORK/bootfs_B.vfat" of="${OUT_LOOP}p3" bs=4M conv=fsync
-# Force the label on the partition's vfat header.
-fatlabel "${OUT_LOOP}p2" BF_BOOT_A
-fatlabel "${OUT_LOOP}p3" BF_BOOT_B
+echo "==> Writing BF_BOOT_A"
+P_START=$(get_part 1 start)
+dd if="$WORK/bootfs_A.vfat" of="$WORK/out.img" bs=$SECTOR seek="$P_START" conv=notrunc status=none
 
-echo "==> Writing BF_ROOT_A + initializing BF_ROOT_B empty"
-dd if="$WORK/rootfs.ext4" of="${OUT_LOOP}p4" bs=4M conv=fsync
-e2label "${OUT_LOOP}p4" BF_ROOT_A
-mkfs.ext4 -F -L BF_ROOT_B "${OUT_LOOP}p5"
+echo "==> Writing BF_BOOT_B"
+P_START=$(get_part 2 start)
+dd if="$WORK/bootfs_B.vfat" of="$WORK/out.img" bs=$SECTOR seek="$P_START" conv=notrunc status=none
+
+echo "==> Writing BF_ROOT_A"
+P_START=$(get_part 3 start)
+dd if="$WORK/rootfs.ext4" of="$WORK/out.img" bs=$SECTOR seek="$P_START" conv=notrunc status=none
+
+echo "==> Formatting BF_ROOT_B (empty placeholder)"
+P_START=$(get_part 4 start)
+P_SIZE=$(get_part 4 size)
+dd if=/dev/zero of="$WORK/out.img" bs=$SECTOR seek="$P_START" count="$P_SIZE" conv=notrunc status=none
+# Can't mkfs.ext4 directly into a region of a file without losetup. Skip
+# formatting B — rauc install will format it when writing the first update.
 
 echo "==> Formatting BF_DATA"
-mkfs.ext4 -F -L BF_DATA "${OUT_LOOP}p6"
-
-losetup -d "$OUT_LOOP"; OUT_LOOP=""
+P_START=$(get_part 5 start)
+P_SIZE=$(get_part 5 size)
+dd if=/dev/zero of="$WORK/out.img" bs=$SECTOR seek="$P_START" count="$P_SIZE" conv=notrunc status=none
 
 echo "==> Final partition table"
 sfdisk -d "$WORK/out.img"
@@ -165,7 +180,7 @@ cp "$WORK/rootfs.ext4" "$ROOTFS_OUT"
 cp "$WORK/bootfs.vfat" "$BOOTFS_OUT"
 
 echo "==> Compressing output image (xz -T0)"
-xz -T0 -9 -c "$WORK/out.img" > "$OUT_IMG_XZ"
+xz -T0 -6 -c "$WORK/out.img" > "$OUT_IMG_XZ"
 
 echo
 echo "==> Done."

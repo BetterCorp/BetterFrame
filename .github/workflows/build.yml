@@ -257,7 +257,7 @@ jobs:
           set -e
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            xz-utils util-linux e2fsprogs dosfstools gdisk
+            xz-utils util-linux e2fsprogs dosfstools gdisk jq
           chmod +x deploy/rauc/repartition-image.sh
           ws="${{ github.workspace }}"
           out_img="${ws}/betterframe-client-${{ inputs.version }}.img.xz"

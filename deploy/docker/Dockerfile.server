@@ -1,7 +1,7 @@
-# BetterFrame server image — Node 23 + native deps for argon2/sqlite.
+# BetterFrame server image — Node 24 + native deps for argon2/sqlite.
 # Trixie base (Debian 13, latest stable) — matches the host distro we
 # recommend in deploy/README.md.
-FROM node:23-trixie-slim AS builder
+FROM node:24-trixie-slim AS builder
 
 WORKDIR /app
 
@@ -22,7 +22,9 @@ WORKDIR /app/server
 RUN npm run build
 
 # ---- Runtime image ----
-FROM node:23-trixie-slim
+FROM node:24-trixie-slim
+
+ARG BF_SERVER_VERSION=
 
 # ffmpeg for camera snapshot capture (optional but needed for /admin/entities/:id/snapshot)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -51,5 +53,6 @@ USER betterframe
 WORKDIR /app/server
 
 ENV NODE_OPTIONS=--import=tsx
+ENV BF_SERVER_VERSION=${BF_SERVER_VERSION}
 
 CMD ["node", "--import", "tsx", "/app/node_modules/@bsb/base/lib/scripts/bsb-plugin-cli.js", "start"]

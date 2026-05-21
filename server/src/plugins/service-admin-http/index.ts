@@ -22,6 +22,7 @@ import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-brid
 import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
 import { initOsUpdates, type OsUpdateApi } from "../../shared/os-updates.js";
 import { envStr } from "../../shared/env-overrides.js";
+import { serverVersion } from "../../shared/version.js";
 import type { Repository } from "../service-store/repository.js";
 
 import { registerMiddleware } from "./middleware.js";
@@ -207,7 +208,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     });
     app.get("/version", () => ({
       name: "betterframe",
-      version: "0.1.0",
+      version: serverVersion(),
       now: new Date().toISOString(),
     }));
     app.get("/", () => {

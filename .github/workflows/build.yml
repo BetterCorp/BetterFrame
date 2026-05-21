@@ -81,6 +81,7 @@ jobs:
         working-directory: kiosk
         env:
           BF_BUILD_ARCH: ${{ matrix.target }}
+          BF_BUILD_VERSION: ${{ inputs.version }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Strip + rename

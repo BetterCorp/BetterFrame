@@ -3,6 +3,7 @@
  * Server-side rendered via jsx-htmx — returns string.
  */
 import { css, js } from "jsx-htmx";
+import { serverVersion } from "../shared/version.js";
 
 // ---- Shared types -----------------------------------------------------------
 
@@ -64,6 +65,7 @@ function Sidebar(props: { activeNav?: string }) {
 // ---- Layout -----------------------------------------------------------------
 
 export function Layout(props: PageProps) {
+  const version = serverVersion();
   return (
     <html lang="en">
       <head>
@@ -92,6 +94,12 @@ export function Layout(props: PageProps) {
             <div class={`flash flash-${props.flash.type}`}>{props.flash.message}</div>
           )}
           <main class="content">{props.children}</main>
+          {!props.minimal && (
+            <footer class="app-footer">
+              <span>Copyright BetterCorp (PTY) Ltd 2016 - 2026 - All Rights Reserved</span>
+              <span>Server: <code>{version}</code></span>
+            </footer>
+          )}
         </div>
         <script src="/static/htmx.min.js"></script>
       </body>
@@ -176,6 +184,17 @@ const baseStyles = {
   ".topbar-user": { color: "#666", fontSize: "0.85rem" },
   ".main-wrap": { display: "flex", flexDirection: "column", minHeight: "100vh" },
   ".content": { flex: "1", padding: "1.5rem" },
+  ".app-footer": {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: "1rem",
+    padding: "0.75rem 1.5rem",
+    color: "#666",
+    fontSize: "0.8rem",
+    borderTop: "1px solid #e0e0e0",
+    backgroundColor: "#fff",
+  },
+  ".app-footer code": { color: "#374151", fontSize: "0.8rem" },
   ".minimal .content": { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh" },
   ".center-card": { width: "100%", maxWidth: "420px" },
   ".auth-logo": { display: "block", width: "220px", maxWidth: "100%", height: "auto", margin: "0 0 1.25rem" },

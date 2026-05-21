@@ -7,6 +7,10 @@ use tracing::info;
 
 use crate::bundle::KioskBundle;
 
+fn kiosk_app_version() -> &'static str {
+    option_env!("BF_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
 fn state_dir() -> PathBuf {
     let home = dirs::home_dir().expect("no home directory");
     let dir = home.join(".betterframe-kiosk");
@@ -258,9 +262,13 @@ pub fn heartbeat(
     hw: &crate::hwmon::HwInfo,
 ) -> bool {
     let client = reqwest::blocking::Client::new();
-    let display_info: Vec<_> = displays.iter().enumerate().map(|(index, (name, w, h))| {
-        serde_json::json!({ "index": index, "name": name, "width_px": w, "height_px": h })
-    }).collect();
+    let display_info: Vec<_> = displays
+        .iter()
+        .enumerate()
+        .map(|(index, (name, w, h))| {
+            serde_json::json!({ "index": index, "name": name, "width_px": w, "height_px": h })
+        })
+        .collect();
     // Surface the LAN-side local key + port to admin so the UI can show a
     // copy-paste URL for bookmark-style layout switches.
     let local_key = load_or_create_local_key();
@@ -272,7 +280,7 @@ pub fn heartbeat(
         .post(format!("{server}/api/kiosk/heartbeat"))
         .header("Authorization", format!("Bearer {key}"))
         .json(&serde_json::json!({
-            "kiosk_app_version": env!("CARGO_PKG_VERSION"),
+            "kiosk_app_version": kiosk_app_version(),
             "displays": display_info,
             "cpu_temp_c": hw.cpu_temp_c,
             "cpu_load_percent": hw.cpu_load_percent,

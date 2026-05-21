@@ -27,6 +27,8 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/Dockerfile.server
+      args:
+        BF_SERVER_VERSION: ${BF_SERVER_VERSION:-}
     container_name: betterframe-server
     restart: unless-stopped
     # Env overrides win over sec-config.yaml — Coolify / k8s inject these.
@@ -36,6 +38,9 @@ services:
       - BF_SQLITE_PATH=/var/lib/betterframe/betterframe.db
       - BF_NODERED_URL=http://nodered:1880
       - BF_SELF_URL=http://server:18080
+      - BF_SERVER_VERSION=${BF_SERVER_VERSION:-}
+      - COOLIFY_GIT_COMMIT=${COOLIFY_GIT_COMMIT:-}
+      - SOURCE_COMMIT=${SOURCE_COMMIT:-}
       # Optional: paste Ed25519 PEM private key here for firmware signing.
       # - BF_FIRMWARE_SIGNING_KEY=
       # Optional: single-purpose Bearer token for GitHub Actions firmware import.

@@ -141,6 +141,9 @@ jobs:
   image:
     if: ${{ inputs.build-image }}
     needs: binary
+    env:
+      HAS_RAUC_SECRETS: ${{ secrets.BF_RAUC_SIGNING_CERT != '' && secrets.BF_RAUC_SIGNING_KEY != '' }}
+      HAS_AUTOIMPORT: ${{ secrets.BF_AUTOIMPORT_URL != '' && secrets.BF_AUTOIMPORT_API_KEY != '' }}
     # GitHub's official native-arm64 runner. Blacksmith's arm64 kernel (6.5)
     # doesn't ship binfmt_misc as a loadable module so pi-gen-action@v1's
     # `modprobe binfmt_misc` errors out even though we don't need it on a
@@ -287,7 +290,7 @@ jobs:
       # Skipped when signing secrets aren't set.
       - name: Build RAUC bundle
         id: raucb
-        if: ${{ secrets.BF_RAUC_SIGNING_CERT != '' && secrets.BF_RAUC_SIGNING_KEY != '' }}
+        if: ${{ env.HAS_RAUC_SECRETS == 'true' }}
         env:
           BF_RAUC_SIGNING_CERT: ${{ secrets.BF_RAUC_SIGNING_CERT }}
           BF_RAUC_SIGNING_KEY: ${{ secrets.BF_RAUC_SIGNING_KEY }}
@@ -323,7 +326,7 @@ jobs:
       # Auto-import to BF server. Mirrors the kiosk-binary auto-import step.
       # Skipped if BF_AUTOIMPORT_* secrets are missing OR no bundle was built.
       - name: Auto-import OS bundle into BF server
-        if: ${{ steps.raucb.outputs.bundle-path != '' && secrets.BF_AUTOIMPORT_URL != '' && secrets.BF_AUTOIMPORT_API_KEY != '' }}
+        if: ${{ steps.raucb.outputs.bundle-path != '' && env.HAS_AUTOIMPORT == 'true' }}
         env:
           BF_AUTOIMPORT_URL: ${{ secrets.BF_AUTOIMPORT_URL }}
           BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}

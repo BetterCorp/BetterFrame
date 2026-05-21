@@ -15,3 +15,5 @@ gstreamer1.0-gtk4
 v4l-utils
 wlr-randr
 ca-certificates
+rauc
+dosfstools

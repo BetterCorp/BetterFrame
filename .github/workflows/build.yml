@@ -192,6 +192,21 @@ jobs:
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/plymouth/betterframe/betterframe.script \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          # RAUC config + custom bootloader backend
+          cp deploy/rauc/system.conf \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/rauc-system.conf
+          cp deploy/rauc/betterframe-rauc-boot.sh \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          # CA cert is operator-supplied — generated locally via
+          # scripts/gen-rauc-signing-keys.sh and committed at
+          # deploy/rauc/ca-cert.pem. Without it the image installs but
+          # rauc refuses every bundle (verify-only mode).
+          if [ -f deploy/rauc/ca-cert.pem ]; then
+            cp deploy/rauc/ca-cert.pem \
+               deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/rauc-keyring.pem
+          else
+            echo "::warning::deploy/rauc/ca-cert.pem missing — OS OTA disabled in this image"
+          fi
           chmod +x deploy/pi-gen/stage-betterframe-client/01-install-kiosk/00-run.sh \
                    deploy/pi-gen/stage-betterframe-client/01-install-kiosk/01-run-chroot.sh \
                    deploy/pi-gen/stage-betterframe-client/prerun.sh

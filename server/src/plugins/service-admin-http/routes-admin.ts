@@ -1434,6 +1434,38 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
   });
 
+  // ---- Camera live event feed (htmx fragment, polled every 5s) ---------------
+  const formatTimeShort = (iso: string) => {
+    try { return new Date(iso).toLocaleString("en-GB", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", day: "2-digit", month: "short" }); }
+    catch { return iso; }
+  };
+  const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  app.get("/admin/cameras/:id/events", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const { events } = deps.repo.queryEvents({
+      camera_id: id,
+      limit: 20,
+    });
+    if (events.length === 0) {
+      return htmlFragment(
+        `<div style="color:#999; font-size:0.85rem; padding:1rem 0">No events yet. ONVIF events appear here as the kiosk receives them.</div>`,
+      );
+    }
+    const rows = events.map((e) => {
+      let payload = "";
+      try { payload = JSON.stringify(e.payload, null, 1); } catch { payload = String(e.payload); }
+      return `<tr>
+        <td style="font-size:0.8rem; white-space:nowrap">${formatTimeShort(e.received_at)}</td>
+        <td><code style="font-size:0.75rem">${escapeHtml(e.topic)}</code></td>
+        <td style="font-size:0.75rem">${escapeHtml(e.source_type)}</td>
+        <td><pre style="margin:0; font-size:0.7rem; max-height:80px; overflow:auto; background:#fafafa; padding:2px 4px">${escapeHtml(payload)}</pre></td>
+      </tr>`;
+    }).join("");
+    return htmlFragment(
+      `<table><thead><tr><th>Time</th><th>Topic</th><th>Source</th><th>Payload</th></tr></thead><tbody>${rows}</tbody></table>`,
+    );
+  });
+
   // ---- Kiosk edit/delete/labels ---------------------------------------------
 
   app.get("/admin/kiosks/:id", (event) => {

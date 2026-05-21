@@ -1330,6 +1330,26 @@ export function CameraEditPage(props: CameraEditProps) {
         </div>
 
         <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Live Events</h2>
+          <p style="color:#666; font-size:0.85rem; margin-bottom:0.75rem">
+            ONVIF events from kiosks subscribed to this camera. Auto-refreshes
+            every 5s. All topics shown — motion, ANPR, line crossing, I/O, analytics, unknown.
+          </p>
+          <div
+            id={`camera-events-${String(cam.id)}`}
+            class="table-wrap"
+            {...{
+              "hx-get": `/admin/cameras/${cam.id}/events`,
+              "hx-trigger": "load, every 5s",
+              "hx-swap": "innerHTML",
+            }}
+            style="max-height:300px; overflow-y:auto"
+          >
+            <div style="color:#999; font-size:0.85rem; padding:1rem 0">Loading...</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Kiosk Subscriptions</h2>
           <p style="color:#666; font-size:0.85rem; margin-bottom:0.75rem">
             Kiosks whose layouts reference this camera. Snapshots are pulled

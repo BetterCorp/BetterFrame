@@ -1,3 +1,4 @@
+mod at_rest;
 mod bundle;
 mod cec;
 mod firmware;

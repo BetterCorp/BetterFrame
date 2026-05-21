@@ -95,10 +95,9 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   runBeforePlugins?: string[];
   runAfterPlugins?: string[];
 
-  // The DB handle and Repository are created in init() and exposed for
-  // sibling-service consumption.
   private db?: DatabaseSync;
   private _repo?: Repository;
+  private purgeTimer?: ReturnType<typeof setInterval>;
 
   constructor(cfg: BSBServiceConstructor<InstanceType<typeof Config>, typeof EventSchemas>) {
     super(cfg);
@@ -175,14 +174,27 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     });
 
     registerRepo(this._repo);
+
+    const purged = this._repo.purgeOldKioskLogs(2);
+    if (purged > 0) {
+      obs.log.info("purged {count} kiosk logs older than 2h", { count: purged });
+    }
+
     obs.log.info("store ready");
   }
 
-  async run(_obs: Observable): Promise<void> {
-    // Long-lived; no work in run().
+  async run(obs: Observable): Promise<void> {
+    this.purgeTimer = setInterval(() => {
+      if (!this._repo) return;
+      const purged = this._repo.purgeOldKioskLogs(2);
+      if (purged > 0) {
+        obs.log.info("purged {count} kiosk logs older than 2h", { count: purged });
+      }
+    }, 10 * 60 * 1000);
   }
 
   async dispose(): Promise<void> {
+    if (this.purgeTimer) clearInterval(this.purgeTimer);
     this.db?.close();
   }
 

@@ -490,7 +490,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       });
     }
     notifyKiosks();
-    deps.nodered.forward("camera.changed", { camera_id: cam.id, event: "created" });
+    deps.nodered.forward("camera.changed", { camera_id: cam.id, event: "created", source: "server" });
 
     return new Response(null, {
       status: 302,
@@ -562,7 +562,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         if (streams.length === 0) continue;
         const camId = importDiscoveredCamera(deps, rawName, username, password, streams);
         if (camId != null) {
-          deps.nodered.forward("camera.changed", { camera_id: camId, event: "created" });
+          deps.nodered.forward("camera.changed", { camera_id: camId, event: "created", source: "server" });
         }
         imported += 1;
       }
@@ -572,7 +572,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       if (streams.length > 0) {
         const camId = importDiscoveredCamera(deps, rawName, username, password, streams);
         if (camId != null) {
-          deps.nodered.forward("camera.changed", { camera_id: camId, event: "created" });
+          deps.nodered.forward("camera.changed", { camera_id: camId, event: "created", source: "server" });
         }
         imported += 1;
       }
@@ -1292,7 +1292,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       }
     }
     notifyKiosks();
-    deps.nodered.forward("camera.changed", { camera_id: id, event: "updated" });
+    deps.nodered.forward("camera.changed", { camera_id: id, event: "updated", source: "server" });
 
     return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
   });
@@ -1331,7 +1331,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = Number(getRouterParam(event, "id"));
     deps.repo.deleteCamera(id);
     notifyKiosks();
-    deps.nodered.forward("camera.changed", { camera_id: id, event: "deleted" });
+    deps.nodered.forward("camera.changed", { camera_id: id, event: "deleted", source: "server" });
     return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
   });
 
@@ -1355,6 +1355,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const gpioBindings = deps.repo.listGpioBindings(id);
     const firmwareReleases = deps.repo.listFirmwareReleases();
     const osReleases = deps.repo.listOsUpdateReleases();
+    const logResult = deps.repo.queryKioskLogs({ kiosk_id: id, limit: 50 });
     return htmlPage(KioskEditPage({
       user: user.username,
       kiosk,
@@ -1365,6 +1366,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       gpioBindings,
       firmwareReleases,
       osReleases,
+      kioskLogs: logResult.logs,
+      kioskLogTotal: logResult.total,
     }));
   });
 
@@ -1560,6 +1563,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       kiosk_id: kioskId,
       layout_id: layoutId,
       layout_name: layout?.name ?? null,
+      source: "server",
     });
   };
 
@@ -1605,6 +1609,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         display_id: id,
         kiosk_id: display.kiosk_id,
         state,
+        source: "server",
       });
     }
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${id}` } });
@@ -1634,6 +1639,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       display_id: displayId,
       kiosk_id: kioskId,
       state,
+      source: "server",
     });
   };
 
@@ -1808,7 +1814,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const enabled = Boolean(body["value"] ?? body["enabled"]);
     deps.repo.updateCamera(id, { enabled } as any);
     notifyKiosks();
-    deps.nodered.forward("camera.changed", { camera_id: id, event: "updated" });
+    deps.nodered.forward("camera.changed", { camera_id: id, event: "updated", source: "server" });
     const camera = deps.repo.getCameraById(id);
     if (!camera) return jsonResponse({ error: "not_found" }, 404);
     return jsonResponse({ camera });

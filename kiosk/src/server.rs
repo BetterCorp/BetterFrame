@@ -107,27 +107,37 @@ fn local_key_file() -> PathBuf {
 }
 
 /// Load (or generate) the kiosk-local API key used by the LAN-side GET
-/// layout-switch endpoint. Persisted hex, 32 bytes random.
+/// layout-switch endpoint. Persisted hex, 32 bytes random. Stored
+/// encrypted-at-rest (hardware-bound) so pulling the SD card doesn't yield
+/// the key plaintext.
 pub fn load_or_create_local_key() -> String {
-    if let Ok(s) = fs::read_to_string(local_key_file()) {
-        let trimmed = s.trim().to_string();
-        if trimmed.len() >= 16 {
-            return trimmed;
+    let path = local_key_file();
+    if let Ok(raw) = fs::read(&path) {
+        let was_encrypted = crate::at_rest::decrypt_from_disk(&raw).is_ok();
+        if let Some(trimmed) = crate::at_rest::read_text_maybe_encrypted(&path) {
+            if trimmed.len() >= 16 {
+                if !was_encrypted {
+                    let _ = crate::at_rest::write_encrypted(&path, trimmed.as_bytes());
+                }
+                return trimmed;
+            }
         }
     }
     use rand::RngCore;
     let mut buf = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut buf);
     let hex_key = hex::encode(buf);
-    let _ = fs::write(local_key_file(), &hex_key);
+    let _ = crate::at_rest::write_encrypted(&path, hex_key.as_bytes());
     hex_key
 }
 
-/// Persist the latest bundle to disk for offline boot.
+/// Persist the latest bundle to disk for offline boot. Encrypted at rest
+/// because the bundle contains camera RTSP URIs with credentials in URL
+/// form (rtsp://user:pass@host/...).
 pub fn save_bundle(bundle: &KioskBundle) {
-    match serde_json::to_string(bundle) {
-        Ok(text) => {
-            if let Err(e) = fs::write(bundle_cache_path(), text) {
+    match serde_json::to_vec(bundle) {
+        Ok(bytes) => {
+            if let Err(e) = crate::at_rest::write_encrypted(&bundle_cache_path(), &bytes) {
                 tracing::warn!("failed to save bundle cache: {e}");
             }
         }
@@ -136,10 +146,11 @@ pub fn save_bundle(bundle: &KioskBundle) {
 }
 
 /// Load a cached bundle from disk. Returns None if file missing or invalid.
+/// Tolerates legacy plaintext (kiosks upgraded from a pre-at_rest build)
+/// so pairing survives the rollout.
 pub fn load_cached_bundle() -> Option<KioskBundle> {
-    let path = bundle_cache_path();
-    let text = fs::read_to_string(&path).ok()?;
-    match serde_json::from_str::<KioskBundle>(&text) {
+    let bytes = crate::at_rest::read_maybe_encrypted(&bundle_cache_path())?;
+    match serde_json::from_slice::<KioskBundle>(&bytes) {
         Ok(b) => Some(b),
         Err(e) => {
             tracing::warn!("cached bundle invalid: {e}");
@@ -197,12 +208,20 @@ pub fn is_paired() -> bool {
     key_file().exists()
 }
 
-/// Read stored kiosk key.
+/// Read stored kiosk key. Detects legacy plaintext (kiosks upgraded from
+/// a pre-at_rest build) and re-stores it ciphertext in place so subsequent
+/// SD-card extractions don't see the bearer token.
 pub fn load_key() -> String {
-    fs::read_to_string(key_file())
-        .expect("failed to read kiosk key")
-        .trim()
-        .to_string()
+    let path = key_file();
+    let raw = fs::read(&path).expect("failed to read kiosk key");
+    let was_encrypted = crate::at_rest::decrypt_from_disk(&raw).is_ok();
+    let key = crate::at_rest::read_text_maybe_encrypted(&path).expect("failed to decode kiosk key");
+    if !was_encrypted {
+        // Best-effort migrate. If write fails (e.g. RO mount during a
+        // recovery boot) we still hand back the key so the kiosk works.
+        let _ = crate::at_rest::write_encrypted(&path, key.as_bytes());
+    }
+    key
 }
 
 #[derive(Deserialize)]
@@ -259,7 +278,8 @@ pub fn poll_claim(server: &str, code: &str) -> (String, String) {
             if claim.status == "claimed" {
                 let key = claim.kiosk_key.expect("missing kiosk_key");
                 let name = claim.kiosk_name.unwrap_or_else(|| "kiosk".into());
-                fs::write(key_file(), &key).expect("failed to save kiosk key");
+                crate::at_rest::write_encrypted(&key_file(), key.as_bytes())
+                    .expect("failed to save kiosk key");
                 return (name, key);
             }
         }

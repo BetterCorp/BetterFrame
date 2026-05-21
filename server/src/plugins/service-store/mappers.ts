@@ -436,3 +436,15 @@ export function rowToEventLog(r: Row): EventLog {
     forwarded_to_nodered: b(r["forwarded_to_nodered"]),
   };
 }
+
+export function rowToKioskLog(r: Row): KioskLog {
+  return {
+    id: n(r["id"]),
+    kiosk_id: n(r["kiosk_id"]),
+    level: s(r["level"]) as KioskLogLevel,
+    message: s(r["message"]),
+    context: j<Record<string, unknown>>(r["context"], {}),
+    logged_at: s(r["logged_at"]),
+    received_at: s(r["received_at"]),
+  };
+}

@@ -12,6 +12,7 @@ import type {
   FirmwareRollout,
   Kiosk,
   KioskGpioBinding,
+  KioskLog,
   Label,
   Layout as LayoutType,
   LayoutCell,
@@ -1341,6 +1342,8 @@ interface KioskEditProps {
   gpioBindings?: KioskGpioBinding[];
   firmwareReleases?: FirmwareRelease[];
   osReleases?: OsUpdateRelease[];
+  kioskLogs?: KioskLog[];
+  kioskLogTotal?: number;
   error?: string;
   success?: string;
 }
@@ -1806,6 +1809,53 @@ export function KioskEditPage(props: KioskEditProps) {
         </div>
 
         {k.managed_image ? <ManagedConfigCard kiosk={k} /> : null}
+
+        {/* Kiosk application logs */}
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">
+            Logs
+            {props.kioskLogTotal ? <span style="color:#999; font-weight:normal; font-size:0.85rem"> ({String(props.kioskLogTotal)})</span> : null}
+          </h2>
+          {props.kioskLogs && props.kioskLogs.length > 0 ? (
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:10rem">Time</th>
+                    <th style="width:4rem">Level</th>
+                    <th>Message</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {props.kioskLogs.map((log) => {
+                    const levelBadge =
+                      log.level === "error" ? "badge-red"
+                      : log.level === "warn" ? "badge-yellow"
+                      : log.level === "info" ? "badge-blue"
+                      : "badge-gray";
+                    const ctx = Object.keys(log.context).length > 0
+                      ? JSON.stringify(log.context)
+                      : "";
+                    return (
+                      <tr>
+                        <td style="font-size:0.8rem; white-space:nowrap; color:#666; font-family:monospace">
+                          {log.received_at.replace("T", " ").replace(/\.\d+Z$/, "Z")}
+                        </td>
+                        <td><span class={`badge ${levelBadge}`}>{log.level}</span></td>
+                        <td>
+                          <span style="font-size:0.85rem">{log.message}</span>
+                          {ctx && <pre style="margin:0.2rem 0 0; font-size:0.75rem; color:#888; white-space:pre-wrap; word-break:break-all">{ctx}</pre>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p style="color:#999">No logs received from this kiosk</p>
+          )}
+        </div>
 
         <form method="post" action={`/admin/kiosks/${k.id}/delete`} style="margin-top:1rem">
           <button type="submit" class="btn btn-danger" {...{"onclick": "return confirm('Delete this kiosk?')"}}>Delete Kiosk</button>

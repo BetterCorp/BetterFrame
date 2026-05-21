@@ -216,6 +216,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
             kiosk_id: kiosk.id,
             kiosk_name: kioskData.name,
             event: "connected",
+            source: "server",
           });
 
           ws.on("message", (data) => {
@@ -258,11 +259,12 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
                 nodered.forward("kiosk.changed", {
                   ...telemetry,
                   event: "heartbeat",
+                  source: "server",
                 });
                 // Dedicated status topic — same payload sans the event marker
                 // so bf-trigger-status can listen on a heartbeat-only channel
                 // without filtering connect/disconnect noise out.
-                nodered.forward("kiosk.status", telemetry);
+                nodered.forward("kiosk.status", { ...telemetry, source: "server" });
               }
             } catch {
               // ignore malformed
@@ -282,6 +284,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
               kiosk_id: kiosk.id,
               kiosk_name: kioskData.name,
               event: "disconnected",
+              source: "server",
             });
           });
         });

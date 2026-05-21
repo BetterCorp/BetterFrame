@@ -42,6 +42,13 @@ ed25519-dalek = { version = "2", features = ["pem"] }
 base64 = "0.22"
 urlencoding = "2"
 
+# Hardware-bound at-rest encryption of state files (kiosk_key + bundle cache
+# contain camera RTSP credentials in URL form). Keys derived via HKDF from
+# the Pi CPU serial — pulling the SD doesn't yield plaintext without also
+# having the same physical board.
+aes-gcm = "0.10"
+hkdf = "0.12"
+
 # Local HTTP server on kiosk (LAN GET-only layout switch + admin proxy)
 axum = "0.7"
 tower = "0.5"

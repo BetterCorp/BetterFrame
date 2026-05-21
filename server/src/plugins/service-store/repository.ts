@@ -24,6 +24,7 @@ import type {
   Entity,
   EntityType,
   EventLog,
+  EventQueryFilters,
   EventSourceType,
   FirmwareChannel,
   FirmwareRelease,
@@ -35,6 +36,9 @@ import type {
   Kiosk,
   KioskGpioBinding,
   KioskLabel,
+  KioskLog,
+  KioskLogLevel,
+  KioskLogQueryFilters,
   Label,
   LabelRole,
   Layout,
@@ -63,6 +67,7 @@ import {
   rowToFirmwareRollout,
   rowToKiosk,
   rowToKioskGpioBinding,
+  rowToKioskLog,
   rowToLabel,
   rowToLayout,
   rowToLayoutCell,
@@ -1638,6 +1643,120 @@ export class Repository {
       "SELECT * FROM event_log ORDER BY received_at DESC LIMIT ?",
     ).all(limit);
     return rs.map((r) => rowToEventLog(r as Record<string, unknown>));
+  }
+
+  markEventForwarded(eventId: number): void {
+    this.prep("UPDATE event_log SET forwarded_to_nodered = 1 WHERE id = ?").run(eventId);
+  }
+
+  queryEvents(filters: EventQueryFilters): { events: EventLog[]; total: number } {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (filters.topic) {
+      where.push("topic = ?");
+      params.push(filters.topic);
+    }
+    if (filters.kiosk_id != null) {
+      where.push("source_kiosk_id = ?");
+      params.push(filters.kiosk_id);
+    }
+    if (filters.from) {
+      where.push("received_at >= ?");
+      params.push(filters.from);
+    }
+    if (filters.to) {
+      where.push("received_at <= ?");
+      params.push(filters.to);
+    }
+
+    const clause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+    const limit = filters.limit ?? 50;
+    const offset = filters.offset ?? 0;
+
+    const countRow = this.db.prepare(`SELECT COUNT(*) as cnt FROM event_log ${clause}`).get(...params) as Record<string, unknown> | undefined;
+    const total = Number(countRow?.["cnt"] ?? 0);
+
+    const rs = this.db.prepare(
+      `SELECT * FROM event_log ${clause} ORDER BY received_at DESC LIMIT ? OFFSET ?`,
+    ).all(...params, limit, offset);
+
+    return {
+      events: rs.map((r) => rowToEventLog(r as Record<string, unknown>)),
+      total,
+    };
+  }
+
+  // ===========================================================================
+  // kiosk_logs
+  // ===========================================================================
+
+  insertKioskLogs(
+    kioskId: number,
+    entries: Array<{ level: KioskLogLevel; message: string; context?: Record<string, unknown>; logged_at?: string }>,
+  ): number {
+    const stmt = this.prep(
+      `INSERT INTO kiosk_logs (kiosk_id, level, message, context, logged_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    const now = isoNow();
+    let count = 0;
+    for (const e of entries) {
+      stmt.run(kioskId, e.level, e.message, J(e.context ?? {}), e.logged_at ?? now);
+      count++;
+    }
+    this.trimKioskLogs(kioskId, 500);
+    return count;
+  }
+
+  private trimKioskLogs(kioskId: number, maxRows: number): void {
+    this.db.prepare(
+      `DELETE FROM kiosk_logs WHERE kiosk_id = ? AND id NOT IN (
+         SELECT id FROM kiosk_logs WHERE kiosk_id = ? ORDER BY received_at DESC LIMIT ?
+       )`,
+    ).run(kioskId, kioskId, maxRows);
+  }
+
+  purgeOldKioskLogs(maxAgeHours: number): number {
+    const cutoff = new Date(Date.now() - maxAgeHours * 3600_000).toISOString();
+    const result = this.db.prepare(
+      "DELETE FROM kiosk_logs WHERE received_at < ?",
+    ).run(cutoff);
+    return Number(result.changes);
+  }
+
+  queryKioskLogs(filters: KioskLogQueryFilters): { logs: KioskLog[]; total: number } {
+    const where: string[] = ["kiosk_id = ?"];
+    const params: (string | number)[] = [filters.kiosk_id];
+
+    if (filters.level) {
+      where.push("level = ?");
+      params.push(filters.level);
+    }
+    if (filters.from) {
+      where.push("received_at >= ?");
+      params.push(filters.from);
+    }
+    if (filters.to) {
+      where.push("received_at <= ?");
+      params.push(filters.to);
+    }
+
+    const clause = `WHERE ${where.join(" AND ")}`;
+    const limit = filters.limit ?? 50;
+    const offset = filters.offset ?? 0;
+
+    const countRow = this.db.prepare(`SELECT COUNT(*) as cnt FROM kiosk_logs ${clause}`).get(...params) as Record<string, unknown> | undefined;
+    const total = Number(countRow?.["cnt"] ?? 0);
+
+    const rs = this.db.prepare(
+      `SELECT * FROM kiosk_logs ${clause} ORDER BY received_at DESC LIMIT ? OFFSET ?`,
+    ).all(...params, limit, offset);
+
+    return {
+      logs: rs.map((r) => rowToKioskLog(r as Record<string, unknown>)),
+      total,
+    };
   }
 
   // ===========================================================================

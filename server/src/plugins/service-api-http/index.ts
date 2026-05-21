@@ -537,9 +537,10 @@ function registerKioskRoutes(
       "display.power.changed",
       "camera.changed",
     ]);
+    const markForwarded = () => repo.markEventForwarded(eventId);
     if (flatTopics.has(body.topic)) {
-      const out = { kiosk_id: kiosk.id, ...(body.payload ?? {}) };
-      nodered.forward(body.topic, out);
+      const out = { kiosk_id: kiosk.id, ...(body.payload ?? {}), source: "kiosk" };
+      nodered.forward(body.topic, out, markForwarded);
       mqtt.publishEvent(kiosk.id, body.topic, out);
     } else {
       const out = {
@@ -550,12 +551,47 @@ function registerKioskRoutes(
         property_op: body.property_op ?? null,
         payload: body.payload ?? {},
         timestamp: new Date().toISOString(),
+        source: "kiosk",
       };
-      nodered.forward(body.topic, out);
+      nodered.forward(body.topic, out, markForwarded);
       mqtt.publishEvent(kiosk.id, body.topic, out);
     }
 
     return { ok: true, event_id: eventId };
+  });
+
+  // ---- Kiosk log ingestion (batch) -----------------------------------------
+  app.post("/api/kiosk/logs", async (event) => {
+    const token = extractBearerToken(event);
+    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
+
+    const kiosk = await auth.verifyKioskKey(token);
+    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+
+    const body = await readBody<{
+      entries?: Array<{ level?: string; message?: string; context?: Record<string, unknown>; logged_at?: string }>;
+    }>(event);
+
+    const raw = body?.entries;
+    if (!Array.isArray(raw) || raw.length === 0) {
+      throw createError({ statusCode: 400, statusMessage: "entries array required" });
+    }
+    if (raw.length > 100) {
+      throw createError({ statusCode: 400, statusMessage: "max 100 entries per batch" });
+    }
+
+    const validLevels = new Set(["debug", "info", "warn", "error"]);
+    const entries = raw
+      .filter((e) => e.message && typeof e.message === "string")
+      .map((e) => ({
+        level: (validLevels.has(e.level ?? "") ? e.level! : "info") as "debug" | "info" | "warn" | "error",
+        message: e.message!,
+        context: e.context ?? {},
+        logged_at: e.logged_at,
+      }));
+
+    const count = repo.insertKioskLogs(kiosk.id, entries);
+    return { ok: true, count };
   });
 
   // ---- Firmware: kiosk checks for + downloads its assigned release -------

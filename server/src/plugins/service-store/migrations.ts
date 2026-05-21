@@ -887,4 +887,17 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "kiosks", "disk_free_mb", "INTEGER");
     addColumnIfNotExists(db, "kiosks", "disk_used_percent", "REAL");
   },
+
+  // ---- kiosk_logs: dedicated table for kiosk application logs ---------------
+  `CREATE TABLE IF NOT EXISTS kiosk_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kiosk_id INTEGER NOT NULL REFERENCES kiosks(id) ON DELETE CASCADE,
+    level TEXT NOT NULL CHECK(level IN ('debug', 'info', 'warn', 'error')),
+    message TEXT NOT NULL,
+    context TEXT NOT NULL DEFAULT '{}',
+    logged_at TEXT NOT NULL,
+    received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_kiosk_logs_kiosk_received ON kiosk_logs(kiosk_id, received_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_kiosk_logs_level ON kiosk_logs(level, received_at DESC)`,
 ];

@@ -2422,6 +2422,9 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
             <button type="submit" class="btn btn-primary">Save</button>
             <a href="/admin/layouts" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
           </form>
+          <form method="post" action={`/admin/layouts/${l.id}/clone`} style="display:inline-block; margin-top:0.5rem">
+            <button type="submit" class="btn btn-ghost">Clone Layout</button>
+          </form>
           <div style="margin-top:1rem; color:#666; font-size:0.85rem">
             <div>Grid: {String(gridCols)}x{String(gridRows)}, {String(cells.length)} cell{cells.length !== 1 ? "s" : ""}</div>
             <div>

@@ -1093,6 +1093,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
 
+  app.post("/admin/layouts/:id/clone", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const clone = deps.repo.cloneLayout(id);
+    notifyKiosks();
+    return new Response(null, { status: 302, headers: { location: `/admin/layouts/${clone.id}` } });
+  });
+
   app.post("/admin/layouts/:id/delete", (event) => {
     const id = Number(getRouterParam(event, "id"));
     deps.repo.deleteLayout(id);

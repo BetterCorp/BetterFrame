@@ -448,8 +448,8 @@ export class Repository {
       `SELECT DISTINCT k.*
          FROM kiosks k
          JOIN displays d ON d.kiosk_id = k.id
-         JOIN layouts l ON l.display_id = d.id
-         JOIN layout_cells lc ON lc.layout_id = l.id
+         JOIN display_layouts dl ON dl.display_id = d.id
+         JOIN layout_cells lc ON lc.layout_id = dl.layout_id
         WHERE lc.camera_id = ?
           AND k.enabled = 1`,
     ).all(cameraId);

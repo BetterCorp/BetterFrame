@@ -304,8 +304,14 @@ function registerKioskRoutes(
       os_version?: string;
       displays?: Array<{ index?: number; name: string; width_px: number; height_px: number }>;
       cpu_temp_c?: number | null;
+      cpu_load_percent?: number | null;
       fan_rpm?: number | null;
       fan_pwm?: number | null;
+      memory_total_mb?: number | null;
+      memory_used_mb?: number | null;
+      disk_total_mb?: number | null;
+      disk_free_mb?: number | null;
+      disk_used_percent?: number | null;
       local_key?: string | null;
       local_port?: number | null;
       // Managed-image kiosk echoes back the version it last applied, and the
@@ -326,8 +332,14 @@ function registerKioskRoutes(
       kiosk_app_version: body?.kiosk_app_version ?? null,
       os_version: body?.os_version ?? null,
       cpu_temp_c: body?.cpu_temp_c ?? null,
+      cpu_load_percent: body?.cpu_load_percent ?? null,
       fan_rpm: body?.fan_rpm ?? null,
       fan_pwm: body?.fan_pwm ?? null,
+      memory_total_mb: body?.memory_total_mb ?? null,
+      memory_used_mb: body?.memory_used_mb ?? null,
+      disk_total_mb: body?.disk_total_mb ?? null,
+      disk_free_mb: body?.disk_free_mb ?? null,
+      disk_used_percent: body?.disk_used_percent ?? null,
       local_key: body?.local_key ?? null,
       local_port: body?.local_port ?? null,
       local_last_ip: remoteIp,
@@ -354,8 +366,14 @@ function registerKioskRoutes(
       kiosk_app_version: body?.kiosk_app_version,
       bundle_version: body?.bundle_version,
       cpu_temp_c: body?.cpu_temp_c,
+      cpu_load_percent: body?.cpu_load_percent,
       fan_rpm: body?.fan_rpm,
       fan_pwm: body?.fan_pwm,
+      memory_total_mb: body?.memory_total_mb,
+      memory_used_mb: body?.memory_used_mb,
+      disk_total_mb: body?.disk_total_mb,
+      disk_free_mb: body?.disk_free_mb,
+      disk_used_percent: body?.disk_used_percent,
       ip: remoteIp,
     });
 

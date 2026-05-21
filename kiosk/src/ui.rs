@@ -6,19 +6,21 @@ use std::time::{Duration, Instant};
 use url::Url;
 
 use gtk4::prelude::*;
-use gtk4::{self as gtk, Application, ApplicationWindow, Box as GtkBox, Grid, Label, Orientation, Picture};
+use gtk4::{
+    self as gtk, Application, ApplicationWindow, Box as GtkBox, Grid, Label, Orientation, Picture,
+};
 use tracing::{info, warn};
 
+use crate::ServerMsg;
 use crate::bundle::{BundleDisplayWithLayouts, KioskBundle};
 use crate::cec;
-use crate::gpio;
 use crate::firmware;
+use crate::gpio;
 use crate::hwmon;
 use crate::local_server;
 use crate::pipeline;
 use crate::server;
 use crate::ws_client;
-use crate::ServerMsg;
 
 /// Per-display runtime state. Kept inside a thread-local hashmap keyed by
 /// display id, so all the idle/sleep/layout tracking is local to that display
@@ -116,7 +118,7 @@ fn activate(app: &Application) {
         .build();
 
     let provider = gtk::CssProvider::new();
-    provider.load_from_string("window { background-color: #000000; }");
+    provider.load_from_string("window { background-color: #000000; } .kiosk-hidden-cursor, .kiosk-hidden-cursor * { cursor: none; }");
     gtk::style_context_add_provider_for_display(
         &WidgetExt::display(&pairing_window),
         &provider,
@@ -129,7 +131,8 @@ fn activate(app: &Application) {
 
     let (tx, rx) = mpsc::channel::<WorkerMsg>();
 
-    let server_url = std::env::var("BETTERFRAME_SERVER").ok()
+    let server_url = std::env::var("BETTERFRAME_SERVER")
+        .ok()
         .or_else(|| std::env::args().nth(1));
     std::thread::spawn(move || {
         let server = server::discover_server(server_url.as_deref());
@@ -152,7 +155,11 @@ fn activate(app: &Application) {
         // cached on-disk bundle and keep retrying every 30s in the background.
         let initial = match server::fetch_bundle(&server, &key) {
             Some(b) => {
-                info!("bundle: {} cameras, {} display(s)", b.cameras.len(), b.normalized_displays().len());
+                info!(
+                    "bundle: {} cameras, {} display(s)",
+                    b.cameras.len(),
+                    b.normalized_displays().len()
+                );
                 Some(b)
             }
             None => {
@@ -241,8 +248,14 @@ fn activate(app: &Application) {
                         }
                         send_heartbeat_now(&server_for_reload, &key_for_reload);
                     }
-                    ServerMsg::SwitchLayout(id) => {
-                        let _ = tx_for_reload.send(WorkerMsg::SwitchLayout(id));
+                    ServerMsg::SwitchLayout {
+                        display_id,
+                        layout_id,
+                    } => {
+                        let _ = tx_for_reload.send(WorkerMsg::SwitchLayout {
+                            display_id,
+                            layout_id,
+                        });
                     }
                     ServerMsg::FirmwareCheck => {
                         maybe_apply_firmware_update(&server_for_reload, &key_for_reload);
@@ -280,8 +293,15 @@ fn activate(app: &Application) {
                     render_bundle(&app_clone, &pairing_window_clone, bundle, &server, &key);
                     install_idle_watchdog();
                 }
-                WorkerMsg::SwitchLayout(id) => {
-                    switch_layout_anywhere(id);
+                WorkerMsg::SwitchLayout {
+                    display_id,
+                    layout_id,
+                } => {
+                    if let Some(display_id) = display_id {
+                        render_layout(display_id, layout_id);
+                    } else {
+                        switch_layout_anywhere(layout_id);
+                    }
                 }
                 WorkerMsg::Wake => {
                     cec::wake();
@@ -301,7 +321,10 @@ fn activate(app: &Application) {
 pub enum WorkerMsg {
     ShowPairingCode(String),
     RenderBundle(KioskBundle, String, String),
-    SwitchLayout(u32),
+    SwitchLayout {
+        display_id: Option<u32>,
+        layout_id: u32,
+    },
     Wake,
 }
 
@@ -340,7 +363,9 @@ fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str) {
         return;
     }
     let current = env!("CARGO_PKG_VERSION");
-    let Some(info) = firmware::check(server_url, kiosk_key, current) else { return };
+    let Some(info) = firmware::check(server_url, kiosk_key, current) else {
+        return;
+    };
     info!("firmware: update {} → {} available", current, info.version);
     if let Err(err) = firmware::apply(server_url, kiosk_key, &info) {
         warn!("firmware: apply failed: {err}");
@@ -356,7 +381,9 @@ fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str) {
 /// Install the once-per-second watchdog that enforces idle/sleep timeouts
 /// per display. Safe to call multiple times — installs at most once.
 fn install_idle_watchdog() {
-    if WATCHDOG_INSTALLED.with(|c| c.get()) { return; }
+    if WATCHDOG_INSTALLED.with(|c| c.get()) {
+        return;
+    }
     WATCHDOG_INSTALLED.with(|c| c.set(true));
     gtk::glib::timeout_add_local(Duration::from_secs(1), move || {
         // Drop any pipelines / webviews whose cooling window has elapsed.
@@ -364,24 +391,41 @@ fn install_idle_watchdog() {
         expire_cooling_webviews();
 
         let bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
-        let Some(bundle) = bundle else { return gtk::glib::ControlFlow::Continue };
+        let Some(bundle) = bundle else {
+            return gtk::glib::ControlFlow::Continue;
+        };
 
         // Snapshot per-display timing decisions so we can act outside the borrow.
-        struct Action { display_id: u32, revert_to: Option<u32>, sleep: bool }
+        struct Action {
+            display_id: u32,
+            revert_to: Option<u32>,
+            sleep: bool,
+        }
         let mut actions: Vec<Action> = Vec::new();
 
         DISPLAYS.with(|ds| {
             for (display_id, st) in ds.borrow().iter() {
-                let Some(d) = bundle.normalized_displays().into_iter().find(|d| d.id == *display_id) else { continue };
+                let Some(d) = bundle
+                    .normalized_displays()
+                    .into_iter()
+                    .find(|d| d.id == *display_id)
+                else {
+                    continue;
+                };
                 let idle_to = d.idle_timeout_seconds as u64;
                 let sleep_to = d.sleep_timeout_seconds as u64;
                 let elapsed = st.last_activity.elapsed();
                 let default_id = d.default_layout_id;
 
-                let mut act = Action { display_id: *display_id, revert_to: None, sleep: false };
+                let mut act = Action {
+                    display_id: *display_id,
+                    revert_to: None,
+                    sleep: false,
+                };
 
                 if idle_to > 0 && elapsed >= Duration::from_secs(idle_to) {
-                    let cur_resets_idle = st.current_layout_id
+                    let cur_resets_idle = st
+                        .current_layout_id
                         .and_then(|cur_id| d.layouts.iter().find(|l| l.id == cur_id))
                         .map(|l| l.resets_idle_timer)
                         .unwrap_or(false);
@@ -402,11 +446,17 @@ fn install_idle_watchdog() {
 
         for a in actions {
             if let Some(layout_id) = a.revert_to {
-                info!("idle timeout reached → reverting display {} to default", a.display_id);
+                info!(
+                    "idle timeout reached → reverting display {} to default",
+                    a.display_id
+                );
                 render_layout(a.display_id, layout_id);
             }
             if a.sleep {
-                info!("sleep timeout reached on display {} → CEC standby", a.display_id);
+                info!(
+                    "sleep timeout reached on display {} → CEC standby",
+                    a.display_id
+                );
                 cec::standby();
                 DISPLAYS.with(|ds| {
                     if let Some(st) = ds.borrow_mut().get_mut(&a.display_id) {
@@ -424,21 +474,34 @@ fn install_idle_watchdog() {
 /// Reads /sys/class/drm/*/status and /sys/class/drm/*/modes.
 fn query_displays() -> Vec<(String, u32, u32)> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir("/sys/class/drm") else { return out };
+    let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
+        return out;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if !name.contains("-HDMI-") && !name.contains("-DP-") { continue; }
+        if !name.contains("-HDMI-") && !name.contains("-DP-") {
+            continue;
+        }
         let path = entry.path();
         let status = std::fs::read_to_string(path.join("status")).unwrap_or_default();
-        if status.trim() != "connected" { continue; }
+        if status.trim() != "connected" {
+            continue;
+        }
         let modes = std::fs::read_to_string(path.join("modes")).unwrap_or_default();
         let mode = modes.lines().next().unwrap_or("");
         let parts: Vec<&str> = mode.split('x').collect();
-        if parts.len() != 2 { continue; }
+        if parts.len() != 2 {
+            continue;
+        }
         let w: u32 = parts[0].parse().unwrap_or(0);
         let h: u32 = parts[1].trim().parse().unwrap_or(0);
-        if w == 0 || h == 0 { continue; }
-        let clean_name = name.split_once('-').map(|(_, rest)| rest.to_string()).unwrap_or(name);
+        if w == 0 || h == 0 {
+            continue;
+        }
+        let clean_name = name
+            .split_once('-')
+            .map(|(_, rest)| rest.to_string())
+            .unwrap_or(name);
         out.push((clean_name, w, h));
     }
     out
@@ -453,7 +516,10 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
     let title = logo_picture(BETTERFRAME_LOGO_SVG, 360, 88, "pairing-logo");
 
     let code_label = Label::new(Some(code));
-    add_css(&code_label, ".code { font-size: 72px; color: #fff; font-weight: 700; letter-spacing: 12px; font-family: monospace; }");
+    add_css(
+        &code_label,
+        ".code { font-size: 72px; color: #fff; font-weight: 700; letter-spacing: 12px; font-family: monospace; }",
+    );
     code_label.add_css_class("code");
 
     let hint = Label::new(Some("Enter this code in BetterFrame admin to pair"));
@@ -504,7 +570,11 @@ fn render_bundle(
     // Tear down any previous per-display windows we no longer need.
     let keep_ids: std::collections::HashSet<u32> = displays.iter().map(|d| d.id).collect();
     let to_remove: Vec<u32> = DISPLAYS.with(|ds| {
-        ds.borrow().keys().filter(|id| !keep_ids.contains(id)).copied().collect()
+        ds.borrow()
+            .keys()
+            .filter(|id| !keep_ids.contains(id))
+            .copied()
+            .collect()
     });
     for id in to_remove {
         if let Some(st) = DISPLAYS.with(|ds| ds.borrow_mut().remove(&id)) {
@@ -530,7 +600,7 @@ fn render_bundle(
                     .fullscreened(true)
                     .build();
                 let provider = gtk::CssProvider::new();
-                provider.load_from_string("window { background-color: #000000; }");
+                provider.load_from_string("window { background-color: #000000; } .kiosk-hidden-cursor, .kiosk-hidden-cursor * { cursor: none; }");
                 gtk::style_context_add_provider_for_display(
                     &WidgetExt::display(&w),
                     &provider,
@@ -544,12 +614,15 @@ fn render_bundle(
                 w
             }
         };
-        new_state.insert(bd.id, DisplayState {
-            window,
-            current_layout_id: None,
-            last_activity: Instant::now(),
-            is_asleep: false,
-        });
+        new_state.insert(
+            bd.id,
+            DisplayState {
+                window,
+                current_layout_id: None,
+                last_activity: Instant::now(),
+                is_asleep: false,
+            },
+        );
     }
     DISPLAYS.with(|ds| *ds.borrow_mut() = new_state);
 
@@ -616,13 +689,14 @@ fn render_layout(display_id: u32, layout_id: u32) {
         return;
     };
 
-    let layout = bd.layouts.iter().find(|l| l.id == layout_id)
-        .or_else(|| {
-            warn!("render_layout: layout {layout_id} not on display {display_id}, falling back to default");
-            bd.default_layout_id
-                .and_then(|did| bd.layouts.iter().find(|l| l.id == did))
-                .or_else(|| bd.layouts.iter().find(|l| l.is_default))
-        });
+    let layout = bd.layouts.iter().find(|l| l.id == layout_id).or_else(|| {
+        warn!(
+            "render_layout: layout {layout_id} not on display {display_id}, falling back to default"
+        );
+        bd.default_layout_id
+            .and_then(|did| bd.layouts.iter().find(|l| l.id == did))
+            .or_else(|| bd.layouts.iter().find(|l| l.is_default))
+    });
 
     let Some(layout) = layout else {
         warn!("render_layout: no usable layout on display {display_id}");
@@ -638,15 +712,25 @@ fn render_layout(display_id: u32, layout_id: u32) {
     // Update per-display layout id BEFORE recomputing warm-cameras so the
     // union across displays is correct.
     let previous_layout_id = DISPLAYS.with(|ds| {
-        let prev = ds.borrow().get(&display_id).and_then(|s| s.current_layout_id);
+        let prev = ds
+            .borrow()
+            .get(&display_id)
+            .and_then(|s| s.current_layout_id);
         if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
             st.current_layout_id = Some(layout.id);
         }
         prev
     });
 
-    info!("rendering layout '{}' (id {}) on display {} ({}x{} grid, {} cells)",
-        layout.name, layout.id, display_id, layout.grid_cols, layout.grid_rows, layout.cells.len());
+    info!(
+        "rendering layout '{}' (id {}) on display {} ({}x{} grid, {} cells)",
+        layout.name,
+        layout.id,
+        display_id,
+        layout.grid_cols,
+        layout.grid_rows,
+        layout.cells.len()
+    );
 
     // Notify the server when the active layout actually changes so Node-RED
     // sees idle reverts + any other kiosk-initiated switch. Skip when the
@@ -657,7 +741,13 @@ fn render_layout(display_id: u32, layout_id: u32) {
         let server = server_url.clone();
         let key = kiosk_key.clone();
         std::thread::spawn(move || {
-            server::report_layout_change(&server, &key, display_id, layout_id_for_report, &layout_name);
+            server::report_layout_change(
+                &server,
+                &key,
+                display_id,
+                layout_id_for_report,
+                &layout_name,
+            );
         });
     }
 
@@ -701,10 +791,17 @@ fn render_layout(display_id: u32, layout_id: u32) {
     for cell in &layout.cells {
         let cell_key: Option<String> = match cell.content_type.as_str() {
             "camera" => cell.camera_id.map(|id| {
-                format!("cam:{id}:{}", cell.stream_selector.as_deref().unwrap_or("auto"))
+                format!(
+                    "cam:{id}:{}",
+                    cell.stream_selector.as_deref().unwrap_or("auto")
+                )
             }),
             "web" => cell.web_url.as_deref().map(|u| format!("web:{}", u.trim())),
-            "html" => cell.html_content.as_deref().filter(|h| !h.trim().is_empty()).map(html_key),
+            "html" => cell
+                .html_content
+                .as_deref()
+                .filter(|h| !h.trim().is_empty())
+                .map(html_key),
             _ => None,
         };
         let widget: gtk::Widget = match cell.content_type.as_str() {
@@ -712,7 +809,9 @@ fn render_layout(display_id: u32, layout_id: u32) {
                 if let Some(cam_id) = cell.camera_id {
                     if let Some(cam) = cam_map.get(&cam_id) {
                         let area = (cell.col_span * cell.row_span) as f32 / total_area;
-                        if let Some((paintable, badge)) = ensure_warm(cam_id, cam, cell.stream_selector.as_deref(), area) {
+                        if let Some((paintable, badge)) =
+                            ensure_warm(cam_id, cam, cell.stream_selector.as_deref(), area)
+                        {
                             let picture = Picture::for_paintable(&paintable);
                             picture.set_content_fit(match cell.fit.as_str() {
                                 "contain" => gtk::ContentFit::Contain,
@@ -731,7 +830,10 @@ fn render_layout(display_id: u32, layout_id: u32) {
                                 label.set_valign(gtk::Align::Start);
                                 label.set_margin_start(4);
                                 label.set_margin_top(4);
-                                add_css(&label, "label { background: rgba(0,0,0,0.6); color: #fff; font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; min-width: 14px; }");
+                                add_css(
+                                    &label,
+                                    "label { background: rgba(0,0,0,0.6); color: #fff; font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; min-width: 14px; }",
+                                );
                                 overlay.add_overlay(&label);
                             }
                             overlay.upcast()
@@ -814,7 +916,13 @@ fn animate_layout_swap(window: &ApplicationWindow, new_grid: &gtk::Grid) {
                 if let Some(b) = c.compute_bounds(&old_child) {
                     let paintable: gtk::gdk::Paintable =
                         gtk::WidgetPaintable::new(Some(&c)).upcast();
-                    snaps.insert(key.to_string(), CellSnap { paintable, bounds: b });
+                    snaps.insert(
+                        key.to_string(),
+                        CellSnap {
+                            paintable,
+                            bounds: b,
+                        },
+                    );
                 }
             }
             child = c.next_sibling();
@@ -841,9 +949,11 @@ fn animate_layout_swap(window: &ApplicationWindow, new_grid: &gtk::Grid) {
         let window_weak = window.downgrade();
         gtk::glib::idle_add_local_once(move || {
             // Swap back to plain grid as window child (drop the overlay).
-            if let (Some(grid), Some(win), Some(ov)) =
-                (new_grid_weak.upgrade(), window_weak.upgrade(), overlay_weak.upgrade())
-            {
+            if let (Some(grid), Some(win), Some(ov)) = (
+                new_grid_weak.upgrade(),
+                window_weak.upgrade(),
+                overlay_weak.upgrade(),
+            ) {
                 if grid.parent().as_ref() == Some(ov.upcast_ref::<gtk::Widget>()) {
                     ov.set_child(None::<&gtk::Widget>);
                     win.set_child(Some(&grid));
@@ -864,7 +974,8 @@ fn animate_layout_swap(window: &ApplicationWindow, new_grid: &gtk::Grid) {
         let mut child = new_grid_clone.first_child();
         while let Some(c) = child {
             let key = c.widget_name();
-            let new_bounds = c.compute_bounds(&new_grid_clone)
+            let new_bounds = c
+                .compute_bounds(&new_grid_clone)
                 .unwrap_or_else(gtk::graphene::Rect::zero);
             if !key.is_empty() {
                 if let Some(snap) = snaps.remove(key.as_str()) {
@@ -909,9 +1020,11 @@ fn animate_layout_swap(window: &ApplicationWindow, new_grid: &gtk::Grid) {
         gtk::glib::timeout_add_local_once(
             Duration::from_millis((LAYOUT_ANIM_MS + 50) as u64),
             move || {
-                if let (Some(grid), Some(win), Some(ov)) =
-                    (grid_weak.upgrade(), window_weak.upgrade(), overlay_weak.upgrade())
-                {
+                if let (Some(grid), Some(win), Some(ov)) = (
+                    grid_weak.upgrade(),
+                    window_weak.upgrade(),
+                    overlay_weak.upgrade(),
+                ) {
                     if grid.parent().as_ref() == Some(ov.upcast_ref::<gtk::Widget>()) {
                         ov.set_child(None::<&gtk::Widget>);
                         win.set_child(Some(&grid));
@@ -939,7 +1052,9 @@ fn animate_picture_to_bounds(
     let fixed_weak = fixed.downgrade();
     let target_weak = target.downgrade();
     pic.add_tick_callback(move |_, _| {
-        let Some(pic) = pic_weak.upgrade() else { return gtk::glib::ControlFlow::Break; };
+        let Some(pic) = pic_weak.upgrade() else {
+            return gtk::glib::ControlFlow::Break;
+        };
         let elapsed = start.elapsed().as_millis() as f64;
         let t = (elapsed / LAYOUT_ANIM_MS as f64).min(1.0);
         let e = ease_out_cubic(t);
@@ -966,11 +1081,17 @@ fn fade_in(widget: &gtk::Widget) {
     let start = Instant::now();
     let weak = widget.downgrade();
     widget.add_tick_callback(move |_, _| {
-        let Some(w) = weak.upgrade() else { return gtk::glib::ControlFlow::Break; };
+        let Some(w) = weak.upgrade() else {
+            return gtk::glib::ControlFlow::Break;
+        };
         let elapsed = start.elapsed().as_millis() as f64;
         let t = (elapsed / LAYOUT_ANIM_MS as f64).min(1.0);
         w.set_opacity(t);
-        if t >= 1.0 { gtk::glib::ControlFlow::Break } else { gtk::glib::ControlFlow::Continue }
+        if t >= 1.0 {
+            gtk::glib::ControlFlow::Break
+        } else {
+            gtk::glib::ControlFlow::Continue
+        }
     });
 }
 
@@ -979,12 +1100,16 @@ fn fade_out_and_drop(pic: &gtk::Picture, fixed: &gtk::Fixed) {
     let pic_weak = pic.downgrade();
     let fixed_weak = fixed.downgrade();
     pic.add_tick_callback(move |_, _| {
-        let Some(p) = pic_weak.upgrade() else { return gtk::glib::ControlFlow::Break; };
+        let Some(p) = pic_weak.upgrade() else {
+            return gtk::glib::ControlFlow::Break;
+        };
         let elapsed = start.elapsed().as_millis() as f64;
         let t = (elapsed / LAYOUT_ANIM_MS as f64).min(1.0);
         p.set_opacity(1.0 - t);
         if t >= 1.0 {
-            if let Some(_f) = fixed_weak.upgrade() { p.unparent(); }
+            if let Some(_f) = fixed_weak.upgrade() {
+                p.unparent();
+            }
             return gtk::glib::ControlFlow::Break;
         }
         gtk::glib::ControlFlow::Continue
@@ -1017,7 +1142,10 @@ fn recompute_global_state() {
 
     // Snapshot per-display active layout id outside any borrow of WARM_CAMERAS.
     let active: Vec<(u32, Option<u32>)> = DISPLAYS.with(|ds| {
-        ds.borrow().iter().map(|(id, st)| (*id, st.current_layout_id)).collect()
+        ds.borrow()
+            .iter()
+            .map(|(id, st)| (*id, st.current_layout_id))
+            .collect()
     });
 
     // Helper: compute the pool key (camera_id, badge) for a given cell in a
@@ -1030,9 +1158,15 @@ fn recompute_global_state() {
     ) {
         let total_area = (layout.grid_cols.max(1) * layout.grid_rows.max(1)) as f32;
         for cell in &layout.cells {
-            if cell.content_type != "camera" { continue; }
-            let Some(cam_id) = cell.camera_id else { continue };
-            let Some(cam) = cam_map.get(&cam_id) else { continue };
+            if cell.content_type != "camera" {
+                continue;
+            }
+            let Some(cam_id) = cell.camera_id else {
+                continue;
+            };
+            let Some(cam) = cam_map.get(&cam_id) else {
+                continue;
+            };
             let area = (cell.col_span * cell.row_span) as f32 / total_area;
             if let Some((_, badge)) = cam.pick_stream(cell.stream_selector.as_deref(), area) {
                 out.insert((cam_id, badge));
@@ -1051,7 +1185,10 @@ fn recompute_global_state() {
     }
 
     for bd in &displays {
-        let active_id = active.iter().find(|(id, _)| *id == bd.id).and_then(|(_, l)| *l);
+        let active_id = active
+            .iter()
+            .find(|(id, _)| *id == bd.id)
+            .and_then(|(_, l)| *l);
         if let Some(cur_id) = active_id {
             if let Some(layout) = bd.layouts.iter().find(|l| l.id == cur_id) {
                 cell_keys(layout, &cam_map, &mut warm_set);
@@ -1071,7 +1208,10 @@ fn recompute_global_state() {
     let mut warm_webs: std::collections::HashSet<WebKey> = std::collections::HashSet::new();
     let mut hot_webs: std::collections::HashSet<WebKey> = std::collections::HashSet::new();
     for bd in &displays {
-        let active_id = active.iter().find(|(id, _)| *id == bd.id).and_then(|(_, l)| *l);
+        let active_id = active
+            .iter()
+            .find(|(id, _)| *id == bd.id)
+            .and_then(|(_, l)| *l);
         if let Some(cur_id) = active_id {
             if let Some(layout) = bd.layouts.iter().find(|l| l.id == cur_id) {
                 web_keys_for_layout(layout, &mut warm_webs);
@@ -1084,7 +1224,9 @@ fn recompute_global_state() {
         }
     }
 
-    if max_cooling_secs == 0 { max_cooling_secs = DEFAULT_COOLING_SECS; }
+    if max_cooling_secs == 0 {
+        max_cooling_secs = DEFAULT_COOLING_SECS;
+    }
     recompute_pool_states(&warm_set, &hot_set, max_cooling_secs);
     recompute_web_states(&warm_webs, &hot_webs, max_cooling_secs);
 }
@@ -1123,9 +1265,8 @@ fn recompute_pool_states(
                     to_stop.push(entry.pipeline.clone());
                 } else {
                     entry.state = WarmthState::Cooling;
-                    entry.cooling_until = Some(
-                        Instant::now() + Duration::from_secs(max_cooling_secs as u64),
-                    );
+                    entry.cooling_until =
+                        Some(Instant::now() + Duration::from_secs(max_cooling_secs as u64));
                     info!(
                         "camera {} ({}): cooling for {}s before drop",
                         key.0, key.1, max_cooling_secs
@@ -1133,7 +1274,9 @@ fn recompute_pool_states(
                 }
             }
         }
-        for k in &to_remove { warm.remove(k); }
+        for k in &to_remove {
+            warm.remove(k);
+        }
     });
 
     for pipe in to_stop {
@@ -1151,8 +1294,7 @@ fn expire_cooling_pipelines() {
         let keys: Vec<PoolKey> = warm
             .iter()
             .filter(|(_, e)| {
-                e.state == WarmthState::Cooling
-                    && e.cooling_until.is_some_and(|t| now >= t)
+                e.state == WarmthState::Cooling && e.cooling_until.is_some_and(|t| now >= t)
             })
             .map(|(k, _)| *k)
             .collect();
@@ -1163,7 +1305,10 @@ fn expire_cooling_pipelines() {
         }
     });
     for (key, pipe) in expired {
-        info!("camera {} ({}): cooling expired → stopping pipeline", key.0, key.1);
+        info!(
+            "camera {} ({}): cooling expired → stopping pipeline",
+            key.0, key.1
+        );
         pipeline::stop(&pipe);
     }
 }
@@ -1182,8 +1327,12 @@ fn load_webview_url(webview: &webkit6::WebView, url: &str, server_url: &str, kio
 }
 
 fn should_attach_kiosk_auth(url: &str, server_url: &str) -> bool {
-    let Ok(target) = Url::parse(url) else { return false };
-    let Ok(server) = Url::parse(server_url) else { return false };
+    let Ok(target) = Url::parse(url) else {
+        return false;
+    };
+    let Ok(server) = Url::parse(server_url) else {
+        return false;
+    };
     if target.scheme() != server.scheme()
         || target.host_str() != server.host_str()
         || target.port_or_known_default() != server.port_or_known_default()
@@ -1210,14 +1359,19 @@ fn ensure_warm(
     let key: PoolKey = (cam_id, desired_badge);
 
     let cached = WARM_CAMERAS.with(|w| {
-        w.borrow().get(&key).map(|e| (e.pipeline.clone(), e.paintable.clone()))
+        w.borrow()
+            .get(&key)
+            .map(|e| (e.pipeline.clone(), e.paintable.clone()))
     });
     if let Some((_pipe, paintable)) = cached {
         // Promote out of Cooling if we're rendering it again.
         WARM_CAMERAS.with(|w| {
             if let Some(e) = w.borrow_mut().get_mut(&key) {
                 if e.state == WarmthState::Cooling {
-                    info!("camera {} ({}): rescued from cooling → warm", cam_id, desired_badge);
+                    info!(
+                        "camera {} ({}): rescued from cooling → warm",
+                        cam_id, desired_badge
+                    );
                     e.state = WarmthState::Warm;
                     e.cooling_until = None;
                 }
@@ -1230,12 +1384,15 @@ fn ensure_warm(
     let paintable = sink.property::<gtk::gdk::Paintable>("paintable");
     pipeline::play(&pipe);
     WARM_CAMERAS.with(|w| {
-        w.borrow_mut().insert(key, PipelineEntry {
-            pipeline: pipe,
-            paintable: paintable.clone(),
-            state: WarmthState::Warm,
-            cooling_until: None,
-        });
+        w.borrow_mut().insert(
+            key,
+            PipelineEntry {
+                pipeline: pipe,
+                paintable: paintable.clone(),
+                state: WarmthState::Warm,
+                cooling_until: None,
+            },
+        );
     });
     info!("warmed pipeline for camera {cam_id} (stream: {desired_badge})");
     Some((paintable, desired_badge))
@@ -1264,9 +1421,7 @@ fn ensure_web(
     server_url: &str,
     kiosk_key: &str,
 ) -> webkit6::WebView {
-    let cached = WARM_WEBVIEWS.with(|m| {
-        m.borrow().get(&key).map(|e| e.webview.clone())
-    });
+    let cached = WARM_WEBVIEWS.with(|m| m.borrow().get(&key).map(|e| e.webview.clone()));
     if let Some(wv) = cached {
         WARM_WEBVIEWS.with(|m| {
             if let Some(e) = m.borrow_mut().get_mut(&key) {
@@ -1296,11 +1451,14 @@ fn ensure_web(
         }
     }
     WARM_WEBVIEWS.with(|m| {
-        m.borrow_mut().insert(key.clone(), WebEntry {
-            webview: wv.clone(),
-            state: WarmthState::Warm,
-            cooling_until: None,
-        });
+        m.borrow_mut().insert(
+            key.clone(),
+            WebEntry {
+                webview: wv.clone(),
+                state: WarmthState::Warm,
+                cooling_until: None,
+            },
+        );
     });
     info!("warmed webview {key}");
     wv
@@ -1359,16 +1517,17 @@ fn recompute_web_states(
                     to_remove.push(key.clone());
                 } else {
                     entry.state = WarmthState::Cooling;
-                    entry.cooling_until = Some(
-                        Instant::now() + Duration::from_secs(max_cooling_secs as u64),
-                    );
+                    entry.cooling_until =
+                        Some(Instant::now() + Duration::from_secs(max_cooling_secs as u64));
                     info!("webview {key}: cooling for {max_cooling_secs}s before drop");
                 }
             }
         }
         for k in &to_remove {
             if let Some(e) = warm.remove(k) {
-                if e.webview.parent().is_some() { e.webview.unparent(); }
+                if e.webview.parent().is_some() {
+                    e.webview.unparent();
+                }
             }
         }
     });
@@ -1383,14 +1542,15 @@ fn expire_cooling_webviews() {
         let keys: Vec<WebKey> = warm
             .iter()
             .filter(|(_, e)| {
-                e.state == WarmthState::Cooling
-                    && e.cooling_until.is_some_and(|t| now >= t)
+                e.state == WarmthState::Cooling && e.cooling_until.is_some_and(|t| now >= t)
             })
             .map(|(k, _)| k.clone())
             .collect();
         for k in keys {
             if let Some(e) = warm.remove(&k) {
-                if e.webview.parent().is_some() { e.webview.unparent(); }
+                if e.webview.parent().is_some() {
+                    e.webview.unparent();
+                }
                 expired.push(k);
             }
         }
@@ -1400,13 +1560,10 @@ fn expire_cooling_webviews() {
     }
 }
 
-/// Hide the mouse pointer on a window. Kiosks have no input device the user
-/// should see — the cursor is just visual noise sitting in the middle of the
-/// content. GDK's "none" cursor name maps to a hidden cursor on Wayland.
+/// Hide the mouse pointer on a window. Avoid GDK's "none" cursor here because
+/// some GTK/Wayland stacks render it as a small square in the top-left corner.
 fn hide_cursor_on(window: &ApplicationWindow) {
-    if let Some(cursor) = gtk::gdk::Cursor::from_name("none", None) {
-        window.set_cursor(Some(&cursor));
-    }
+    window.add_css_class("kiosk-hidden-cursor");
 }
 
 fn show_logo(window: &ApplicationWindow) {

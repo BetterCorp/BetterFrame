@@ -14,17 +14,27 @@ fn state_dir() -> PathBuf {
     dir
 }
 
-fn key_file() -> PathBuf { state_dir().join("kiosk.key") }
-fn server_file() -> PathBuf { state_dir().join("server.url") }
-fn bundle_cache_path() -> PathBuf { state_dir().join("bundle.json") }
-fn local_key_file() -> PathBuf { state_dir().join("local.key") }
+fn key_file() -> PathBuf {
+    state_dir().join("kiosk.key")
+}
+fn server_file() -> PathBuf {
+    state_dir().join("server.url")
+}
+fn bundle_cache_path() -> PathBuf {
+    state_dir().join("bundle.json")
+}
+fn local_key_file() -> PathBuf {
+    state_dir().join("local.key")
+}
 
 /// Load (or generate) the kiosk-local API key used by the LAN-side GET
 /// layout-switch endpoint. Persisted hex, 32 bytes random.
 pub fn load_or_create_local_key() -> String {
     if let Ok(s) = fs::read_to_string(local_key_file()) {
         let trimmed = s.trim().to_string();
-        if trimmed.len() >= 16 { return trimmed; }
+        if trimmed.len() >= 16 {
+            return trimmed;
+        }
     }
     use rand::RngCore;
     let mut buf = [0u8; 32];
@@ -255,7 +265,9 @@ pub fn heartbeat(
     // copy-paste URL for bookmark-style layout switches.
     let local_key = load_or_create_local_key();
     let local_port: u16 = std::env::var("BF_KIOSK_LOCAL_PORT")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(18090);
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(18090);
     client
         .post(format!("{server}/api/kiosk/heartbeat"))
         .header("Authorization", format!("Bearer {key}"))
@@ -263,8 +275,14 @@ pub fn heartbeat(
             "kiosk_app_version": env!("CARGO_PKG_VERSION"),
             "displays": display_info,
             "cpu_temp_c": hw.cpu_temp_c,
+            "cpu_load_percent": hw.cpu_load_percent,
             "fan_rpm": hw.fan_rpm,
             "fan_pwm": hw.fan_pwm,
+            "memory_total_mb": hw.memory_total_mb,
+            "memory_used_mb": hw.memory_used_mb,
+            "disk_total_mb": hw.disk_total_mb,
+            "disk_free_mb": hw.disk_free_mb,
+            "disk_used_percent": hw.disk_used_percent,
             "local_key": local_key,
             "local_port": local_port,
         }))

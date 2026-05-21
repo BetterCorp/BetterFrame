@@ -1316,7 +1316,7 @@ interface KioskEditProps {
   labels: Array<{ label_id: number; name: string; role: string }>;
   allLabels: Label[];
   displays?: Display[];
-  switchableLayouts?: LayoutType[];
+  displayLayouts?: Array<{ display: Display; layouts: LayoutType[] }>;
   gpioBindings?: KioskGpioBinding[];
   firmwareReleases?: FirmwareRelease[];
   error?: string;
@@ -1556,24 +1556,37 @@ export function KioskEditPage(props: KioskEditProps) {
             >Standby</button>
           </div>
 
-          {props.switchableLayouts && props.switchableLayouts.length > 0 ? (
+          {props.displayLayouts && props.displayLayouts.length > 0 ? (
             <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
-              <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Switch Layout</div>
-              <div style="display:flex; gap:0.5rem; align-items:center">
-                <select id={`kiosk-layout-pick-${String(k.id)}`} class="form-input" style="flex:1">
-                  {props.switchableLayouts.map((l) => (
-                    <option value={String(l.id)}>{l.name}</option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  class="btn btn-sm"
-                  {...{
-                    "hx-post": `/admin/kiosks/${String(k.id)}/layout/0`,
-                    "hx-swap": "none",
-                    "hx-on::config-request": `event.detail.path = event.detail.path.replace(/\\/layout\\/.*/, '/layout/' + document.getElementById('kiosk-layout-pick-${String(k.id)}').value);`,
-                  }}
-                >Switch</button>
+              <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Switch Layout By Display</div>
+              <div style="display:grid; gap:0.75rem">
+                {props.displayLayouts.map(({ display, layouts }) => (
+                  <div style="display:grid; grid-template-columns:minmax(130px, 0.8fr) minmax(180px, 1fr) auto; gap:0.5rem; align-items:center">
+                    <div style="font-size:0.85rem">
+                      <a href={`/admin/displays/${String(display.id)}`}><strong>{display.name}</strong></a>
+                      <div style="color:#666; font-size:0.75rem">{String(display.width_px)}x{String(display.height_px)}</div>
+                    </div>
+                    {layouts.length > 0 ? (
+                      <select id={`display-layout-pick-${String(display.id)}`} class="form-input">
+                        {layouts.map((l) => (
+                          <option value={String(l.id)}>{l.name}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span style="color:#999; font-size:0.85rem">No attached layouts</span>
+                    )}
+                    <button
+                      type="button"
+                      class="btn btn-sm"
+                      disabled={layouts.length === 0}
+                      {...{
+                        "hx-post": `/admin/displays/${String(display.id)}/layout/0`,
+                        "hx-swap": "none",
+                        "hx-on::config-request": `event.detail.path = event.detail.path.replace(/\\/layout\\/.*/, '/layout/' + document.getElementById('display-layout-pick-${String(display.id)}').value);`,
+                      }}
+                    >Switch</button>
+                  </div>
+                )).join("")}
               </div>
             </div>
           ) : null}
@@ -1583,6 +1596,9 @@ export function KioskEditPage(props: KioskEditProps) {
             <div style="display:flex; gap:1.5rem; flex-wrap:wrap; font-size:0.85rem; color:#666; margin-bottom:0.75rem">
               <div>CPU: {k.cpu_temp_c != null ? `${k.cpu_temp_c.toFixed(1)}°C` : "—"}</div>
               <div>Fan: {k.fan_rpm != null ? `${k.fan_rpm} RPM` : "—"}</div>
+              <div>CPU Load: {percentText(k.cpu_load_percent)}</div>
+              <div>RAM: {mbPair(k.memory_used_mb, k.memory_total_mb)}</div>
+              <div>Disk: {k.disk_free_mb != null && k.disk_total_mb != null ? `${String(k.disk_free_mb)} MB free / ${String(k.disk_total_mb)} MB` : "—"} {k.disk_used_percent != null ? `(${k.disk_used_percent.toFixed(1)}%)` : ""}</div>
               <div>PWM: {k.fan_pwm != null ? `${k.fan_pwm}/255` : "—"}</div>
             </div>
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
@@ -2683,6 +2699,15 @@ function tempBadge(temp: number | null) {
   return <span class="badge badge-green">{txt}</span>;
 }
 
+function percentText(value: number | null): string {
+  return value == null ? "—" : `${value.toFixed(1)}%`;
+}
+
+function mbPair(used: number | null, total: number | null): string {
+  if (used == null || total == null) return "—";
+  return `${String(used)} / ${String(total)} MB`;
+}
+
 // ---- Node-RED Embed ---------------------------------------------------
 
 export function NoderedEmbedPage(props: { user: string }) {
@@ -2736,6 +2761,9 @@ export function SystemHealthPage(props: SystemHealthPageProps) {
               <th>Status</th>
               <th>Last Seen</th>
               <th>CPU Temp</th>
+              <th>CPU Load</th>
+              <th>RAM</th>
+              <th>Disk</th>
               <th>Fan</th>
               <th>Bundle</th>
               <th>Displays</th>
@@ -2743,7 +2771,7 @@ export function SystemHealthPage(props: SystemHealthPageProps) {
           </thead>
           <tbody>
             {props.rows.length === 0 ? (
-              <tr><td colspan="7" style="text-align:center; color:#999; padding:2rem">No kiosks paired</td></tr>
+              <tr><td colspan="10" style="text-align:center; color:#999; padding:2rem">No kiosks paired</td></tr>
             ) : (
               props.rows.map((row) => {
                 const k = row.kiosk;
@@ -2757,6 +2785,14 @@ export function SystemHealthPage(props: SystemHealthPageProps) {
                     </td>
                     <td style="font-size:0.85rem; white-space:nowrap">{k.last_seen_at ? formatTime(k.last_seen_at) : "Never"}</td>
                     <td>{tempBadge(k.cpu_temp_c)}</td>
+                    <td style="font-size:0.85rem">{percentText(k.cpu_load_percent)}</td>
+                    <td style="font-size:0.85rem">{mbPair(k.memory_used_mb, k.memory_total_mb)}</td>
+                    <td style="font-size:0.85rem">
+                      {k.disk_free_mb != null && k.disk_total_mb != null
+                        ? `${String(k.disk_free_mb)} MB free / ${String(k.disk_total_mb)} MB`
+                        : "—"}
+                      {k.disk_used_percent != null ? <span style="color:#999"> ({k.disk_used_percent.toFixed(1)}%)</span> : ""}
+                    </td>
                     <td style="font-size:0.85rem">
                       {k.fan_rpm != null ? `${String(k.fan_rpm)} RPM` : "—"}
                       {k.fan_pwm != null && (

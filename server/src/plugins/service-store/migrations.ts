@@ -593,8 +593,14 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
   // ---- hwmon columns on kiosks: cpu_temp_c, fan_rpm, fan_pwm ------
   (db: DatabaseSync) => {
     addColumnIfNotExists(db, "kiosks", "cpu_temp_c", "REAL");
+    addColumnIfNotExists(db, "kiosks", "cpu_load_percent", "REAL");
     addColumnIfNotExists(db, "kiosks", "fan_rpm", "INTEGER");
     addColumnIfNotExists(db, "kiosks", "fan_pwm", "INTEGER");
+    addColumnIfNotExists(db, "kiosks", "memory_total_mb", "INTEGER");
+    addColumnIfNotExists(db, "kiosks", "memory_used_mb", "INTEGER");
+    addColumnIfNotExists(db, "kiosks", "disk_total_mb", "INTEGER");
+    addColumnIfNotExists(db, "kiosks", "disk_free_mb", "INTEGER");
+    addColumnIfNotExists(db, "kiosks", "disk_used_percent", "REAL");
   },
 
   // ---- per-cell content fit (cover|contain|fill) ----
@@ -832,5 +838,21 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "kiosks", "managed_config_applied_version", "INTEGER NOT NULL DEFAULT 0");
     addColumnIfNotExists(db, "kiosks", "managed_config_applied_at", "TEXT");
     addColumnIfNotExists(db, "kiosks", "managed_config_error", "TEXT");
+  },
+
+  // Backfill RTSP cameras created before camera_streams became mandatory for
+  // rendering. Without this, the kiosk sees a camera but no playable stream.
+  (db: DatabaseSync) => {
+    db.exec(`
+      INSERT INTO camera_streams (camera_id, role, name, rtsp_uri, is_discovered)
+      SELECT c.id, 'main', 'Main', c.rtsp_url, 0
+        FROM cameras c
+       WHERE c.type = 'rtsp'
+         AND c.rtsp_url IS NOT NULL
+         AND c.rtsp_url != ''
+         AND NOT EXISTS (
+           SELECT 1 FROM camera_streams s WHERE s.camera_id = c.id
+         )
+    `);
   },
 ];

@@ -22,12 +22,12 @@ use std::sync::mpsc::Sender as StdSender;
 use std::sync::{Arc, Mutex};
 
 use axum::{
+    Json, Router,
     body::{Body, Bytes},
     extract::{Path, Query, Request, State},
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{any, get},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -50,7 +50,9 @@ pub struct LocalServerState {
 }
 
 #[derive(Deserialize)]
-pub struct LocalAuth { key: String }
+pub struct LocalAuth {
+    key: String,
+}
 
 #[derive(Serialize)]
 pub struct LocalInfo {
@@ -122,7 +124,10 @@ async fn local_layout_handler(
     let Some(tx) = tx else {
         return (StatusCode::SERVICE_UNAVAILABLE, "ui not ready").into_response();
     };
-    if let Err(e) = tx.send(WorkerMsg::SwitchLayout(id)) {
+    if let Err(e) = tx.send(WorkerMsg::SwitchLayout {
+        display_id: None,
+        layout_id: id,
+    }) {
         warn!("local-server: send SwitchLayout failed: {e}");
         return (StatusCode::INTERNAL_SERVER_ERROR, "send failed").into_response();
     }
@@ -187,9 +192,9 @@ async fn proxy_handler(
             return (StatusCode::BAD_GATEWAY, "proxy upstream body error").into_response();
         }
     };
-    builder
-        .body(Body::from(bytes))
-        .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "bad proxy response").into_response())
+    builder.body(Body::from(bytes)).unwrap_or_else(|_| {
+        (StatusCode::INTERNAL_SERVER_ERROR, "bad proxy response").into_response()
+    })
 }
 
 fn reqwest_method(m: &Method) -> reqwest::Method {
@@ -197,9 +202,13 @@ fn reqwest_method(m: &Method) -> reqwest::Method {
 }
 
 fn constant_time_eq(a: &str, b: &str) -> bool {
-    if a.len() != b.len() { return false; }
+    if a.len() != b.len() {
+        return false;
+    }
     let mut diff = 0u8;
-    for (x, y) in a.bytes().zip(b.bytes()) { diff |= x ^ y; }
+    for (x, y) in a.bytes().zip(b.bytes()) {
+        diff |= x ^ y;
+    }
     diff == 0
 }
 

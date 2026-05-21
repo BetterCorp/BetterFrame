@@ -239,14 +239,21 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
               if (msg["type"] === "status") {
                 obs.log.info("kiosk status: {data}", { data: data.toString() });
                 const cpu = typeof msg["cpu_temp_c"] === "number" ? msg["cpu_temp_c"] : null;
+                const cpuLoad = typeof msg["cpu_load_percent"] === "number" ? msg["cpu_load_percent"] : null;
                 const fanRpm = typeof msg["fan_rpm"] === "number" ? msg["fan_rpm"] : null;
                 const fanPwm = typeof msg["fan_pwm"] === "number" ? msg["fan_pwm"] : null;
                 const telemetry = {
                   kiosk_id: kiosk.id,
                   kiosk_name: kioskData.name,
                   cpu_temp_c: cpu,
+                  cpu_load_percent: cpuLoad,
                   fan_rpm: fanRpm,
                   fan_pwm: fanPwm,
+                  memory_total_mb: typeof msg["memory_total_mb"] === "number" ? msg["memory_total_mb"] : null,
+                  memory_used_mb: typeof msg["memory_used_mb"] === "number" ? msg["memory_used_mb"] : null,
+                  disk_total_mb: typeof msg["disk_total_mb"] === "number" ? msg["disk_total_mb"] : null,
+                  disk_free_mb: typeof msg["disk_free_mb"] === "number" ? msg["disk_free_mb"] : null,
+                  disk_used_percent: typeof msg["disk_used_percent"] === "number" ? msg["disk_used_percent"] : null,
                 };
                 nodered.forward("kiosk.changed", {
                   ...telemetry,

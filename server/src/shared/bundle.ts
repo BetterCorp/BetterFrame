@@ -208,6 +208,20 @@ export function generateBundle(
 
   const bundleCameras: BundleCamera[] = cameras.map((cam) => {
     const streams = repo.listCameraStreams(cam.id);
+    const effectiveStreams = streams.length > 0 ? streams : (
+      cam.type === "rtsp" && cam.rtsp_url
+        ? [{
+          id: 0,
+          role: "main" as const,
+          name: "Main",
+          rtsp_uri: cam.rtsp_url,
+          width: null,
+          height: null,
+          encoding: null,
+          framerate: null,
+        }]
+        : []
+    );
     let onvifPwEncrypted: string | null = null;
     if (cam.onvif_password && clusterKey) {
       onvifPwEncrypted = secrets.encryptForCluster(cam.onvif_password, clusterKey);
@@ -222,7 +236,7 @@ export function generateBundle(
       onvif_username: cam.onvif_username,
       onvif_password_encrypted: onvifPwEncrypted,
       stream_policy: cam.stream_policy,
-      streams: streams.map((s) => ({
+      streams: effectiveStreams.map((s) => ({
         id: s.id,
         role: s.role,
         name: s.name,

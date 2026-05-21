@@ -1025,8 +1025,14 @@ export class Repository {
          kiosk_app_version = NULL,
          os_version = NULL,
          cpu_temp_c = NULL,
+         cpu_load_percent = NULL,
          fan_rpm = NULL,
-         fan_pwm = NULL
+         fan_pwm = NULL,
+         memory_total_mb = NULL,
+         memory_used_mb = NULL,
+         disk_total_mb = NULL,
+         disk_free_mb = NULL,
+         disk_used_percent = NULL
        WHERE id = ?`,
     ).run(
       input.key_hash,
@@ -1046,8 +1052,14 @@ export class Repository {
       kiosk_app_version?: string | null;
       os_version?: string | null;
       cpu_temp_c?: number | null;
+      cpu_load_percent?: number | null;
       fan_rpm?: number | null;
       fan_pwm?: number | null;
+      memory_total_mb?: number | null;
+      memory_used_mb?: number | null;
+      disk_total_mb?: number | null;
+      disk_free_mb?: number | null;
+      disk_used_percent?: number | null;
       local_key?: string | null;
       local_port?: number | null;
       local_last_ip?: string | null;
@@ -1060,8 +1072,14 @@ export class Repository {
          kiosk_app_version = COALESCE(?, kiosk_app_version),
          os_version = COALESCE(?, os_version),
          cpu_temp_c = ?,
+         cpu_load_percent = ?,
          fan_rpm = ?,
          fan_pwm = ?,
+         memory_total_mb = ?,
+         memory_used_mb = ?,
+         disk_total_mb = ?,
+         disk_free_mb = ?,
+         disk_used_percent = ?,
          local_key = COALESCE(?, local_key),
          local_port = COALESCE(?, local_port),
          local_last_ip = COALESCE(?, local_last_ip)
@@ -1072,8 +1090,14 @@ export class Repository {
       patch.kiosk_app_version ?? null,
       patch.os_version ?? null,
       patch.cpu_temp_c ?? null,
+      patch.cpu_load_percent ?? null,
       patch.fan_rpm ?? null,
       patch.fan_pwm ?? null,
+      patch.memory_total_mb ?? null,
+      patch.memory_used_mb ?? null,
+      patch.disk_total_mb ?? null,
+      patch.disk_free_mb ?? null,
+      patch.disk_used_percent ?? null,
       patch.local_key ?? null,
       patch.local_port ?? null,
       patch.local_last_ip ?? null,

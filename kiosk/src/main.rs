@@ -1,4 +1,3 @@
-mod server;
 mod bundle;
 mod cec;
 mod firmware;
@@ -6,6 +5,7 @@ mod gpio;
 mod hwmon;
 mod local_server;
 mod pipeline;
+mod server;
 mod ui;
 mod ws_client;
 
@@ -17,20 +17,25 @@ pub enum ServerMsg {
     Wake,
     /// Some(0..=255) = manual PWM. None = restore auto.
     Fan(Option<u32>),
-    /// Switch to a specific layout by ID (must be present in current bundle).
-    SwitchLayout(u32),
+    /// Switch to a specific layout by ID, optionally scoped to one display.
+    SwitchLayout {
+        display_id: Option<u32>,
+        layout_id: u32,
+    },
     /// Server-pushed "go check for a firmware update now".
     FirmwareCheck,
 }
 
-use gtk4::prelude::{ApplicationExt, ApplicationExtManual};
 use gstreamer::prelude::PluginFeatureExtManual;
+use gtk4::prelude::{ApplicationExt, ApplicationExtManual};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 fn main() {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("betterframe_kiosk=info".parse().unwrap()))
+        .with_env_filter(
+            EnvFilter::from_default_env().add_directive("betterframe_kiosk=info".parse().unwrap()),
+        )
         .init();
 
     gstreamer::init().expect("Failed to init GStreamer");

@@ -1231,6 +1231,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       const mainStream = streams.find((s) => s.role === "main");
       if (mainStream) {
         deps.repo.updateCameraStream(mainStream.id, { rtsp_uri: rtspUrl });
+      } else {
+        deps.repo.createCameraStream({
+          camera_id: id,
+          role: "main",
+          name: "Main",
+          rtsp_uri: rtspUrl,
+        });
       }
     }
     notifyKiosks();
@@ -1290,8 +1297,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       role: kl.role,
     }));
     const displays = deps.repo.listDisplaysForKiosk(id);
-    const firstDisplay = displays[0];
-    const switchableLayouts = firstDisplay ? deps.repo.listLayoutsForDisplay(firstDisplay.id) : [];
+    const displayLayouts = displays.map((display) => ({
+      display,
+      layouts: deps.repo.listLayoutsForDisplay(display.id),
+    }));
     const gpioBindings = deps.repo.listGpioBindings(id);
     const firmwareReleases = deps.repo.listFirmwareReleases();
     return htmlPage(KioskEditPage({
@@ -1300,7 +1309,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       labels: kioskLabels,
       allLabels: deps.repo.listLabels(),
       displays,
-      switchableLayouts,
+      displayLayouts,
       gpioBindings,
       firmwareReleases,
     }));
@@ -1489,32 +1498,21 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     });
   };
 
-  const kioskLayoutSwitch = (event: any) => {
-    const id = Number(getRouterParam(event, "id"));
-    const layoutId = Number(getRouterParam(event, "layoutId"));
-    if (Number.isFinite(id) && Number.isFinite(layoutId)) {
-      getCoordinator().sendToKiosk(id, { type: "layout-switch", layout_id: layoutId });
-      const displays = deps.repo.listDisplaysForKiosk(id);
-      emitLayoutChanged(displays[0]?.id ?? null, id, layoutId);
-    }
-    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
-  };
-  app.post("/admin/kiosks/:id/layout/:layoutId", kioskLayoutSwitch);
-  app.get("/admin/kiosks/:id/layout/:layoutId", kioskLayoutSwitch);
-
   const displayLayoutSwitch = (event: any) => {
     const displayId = Number(getRouterParam(event, "displayId"));
     const layoutId = Number(getRouterParam(event, "layoutId"));
     if (Number.isFinite(displayId) && Number.isFinite(layoutId)) {
       const display = deps.repo.getDisplayById(displayId);
-      if (display?.kiosk_id) {
+      const attached = deps.repo.listLayoutsForDisplay(displayId);
+      const isAttached = attached.some((l) => l.id === layoutId);
+      if (display?.kiosk_id && isAttached) {
         getCoordinator().sendToKiosk(display.kiosk_id, {
           type: "layout-switch",
           display_id: displayId,
           layout_id: layoutId,
         });
+        emitLayoutChanged(displayId, display.kiosk_id, layoutId);
       }
-      emitLayoutChanged(displayId, display?.kiosk_id ?? null, layoutId);
     }
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${displayId}` } });
   };

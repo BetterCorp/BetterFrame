@@ -46,13 +46,17 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
                         match msg {
                             Ok(Message::Text(text)) => {
                                 if text.contains("\"type\":\"ping\"") {
-                                    let _ = ws.send(Message::Text(r#"{"type":"pong"}"#.to_string())).await;
+                                    let _ = ws
+                                        .send(Message::Text(r#"{"type":"pong"}"#.to_string()))
+                                        .await;
                                 } else if text.contains("\"type\":\"onvif-soap-request\"") {
-                                    let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) else {
+                                    let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text)
+                                    else {
                                         warn!("ws: onvif request was not valid JSON");
                                         continue;
                                     };
-                                    let Ok(req) = serde_json::from_value::<OnvifSoapRequest>(msg) else {
+                                    let Ok(req) = serde_json::from_value::<OnvifSoapRequest>(msg)
+                                    else {
                                         warn!("ws: onvif request missing fields");
                                         continue;
                                     };
@@ -69,11 +73,22 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
                                     let _ = tx.send(ServerMsg::Wake);
                                 } else if text.contains("\"type\":\"layout-switch\"") {
                                     info!("ws: layout-switch received: {text}");
-                                    let layout_id: Option<u32> = text.split("\"layout_id\":").nth(1)
-                                        .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
-                                        .and_then(|s| s.parse::<u32>().ok());
-                                    if let Some(id) = layout_id {
-                                        let _ = tx.send(ServerMsg::SwitchLayout(id));
+                                    let msg = serde_json::from_str::<serde_json::Value>(&text).ok();
+                                    let layout_id = msg
+                                        .as_ref()
+                                        .and_then(|m| m.get("layout_id"))
+                                        .and_then(|v| v.as_u64())
+                                        .map(|v| v as u32);
+                                    let display_id = msg
+                                        .as_ref()
+                                        .and_then(|m| m.get("display_id"))
+                                        .and_then(|v| v.as_u64())
+                                        .map(|v| v as u32);
+                                    if let Some(layout_id) = layout_id {
+                                        let _ = tx.send(ServerMsg::SwitchLayout {
+                                            display_id,
+                                            layout_id,
+                                        });
                                     } else {
                                         warn!("ws: layout-switch missing layout_id");
                                     }
@@ -82,18 +97,23 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
                                     let _ = tx.send(ServerMsg::FirmwareCheck);
                                 } else if text.contains("\"type\":\"fan\"") {
                                     info!("ws: fan received: {text}");
-                                    let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) else {
+                                    let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text)
+                                    else {
                                         warn!("ws: fan command was not valid JSON");
                                         continue;
                                     };
-                                    let pwm: Option<u32> = if msg.get("mode").and_then(|v| v.as_str()) == Some("auto") {
-                                        None
-                                    } else if let Some(value) = msg.get("pwm").and_then(|v| v.as_u64()) {
-                                        Some(value.min(255) as u32)
-                                    } else {
-                                        warn!("ws: fan command missing mode=auto or pwm");
-                                        continue;
-                                    };
+                                    let pwm: Option<u32> =
+                                        if msg.get("mode").and_then(|v| v.as_str()) == Some("auto")
+                                        {
+                                            None
+                                        } else if let Some(value) =
+                                            msg.get("pwm").and_then(|v| v.as_u64())
+                                        {
+                                            Some(value.min(255) as u32)
+                                        } else {
+                                            warn!("ws: fan command missing mode=auto or pwm");
+                                            continue;
+                                        };
                                     let _ = tx.send(ServerMsg::Fan(pwm));
                                 } else {
                                     info!("ws: msg: {text}");
@@ -132,7 +152,8 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
                 "type": "onvif-soap-response",
                 "request_id": req.request_id,
                 "error": format!("kiosk ONVIF client init failed: {err}"),
-            }).to_string();
+            })
+            .to_string();
         }
     };
 
@@ -143,7 +164,8 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
                 "type": "onvif-soap-response",
                 "request_id": req.request_id,
                 "error": format!("invalid ONVIF URL: {err}"),
-            }).to_string();
+            })
+            .to_string();
         }
     };
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
@@ -151,12 +173,19 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
             "type": "onvif-soap-response",
             "request_id": req.request_id,
             "error": "ONVIF URL must use http or https",
-        }).to_string();
+        })
+        .to_string();
     }
 
     let result = client
         .post(parsed)
-        .header("Content-Type", format!("application/soap+xml; charset=utf-8; action=\"{}\"", req.action))
+        .header(
+            "Content-Type",
+            format!(
+                "application/soap+xml; charset=utf-8; action=\"{}\"",
+                req.action
+            ),
+        )
         .header("SOAPAction", req.action)
         .body(req.body)
         .send()
@@ -171,20 +200,23 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
                     "request_id": req.request_id,
                     "status": status,
                     "body": body,
-                }).to_string(),
+                })
+                .to_string(),
                 Err(err) => serde_json::json!({
                     "type": "onvif-soap-response",
                     "request_id": req.request_id,
                     "status": status,
                     "error": format!("kiosk ONVIF response read failed: {err}"),
-                }).to_string(),
+                })
+                .to_string(),
             }
         }
         Err(err) => serde_json::json!({
             "type": "onvif-soap-response",
             "request_id": req.request_id,
             "error": format!("kiosk ONVIF request failed: {err}"),
-        }).to_string(),
+        })
+        .to_string(),
     }
 }
 

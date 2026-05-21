@@ -209,8 +209,14 @@ export interface Kiosk {
   last_bundle_version: string | null;
   display_id: number | null; // deprecated — displays now point to kiosks via kiosk_id
   cpu_temp_c: number | null;
+  cpu_load_percent: number | null;
   fan_rpm: number | null;
   fan_pwm: number | null;
+  memory_total_mb: number | null;
+  memory_used_mb: number | null;
+  disk_total_mb: number | null;
+  disk_free_mb: number | null;
+  disk_used_percent: number | null;
   firmware_channel: FirmwareChannel;
   firmware_target_version: string | null;
   firmware_last_attempt_at: string | null;

@@ -278,20 +278,21 @@ function profileGroupKey(profileName: string, sourceToken: string | null, stream
   return match?.[1] ? `channel:${match[1]}` : "source:default";
 }
 
-function groupProfiles(host: string, profiles: DiscoveredProfile[]): DiscoveredCamera[] {
+function groupProfiles(host: string, deviceName: string | null, profiles: DiscoveredProfile[]): DiscoveredCamera[] {
   const groups = new Map<string, DiscoveredProfile[]>();
   for (const profile of profiles) {
     const key = profileGroupKey(profile.profile_name, profile.source_token, profile.stream_uri);
     groups.set(key, [...(groups.get(key) ?? []), profile]);
   }
 
+  const base = deviceName || host;
   const out: DiscoveredCamera[] = [];
   let i = 1;
   for (const [key, group] of groups) {
     const sourceToken = group.find((p) => p.source_token)?.source_token ?? null;
     const name = groups.size === 1
-      ? host
-      : sourceToken ? `${host} ${sourceToken}` : `${host} camera ${String(i)}`;
+      ? base
+      : sourceToken ? `${base} ${sourceToken}` : `${base} camera ${String(i)}`;
     out.push({
       name,
       source_token: sourceToken ?? (key.startsWith("channel:") ? key.slice("channel:".length) : null),
@@ -315,6 +316,29 @@ export async function discover(input: DiscoverInput): Promise<DiscoveredCamera[]
   const mediaUrl = await discoverMediaUrl(input, endpoint, timeoutMs, input.soapTransport);
 
   const header = wsseHeader(input.username, input.password);
+
+  // ---- GetDeviceInformation (best-effort, for friendly device name) ---------
+  let deviceName: string | null = null;
+  try {
+    const devInfoEnv = buildEnvelope(header, `<tds:GetDeviceInformation xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>`);
+    const devInfoXml = await soap(
+      endpoint.deviceUrl,
+      "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation",
+      devInfoEnv,
+      timeoutMs,
+      input.soapTransport,
+    );
+    // Try Manufacturer + Model as combined name (e.g. "Hikvision DS-2CD2146G2")
+    const manufacturer = pickAll(devInfoXml, "Manufacturer")[0]?.trim() ?? null;
+    const model = pickAll(devInfoXml, "Model")[0]?.trim() ?? null;
+    if (manufacturer && model) {
+      deviceName = `${manufacturer} ${model}`;
+    } else {
+      deviceName = manufacturer ?? model ?? null;
+    }
+  } catch {
+    // Device info is optional — some cameras gate it behind auth or omit it.
+  }
 
   // ---- GetProfiles -----------------------------------------------------------
   const profilesEnv = buildEnvelope(header, `<trt:GetProfiles/>`);
@@ -403,5 +427,5 @@ export async function discover(input: DiscoverInput): Promise<DiscoveredCamera[]
     });
   }
 
-  return groupProfiles(input.host, out);
+  return groupProfiles(input.host, deviceName, out);
 }

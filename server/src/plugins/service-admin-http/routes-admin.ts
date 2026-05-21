@@ -1317,6 +1317,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         });
       }
     }
+    // Sync entity name when camera name changes.
+    if (patch["name"]) {
+      const ent = deps.repo.getEntityForCamera(id);
+      if (ent && ent.name !== patch["name"]) {
+        deps.repo.updateEntity(ent.id, { name: patch["name"] } as any);
+      }
+    }
+
     notifyKiosks();
     deps.nodered.forward("camera.changed", { camera_id: id, event: "updated", source: "server" });
 

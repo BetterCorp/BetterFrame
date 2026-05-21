@@ -19,7 +19,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::bundle::BundleCamera;
@@ -61,14 +60,14 @@ pub fn start(
     for cam in onvif_cams {
         let server = server_url.to_string();
         let key = kiosk_key.to_string();
-        let gen = Arc::downgrade(&generation);
+        let weak_gen = Arc::downgrade(&generation);
         let password = match (&cam.onvif_password_encrypted, cluster_key) {
             (Some(enc), Some(ck)) => decrypt_cluster(enc, ck),
             _ => None,
         };
 
         std::thread::spawn(move || {
-            run_subscription(cam, password.as_deref(), &server, &key, gen);
+            run_subscription(cam, password.as_deref(), &server, &key, weak_gen);
         });
     }
 
@@ -365,7 +364,7 @@ fn extract_tag(xml: &str, tag: &str) -> Option<String> {
             if rest.contains(':') && rest.ends_with(tag) || rest.split_whitespace().next()?.ends_with(&format!(":{tag}")) {
                 // Found opening tag with namespace
                 let after_close = &xml[xml.find(part)? + part.len()..];
-                if let Some(end_idx) = after_close.find(&format!(":{tag}>")) {
+                if let Some(_end_idx) = after_close.find(&format!(":{tag}>")) {
                     let content = &after_close[after_close.find('>')? + 1..];
                     if let Some(close) = content.find('<') {
                         return Some(content[..close].trim().to_string());

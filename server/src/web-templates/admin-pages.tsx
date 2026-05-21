@@ -1318,7 +1318,7 @@ export function CameraEditPage(props: CameraEditProps) {
                     <tr>
                       <td><span class="badge badge-gray">{s.role}</span></td>
                       <td>{s.name}</td>
-                      <td style="font-size:0.8rem; word-break:break-all">{s.rtsp_uri}</td>
+                      <td style="font-size:0.8rem; word-break:break-all">{maskRtspPassword(s.rtsp_uri)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -2844,6 +2844,10 @@ function parseRtspUrl(url: string): { host: string; port: string; path: string; 
     port: m[4] ?? "554",
     path: m[5] ?? "",
   };
+}
+
+function maskRtspPassword(uri: string): string {
+  return uri.replace(/(rtsp:\/\/[^:]+:)([^@]+)(@)/, "$1**********$3");
 }
 
 function formatTime(iso: string): string {

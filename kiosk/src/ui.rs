@@ -267,18 +267,26 @@ fn activate(app: &Application) {
         });
 
         // Heartbeat loop — reports display geometry + hwmon, also checks for
-        // firmware updates so kiosks pick up new builds without admin push.
+        // firmware + OS bundle updates so kiosks pick up new builds without
+        // admin push.
         let mut first_iter = true;
         loop {
             let heartbeat_ok = send_heartbeat_now(&server, &key);
             if first_iter && heartbeat_ok {
                 // Successfully heart-beat at least once → consider this boot a
                 // healthy one. Clears the rollback-pending marker so the next
-                // start doesn't try to roll back a healthy install.
+                // start doesn't try to roll back a healthy install, AND tells
+                // RAUC the current slot is good so its boot-attempts counter
+                // resets (otherwise three bad boots auto-roll back).
                 firmware::mark_firmware_applied();
                 mark_kiosk_healthy();
+                mark_rauc_slot_good();
                 first_iter = false;
             }
+            // OS bundle first — if it succeeds it reboots and we never reach
+            // the firmware check below this iteration. Order matters: an OS
+            // bundle update can ship an app-binary change anyway.
+            maybe_apply_os_update(&server, &key);
             maybe_apply_firmware_update(&server, &key);
             std::thread::sleep(std::time::Duration::from_secs(60));
         }
@@ -440,6 +448,62 @@ fn mark_kiosk_healthy() {
     if let Err(err) = fs::write("/run/betterframe/kiosk-healthy", b"ok\n") {
         warn!("failed to write health marker: {err}");
     }
+}
+
+/// Tell RAUC the current slot is good so its boot-attempts counter doesn't
+/// fire a rollback after a clean boot. No-op when RAUC isn't installed
+/// (dev / non-A/B kiosks). RAUC's `mark-good` reads the running slot from
+/// /proc/device-tree/chosen/bootloader/partition via our custom bootloader
+/// backend — we just shell out and ignore non-zero exit (e.g. running
+/// kiosk on a non-RAUC image).
+fn mark_rauc_slot_good() {
+    use std::process::Command;
+    let _ = Command::new("rauc")
+        .args(["status", "mark-good"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// Ask the server whether a full-OS RAUC bundle is available for this
+/// kiosk. On hit, download + sha256 + `rauc install` + reboot. On miss or
+/// error: log + keep running. Gated by BF_ENABLE_OS_OTA=1 (default OFF
+/// for dev kiosks running a non-A/B image).
+fn maybe_apply_os_update(server_url: &str, kiosk_key: &str) {
+    if std::env::var("BF_ENABLE_OS_OTA").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(info) = os_update::check(server_url, kiosk_key) else {
+        return;
+    };
+    info!("os-update: bundle {} available", info.version);
+    server::report_kiosk_log(
+        server_url,
+        kiosk_key,
+        "info",
+        "os update available",
+        serde_json::json!({
+            "target_version": &info.version,
+            "channel": &info.channel,
+            "release_id": &info.release_id,
+            "size_bytes": info.size_bytes,
+        }),
+    );
+    if let Err(err) = os_update::apply(server_url, kiosk_key, &info) {
+        warn!("os-update: apply failed: {err}");
+        server::report_kiosk_log(
+            server_url,
+            kiosk_key,
+            "error",
+            "os update failed",
+            serde_json::json!({
+                "target_version": &info.version,
+                "release_id": &info.release_id,
+                "error": &err,
+            }),
+        );
+    }
+    // Success path doesn't return — apply() reboots the system.
 }
 
 /// Ask the server whether an update is available. On hit, download + verify

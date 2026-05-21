@@ -40,6 +40,7 @@ gpiod = "0.3"
 sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["pem"] }
 base64 = "0.22"
+urlencoding = "2"
 
 # Local HTTP server on kiosk (LAN GET-only layout switch + admin proxy)
 axum = "0.7"

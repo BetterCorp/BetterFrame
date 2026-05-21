@@ -4,6 +4,7 @@ mod firmware;
 mod gpio;
 mod hwmon;
 mod local_server;
+mod os_update;
 mod pipeline;
 mod server;
 mod ui;

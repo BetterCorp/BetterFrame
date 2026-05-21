@@ -18,6 +18,7 @@ use crate::firmware;
 use crate::gpio;
 use crate::hwmon;
 use crate::local_server;
+use crate::os_update;
 use crate::pipeline;
 use crate::server;
 use crate::ws_client;
@@ -1634,15 +1635,16 @@ fn ensure_web(
     // over page-author CSS.
     {
         use webkit6::prelude::*;
-        let ucm = wv.user_content_manager();
-        let style = webkit6::UserStyleSheet::new(
-            "*, *::before, *::after { cursor: none !important; }",
-            webkit6::UserContentInjectedFrames::AllFrames,
-            webkit6::UserStyleLevel::User,
-            &[],
-            &[],
-        );
-        ucm.add_style_sheet(&style);
+        if let Some(ucm) = wv.user_content_manager() {
+            let style = webkit6::UserStyleSheet::new(
+                "*, *::before, *::after { cursor: none !important; }",
+                webkit6::UserContentInjectedFrames::AllFrames,
+                webkit6::UserStyleLevel::User,
+                &[],
+                &[],
+            );
+            ucm.add_style_sheet(&style);
+        }
     }
 
     match source {

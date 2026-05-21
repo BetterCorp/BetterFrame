@@ -37,6 +37,11 @@ cat > /etc/default/betterframe-kiosk <<'EOF'
 # Override the BF server discovery (default tries localhost → betterframe.local
 # → frame-eu.betterportal.net):
 # BETTERFRAME_SERVER=https://frame.example.com
+
+# Enable kiosk-app OTA. This image is curated and signed by us — fresh dev
+# builds auto-deploy once they land in the BF server (via the build workflow's
+# auto-import step). Set to 0 to pin a kiosk to its current binary.
+BF_ENABLE_APP_OTA=1
 EOF
 
 # Plymouth boot splash

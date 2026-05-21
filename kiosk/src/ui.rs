@@ -733,6 +733,10 @@ fn render_bundle(
     // Restart GPIO workers (always — even if list is empty, this drops the old set).
     gpio::start_workers(&bundle.gpio_bindings, server_url, kiosk_key);
 
+    // (Re)start ONVIF event subscriptions for all ONVIF cameras in the bundle.
+    // Workers self-terminate when a new start() call replaces the generation.
+    onvif_events::start(&bundle.cameras, None, server_url, kiosk_key);
+
     let displays = bundle.normalized_displays();
     if displays.is_empty() {
         warn!("bundle has no displays");

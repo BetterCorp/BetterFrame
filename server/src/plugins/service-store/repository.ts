@@ -590,6 +590,63 @@ export class Repository {
     void this.notify("layouts", "update", id);
   }
 
+  cloneLayout(id: number): Layout {
+    const src = this.getLayoutById(id);
+    if (!src) throw new Error("layout not found");
+
+    let cloneName = `${src.name} (copy)`;
+    let suffix = 2;
+    while (this.db.prepare("SELECT 1 FROM layouts WHERE name = ?").get(cloneName)) {
+      cloneName = `${src.name} (copy ${String(suffix)})`;
+      suffix++;
+    }
+
+    const clone = this.createLayout({
+      name: cloneName,
+      description: src.description,
+      priority: src.priority,
+      cooling_timeout_seconds: src.cooling_timeout_seconds,
+      preload_camera_ids: src.preload_camera_ids,
+      resets_idle_timer: src.resets_idle_timer,
+    });
+
+    const cells = this.listLayoutCells(id);
+    for (const c of cells) {
+      this.createLayoutCell({
+        layout_id: clone.id,
+        row: c.row,
+        col: c.col,
+        row_span: c.row_span,
+        col_span: c.col_span,
+        content_type: c.content_type,
+        camera_id: c.camera_id,
+        stream_selector: c.stream_selector,
+        web_url: c.web_url,
+        html_content: c.html_content,
+        cooling_timeout_seconds: c.cooling_timeout_seconds,
+        options: c.options,
+        entity_id: c.entity_id,
+        fit: c.fit,
+      });
+    }
+
+    const labels = this.db.prepare(
+      "SELECT label_id FROM layout_labels WHERE layout_id = ?",
+    ).all(id) as Array<{ label_id: number }>;
+    for (const ll of labels) {
+      this.attachLayoutLabel(clone.id, ll.label_id);
+    }
+
+    const displays = this.db.prepare(
+      "SELECT display_id FROM display_layouts WHERE layout_id = ?",
+    ).all(id) as Array<{ display_id: number }>;
+    for (const dl of displays) {
+      this.attachLayoutToDisplay(dl.display_id, clone.id);
+    }
+
+    return clone;
+  }
+
   deleteLayout(id: number): void {
     this.db.prepare(`DELETE FROM layout_cells WHERE layout_id = ?`).run(id);
     this.db.prepare(`DELETE FROM layout_labels WHERE layout_id = ?`).run(id);

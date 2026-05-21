@@ -42,6 +42,9 @@ ed25519-dalek = { version = "2", features = ["pem"] }
 base64 = "0.22"
 urlencoding = "2"
 
+# ONVIF WSSE PasswordDigest auth
+sha1 = "0.10"
+
 # Hardware-bound at-rest encryption of state files (kiosk_key + bundle cache
 # contain camera RTSP credentials in URL form). Keys derived via HKDF from
 # the Pi CPU serial — pulling the SD doesn't yield plaintext without also

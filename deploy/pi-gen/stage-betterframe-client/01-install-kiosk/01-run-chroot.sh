@@ -76,6 +76,12 @@ BF_ENABLE_APP_OTA=1
 # preinstalled. Set to 0 to pin OS version manually (kiosk-app updates
 # still flow via BF_ENABLE_APP_OTA).
 BF_ENABLE_OS_OTA=1
+
+# Enable ONVIF event subscriptions: kiosk subscribes to PullPoint on
+# every ONVIF camera in its bundle, polls every 3s, forwards events
+# (motion, ANPR, analytics, line crossing, etc.) to the BF server +
+# Node-RED. Set to 0 if no ONVIF cameras on the network.
+BF_ENABLE_ONVIF_EVENTS=1
 EOF
 
 # Plymouth boot splash

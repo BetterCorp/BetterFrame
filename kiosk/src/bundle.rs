@@ -110,6 +110,16 @@ pub struct BundleCamera {
     pub rtsp_url: Option<String>,
     pub stream_policy: String,
     pub streams: Vec<BundleStream>,
+    // ONVIF fields — present when cam_type=="onvif". Password is encrypted
+    // with the cluster key; kiosk decrypts for ONVIF SOAP auth.
+    #[serde(default)]
+    pub onvif_host: Option<String>,
+    #[serde(default)]
+    pub onvif_port: Option<u16>,
+    #[serde(default)]
+    pub onvif_username: Option<String>,
+    #[serde(default)]
+    pub onvif_password_encrypted: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

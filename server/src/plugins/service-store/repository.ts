@@ -419,13 +419,8 @@ export class Repository {
   }
 
   /**
-   * Kiosks currently rendering this camera. Join chain:
-   *   displays.active_layout_id == layouts.id
-   *   → layout_cells.layout_id == layouts.id
-   *   → layout_cells.camera_id == ?
-   *   → kiosks via displays.kiosk_id
-   * Active layout is set by kiosk's layout.changed event. Stale ones may
-   * still appear here — caller filters by last_seen_at + local_port.
+   * Kiosks currently rendering this camera (active layout has a cell
+   * pointing at it). Subset of listKiosksWithCameraInBundle.
    */
   listKiosksRenderingCamera(cameraId: number): Kiosk[] {
     const rs = this.prep(
@@ -435,6 +430,27 @@ export class Repository {
          JOIN layout_cells lc ON lc.layout_id = d.active_layout_id
         WHERE lc.camera_id = ?
           AND d.active_layout_id IS NOT NULL
+          AND k.enabled = 1`,
+    ).all(cameraId);
+    return rs.map((r) => rowToKiosk(r as Record<string, unknown>));
+  }
+
+  /**
+   * Kiosks that have this camera in ANY of their layouts (bundle-level).
+   * The kiosk's cached bundle includes the camera even when it's not the
+   * active layout, so snapshot requests via the kiosk LAN endpoint still
+   * resolve — the kiosk opens a short-lived RTSP connection from its own
+   * LAN position. Only when NO kiosk has the camera should the server
+   * fall back to pulling the stream itself.
+   */
+  listKiosksWithCameraInBundle(cameraId: number): Kiosk[] {
+    const rs = this.prep(
+      `SELECT DISTINCT k.*
+         FROM kiosks k
+         JOIN displays d ON d.kiosk_id = k.id
+         JOIN layouts l ON l.display_id = d.id
+         JOIN layout_cells lc ON lc.layout_id = l.id
+        WHERE lc.camera_id = ?
           AND k.enabled = 1`,
     ).all(cameraId);
     return rs.map((r) => rowToKiosk(r as Record<string, unknown>));

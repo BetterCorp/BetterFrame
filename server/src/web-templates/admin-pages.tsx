@@ -1141,12 +1141,19 @@ export function SimpleListPage(props: SimpleListProps) {
 
 // ---- Camera Edit ------------------------------------------------------------
 
+interface CameraSubscription {
+  kiosk: Kiosk;
+  layouts: string[]; // layout names that reference this camera
+  active: boolean; // true if camera is in the kiosk's active layout right now
+}
+
 interface CameraEditProps {
   user: string;
   camera: Camera;
   labels: Array<{ label_id: number; name: string }>;
   allLabels: Label[];
   streams: Array<{ id: number; role: string; name: string; rtsp_uri: string }>;
+  subscriptions: CameraSubscription[];
   error?: string;
   success?: string;
 }
@@ -1319,6 +1326,38 @@ export function CameraEditPage(props: CameraEditProps) {
             </div>
           ) : (
             <p style="color:#999">No streams configured</p>
+          )}
+        </div>
+
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Kiosk Subscriptions</h2>
+          <p style="color:#666; font-size:0.85rem; margin-bottom:0.75rem">
+            Kiosks whose layouts reference this camera. Snapshots are pulled
+            from a subscribed kiosk (same LAN as camera) when available.
+          </p>
+          {props.subscriptions.length > 0 ? (
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Kiosk</th><th>Layouts</th><th>Status</th></tr></thead>
+                <tbody>
+                  {props.subscriptions.map((sub) => (
+                    <tr>
+                      <td>
+                        <a href={`/admin/kiosks/${sub.kiosk.id}`}><strong>{sub.kiosk.name}</strong></a>
+                      </td>
+                      <td style="font-size:0.85rem">{sub.layouts.join(", ") || "—"}</td>
+                      <td>
+                        {sub.active
+                          ? <span class="badge badge-green">active</span>
+                          : <span class="badge badge-gray">bundled</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p style="color:#999">No kiosk has this camera in any layout.</p>
           )}
         </div>
 

@@ -713,10 +713,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
     const cameraId = ent.camera_id;
 
-    // 1. Try kiosks currently rendering this camera. listKiosksRenderingCamera
-    // returns kiosks whose active_layout_id has at least one layout_cell
-    // pointing at cameraId. Filter to ones we can actually reach.
-    const candidates = deps.repo.listKiosksRenderingCamera(cameraId);
+    // 1. Try kiosks that have this camera in ANY layout (bundle-level).
+    // Even if the camera isn't on screen right now, the kiosk is on the
+    // same LAN and can open a one-shot RTSP connection for the snapshot.
+    // Only fall through to server-direct when NO kiosk has it at all.
+    const candidates = deps.repo.listKiosksWithCameraInBundle(cameraId);
     const STALE_MS = 2 * 60 * 1000; // kiosk silent > 2 min → don't bother
     const now = Date.now();
     for (const k of candidates) {
@@ -1225,12 +1226,37 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = Number(getRouterParam(event, "id"));
     const camera = deps.repo.getCameraById(id);
     if (!camera) return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
+
+    // Build subscription list: which kiosks have this camera in any layout?
+    const bundleKiosks = deps.repo.listKiosksWithCameraInBundle(id);
+    const activeKiosks = new Set(deps.repo.listKiosksRenderingCamera(id).map((k) => k.id));
+    const subscriptions = bundleKiosks.map((k) => {
+      // Find layout names that reference this camera on this kiosk's displays
+      const displays = deps.repo.listDisplaysForKiosk(k.id);
+      const layoutNames: string[] = [];
+      for (const d of displays) {
+        const layouts = deps.repo.listLayoutsForDisplay(d.id);
+        for (const l of layouts) {
+          const cells = deps.repo.listLayoutCells(l.id);
+          if (cells.some((c) => c.camera_id === id)) {
+            layoutNames.push(l.name);
+          }
+        }
+      }
+      return {
+        kiosk: k,
+        layouts: layoutNames,
+        active: activeKiosks.has(k.id),
+      };
+    });
+
     return htmlPage(CameraEditPage({
       user: user.username,
       camera,
       labels: deps.repo.cameraLabelIds(id),
       allLabels: deps.repo.listLabels(),
       streams: deps.repo.listCameraStreams(id),
+      subscriptions,
     }));
   });
 

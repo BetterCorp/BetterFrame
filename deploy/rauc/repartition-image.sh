@@ -80,6 +80,11 @@ printf '%s\n' "${BF_RAUC_COMPATIBILITY:-betterframe-rpi5-aarch64}" > "$WORK/mnt-
 umount "$WORK/mnt-root"
 losetup -d "$ROOTFS_LOOP"
 
+# Set ext4 filesystem label BEFORE dd into the output image. cmdline.txt
+# uses root=LABEL=BF_ROOT_A so the kernel needs this label to find root.
+echo "==> Labeling rootfs.ext4 as BF_ROOT_A"
+e2label "$WORK/rootfs.ext4" BF_ROOT_A
+
 # Build two bootfs copies with slot-specific cmdline.txt root=LABEL=...
 echo "==> Building BF_BOOT_A + BF_BOOT_B bootfs copies"
 cp "$WORK/bootfs.vfat" "$WORK/bootfs_A.vfat"
@@ -89,6 +94,7 @@ mount "$BOOT_A_LOOP" "$WORK/mnt-ba"
 sed -i 's|root=PARTUUID=[^ ]*|root=LABEL=BF_ROOT_A|' "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
 umount "$WORK/mnt-ba"
 losetup -d "$BOOT_A_LOOP"
+fatlabel "$WORK/bootfs_A.vfat" BF_BOOT_A
 
 cp "$WORK/bootfs.vfat" "$WORK/bootfs_B.vfat"
 BOOT_B_LOOP="$(losetup -f --show "$WORK/bootfs_B.vfat")"
@@ -97,6 +103,7 @@ mount "$BOOT_B_LOOP" "$WORK/mnt-bb"
 sed -i 's|root=PARTUUID=[^ ]*|root=LABEL=BF_ROOT_B|' "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
 umount "$WORK/mnt-bb"
 losetup -d "$BOOT_B_LOOP"
+fatlabel "$WORK/bootfs_B.vfat" BF_BOOT_B
 
 # Layout the new A/B image. GPT, 6 partitions.
 SELECTOR_MB=8

@@ -141,6 +141,7 @@ export function rowToDisplay(r: Row): Display {
     state_check_enabled: b(r["state_check_enabled"]),
     state_check_interval_seconds: n(r["state_check_interval_seconds"]),
     is_enabled: b(r["is_enabled"]),
+    active_layout_id: nn(r["active_layout_id"]),
   };
 }
 

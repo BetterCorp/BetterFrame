@@ -511,6 +511,20 @@ function registerKioskRoutes(
       forwarded_to_nodered: false,
     });
 
+    // Side-effect: persist active layout per display so the admin UI can
+    // surface "currently showing X" without having to query event_log.
+    if (body.topic === "layout.changed") {
+      const displayId = Number(body.payload?.["display_id"]);
+      const layoutId = Number(body.payload?.["layout_id"]);
+      if (Number.isInteger(displayId) && Number.isInteger(layoutId)) {
+        try {
+          repo.updateDisplay(displayId, { active_layout_id: layoutId } as any);
+        } catch {
+          // Display might not exist; layout.changed is best-effort telemetry.
+        }
+      }
+    }
+
     // Best-effort forward to Node-RED. Topics that have a dedicated trigger
     // node (bf-trigger-layout-changed etc.) expect a FLAT payload matching
     // what the admin-side emit produces — splat body.payload up to the top

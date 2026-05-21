@@ -867,6 +867,13 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "displays", "actual_power_state_at", "TEXT");
   },
 
+  // Kiosk reports active layout per display via layout.changed events.
+  // Persist on the display row so the admin UI can highlight which layout
+  // is currently rendering instead of defaulting to first-in-list.
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "displays", "active_layout_id", "INTEGER REFERENCES layouts(id) ON DELETE SET NULL");
+  },
+
   // Backfill hwmon/telemetry columns. They were originally added inline to
   // an earlier migration entry; existing deploys had already passed that
   // index via PRAGMA user_version, so the new columns silently never landed.

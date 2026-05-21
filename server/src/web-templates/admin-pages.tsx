@@ -1596,7 +1596,10 @@ export function KioskEditPage(props: KioskEditProps) {
                     {layouts.length > 0 ? (
                       <select name="layout_id" class="form-input">
                         {layouts.map((l) => (
-                          <option value={String(l.id)}>{l.name}</option>
+                          <option
+                            value={String(l.id)}
+                            selected={l.id === display.active_layout_id}
+                          >{l.name}{l.id === display.active_layout_id ? " (active)" : ""}</option>
                         ))}
                       </select>
                     ) : (
@@ -2538,6 +2541,16 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
             {d.kiosk_id && (
               <div>Kiosk: <a href={`/admin/kiosks/${d.kiosk_id}`}>{props.kioskName ?? `#${String(d.kiosk_id)}`}</a></div>
             )}
+            {(() => {
+              const active = props.attachedLayouts.find((l) => l.id === d.active_layout_id);
+              return (
+                <div>
+                  Active layout: {active
+                    ? <strong>{active.name}</strong>
+                    : <span style="color:#999">(unknown — kiosk hasn't reported)</span>}
+                </div>
+              );
+            })()}
           </div>
           {props.attachedLayouts.length > 0 && d.kiosk_id ? (
             <div style="margin-bottom:1rem; padding:0.75rem; background:#f9fafb; border-radius:4px">
@@ -2553,7 +2566,10 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
               >
                 <select name="layout_id" class="form-input" style="flex:1">
                   {props.attachedLayouts.map((l) => (
-                    <option value={String(l.id)}>{l.name}</option>
+                    <option
+                      value={String(l.id)}
+                      selected={l.id === d.active_layout_id}
+                    >{l.name}{l.id === d.active_layout_id ? " (active)" : ""}</option>
                   ))}
                 </select>
                 <button

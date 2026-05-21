@@ -103,6 +103,7 @@ export interface Display {
   state_check_enabled: boolean;
   state_check_interval_seconds: number;
   is_enabled: boolean;
+  active_layout_id: number | null;
 }
 
 export interface Camera {

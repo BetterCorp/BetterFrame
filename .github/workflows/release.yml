@@ -1,14 +1,13 @@
 # Single entrypoint for release automation.
 #
 # Triggers:
-#   - push to master       → auto-tag (semver patch bump + -dev.<sha>),
+#   - push to master       → auto-tag next patch from latest tag + -dev.<sha>,
 #                            create prerelease, invoke build.yml
-#   - push of v* tag       → use tag as-is, create release (or update),
-#                            invoke build.yml; channel = stable / beta
+#   - push of v* tag       → infer channel from tag, auto-tag next patch,
+#                            create release (or update), invoke build.yml
 #
 # Build steps live in build.yml (reusable). This file only owns versioning
-# + release creation. Skip the heavy image build for dev runs (binary only)
-# so master pushes don't take 30 min; tag pushes do the full image.
+# + release creation. Every channel builds the kiosk binary and Pi image.
 
 name: release
 
@@ -57,33 +56,41 @@ jobs:
           short=$(git rev-parse --short HEAD)
 
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            tag="${GITHUB_REF#refs/tags/}"
-            version="${tag#v}"
-            if [[ "$version" == *"-beta."* ]]; then
+            requested_tag="${GITHUB_REF#refs/tags/}"
+            requested_version="${requested_tag#v}"
+            if [[ "$requested_version" == *"-beta"* ]]; then
               channel=beta
-            elif [[ "$version" == *"-dev."* ]]; then
+            elif [[ "$requested_version" == *"-dev"* ]]; then
               channel=dev
             else
               channel=stable
             fi
-            build_image=true
           else
-            # Master push (or workflow_dispatch). Find latest stable tag,
-            # bump patch, append -dev.<sha>. Prerelease.
-            latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
-              | grep -v '-' | head -1 || true)
-            if [ -z "$latest" ]; then latest="v0.0.0"; fi
-            base="${latest#v}"
-            IFS=. read -r MAJ MIN PAT <<< "$base"
-            PAT=$((PAT + 1))
-            version="${MAJ}.${MIN}.${PAT}-dev.${short}"
-            tag="v${version}"
             channel=dev
-            # Every release — including dev — ships the flashable .img.xz.
-            # Public repo = unlimited Actions minutes, so the 30-60 min image
-            # bake on every master push costs nothing.
-            build_image=true
           fi
+
+          # Stable, beta, and dev all advance the patch number per build.
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
+            | head -1 || true)
+          if [ -z "$latest" ]; then latest="v0.0.0"; fi
+          base="${latest#v}"
+          base="${base%%-*}"
+          IFS=. read -r MAJ MIN PAT <<< "$base"
+          PAT=$((PAT + 1))
+
+          case "$channel" in
+            stable)
+              version="${MAJ}.${MIN}.${PAT}"
+              ;;
+            beta)
+              version="${MAJ}.${MIN}.${PAT}-beta.${short}"
+              ;;
+            dev)
+              version="${MAJ}.${MIN}.${PAT}-dev.${short}"
+              ;;
+          esac
+          tag="v${version}"
+          build_image=true
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag"           >> "$GITHUB_OUTPUT"
@@ -98,8 +105,9 @@ jobs:
           CHANNEL: ${{ steps.compute.outputs.channel }}
         run: |
           set -e
-          # For master / dispatch we need to create the tag ourselves.
-          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+          # The workflow computes the release tag for all channels so every
+          # build bumps the patch version. A pushed tag only selects channel.
+          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
             git config user.email "actions@github.com"
             git config user.name  "github-actions[bot]"
             git tag -a "$TAG" -m "Auto-tag $TAG ($CHANNEL)"

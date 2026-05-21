@@ -1561,6 +1561,26 @@ fn ensure_web(
     let wv = webkit6::WebView::new();
     wv.set_vexpand(true);
     wv.set_hexpand(true);
+
+    // Hide the pointer inside every WebKit page. The default GTK CSS cursor:
+    // none we set on top-level windows doesn't propagate into the WebView's
+    // own surface — it draws its own cursor over hovered HTML elements.
+    // Inject a UserStyleSheet at the WebKit level so every page (and every
+    // frame) hides the cursor unconditionally. UserStyleLevel::User wins
+    // over page-author CSS.
+    {
+        use webkit6::prelude::*;
+        let ucm = wv.user_content_manager();
+        let style = webkit6::UserStyleSheet::new(
+            "*, *::before, *::after { cursor: none !important; }",
+            webkit6::UserContentInjectedFrames::AllFrames,
+            webkit6::UserStyleLevel::User,
+            &[],
+            &[],
+        );
+        ucm.add_style_sheet(&style);
+    }
+
     match source {
         WebSource::Html(html) => {
             webkit6::prelude::WebViewExt::load_html(&wv, html, None);

@@ -28,13 +28,15 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 Push-Location $OutDir
 
 try {
-    Write-Host "==> Generating CA (Ed25519, 10 year validity)"
-    openssl genpkey -algorithm ED25519 -out ca-key.pem
+    # ECDSA P-256 — RAUC uses OpenSSL CMS which doesn't support Ed25519 on
+    # OpenSSL < 3.2 (Ubuntu 24.04 ships 3.0). P-256 is universally supported.
+    Write-Host "==> Generating CA (ECDSA P-256, 10 year validity)"
+    openssl ecparam -genkey -name prime256v1 -noout -out ca-key.pem
     openssl req -new -x509 -days 3650 -key ca-key.pem `
         -subj "/CN=BetterFrame RAUC CA" -out ca-cert.pem
 
-    Write-Host "==> Generating signing cert (Ed25519, 2 year validity)"
-    openssl genpkey -algorithm ED25519 -out signing-key.pem
+    Write-Host "==> Generating signing cert (ECDSA P-256, 2 year validity)"
+    openssl ecparam -genkey -name prime256v1 -noout -out signing-key.pem
     openssl req -new -key signing-key.pem `
         -subj "/CN=BetterFrame RAUC Signing" -out signing.csr
     openssl x509 -req -in signing.csr -CA ca-cert.pem -CAkey ca-key.pem `

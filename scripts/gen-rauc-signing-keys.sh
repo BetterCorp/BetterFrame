@@ -25,13 +25,16 @@ if [ -f ca-cert.pem ]; then
   exit 1
 fi
 
-echo "==> Generating CA (Ed25519, 10 year validity)"
-openssl genpkey -algorithm ED25519 -out ca-key.pem
+# ECDSA P-256 — RAUC uses OpenSSL CMS signing which doesn't support
+# Ed25519 on OpenSSL < 3.2 (Ubuntu 24.04 ships 3.0). P-256 is universally
+# supported, fast, and small.
+echo "==> Generating CA (ECDSA P-256, 10 year validity)"
+openssl ecparam -genkey -name prime256v1 -noout -out ca-key.pem
 MSYS_NO_PATHCONV=1 openssl req -new -x509 -days 3650 -key ca-key.pem \
   -subj "/CN=BetterFrame RAUC CA" -out ca-cert.pem
 
-echo "==> Generating signing cert (Ed25519, 2 year validity)"
-openssl genpkey -algorithm ED25519 -out signing-key.pem
+echo "==> Generating signing cert (ECDSA P-256, 2 year validity)"
+openssl ecparam -genkey -name prime256v1 -noout -out signing-key.pem
 MSYS_NO_PATHCONV=1 openssl req -new -key signing-key.pem \
   -subj "/CN=BetterFrame RAUC Signing" -out signing.csr
 openssl x509 -req -in signing.csr -CA ca-cert.pem -CAkey ca-key.pem \

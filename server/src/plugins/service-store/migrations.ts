@@ -900,4 +900,63 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS idx_kiosk_logs_kiosk_received ON kiosk_logs(kiosk_id, received_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_kiosk_logs_level ON kiosk_logs(level, received_at DESC)`,
+
+  // Catch-all backfill for tables/columns that were added inside earlier
+  // migration entries after existing deploys had already passed those
+  // indices via PRAGMA user_version. All IF NOT EXISTS / addColumnIfNotExists
+  // so they're safe to run on fresh DBs too.
+  (db: DatabaseSync) => {
+    // --- reported hostname + network interfaces (heartbeat telemetry) ---
+    addColumnIfNotExists(db, "kiosks", "reported_hostname", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "network_interfaces_json", "TEXT");
+
+    // --- OS update per-kiosk prefs ---
+    addColumnIfNotExists(db, "kiosks", "os_update_channel", "TEXT NOT NULL DEFAULT 'stable'");
+    addColumnIfNotExists(db, "kiosks", "os_update_target_version", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "os_update_last_attempt_at", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "os_update_last_attempt_version", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "os_update_last_error", "TEXT");
+
+    // --- OS update releases + rollouts tables ---
+    db.exec(`CREATE TABLE IF NOT EXISTS os_update_releases (
+      id TEXT PRIMARY KEY,
+      version TEXT NOT NULL,
+      channel TEXT NOT NULL CHECK(channel IN ('stable', 'beta', 'dev')),
+      compatibility TEXT NOT NULL,
+      artifact_path TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      sha256 TEXT NOT NULL,
+      bundle_format TEXT NOT NULL DEFAULT 'raucb',
+      release_notes TEXT,
+      uploaded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      yanked_at TEXT
+    ) STRICT`);
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_os_update_releases_version_compat ON os_update_releases(version, compatibility)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_os_update_releases_channel ON os_update_releases(channel, compatibility, uploaded_at DESC)`);
+
+    db.exec(`CREATE TABLE IF NOT EXISTS os_update_rollouts (
+      id TEXT PRIMARY KEY,
+      release_id TEXT NOT NULL REFERENCES os_update_releases(id) ON DELETE CASCADE,
+      target_kiosk_ids TEXT NOT NULL DEFAULT '[]',
+      state TEXT NOT NULL DEFAULT 'queued' CHECK(state IN ('queued', 'active', 'paused', 'complete')),
+      percentage INTEGER NOT NULL DEFAULT 100 CHECK(percentage BETWEEN 1 AND 100),
+      started_at TEXT,
+      finished_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+    ) STRICT`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_os_update_rollouts_state ON os_update_rollouts(state)`);
+
+    // --- managed-image config columns ---
+    addColumnIfNotExists(db, "kiosks", "managed_image", "INTEGER NOT NULL DEFAULT 0");
+    addColumnIfNotExists(db, "kiosks", "managed_config_json", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "managed_config_version", "INTEGER NOT NULL DEFAULT 0");
+    addColumnIfNotExists(db, "kiosks", "managed_config_applied_version", "INTEGER NOT NULL DEFAULT 0");
+    addColumnIfNotExists(db, "kiosks", "managed_config_applied_at", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "managed_config_error", "TEXT");
+
+    // --- display active layout ---
+    addColumnIfNotExists(db, "displays", "active_layout_id", "INTEGER REFERENCES layouts(id) ON DELETE SET NULL");
+  },
 ];

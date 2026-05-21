@@ -1083,9 +1083,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (rowSpanRaw != null && String(rowSpanRaw).trim() !== "") {
       dimsPatch["row_span"] = Math.max(1, Number(rowSpanRaw) || 1);
     }
+    let spansChanged = false;
     if (Object.keys(dimsPatch).length > 0) {
       deps.repo.updateLayoutCell(cellId, dimsPatch as any);
       if ("col_span" in dimsPatch || "row_span" in dimsPatch) {
+        spansChanged = true;
         const axis = "col_span" in dimsPatch ? "col" as const : "row" as const;
         resolveOverlaps(deps, layoutId, cellId, axis);
       }
@@ -1093,10 +1095,24 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     notifyKiosks();
 
     if (isHtmxRequest(event)) {
-      const cells = deps.repo.layoutCells(layoutId);
+      if (spansChanged) {
+        const cells = deps.repo.layoutCells(layoutId);
+        const cameras = deps.repo.listCameras();
+        const entities = deps.repo.listEntities();
+        const body = String(renderGrid(layoutId, cells, entities, cameras));
+        return new Response(body, {
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+            "hx-retarget": "#layout-grid",
+            "hx-reswap": "innerHTML",
+          },
+        });
+      }
+      const cell = deps.repo.getLayoutCellById(cellId);
+      if (!cell) return new Response("", { headers: { "content-type": "text/html; charset=utf-8" } });
       const cameras = deps.repo.listCameras();
       const entities = deps.repo.listEntities();
-      return htmlFragment(renderGrid(layoutId, cells, entities, cameras));
+      return htmlFragment(renderCell(layoutId, cell, entities, cameras, "read"));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });

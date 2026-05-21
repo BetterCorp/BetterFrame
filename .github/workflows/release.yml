@@ -138,3 +138,5 @@ jobs:
     secrets:
       BF_AUTOIMPORT_URL:     ${{ secrets.BF_AUTOIMPORT_URL }}
       BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}
+      BF_RAUC_SIGNING_CERT:  ${{ secrets.BF_RAUC_SIGNING_CERT }}
+      BF_RAUC_SIGNING_KEY:   ${{ secrets.BF_RAUC_SIGNING_KEY }}

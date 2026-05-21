@@ -54,9 +54,9 @@ jobs:
       matrix:
         include:
           - target: aarch64-unknown-linux-gnu
-            runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+            runs-on: blacksmith-8vcpu-ubuntu-2404-arm
           - target: x86_64-unknown-linux-gnu
-            runs-on: blacksmith-4vcpu-ubuntu-2404
+            runs-on: blacksmith-8vcpu-ubuntu-2404
     runs-on: ${{ matrix.runs-on }}
     # Trixie container matches Pi OS Trixie's glibc + apt packages.
     container:
@@ -218,20 +218,50 @@ jobs:
           echo "image-path: ${{ steps.pigen.outputs.image-path }}"
           ls -la "$(dirname '${{ steps.pigen.outputs.image-path }}')" || true
 
-      # pi-gen writes the .img.xz under its own checkout (inside pi-gen-action's
-      # working dir), not our repo deploy/. The action exposes the exact path
-      # via the `image-path` output — use it directly instead of globbing.
-      - name: Upload image to GitHub Release
+      # ---- A/B repartition + slot extraction --------------------------------
+      # Post-process the stock pi-gen .img.xz into an A/B-ready RAUC image
+      # AND emit the rootfs.ext4 + bootfs.vfat slot blobs that the .raucb
+      # bundle re-uses. Keeps pi-gen vanilla; all RAUC awareness lives here.
+      - name: Repartition image to A/B layout
+        id: repartition
+        env:
+          BF_BUILD_VERSION: ${{ inputs.version }}
+          BF_RAUC_COMPATIBILITY: betterframe-rpi5-aarch64
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xz-utils util-linux e2fsprogs dosfstools gdisk
+          chmod +x deploy/rauc/repartition-image.sh
+          ws="${{ github.workspace }}"
+          out_img="${ws}/betterframe-client-${{ inputs.version }}.img.xz"
+          rootfs="${ws}/rootfs.ext4"
+          bootfs="${ws}/bootfs.vfat"
+          sudo BF_BUILD_VERSION="$BF_BUILD_VERSION" \
+               BF_RAUC_COMPATIBILITY="$BF_RAUC_COMPATIBILITY" \
+               deploy/rauc/repartition-image.sh \
+            "${{ steps.pigen.outputs.image-path }}" \
+            "$out_img" \
+            "$rootfs" \
+            "$bootfs"
+          sudo chown "$USER:" "$out_img" "$rootfs" "$bootfs"
+          echo "ab-image-path=$out_img" >> "$GITHUB_OUTPUT"
+          echo "rootfs-path=$rootfs" >> "$GITHUB_OUTPUT"
+          echo "bootfs-path=$bootfs" >> "$GITHUB_OUTPUT"
+
+      # Ship the A/B image (not the original stock one). The original is
+      # discarded — only useful if you can't run repartition for some reason.
+      - name: Upload A/B image to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag }}
-          files: ${{ steps.pigen.outputs.image-path }}
+          files: ${{ steps.repartition.outputs.ab-image-path }}
 
       # ---- RAUC bundle (OS OTA) --------------------------------------------
-      # Build a signed .raucb bundle from the same partitions baked into the
-      # .img.xz. Kiosks fetch this from /api/kiosk/os/check + rauc install it
-      # into the inactive A/B slot. Skipped when signing secrets aren't set
-      # (image still ships for manual flashing).
+      # Build a signed .raucb bundle from the SAME slot images embedded in
+      # the A/B initial-flash image. Kiosks fetch this from
+      # /api/kiosk/os/check + rauc install it into the inactive slot.
+      # Skipped when signing secrets aren't set.
       - name: Build RAUC bundle
         id: raucb
         if: ${{ secrets.BF_RAUC_SIGNING_CERT != '' && secrets.BF_RAUC_SIGNING_KEY != '' }}
@@ -240,8 +270,7 @@ jobs:
           BF_RAUC_SIGNING_KEY: ${{ secrets.BF_RAUC_SIGNING_KEY }}
         run: |
           set -e
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends rauc e2fsprogs xz-utils util-linux openssl
+          sudo apt-get install -y --no-install-recommends rauc openssl
           mkdir -p /tmp/rauc-signing
           chmod 700 /tmp/rauc-signing
           printf '%s\n' "$BF_RAUC_SIGNING_CERT" > /tmp/rauc-signing/cert.pem
@@ -250,7 +279,8 @@ jobs:
           chmod +x deploy/rauc/build-bundle.sh
           out="${{ github.workspace }}/betterframe-${{ inputs.version }}.raucb"
           deploy/rauc/build-bundle.sh \
-            "${{ steps.pigen.outputs.image-path }}" \
+            "${{ steps.repartition.outputs.rootfs-path }}" \
+            "${{ steps.repartition.outputs.bootfs-path }}" \
             "$out" \
             "${{ inputs.version }}" \
             "${{ github.sha }}" \

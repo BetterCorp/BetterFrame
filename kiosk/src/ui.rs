@@ -18,6 +18,7 @@ use crate::firmware;
 use crate::gpio;
 use crate::hwmon;
 use crate::local_server;
+use crate::onvif_events;
 use crate::os_update;
 use crate::pipeline;
 use crate::server;

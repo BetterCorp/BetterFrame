@@ -27,12 +27,12 @@ fi
 
 echo "==> Generating CA (Ed25519, 10 year validity)"
 openssl genpkey -algorithm ED25519 -out ca-key.pem
-openssl req -new -x509 -days 3650 -key ca-key.pem \
+MSYS_NO_PATHCONV=1 openssl req -new -x509 -days 3650 -key ca-key.pem \
   -subj "/CN=BetterFrame RAUC CA" -out ca-cert.pem
 
 echo "==> Generating signing cert (Ed25519, 2 year validity)"
 openssl genpkey -algorithm ED25519 -out signing-key.pem
-openssl req -new -key signing-key.pem \
+MSYS_NO_PATHCONV=1 openssl req -new -key signing-key.pem \
   -subj "/CN=BetterFrame RAUC Signing" -out signing.csr
 openssl x509 -req -in signing.csr -CA ca-cert.pem -CAkey ca-key.pem \
   -CAcreateserial -days 730 -out signing-cert.pem

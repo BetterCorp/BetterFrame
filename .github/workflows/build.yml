@@ -35,6 +35,13 @@ on:
         required: false
       BF_AUTOIMPORT_API_KEY:
         required: false
+      # RAUC bundle signing — generated once via scripts/gen-rauc-signing-keys.sh
+      # and uploaded to the GH repo secrets. Without both, the OS-bundle step
+      # is skipped; .img.xz still ships as a release asset for manual flashing.
+      BF_RAUC_SIGNING_CERT:
+        required: false
+      BF_RAUC_SIGNING_KEY:
+        required: false
 
 permissions:
   contents: write
@@ -219,3 +226,71 @@ jobs:
         with:
           tag_name: ${{ inputs.tag }}
           files: ${{ steps.pigen.outputs.image-path }}
+
+      # ---- RAUC bundle (OS OTA) --------------------------------------------
+      # Build a signed .raucb bundle from the same partitions baked into the
+      # .img.xz. Kiosks fetch this from /api/kiosk/os/check + rauc install it
+      # into the inactive A/B slot. Skipped when signing secrets aren't set
+      # (image still ships for manual flashing).
+      - name: Build RAUC bundle
+        id: raucb
+        if: ${{ secrets.BF_RAUC_SIGNING_CERT != '' && secrets.BF_RAUC_SIGNING_KEY != '' }}
+        env:
+          BF_RAUC_SIGNING_CERT: ${{ secrets.BF_RAUC_SIGNING_CERT }}
+          BF_RAUC_SIGNING_KEY: ${{ secrets.BF_RAUC_SIGNING_KEY }}
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rauc e2fsprogs xz-utils util-linux openssl
+          mkdir -p /tmp/rauc-signing
+          chmod 700 /tmp/rauc-signing
+          printf '%s\n' "$BF_RAUC_SIGNING_CERT" > /tmp/rauc-signing/cert.pem
+          printf '%s\n' "$BF_RAUC_SIGNING_KEY" > /tmp/rauc-signing/key.pem
+          chmod 600 /tmp/rauc-signing/key.pem
+          chmod +x deploy/rauc/build-bundle.sh
+          out="${{ github.workspace }}/betterframe-${{ inputs.version }}.raucb"
+          deploy/rauc/build-bundle.sh \
+            "${{ steps.pigen.outputs.image-path }}" \
+            "$out" \
+            "${{ inputs.version }}" \
+            "${{ github.sha }}" \
+            /tmp/rauc-signing/cert.pem \
+            /tmp/rauc-signing/key.pem
+          rm -rf /tmp/rauc-signing
+          echo "bundle-path=$out" >> "$GITHUB_OUTPUT"
+          echo "bundle-sha256=$(sha256sum "$out" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload RAUC bundle to GitHub Release
+        if: ${{ steps.raucb.outputs.bundle-path != '' }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: ${{ steps.raucb.outputs.bundle-path }}
+
+      # Auto-import to BF server. Mirrors the kiosk-binary auto-import step.
+      # Skipped if BF_AUTOIMPORT_* secrets are missing OR no bundle was built.
+      - name: Auto-import OS bundle into BF server
+        if: ${{ steps.raucb.outputs.bundle-path != '' && secrets.BF_AUTOIMPORT_URL != '' && secrets.BF_AUTOIMPORT_API_KEY != '' }}
+        env:
+          BF_AUTOIMPORT_URL: ${{ secrets.BF_AUTOIMPORT_URL }}
+          BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}
+        run: |
+          set -e
+          tag="${{ inputs.tag }}"
+          repo="${{ github.repository }}"
+          # Direct GH release asset URL — server downloads from here.
+          asset_name="$(basename "${{ steps.raucb.outputs.bundle-path }}")"
+          asset_url="https://github.com/${repo}/releases/download/${tag}/${asset_name}"
+          payload="$(jq -nc \
+            --arg v "${{ inputs.version }}" \
+            --arg c "${{ inputs.channel }}" \
+            --arg compat "betterframe-rpi5-aarch64" \
+            --arg sha "${{ steps.raucb.outputs.bundle-sha256 }}" \
+            --arg url "$asset_url" \
+            --arg n "GitHub Actions build of ${{ inputs.tag }} (${{ github.sha }})" \
+            '{version:$v, channel:$c, compatibility:$compat, source_url:$url, sha256:$sha, release_notes:$n}')"
+          curl -sSf -X POST \
+            -H "Authorization: Bearer ${BF_AUTOIMPORT_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            "${BF_AUTOIMPORT_URL}/api/admin/os/import"

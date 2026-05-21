@@ -17,3 +17,4 @@ wlr-randr
 ca-certificates
 rauc
 dosfstools
+nftables

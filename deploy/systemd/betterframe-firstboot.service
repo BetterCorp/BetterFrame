@@ -1,0 +1,19 @@
+[Unit]
+Description=BetterFrame first-boot provisioning (rotate default password)
+Documentation=https://github.com/BetterCorp/BetterFrame
+ConditionPathExists=!/var/lib/betterframe/.firstboot-complete
+DefaultDependencies=no
+After=local-fs.target
+Before=getty.target multi-user.target betterframe-kiosk.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/betterframe-firstboot.sh
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=no
+
+[Install]
+WantedBy=multi-user.target

@@ -45,6 +45,21 @@ else
 fi
 install -m 755 /tmp/bf-files/betterframe-rauc-boot.sh /usr/local/sbin/betterframe-rauc-boot.sh
 
+# --- Firewall: default-drop inbound, LAN-only kiosk local API ---
+# Replaces any default nftables config Debian ships.
+install -m 644 /tmp/bf-files/nftables.conf /etc/nftables.conf
+systemctl enable nftables.service
+
+# --- First-boot password rotation ---
+# Replaces the image-default bfadmin password with a per-device random one
+# the first time the kiosk boots. Stored at /etc/betterframe/admin-password
+# (0400 root) AND printed to tty1 banner once. See script for details.
+install -m 644 /tmp/bf-files/betterframe-firstboot.service \
+  /etc/systemd/system/betterframe-firstboot.service
+install -m 755 /tmp/bf-files/betterframe-firstboot.sh \
+  /usr/local/sbin/betterframe-firstboot.sh
+systemctl enable betterframe-firstboot.service
+
 # Default env file — operator may edit on first boot to point at their server.
 cat > /etc/default/betterframe-kiosk <<'EOF'
 # Runtime env for betterframe-kiosk. Edit and `systemctl restart betterframe-kiosk`.

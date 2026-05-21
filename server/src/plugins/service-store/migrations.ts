@@ -867,4 +867,17 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "displays", "actual_power_state_at", "TEXT");
   },
 
+  // Backfill hwmon/telemetry columns. They were originally added inline to
+  // an earlier migration entry; existing deploys had already passed that
+  // index via PRAGMA user_version, so the new columns silently never landed.
+  // Re-add idempotently here so replaceKioskKey / heartbeat stop hitting
+  // "no such column" on upgrade.
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "kiosks", "cpu_load_percent", "REAL");
+    addColumnIfNotExists(db, "kiosks", "memory_total_mb", "INTEGER");
+    addColumnIfNotExists(db, "kiosks", "memory_used_mb", "INTEGER");
+    addColumnIfNotExists(db, "kiosks", "disk_total_mb", "INTEGER");
+    addColumnIfNotExists(db, "kiosks", "disk_free_mb", "INTEGER");
+    addColumnIfNotExists(db, "kiosks", "disk_used_percent", "REAL");
+  },
 ];

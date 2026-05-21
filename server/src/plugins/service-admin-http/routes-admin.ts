@@ -590,6 +590,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/entities", (event) => {
     const user = event.context.user!;
+    syncDashboardsFromNodered(deps).catch(() => {});
     return htmlPage(EntitiesPage({
       user: user.username,
       entities: deps.repo.listEntities(),

@@ -22,10 +22,12 @@ COPY deploy/docker/nodered-settings.js /usr/src/bf-settings.js
 COPY deploy/docker/nodered-entrypoint.sh /usr/local/bin/bf-nodered-entrypoint
 RUN chmod +x /usr/local/bin/bf-nodered-entrypoint
 
-# Install deps for the nodes
+# Install deps for the nodes + FlowFuse Dashboard 2.0 into user dir
 RUN cd /usr/src/betterframe-nodes && \
     npm install --omit=dev && \
-    chown -R node-red:root /usr/src/betterframe-nodes /usr/src/bf-settings.js
+    cd /usr/src/node-red && \
+    npm install @flowfuse/node-red-dashboard && \
+    chown -R node-red:root /usr/src/betterframe-nodes /usr/src/bf-settings.js /usr/src/node-red
 
 # Run entrypoint as root so it can fix stale /data state (e.g. /data/settings.js
 # left as a directory by a previous broken bind mount). Entrypoint drops to

@@ -189,8 +189,9 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
     exit 1
   fi
 
-  install -d -m 755 "${BIN_DST_DIR}"
+  install -d -o bfkiosk -g bfkiosk -m 755 "${BIN_DST_DIR}"
   install -m 755 "${BIN_SRC}" "${BIN_DST}"
+  install -d -o bfkiosk -g bfkiosk -m 755 /var/lib/betterframe/kiosk
   echo "    installed → ${BIN_DST}"
 
   # --------------------------------------------------------------------------

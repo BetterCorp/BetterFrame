@@ -37,6 +37,7 @@ pub const ARCH: &str = match option_env!("BF_BUILD_ARCH") {
 };
 
 const DEFAULT_BIN_PATH: &str = "/opt/betterframe/kiosk/betterframe-kiosk";
+const FIRMWARE_MARKER: &str = "/var/lib/betterframe/kiosk/firmware-applying.json";
 
 fn binary_path() -> PathBuf {
     std::env::var("BF_KIOSK_BINARY")
@@ -163,8 +164,8 @@ pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
     // failed first boot of the new binary. We delete it after a clean boot
     // (see `mark_firmware_applied()`). If we crash before that, next start
     // sees a stale marker → restores .prev.
-    if let Some(dir) = bin.parent() {
-        let marker = dir.join("firmware-applying.json");
+    {
+        let marker = PathBuf::from(FIRMWARE_MARKER);
         let payload = serde_json::json!({
             "version": info.version,
             "attempt_at": chrono_now_iso(),
@@ -210,12 +211,9 @@ fn verify_signature(public_key_pem: &str, sha256_hex: &str, sig_b64url: &str) ->
 /// Clear the in-progress marker. Call after the kiosk has booted cleanly and
 /// reported back to the server — proves the new binary survives startup.
 pub fn mark_firmware_applied() {
-    let bin = binary_path();
-    if let Some(dir) = bin.parent() {
-        let marker = dir.join("firmware-applying.json");
-        if marker.exists() {
-            let _ = fs::remove_file(marker);
-        }
+    let marker = PathBuf::from(FIRMWARE_MARKER);
+    if marker.exists() {
+        let _ = fs::remove_file(marker);
     }
 }
 

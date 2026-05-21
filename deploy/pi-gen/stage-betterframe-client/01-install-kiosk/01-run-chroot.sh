@@ -14,8 +14,10 @@ for grp in video render input audio; do
 done
 
 # --- Binary ---
-install -d -m 755 /opt/betterframe/kiosk
+install -d -o bfkiosk -g bfkiosk -m 755 /opt/betterframe/kiosk
 install -m 755 /tmp/bf-files/betterframe-kiosk /opt/betterframe/kiosk/betterframe-kiosk
+# State dir for firmware marker file (rollback script reads this)
+install -d -o bfkiosk -g bfkiosk -m 755 /var/lib/betterframe/kiosk
 
 # --- Systemd unit + PAM + rollback hook ---
 install -m 644 /tmp/bf-files/betterframe-kiosk.service /etc/systemd/system/betterframe-kiosk.service

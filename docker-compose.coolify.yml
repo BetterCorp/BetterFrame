@@ -18,8 +18,7 @@ services:
       context: .
       dockerfile: deploy/docker/Dockerfile.server
       args:
-        BF_SERVER_VERSION: ${BF_SERVER_VERSION:-${SOURCE_COMMIT:-dev}}
-        SOURCE_COMMIT: ${SOURCE_COMMIT:-}
+        BF_SERVER_VERSION: ${BF_SERVER_VERSION:-${COOLIFY_GIT_COMMIT:-${SOURCE_COMMIT:-dev}}}
     container_name: betterframe-server
     restart: unless-stopped
     environment:
@@ -28,8 +27,7 @@ services:
       - BF_SQLITE_PATH=/var/lib/betterframe/betterframe.db
       - BF_NODERED_URL=http://nodered:1880
       - BF_SELF_URL=http://server:18080
-      - BF_SERVER_VERSION=${BF_SERVER_VERSION:-${SOURCE_COMMIT:-dev}}
-      - SOURCE_COMMIT=${SOURCE_COMMIT:-}
+      - BF_SERVER_VERSION=${BF_SERVER_VERSION:-${COOLIFY_GIT_COMMIT:-${SOURCE_COMMIT:-dev}}}
     volumes:
       - betterframe-data:/var/lib/betterframe
     expose:

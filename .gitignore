@@ -42,4 +42,5 @@ npm-debug.log*
 # Misc
 *.tgz
 *.tsbuildinfo
-/old-python/
+# RAUC signing keys (generated locally, secrets set in GitHub Actions)
+rauc-signing/

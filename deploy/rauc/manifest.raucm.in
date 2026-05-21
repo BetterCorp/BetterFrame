@@ -9,8 +9,6 @@ format=verity
 
 [image.bootfs]
 filename=bootfs.vfat
-type=image
 
 [image.rootfs]
 filename=rootfs.ext4
-type=image

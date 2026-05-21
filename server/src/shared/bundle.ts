@@ -209,7 +209,7 @@ export function generateBundle(
   const bundleCameras: BundleCamera[] = cameras.map((cam) => {
     const streams = repo.listCameraStreams(cam.id);
     const effectiveStreams = streams.length > 0 ? streams : (
-      cam.rtsp_url
+      cam.type === "rtsp" && cam.rtsp_url
         ? [{
           id: 0,
           role: "main" as const,

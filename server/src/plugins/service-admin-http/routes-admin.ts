@@ -41,6 +41,7 @@ import { captureSnapshot } from "../../shared/snapshot.js";
 import { stripSecrets } from "../../shared/strip-secrets.js";
 import { audit } from "../../shared/audit.js";
 import { createBackup, restoreBackup } from "../../shared/backup.js";
+import { pickKioskLanIp } from "../../shared/kiosk-lan.js";
 
 interface DiscoverAddStream {
   profile_name: string;
@@ -700,17 +701,53 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
   });
 
-  // Camera snapshot — pulls one frame from the entity's main stream and
-  // returns it as JPEG. Used by the EntityEditPage "Test" preview.
+  // Camera snapshot — prefer a kiosk already rendering this camera so we don't
+  // double the RTSP load on the source. Fall back to server-direct only when
+  // no kiosk currently has the camera in its active layout (or every kiosk
+  // attempt times out). Used by the EntityEditPage "Test" preview.
   app.get("/admin/entities/:id/snapshot", async (event) => {
     const id = Number(getRouterParam(event, "id"));
     const ent = deps.repo.getEntityById(id);
     if (!ent || ent.type !== "camera" || ent.camera_id == null) {
       return new Response("Not a camera entity", { status: 404 });
     }
-    const streams = deps.repo.listCameraStreams(ent.camera_id);
+    const cameraId = ent.camera_id;
+
+    // 1. Try kiosks currently rendering this camera. listKiosksRenderingCamera
+    // returns kiosks whose active_layout_id has at least one layout_cell
+    // pointing at cameraId. Filter to ones we can actually reach.
+    const candidates = deps.repo.listKiosksRenderingCamera(cameraId);
+    const STALE_MS = 2 * 60 * 1000; // kiosk silent > 2 min → don't bother
+    const now = Date.now();
+    for (const k of candidates) {
+      if (!k.local_port || !k.local_key) continue;
+      if (k.last_seen_at && now - new Date(k.last_seen_at).getTime() > STALE_MS) continue;
+      const ip = pickKioskLanIp(k);
+      if (!ip) continue;
+
+      const url = `http://${ip}:${String(k.local_port)}/local/snapshot/${String(cameraId)}?key=${encodeURIComponent(k.local_key)}`;
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+        if (res.ok) {
+          const bytes = new Uint8Array(await res.arrayBuffer());
+          return new Response(bytes, {
+            status: 200,
+            headers: {
+              "content-type": res.headers.get("content-type") ?? "image/jpeg",
+              "cache-control": "no-store",
+              "x-bf-snapshot-source": `kiosk:${String(k.id)}`,
+            },
+          });
+        }
+      } catch {
+        // Network error / timeout — try next kiosk.
+      }
+    }
+
+    // 2. Fall back to server-direct RTSP pull (ffmpeg/gst).
+    const streams = deps.repo.listCameraStreams(cameraId);
     const main = streams.find((s) => s.role === "main") ?? streams[0];
-    const cam = deps.repo.getCameraById(ent.camera_id);
+    const cam = deps.repo.getCameraById(cameraId);
     const rtsp = main?.rtsp_uri ?? cam?.rtsp_url ?? null;
     if (!rtsp) return new Response("No RTSP URL", { status: 404 });
 
@@ -723,6 +760,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       headers: {
         "content-type": "image/jpeg",
         "cache-control": "no-store",
+        "x-bf-snapshot-source": "server",
       },
     });
   });

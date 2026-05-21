@@ -413,6 +413,28 @@ export class Repository {
     return rs.map((r) => rowToDisplay(r as Record<string, unknown>));
   }
 
+  /**
+   * Kiosks currently rendering this camera. Join chain:
+   *   displays.active_layout_id == layouts.id
+   *   → layout_cells.layout_id == layouts.id
+   *   → layout_cells.camera_id == ?
+   *   → kiosks via displays.kiosk_id
+   * Active layout is set by kiosk's layout.changed event. Stale ones may
+   * still appear here — caller filters by last_seen_at + local_port.
+   */
+  listKiosksRenderingCamera(cameraId: number): Kiosk[] {
+    const rs = this.prep(
+      `SELECT DISTINCT k.*
+         FROM kiosks k
+         JOIN displays d ON d.kiosk_id = k.id
+         JOIN layout_cells lc ON lc.layout_id = d.active_layout_id
+        WHERE lc.camera_id = ?
+          AND d.active_layout_id IS NOT NULL
+          AND k.enabled = 1`,
+    ).all(cameraId);
+    return rs.map((r) => rowToKiosk(r as Record<string, unknown>));
+  }
+
   private nextDisplayIndexForKiosk(kioskId: number): number {
     const r = this.prep('SELECT MAX("index") AS m FROM displays WHERE kiosk_id = ?').get(kioskId) as { m: number | null } | undefined;
     return (r?.m ?? -1) + 1;

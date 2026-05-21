@@ -79,6 +79,7 @@ pub fn start(state: LocalServerState) {
             let app = Router::new()
                 .route("/local/info", get(local_info_handler))
                 .route("/local/layout/:id", get(local_layout_handler))
+                .route("/local/snapshot/:camera_id", get(local_snapshot_handler))
                 .route("/proxy/*path", any(proxy_handler))
                 .with_state(state);
 
@@ -133,6 +134,109 @@ async fn local_layout_handler(
     }
     info!("local-server: switched to layout {id}");
     (StatusCode::NO_CONTENT, "").into_response()
+}
+
+/// One-shot JPEG snapshot of `camera_id` from THIS kiosk. Resolves the
+/// camera's RTSP URI from the on-disk cached bundle (written by
+/// server::save_bundle), then spawns a one-off gstreamer pipeline:
+///
+///     rtspsrc → decodebin → videoconvert → jpegenc ! filesink
+///
+/// Identical pattern to the server's fallback path, just running on the
+/// kiosk so the admin preview hits the device closest to the camera.
+/// Server-side caller selects this when a kiosk already has the camera
+/// in its active layout — the assumption is the kiosk's RTSP session
+/// already works, so a parallel one-frame pull is cheap. We do NOT
+/// reuse the warm GTK4 paintable pipeline because cross-thread paintable
+/// access + sample extraction would need significant rework; this is
+/// "good enough" and isolated.
+async fn local_snapshot_handler(
+    State(state): State<LocalServerState>,
+    Path(camera_id): Path<u32>,
+    Query(auth): Query<LocalAuth>,
+) -> Response {
+    if !constant_time_eq(&auth.key, &state.local_key) {
+        return (StatusCode::UNAUTHORIZED, "bad key").into_response();
+    }
+    let Some(bundle) = crate::server::load_cached_bundle() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "no bundle cached yet").into_response();
+    };
+    let Some(cam) = bundle.cameras.iter().find(|c| c.id == camera_id) else {
+        return (StatusCode::NOT_FOUND, "camera not in bundle").into_response();
+    };
+    // Use sub stream when present (lower-bandwidth snapshot), else main.
+    let Some((uri, _)) = cam.pick_stream(Some("sub"), 0.0)
+        .or_else(|| cam.pick_stream(Some("main"), 1.0)) else {
+        return (StatusCode::NOT_FOUND, "no stream for camera").into_response();
+    };
+
+    // Blocking gst-launch on a worker thread so we don't block axum's reactor.
+    let jpeg = tokio::task::spawn_blocking(move || capture_jpeg_blocking(&uri)).await;
+    match jpeg {
+        Ok(Ok(bytes)) => Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "image/jpeg")
+            .header("cache-control", "no-store")
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "build").into_response()),
+        Ok(Err(e)) => {
+            warn!("local-server: snapshot for cam {camera_id} failed: {e}");
+            (StatusCode::BAD_GATEWAY, format!("snapshot failed: {e}")).into_response()
+        }
+        Err(e) => {
+            warn!("local-server: snapshot task join failed: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "task error").into_response()
+        }
+    }
+}
+
+fn capture_jpeg_blocking(rtsp_uri: &str) -> Result<Vec<u8>, String> {
+    use std::process::Command;
+    let tmp = std::env::temp_dir().join(format!(
+        "bf-snap-{}.jpg",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    // 5s ceiling: rtspsrc handshake + a couple of decoded frames. jpegenc
+    // emits one JPEG, filesink writes it. num-buffers=1 on filesink stops
+    // the pipeline after the first sample so we don't dangle.
+    let status = Command::new("gst-launch-1.0")
+        .args([
+            "-q",
+            "rtspsrc",
+            &format!("location={rtsp_uri}"),
+            "latency=200",
+            "protocols=tcp",
+            "!",
+            "decodebin",
+            "!",
+            "videoconvert",
+            "!",
+            "jpegenc",
+            "!",
+            "filesink",
+            "num-buffers=1",
+            &format!("location={}", tmp.display()),
+        ])
+        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("gst-launch-1.0 spawn: {e}"))?;
+    let result = if status.success() {
+        std::fs::read(&tmp).map_err(|e| format!("read snapshot: {e}"))
+    } else {
+        Err(format!("gst-launch-1.0 exit {status:?}"))
+    };
+    let _ = std::fs::remove_file(&tmp);
+    result.and_then(|bytes| {
+        if bytes.is_empty() {
+            Err("snapshot file empty".to_string())
+        } else {
+            Ok(bytes)
+        }
+    })
 }
 
 /// Forward any request under /proxy/* to the BF server. Method, query

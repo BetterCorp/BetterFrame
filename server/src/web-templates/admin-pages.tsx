@@ -15,6 +15,8 @@ import type {
   Label,
   Layout as LayoutType,
   LayoutCell,
+  OsUpdateRelease,
+  OsUpdateRollout,
   PairingCode,
   EventLog,
 } from "../shared/types.js";
@@ -1338,6 +1340,7 @@ interface KioskEditProps {
   displayLayouts?: Array<{ display: Display; layouts: LayoutType[] }>;
   gpioBindings?: KioskGpioBinding[];
   firmwareReleases?: FirmwareRelease[];
+  osReleases?: OsUpdateRelease[];
   error?: string;
   success?: string;
 }
@@ -1693,6 +1696,10 @@ export function KioskEditPage(props: KioskEditProps) {
 
         {props.firmwareReleases && (
           KioskFirmwarePanel({ kiosk: props.kiosk, releases: props.firmwareReleases })
+        )}
+
+        {props.osReleases && (
+          KioskOsUpdatePanel({ kiosk: props.kiosk, releases: props.osReleases })
         )}
 
         {(props.kiosk.local_key && props.kiosk.local_port) && KioskLocalPanel({ kiosk: props.kiosk })}
@@ -3396,5 +3403,246 @@ export function BackupPage(props: BackupPageProps) {
         </div>
       </div>
     </Layout>
+  );
+}
+
+// ---- OS updates -------------------------------------------------------------
+//
+// Mirrors the FirmwarePage / FirmwareRolloutsPage / KioskFirmwarePanel
+// triplet but targeting RAUC OS bundles. CI publishes a release via
+// /api/admin/os/import; the admin doesn't normally upload by hand — the
+// page surfaces the table so an operator can yank a bad release and
+// kick off a rollout to a slice of the fleet.
+
+interface OsUpdatePageProps {
+  user: string;
+  releases: OsUpdateRelease[];
+}
+
+export function OsUpdatePage(props: OsUpdatePageProps) {
+  return (
+    <Layout title="OS Updates" user={props.user} activeNav="os-updates">
+      <p style="color:#666; margin-bottom:1rem">
+        Signed RAUC bundles. Kiosks running the BetterFrame A/B image poll
+        for new bundles every 60s and atomic-swap into the inactive slot
+        on match. Tryboot rolls back if the new slot fails to boot.
+        <a href="/admin/os-updates/rollouts" style="margin-left:0.5rem">Rollouts →</a>
+      </p>
+
+      <div class="card" style="margin-bottom:1.5rem; background:#fafafa; font-size:0.85rem">
+        <strong>How bundles get here:</strong> the CI build workflow signs the
+        .raucb with the operator's signing cert, uploads it as a GitHub Release
+        asset, then POSTs to <code>/api/admin/os/import</code> with the asset URL
+        + sha256. Configure GitHub secrets <code>BF_RAUC_SIGNING_CERT</code>,
+        <code>BF_RAUC_SIGNING_KEY</code>, <code>BF_AUTOIMPORT_URL</code>,
+        <code>BF_AUTOIMPORT_API_KEY</code> to enable the pipeline. See
+        <code>scripts/gen-rauc-signing-keys.sh</code>.
+      </div>
+
+      <div class="table-wrap" style="margin-bottom:1.5rem">
+        <table>
+          <thead>
+            <tr>
+              <th>Version</th>
+              <th>Channel</th>
+              <th>Compatibility</th>
+              <th>Size</th>
+              <th>SHA256</th>
+              <th>Uploaded</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {props.releases.length === 0 ? (
+              <tr><td colspan="7" style="text-align:center; color:#999; padding:2rem">No OS releases yet. Push a master commit with signing secrets configured.</td></tr>
+            ) : (
+              props.releases.map((r) => (
+                <tr style={r.yanked_at ? "opacity:0.4" : ""}>
+                  <td><strong>{r.version}</strong></td>
+                  <td><span class={`badge ${r.channel === "stable" ? "badge-green" : r.channel === "beta" ? "badge-yellow" : "badge-gray"}`}>{r.channel}</span></td>
+                  <td style="font-family:monospace; font-size:0.8rem">{r.compatibility}</td>
+                  <td style="font-size:0.85rem">{Math.round(r.size_bytes / 1024 / 1024)} MiB</td>
+                  <td style="font-family:monospace; font-size:0.75rem">{r.sha256.slice(0, 12)}…</td>
+                  <td style="font-size:0.85rem; white-space:nowrap">{formatTime(r.uploaded_at)}</td>
+                  <td>
+                    {r.yanked_at ? (
+                      <span style="color:#999; font-size:0.8rem">yanked</span>
+                    ) : (
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-danger"
+                        {...{
+                          "hx-post": `/admin/os-updates/${r.id}/yank`,
+                          "hx-confirm": "Yank this OS release? Kiosks already updated keep it; new kiosks won't pick it up.",
+                          "hx-swap": "none",
+                          "hx-on::after-request": "location.reload()",
+                        }}
+                      >Yank</button>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Layout>
+  );
+}
+
+interface OsUpdateRolloutsPageProps {
+  user: string;
+  rollouts: OsUpdateRollout[];
+  releases: OsUpdateRelease[];
+  kiosks: Kiosk[];
+}
+
+export function OsUpdateRolloutsPage(props: OsUpdateRolloutsPageProps) {
+  const releaseById = new Map(props.releases.map((r) => [r.id, r]));
+  const kioskById = new Map(props.kiosks.map((k) => [k.id, k]));
+  return (
+    <Layout title="OS rollouts" user={props.user} activeNav="os-updates">
+      <p style="color:#666; margin-bottom:1rem">
+        Push a specific OS bundle to a slice of the fleet. Bucket assignment
+        is deterministic by kiosk id — re-running a 50% rollout with the same
+        targets touches the same half.
+      </p>
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="margin:0 0 1rem; font-size:1.1rem">New rollout</h2>
+        <form method="post" action="/admin/os-updates/rollouts/new"
+              style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem">
+          <div class="form-group">
+            <label for="release_id">Release</label>
+            <select id="release_id" name="release_id" class="form-input" required>
+              <option value="">--</option>
+              {props.releases.filter((r) => !r.yanked_at).map((r) => (
+                <option value={r.id}>{r.version} · {r.channel} · {r.compatibility}</option>
+              ))}
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="percentage">Percentage</label>
+            <input id="percentage" name="percentage" type="number" min="1" max="100" value="100" class="form-input" />
+          </div>
+          <div class="form-group" style="grid-column:1/-1">
+            <label for="target_kiosk_ids">Targets (leave empty = all kiosks on release channel)</label>
+            <select id="target_kiosk_ids" name="target_kiosk_ids" class="form-input" multiple size="6">
+              {props.kiosks.map((k) => (
+                <option value={String(k.id)}>{k.name} (#{String(k.id)})</option>
+              ))}
+            </select>
+            <div class="form-hint">Cmd/Ctrl-click to multi-select.</div>
+          </div>
+          <button type="submit" class="btn btn-primary" style="grid-column:1/-1">Create + activate</button>
+        </form>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Release</th>
+              <th>State</th>
+              <th>%</th>
+              <th>Targets</th>
+              <th>Created</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {props.rollouts.length === 0 ? (
+              <tr><td colspan="6" style="text-align:center; color:#999; padding:2rem">No OS rollouts yet.</td></tr>
+            ) : (
+              props.rollouts.map((r) => {
+                const rel = releaseById.get(r.release_id);
+                const targetCount = r.target_kiosk_ids.length;
+                const targetSummary = targetCount === 0
+                  ? "(all on channel)"
+                  : r.target_kiosk_ids.slice(0, 3).map((id) => kioskById.get(id)?.name ?? `#${String(id)}`).join(", ")
+                    + (targetCount > 3 ? ` +${String(targetCount - 3)} more` : "");
+                return (
+                  <tr>
+                    <td><strong>{rel?.version ?? r.release_id}</strong>{rel && <span style="color:#999"> ({rel.channel})</span>}</td>
+                    <td><span class={`badge ${r.state === "active" ? "badge-green" : r.state === "paused" ? "badge-yellow" : r.state === "complete" ? "badge-gray" : "badge-blue"}`}>{r.state}</span></td>
+                    <td>{String(r.percentage)}%</td>
+                    <td style="font-size:0.85rem">{targetSummary}</td>
+                    <td style="font-size:0.85rem; white-space:nowrap">{formatTime(r.created_at)}</td>
+                    <td>
+                      <form method="post" action={`/admin/os-updates/rollouts/${r.id}/state`} style="display:inline">
+                        <input type="hidden" name="state" value={r.state === "paused" ? "active" : "paused"} />
+                        <button type="submit" class="btn btn-sm" style="margin-right:0.25rem">
+                          {r.state === "paused" ? "Resume" : "Pause"}
+                        </button>
+                      </form>
+                      <form method="post" action={`/admin/os-updates/rollouts/${r.id}/state`} style="display:inline">
+                        <input type="hidden" name="state" value="complete" />
+                        <button type="submit" class="btn btn-sm btn-danger">Complete</button>
+                      </form>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Layout>
+  );
+}
+
+interface KioskOsUpdatePanelProps {
+  kiosk: Kiosk;
+  releases: OsUpdateRelease[];
+}
+
+export function KioskOsUpdatePanel(props: KioskOsUpdatePanelProps) {
+  const k = props.kiosk;
+  const current = k.os_version ?? "unknown";
+  return (
+    <div id={`kiosk-os-${String(k.id)}`} class="card" style="margin-bottom:1.5rem">
+      <h3 style="margin:0 0 0.75rem; font-size:1rem">OS</h3>
+      <div style="font-size:0.85rem; color:#666; margin-bottom:0.75rem">
+        <div>Running: <code>{current}</code></div>
+        {k.os_update_last_attempt_version && (
+          <div>
+            Last attempt: <code>{k.os_update_last_attempt_version}</code>
+            {k.os_update_last_attempt_at && <span> at {formatTime(k.os_update_last_attempt_at)}</span>}
+            {k.os_update_last_error && <span style="color:#a00"> — {k.os_update_last_error}</span>}
+          </div>
+        )}
+      </div>
+      <form
+        {...{
+          "hx-post": `/admin/kiosks/${String(k.id)}/os-update`,
+          "hx-target": `#kiosk-os-${String(k.id)}`,
+          "hx-swap": "outerHTML",
+        }}
+        style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem"
+      >
+        <div class="form-group">
+          <label for={`os-channel-${String(k.id)}`}>Channel</label>
+          <select id={`os-channel-${String(k.id)}`} name="channel" class="form-input">
+            {(["stable", "beta", "dev"] as const).map((c) => (
+              <option value={c} selected={k.os_update_channel === c}>{c}</option>
+            ))}
+          </select>
+        </div>
+        <div class="form-group">
+          <label for={`os-target-${String(k.id)}`}>Pin to version</label>
+          <select id={`os-target-${String(k.id)}`} name="target_version" class="form-input">
+            <option value="">-- follow channel --</option>
+            {props.releases.filter((r) => !r.yanked_at).map((r) => (
+              <option value={r.version} selected={k.os_update_target_version === r.version}>
+                {r.version} ({r.channel})
+              </option>
+            ))}
+          </select>
+        </div>
+        <div style="grid-column:1/-1">
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
   );
 }

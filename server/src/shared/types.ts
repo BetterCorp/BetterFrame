@@ -375,3 +375,33 @@ export interface EventLog {
   received_at: string;
   forwarded_to_nodered: boolean;
 }
+
+export interface EventQueryFilters {
+  topic?: string;
+  kiosk_id?: number;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export type KioskLogLevel = "debug" | "info" | "warn" | "error";
+
+export interface KioskLog {
+  id: number;
+  kiosk_id: number;
+  level: KioskLogLevel;
+  message: string;
+  context: Record<string, unknown>;
+  logged_at: string;
+  received_at: string;
+}
+
+export interface KioskLogQueryFilters {
+  kiosk_id: number;
+  level?: KioskLogLevel;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}

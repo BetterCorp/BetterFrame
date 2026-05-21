@@ -32,6 +32,8 @@ import type {
   Kiosk,
   KioskGpioBinding,
   KioskLabel,
+  KioskLog,
+  KioskLogLevel,
   Label,
   LabelRole,
   Layout,

@@ -1354,6 +1354,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }));
     const gpioBindings = deps.repo.listGpioBindings(id);
     const firmwareReleases = deps.repo.listFirmwareReleases();
+    const osReleases = deps.repo.listOsUpdateReleases();
     return htmlPage(KioskEditPage({
       user: user.username,
       kiosk,
@@ -1363,6 +1364,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       displayLayouts,
       gpioBindings,
       firmwareReleases,
+      osReleases,
     }));
   });
 

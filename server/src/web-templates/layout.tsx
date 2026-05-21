@@ -51,6 +51,7 @@ function Sidebar(props: { activeNav?: string }) {
         <NavItem href="/admin/displays" label="Displays" icon="&#9642;" active={a === "displays"} />
         <NavItem href="/admin/kiosks" label="Kiosks" icon="&#9672;" active={a === "kiosks"} />
         <NavItem href="/admin/firmware" label="Firmware" icon="&#9650;" active={a === "firmware"} />
+        <NavItem href="/admin/os-updates" label="OS Updates" icon="&#9679;" active={a === "os-updates"} />
         <NavItem href="/admin/labels" label="Labels" icon="&#9670;" active={a === "labels"} />
         <NavItem href="/admin/audit" label="Audit" icon="&#9678;" active={a === "audit"} />
         <NavItem href="/admin/backup" label="Backup" icon="&#9788;" active={a === "backup"} />

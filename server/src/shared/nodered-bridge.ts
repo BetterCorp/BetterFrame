@@ -24,7 +24,7 @@ export interface NoderedDashboard {
 }
 
 export interface NoderedBridge {
-  forward(topic: string, payload: Record<string, unknown>): void;
+  forward(topic: string, payload: Record<string, unknown>, onSuccess?: () => void): void;
   listDashboards(): Promise<NoderedDashboard[]>;
   /**
    * Idempotently provision a `bf-server-config` node in Node-RED's flow graph
@@ -87,15 +87,10 @@ export function initNoderedBridge(config: NoderedConfig, log: NoderedLog): Noder
   const timeoutMs = config.timeoutMs ?? 3000;
 
   return {
-    forward(topic: string, payload: Record<string, unknown>): void {
+    forward(topic: string, payload: Record<string, unknown>, onSuccess?: () => void): void {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
 
-      // Internal server-to-Node-RED delivery for events the backend already
-      // authenticated, such as kiosk ONVIF/GPIO ingest.
-      // Use /api/internal/ — Angie returns 404 for any /api/* not whitelisted,
-      // so external requests cannot trigger BF nodes. Server bridge bypasses
-      // Angie (direct to nodered container).
       const url = `${base}/api/internal/${encodeURIComponent(topic)}`;
       fetch(url, {
         method: "POST",
@@ -104,7 +99,11 @@ export function initNoderedBridge(config: NoderedConfig, log: NoderedLog): Noder
         signal: ctrl.signal,
       })
         .then((r) => {
-          if (!r.ok) log.warn(`nodered ${topic} → ${r.status}`);
+          if (r.ok) {
+            onSuccess?.();
+          } else {
+            log.warn(`nodered ${topic} → ${r.status}`);
+          }
         })
         .catch((err) => log.warn(`nodered ${topic} failed: ${(err as Error).message}`))
         .finally(() => clearTimeout(t));

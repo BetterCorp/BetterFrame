@@ -1498,9 +1498,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     });
   };
 
-  const displayLayoutSwitch = (event: any) => {
+  const displayLayoutSwitch = async (event: any) => {
     const displayId = Number(getRouterParam(event, "displayId"));
-    const layoutId = Number(getRouterParam(event, "layoutId"));
+    let layoutId = Number(getRouterParam(event, "layoutId"));
+    if (!Number.isFinite(layoutId) || layoutId <= 0) {
+      const body = await readBody<Record<string, string>>(event);
+      layoutId = Number(body?.["layout_id"]);
+    }
     if (Number.isFinite(displayId) && Number.isFinite(layoutId)) {
       const display = deps.repo.getDisplayById(displayId);
       const attached = deps.repo.listLayoutsForDisplay(displayId);
@@ -1516,6 +1520,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${displayId}` } });
   };
+  app.post("/admin/displays/:displayId/layout", displayLayoutSwitch);
   app.post("/admin/displays/:displayId/layout/:layoutId", displayLayoutSwitch);
   app.get("/admin/displays/:displayId/layout/:layoutId", displayLayoutSwitch);
 

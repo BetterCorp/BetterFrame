@@ -1561,13 +1561,21 @@ export function KioskEditPage(props: KioskEditProps) {
               <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Switch Layout By Display</div>
               <div style="display:grid; gap:0.75rem">
                 {props.displayLayouts.map(({ display, layouts }) => (
-                  <div style="display:grid; grid-template-columns:minmax(130px, 0.8fr) minmax(180px, 1fr) auto; gap:0.5rem; align-items:center">
+                  <form
+                    method="post"
+                    action={`/admin/displays/${String(display.id)}/layout`}
+                    style="display:grid; grid-template-columns:minmax(130px, 0.8fr) minmax(180px, 1fr) auto; gap:0.5rem; align-items:center"
+                    {...{
+                      "hx-post": `/admin/displays/${String(display.id)}/layout`,
+                      "hx-swap": "none",
+                    }}
+                  >
                     <div style="font-size:0.85rem">
                       <a href={`/admin/displays/${String(display.id)}`}><strong>{display.name}</strong></a>
                       <div style="color:#666; font-size:0.75rem">{String(display.width_px)}x{String(display.height_px)}</div>
                     </div>
                     {layouts.length > 0 ? (
-                      <select id={`display-layout-pick-${String(display.id)}`} class="form-input">
+                      <select name="layout_id" class="form-input">
                         {layouts.map((l) => (
                           <option value={String(l.id)}>{l.name}</option>
                         ))}
@@ -1576,16 +1584,11 @@ export function KioskEditPage(props: KioskEditProps) {
                       <span style="color:#999; font-size:0.85rem">No attached layouts</span>
                     )}
                     <button
-                      type="button"
+                      type="submit"
                       class="btn btn-sm"
                       disabled={layouts.length === 0}
-                      {...{
-                        "hx-post": `/admin/displays/${String(display.id)}/layout/0`,
-                        "hx-swap": "none",
-                        "hx-on::config-request": `event.detail.path = event.detail.path.replace(/\\/layout\\/.*/, '/layout/' + document.getElementById('display-layout-pick-${String(display.id)}').value);`,
-                      }}
                     >Switch</button>
-                  </div>
+                  </form>
                 )).join("")}
               </div>
             </div>
@@ -2518,23 +2521,25 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
           {props.attachedLayouts.length > 0 && d.kiosk_id ? (
             <div style="margin-bottom:1rem; padding:0.75rem; background:#f9fafb; border-radius:4px">
               <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Switch Layout Now</div>
-              <div style="display:flex; gap:0.5rem; align-items:center">
-                <select id={`layout-pick-${d.id}`} class="form-input" style="flex:1">
+              <form
+                method="post"
+                action={`/admin/displays/${d.id}/layout`}
+                style="display:flex; gap:0.5rem; align-items:center"
+                {...{
+                  "hx-post": `/admin/displays/${d.id}/layout`,
+                  "hx-swap": "none",
+                }}
+              >
+                <select name="layout_id" class="form-input" style="flex:1">
                   {props.attachedLayouts.map((l) => (
                     <option value={String(l.id)}>{l.name}</option>
                   ))}
                 </select>
                 <button
-                  type="button"
+                  type="submit"
                   class="btn btn-sm"
-                  {...{
-                    "hx-post": `/admin/displays/${d.id}/layout/0`,
-                    "hx-swap": "none",
-                    "hx-vals": "js:{}",
-                    "hx-on::config-request": `event.detail.path = event.detail.path.replace(/\\/layout\\/.*/, '/layout/' + document.getElementById('layout-pick-${d.id}').value);`,
-                  }}
                 >Switch</button>
-              </div>
+              </form>
             </div>
           ) : null}
 

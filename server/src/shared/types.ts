@@ -28,6 +28,7 @@ export interface Entity {
   created_at: string;
 }
 export type DesiredPowerState = "follow_layout" | "on" | "standby";
+export type ActualPowerState = "awake" | "standby" | "unknown";
 export type LabelRole = "consume" | "operate";
 export type EventSourceType = "onvif" | "gpio" | "synthetic" | "system";
 
@@ -97,6 +98,8 @@ export interface Display {
   cec_device_path: string | null;
   cec_logical_address: number | null;
   desired_power_state: DesiredPowerState;
+  actual_power_state: ActualPowerState;
+  actual_power_state_at: string | null;
   state_check_enabled: boolean;
   state_check_interval_seconds: number;
   is_enabled: boolean;

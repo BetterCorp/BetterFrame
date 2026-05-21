@@ -238,9 +238,11 @@ fn activate(app: &Application) {
                             None => warn!("reload-bundle: fetch failed, keeping current render"),
                         }
                     }
-                    ServerMsg::Standby => cec::standby(),
-                    ServerMsg::Wake => {
-                        let _ = tx_for_reload.send(WorkerMsg::Wake);
+                    ServerMsg::Standby(display_id) => {
+                        let _ = tx_for_reload.send(WorkerMsg::Standby(display_id));
+                    }
+                    ServerMsg::Wake(display_id) => {
+                        let _ = tx_for_reload.send(WorkerMsg::Wake(display_id));
                     }
                     ServerMsg::Fan(pwm) => {
                         if !hwmon::set_fan(pwm) {
@@ -303,15 +305,8 @@ fn activate(app: &Application) {
                         switch_layout_anywhere(layout_id);
                     }
                 }
-                WorkerMsg::Wake => {
-                    cec::wake();
-                    DISPLAYS.with(|ds| {
-                        for st in ds.borrow_mut().values_mut() {
-                            st.is_asleep = false;
-                            st.last_activity = Instant::now();
-                        }
-                    });
-                }
+                WorkerMsg::Standby(display_id) => standby_display(display_id),
+                WorkerMsg::Wake(display_id) => wake_display(display_id),
             }
         }
         gtk::glib::ControlFlow::Continue
@@ -325,7 +320,68 @@ pub enum WorkerMsg {
         display_id: Option<u32>,
         layout_id: u32,
     },
-    Wake,
+    Standby(Option<u32>),
+    Wake(Option<u32>),
+}
+
+fn output_name_for_display(display_id: u32) -> Option<String> {
+    CURRENT_BUNDLE.with(|b| {
+        b.borrow()
+            .as_ref()
+            .and_then(|bundle| {
+                bundle
+                    .normalized_displays()
+                    .into_iter()
+                    .find(|d| d.id == display_id)
+            })
+            .map(|d| d.name)
+    })
+}
+
+fn standby_display(display_id: Option<u32>) {
+    if let Some(display_id) = display_id {
+        if let Some(output_name) = output_name_for_display(display_id) {
+            cec::standby_output(&output_name);
+        } else {
+            cec::standby();
+        }
+        DISPLAYS.with(|ds| {
+            if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
+                st.is_asleep = true;
+            }
+        });
+    } else {
+        cec::standby();
+        DISPLAYS.with(|ds| {
+            for st in ds.borrow_mut().values_mut() {
+                st.is_asleep = true;
+            }
+        });
+    }
+}
+
+fn wake_display(display_id: Option<u32>) {
+    if let Some(display_id) = display_id {
+        if let Some(output_name) = output_name_for_display(display_id) {
+            cec::wake_output(&output_name);
+        } else {
+            cec::wake();
+        }
+        DISPLAYS.with(|ds| {
+            if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
+                st.is_asleep = false;
+                st.last_activity = Instant::now();
+            }
+        });
+    } else {
+        cec::wake();
+        DISPLAYS.with(|ds| {
+            for st in ds.borrow_mut().values_mut() {
+                st.is_asleep = false;
+                st.last_activity = Instant::now();
+            }
+        });
+    }
 }
 
 /// Reset activity timer for one display. If asleep, wake it.
@@ -335,7 +391,11 @@ fn mark_activity(display_id: u32) {
             st.last_activity = Instant::now();
             if st.is_asleep {
                 info!("activity while asleep → waking display {display_id}");
-                cec::wake();
+                if let Some(output_name) = output_name_for_display(display_id) {
+                    cec::wake_output(&output_name);
+                } else {
+                    cec::wake();
+                }
                 st.is_asleep = false;
             }
         }
@@ -343,7 +403,34 @@ fn mark_activity(display_id: u32) {
 }
 
 fn send_heartbeat_now(server_url: &str, kiosk_key: &str) -> bool {
-    let displays = query_displays();
+    let raw_displays = query_displays();
+    let bundle_displays = CURRENT_BUNDLE
+        .with(|b| b.borrow().as_ref().map(|b| b.normalized_displays()))
+        .unwrap_or_default();
+    let displays: Vec<server::DisplayReport> = raw_displays
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, width_px, height_px))| {
+            let bundle_id = bundle_displays
+                .get(index)
+                .map(|d| d.id)
+                .or_else(|| bundle_displays.iter().find(|d| d.name == name).map(|d| d.id));
+            let power_state = bundle_id
+                .and_then(|id| {
+                    DISPLAYS.with(|ds| ds.borrow().get(&id).map(|st| st.is_asleep))
+                })
+                .map(|is_asleep| if is_asleep { "standby" } else { "awake" })
+                .unwrap_or("unknown")
+                .to_string();
+            server::DisplayReport {
+                index,
+                name,
+                width_px,
+                height_px,
+                power_state,
+            }
+        })
+        .collect();
     let hw = hwmon::read();
     server::heartbeat(server_url, kiosk_key, &displays, &hw)
 }
@@ -362,7 +449,7 @@ fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str) {
     if std::env::var("BF_ENABLE_APP_OTA").as_deref() != Ok("1") {
         return;
     }
-    let current = env!("CARGO_PKG_VERSION");
+    let current = option_env!("BF_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
     let Some(info) = firmware::check(server_url, kiosk_key, current) else {
         return;
     };
@@ -454,10 +541,19 @@ fn install_idle_watchdog() {
             }
             if a.sleep {
                 info!(
-                    "sleep timeout reached on display {} → CEC standby",
+                    "sleep timeout reached on display {}",
                     a.display_id
                 );
-                cec::standby();
+                let output_name = bundle
+                    .normalized_displays()
+                    .into_iter()
+                    .find(|d| d.id == a.display_id)
+                    .map(|d| d.name);
+                if let Some(output_name) = output_name {
+                    cec::standby_output(&output_name);
+                } else {
+                    cec::standby();
+                }
                 DISPLAYS.with(|ds| {
                     if let Some(st) = ds.borrow_mut().get_mut(&a.display_id) {
                         st.is_asleep = true;
@@ -591,8 +687,8 @@ fn render_bundle(
     let mut new_state: HashMap<u32, DisplayState> = HashMap::new();
     for (i, bd) in displays.iter().enumerate() {
         let existing = DISPLAYS.with(|ds| ds.borrow_mut().remove(&bd.id));
-        let window = match existing {
-            Some(st) => st.window,
+        let (window, was_asleep) = match existing {
+            Some(st) => (st.window, st.is_asleep),
             None => {
                 let w = ApplicationWindow::builder()
                     .application(app)
@@ -611,7 +707,7 @@ fn render_bundle(
                 if let Some(monitor) = gdk_monitors.get(i) {
                     w.fullscreen_on_monitor(monitor);
                 }
-                w
+                (w, false)
             }
         };
         new_state.insert(
@@ -620,7 +716,7 @@ fn render_bundle(
                 window,
                 current_layout_id: None,
                 last_activity: Instant::now(),
-                is_asleep: false,
+                is_asleep: was_asleep,
             },
         );
     }

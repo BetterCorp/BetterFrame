@@ -1096,7 +1096,7 @@ export function SimpleListPage(props: SimpleListProps) {
           </thead>
           <tbody>
             {props.items.length === 0 ? (
-              <tr><td colspan="2" style="text-align:center; color:#999; padding:2rem">None configured yet</td></tr>
+              <tr><td colspan="3" style="text-align:center; color:#999; padding:2rem">None configured yet</td></tr>
             ) : (
               props.items.map((item) => (
                 <tr>
@@ -1651,13 +1651,14 @@ export function KioskEditPage(props: KioskEditProps) {
           {props.displays && props.displays.length > 0 ? (
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Name</th><th>Resolution</th><th>Index</th></tr></thead>
+                <thead><tr><th>Name</th><th>Resolution</th><th>Index</th><th>Power</th></tr></thead>
                 <tbody>
                   {props.displays.map((d) => (
                     <tr>
                       <td><a href={`/admin/displays/${d.id}`}><strong>{d.name}</strong></a></td>
                       <td>{String(d.width_px)}x{String(d.height_px)}</td>
                       <td>{String(d.index)}</td>
+                      <td>{powerBadge(d.actual_power_state)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -2514,6 +2515,7 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
           <div style="color:#666; font-size:0.85rem; margin-bottom:1rem">
             <div>Index: {String(d.index)}</div>
             <div>Resolution: {String(d.width_px)}x{String(d.height_px)} <span style="color:#999">(reported by kiosk)</span></div>
+            <div>Power: {powerBadge(d.actual_power_state)} {d.actual_power_state_at ? <span style="color:#999">as of {formatTime(d.actual_power_state_at)}</span> : ""}</div>
             {d.kiosk_id && (
               <div>Kiosk: <a href={`/admin/kiosks/${d.kiosk_id}`}>{props.kioskName ?? `#${String(d.kiosk_id)}`}</a></div>
             )}
@@ -2540,6 +2542,27 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
                   class="btn btn-sm"
                 >Switch</button>
               </form>
+            </div>
+          ) : null}
+
+          {d.kiosk_id ? (
+            <div style="margin-bottom:1rem; display:flex; gap:0.5rem; flex-wrap:wrap">
+              <button
+                type="button"
+                class="btn btn-sm"
+                {...{
+                  "hx-post": `/admin/displays/${d.id}/power/wake`,
+                  "hx-swap": "none",
+                }}
+              >Wake Display</button>
+              <button
+                type="button"
+                class="btn btn-sm btn-ghost"
+                {...{
+                  "hx-post": `/admin/displays/${d.id}/power/standby`,
+                  "hx-swap": "none",
+                }}
+              >Standby Display</button>
             </div>
           ) : null}
 
@@ -2628,11 +2651,12 @@ export function DisplaysPage(props: DisplaysPageProps) {
             <tr>
               <th>Name</th>
               <th>Details</th>
+              <th>Power</th>
             </tr>
           </thead>
           <tbody>
             {props.displays.length === 0 ? (
-              <tr><td colspan="2" style="text-align:center; color:#999; padding:2rem">None configured yet</td></tr>
+              <tr><td colspan="3" style="text-align:center; color:#999; padding:2rem">None configured yet</td></tr>
             ) : (
               props.displays.map((d) => (
                 <tr>
@@ -2643,6 +2667,7 @@ export function DisplaysPage(props: DisplaysPageProps) {
                     )}
                   </td>
                   <td style="color:#666">{String(d.width_px)}x{String(d.height_px)} — index {String(d.index)}</td>
+                  <td>{powerBadge(d.actual_power_state)}</td>
                 </tr>
               ))
             )}
@@ -2711,6 +2736,12 @@ function percentText(value: number | null): string {
 function mbPair(used: number | null, total: number | null): string {
   if (used == null || total == null) return "—";
   return `${String(used)} / ${String(total)} MB`;
+}
+
+function powerBadge(state: Display["actual_power_state"]) {
+  if (state === "awake") return <span class="badge badge-green">awake</span>;
+  if (state === "standby") return <span class="badge badge-blue">standby</span>;
+  return <span class="badge badge-gray">unknown</span>;
 }
 
 // ---- Node-RED Embed ---------------------------------------------------

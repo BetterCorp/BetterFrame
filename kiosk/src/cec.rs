@@ -20,12 +20,26 @@ pub fn standby() {
     }
 }
 
+pub fn standby_output(output: &str) {
+    info!("power: standby output {output}");
+    if !wlr_output_set(output, false) {
+        standby();
+    }
+}
+
 /// Wake the display — fire both CEC and DPMS.
 pub fn wake() {
     info!("power: wake");
     cec_wake();
     if !wlr_output_on() {
         xset_dpms_on();
+    }
+}
+
+pub fn wake_output(output: &str) {
+    info!("power: wake output {output}");
+    if !wlr_output_set(output, true) {
+        wake();
     }
 }
 
@@ -103,6 +117,27 @@ fn wlr_output_on() -> bool {
         }
     }
     ok
+}
+
+fn wlr_output_set(output: &str, on: bool) -> bool {
+    let state = if on { "--on" } else { "--off" };
+    match Command::new("wlr-randr")
+        .args(["--output", output, state])
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            info!("dpms: {output} {state}");
+            true
+        }
+        Ok(out) => {
+            warn!("dpms {output} {state} failed: {}", String::from_utf8_lossy(&out.stderr));
+            false
+        }
+        Err(e) => {
+            warn!("wlr-randr unavailable: {e}");
+            false
+        }
+    }
 }
 
 fn list_outputs() -> Vec<String> {

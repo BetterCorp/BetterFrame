@@ -302,7 +302,13 @@ function registerKioskRoutes(
       bundle_version?: string;
       kiosk_app_version?: string;
       os_version?: string;
-      displays?: Array<{ index?: number; name: string; width_px: number; height_px: number }>;
+      displays?: Array<{
+        index?: number;
+        name: string;
+        width_px: number;
+        height_px: number;
+        power_state?: "awake" | "standby" | "unknown";
+      }>;
       cpu_temp_c?: number | null;
       cpu_load_percent?: number | null;
       fan_rpm?: number | null;
@@ -389,17 +395,27 @@ function registerKioskRoutes(
           ?? existing.find((d) => d.index === reportedIndex);
         if (match) {
           seenDisplayIds.add(match.id);
+          const powerState = reported.power_state === "awake" || reported.power_state === "standby"
+            ? reported.power_state
+            : reported.power_state === "unknown"
+              ? "unknown"
+              : null;
           if (
             match.name !== reported.name
             || match.index !== reportedIndex
             || match.width_px !== reported.width_px
             || match.height_px !== reported.height_px
+            || (powerState != null && match.actual_power_state !== powerState)
           ) {
             repo.updateDisplay(match.id, {
               name: reported.name,
               index: reportedIndex,
               width_px: reported.width_px,
               height_px: reported.height_px,
+              ...(powerState != null ? {
+                actual_power_state: powerState,
+                actual_power_state_at: new Date().toISOString(),
+              } : {}),
             } as any);
           }
         } else {
@@ -410,6 +426,17 @@ function registerKioskRoutes(
             width_px: reported.width_px,
             height_px: reported.height_px,
           });
+          const powerState = reported.power_state === "awake" || reported.power_state === "standby"
+            ? reported.power_state
+            : reported.power_state === "unknown"
+              ? "unknown"
+              : null;
+          if (powerState != null) {
+            repo.updateDisplay(created.id, {
+              actual_power_state: powerState,
+              actual_power_state_at: new Date().toISOString(),
+            } as any);
+          }
           seenDisplayIds.add(created.id);
         }
       }

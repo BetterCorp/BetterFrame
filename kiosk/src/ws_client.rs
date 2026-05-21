@@ -67,10 +67,16 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
                                     let _ = tx.send(ServerMsg::ReloadBundle);
                                 } else if text.contains("\"type\":\"standby\"") {
                                     info!("ws: standby received");
-                                    let _ = tx.send(ServerMsg::Standby);
+                                    let display_id = serde_json::from_str::<serde_json::Value>(&text)
+                                        .ok()
+                                        .and_then(|m| m.get("display_id").and_then(|v| v.as_u64()).map(|v| v as u32));
+                                    let _ = tx.send(ServerMsg::Standby(display_id));
                                 } else if text.contains("\"type\":\"wake\"") {
                                     info!("ws: wake received");
-                                    let _ = tx.send(ServerMsg::Wake);
+                                    let display_id = serde_json::from_str::<serde_json::Value>(&text)
+                                        .ok()
+                                        .and_then(|m| m.get("display_id").and_then(|v| v.as_u64()).map(|v| v as u32));
+                                    let _ = tx.send(ServerMsg::Wake(display_id));
                                 } else if text.contains("\"type\":\"layout-switch\"") {
                                     info!("ws: layout-switch received: {text}");
                                     let msg = serde_json::from_str::<serde_json::Value>(&text).ok();

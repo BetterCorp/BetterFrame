@@ -13,8 +13,8 @@ pub use ui::WorkerMsg;
 
 pub enum ServerMsg {
     ReloadBundle,
-    Standby,
-    Wake,
+    Standby(Option<u32>),
+    Wake(Option<u32>),
     /// Some(0..=255) = manual PWM. None = restore auto.
     Fan(Option<u32>),
     /// Switch to a specific layout by ID, optionally scoped to one display.

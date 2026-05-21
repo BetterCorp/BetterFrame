@@ -7,6 +7,14 @@ use tracing::info;
 
 use crate::bundle::KioskBundle;
 
+pub struct DisplayReport {
+    pub index: usize,
+    pub name: String,
+    pub width_px: u32,
+    pub height_px: u32,
+    pub power_state: String,
+}
+
 fn kiosk_app_version() -> &'static str {
     option_env!("BF_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
 }
@@ -258,17 +266,19 @@ pub fn report_layout_change(
 pub fn heartbeat(
     server: &str,
     key: &str,
-    displays: &[(String, u32, u32)],
+    displays: &[DisplayReport],
     hw: &crate::hwmon::HwInfo,
 ) -> bool {
     let client = reqwest::blocking::Client::new();
-    let display_info: Vec<_> = displays
-        .iter()
-        .enumerate()
-        .map(|(index, (name, w, h))| {
-            serde_json::json!({ "index": index, "name": name, "width_px": w, "height_px": h })
+    let display_info: Vec<_> = displays.iter().map(|d| {
+        serde_json::json!({
+            "index": d.index,
+            "name": &d.name,
+            "width_px": d.width_px,
+            "height_px": d.height_px,
+            "power_state": &d.power_state,
         })
-        .collect();
+    }).collect();
     // Surface the LAN-side local key + port to admin so the UI can show a
     // copy-paste URL for bookmark-style layout switches.
     let local_key = load_or_create_local_key();

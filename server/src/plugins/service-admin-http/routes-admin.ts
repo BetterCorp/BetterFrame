@@ -1524,6 +1524,29 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/displays/:displayId/layout/:layoutId", displayLayoutSwitch);
   app.get("/admin/displays/:displayId/layout/:layoutId", displayLayoutSwitch);
 
+  const displayPower = (event: any, state: "on" | "standby") => {
+    const id = Number(getRouterParam(event, "id"));
+    const display = deps.repo.getDisplayById(id);
+    if (display?.kiosk_id) {
+      getCoordinator().sendToKiosk(display.kiosk_id, {
+        type: state === "on" ? "wake" : "standby",
+        display_id: id,
+      });
+      deps.repo.updateDisplay(id, {
+        actual_power_state: state === "on" ? "awake" : "standby",
+        actual_power_state_at: new Date().toISOString(),
+      } as any);
+      deps.nodered.forward("display.power.changed", {
+        display_id: id,
+        kiosk_id: display.kiosk_id,
+        state,
+      });
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/displays/${id}` } });
+  };
+  app.post("/admin/displays/:id/power/standby", (event) => displayPower(event, "standby"));
+  app.post("/admin/displays/:id/power/wake", (event) => displayPower(event, "on"));
+
   // Node-RED embedded page
   app.get("/admin/nodered", (event) => {
     const user = event.context.user!;
@@ -1534,6 +1557,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   const emitDisplayPower = (kioskId: number, state: "on" | "standby") => {
     const displays = deps.repo.listDisplaysForKiosk(kioskId);
     const displayId = displays[0]?.id ?? null;
+    const actual = state === "on" ? "awake" : "standby";
+    const at = new Date().toISOString();
+    for (const display of displays) {
+      deps.repo.updateDisplay(display.id, {
+        actual_power_state: actual,
+        actual_power_state_at: at,
+      } as any);
+    }
     deps.nodered.forward("display.power.changed", {
       display_id: displayId,
       kiosk_id: kioskId,

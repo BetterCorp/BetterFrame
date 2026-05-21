@@ -111,6 +111,9 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     cec_logical_address INTEGER,
     desired_power_state TEXT NOT NULL DEFAULT 'follow_layout'
       CHECK(desired_power_state IN ('follow_layout', 'on', 'standby')),
+    actual_power_state TEXT NOT NULL DEFAULT 'unknown'
+      CHECK(actual_power_state IN ('awake', 'standby', 'unknown')),
+    actual_power_state_at TEXT,
     state_check_enabled INTEGER NOT NULL DEFAULT 0,
     state_check_interval_seconds INTEGER NOT NULL DEFAULT 60
   ) STRICT`,
@@ -854,5 +857,11 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
            SELECT 1 FROM camera_streams s WHERE s.camera_id = c.id
          )
     `);
+  },
+
+  // Display power state reported by kiosk heartbeat.
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "displays", "actual_power_state", "TEXT NOT NULL DEFAULT 'unknown'");
+    addColumnIfNotExists(db, "displays", "actual_power_state_at", "TEXT");
   },
 ];

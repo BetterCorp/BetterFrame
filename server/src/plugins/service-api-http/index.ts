@@ -320,6 +320,8 @@ function registerKioskRoutes(
       disk_used_percent?: number | null;
       local_key?: string | null;
       local_port?: number | null;
+      reported_hostname?: string | null;
+      network_interfaces?: Array<Record<string, unknown>>;
       // Managed-image kiosk echoes back the version it last applied, and the
       // last apply error (if any). Server uses these to decide whether to
       // include pending_config in the response.
@@ -349,6 +351,10 @@ function registerKioskRoutes(
       local_key: body?.local_key ?? null,
       local_port: body?.local_port ?? null,
       local_last_ip: remoteIp,
+      reported_hostname: body?.reported_hostname ?? null,
+      network_interfaces_json: Array.isArray(body?.network_interfaces)
+        ? JSON.stringify(body.network_interfaces)
+        : null,
     });
 
     // Managed-config echo: kiosk reports the version it has successfully
@@ -381,6 +387,8 @@ function registerKioskRoutes(
       disk_free_mb: body?.disk_free_mb,
       disk_used_percent: body?.disk_used_percent,
       ip: remoteIp,
+      reported_hostname: body?.reported_hostname,
+      network_interfaces: body?.network_interfaces,
     });
 
     // Sync displays reported by the kiosk
@@ -657,6 +665,19 @@ function registerKioskRoutes(
       throw createError({ statusCode: 400, statusMessage: "version required" });
     }
     repo.recordKioskFirmwareAttempt(kiosk.id, body.version, body.error ?? null);
+    repo.insertEvent({
+      source_kiosk_id: kiosk.id,
+      source_camera_id: null,
+      source_type: "system",
+      topic: "kiosk.log",
+      property_op: null,
+      payload: {
+        level: body.error ? "error" : "info",
+        message: body.error ? "firmware update failed" : "firmware update applied",
+        context: { version: body.version, error: body.error ?? null },
+      },
+      forwarded_to_nodered: false,
+    });
     return { ok: true };
   });
 
@@ -759,6 +780,19 @@ function registerKioskRoutes(
       throw createError({ statusCode: 400, statusMessage: "version required" });
     }
     repo.recordKioskOsUpdateAttempt(kiosk.id, body.version, body.error ?? null);
+    repo.insertEvent({
+      source_kiosk_id: kiosk.id,
+      source_camera_id: null,
+      source_type: "system",
+      topic: "kiosk.log",
+      property_op: null,
+      payload: {
+        level: body.error ? "error" : "info",
+        message: body.error ? "os update failed" : "os update applied",
+        context: { version: body.version, error: body.error ?? null },
+      },
+      forwarded_to_nodered: false,
+    });
     return { ok: true };
   });
 }

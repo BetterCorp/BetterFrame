@@ -70,6 +70,17 @@ function jsonResponse(value: unknown, status: number = 200): Response {
   });
 }
 
+function hostnameFromName(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-")
+    .slice(0, 63)
+    .replace(/^-+|-+$/g, "");
+  return slug || "betterframe-kiosk";
+}
+
 function isHtmxRequest(event: Parameters<typeof getRequestHeader>[0]): boolean {
   return getRequestHeader(event, "hx-request") === "true";
 }
@@ -1358,10 +1369,22 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/kiosks/:id", async (event) => {
     const id = Number(getRouterParam(event, "id"));
     const body = await readBody<Record<string, string>>(event);
+    const kiosk = deps.repo.getKioskById(id);
     deps.repo.updateKiosk(id, {
       name: body?.["name"],
       enabled: body?.["enabled"] === "1",
     } as any);
+    if (kiosk?.managed_image && body?.["name"]) {
+      const cfg = kiosk.managed_config_json ? JSON.parse(kiosk.managed_config_json) : {};
+      const hostname = hostnameFromName(body["name"]);
+      if (cfg?.hostname !== hostname) {
+        deps.repo.updateKiosk(id, {
+          managed_config_json: JSON.stringify({ ...cfg, hostname }),
+          managed_config_version: kiosk.managed_config_version + 1,
+          managed_config_error: null,
+        } as any);
+      }
+    }
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
@@ -1380,7 +1403,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
     const trim = (v: string | undefined) => (v ?? "").trim();
     const cfg: Record<string, unknown> = {};
-    const hostname = trim(body?.["hostname"]);
+    const hostname = trim(body?.["hostname"]) || hostnameFromName(kiosk.name);
     if (hostname) cfg["hostname"] = hostname;
     const timezone = trim(body?.["timezone"]);
     if (timezone) cfg["timezone"] = timezone;

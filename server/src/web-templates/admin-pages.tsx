@@ -3049,10 +3049,45 @@ export function KioskFirmwarePanel(props: KioskFirmwarePanelProps) {
 
 interface KioskLocalPanelProps { kiosk: Kiosk }
 
+interface ReportedNetworkInterface {
+  name: string;
+  mac?: string | null;
+  operstate?: string | null;
+  ips: string[];
+}
+
+function parseReportedNetworkInterfaces(raw: string | null): ReportedNetworkInterface[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((item) => ({
+      name: typeof item?.name === "string" ? item.name : "unknown",
+      mac: typeof item?.mac === "string" ? item.mac : null,
+      operstate: typeof item?.operstate === "string" ? item.operstate : null,
+      ips: Array.isArray(item?.ips) ? item.ips.filter((ip: unknown) => typeof ip === "string") : [],
+    })).filter((item) => item.ips.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function ipWithoutCidr(ip: string): string {
+  return ip.includes("/") ? ip.slice(0, ip.indexOf("/")) : ip;
+}
+
+function isUsableLanIp(ip: string): boolean {
+  const bare = ipWithoutCidr(ip);
+  return bare !== "::1" && !bare.startsWith("127.") && !bare.startsWith("169.254.");
+}
+
 export function KioskLocalPanel(props: KioskLocalPanelProps) {
   const k = props.kiosk;
   if (!k.local_key || !k.local_port) return "";
-  const ip = k.local_last_ip || "<kiosk-ip>";
+  const reportedInterfaces = parseReportedNetworkInterfaces(k.network_interfaces_json);
+  const reportedIps = reportedInterfaces.flatMap((iface) => iface.ips);
+  const primaryReportedIp = reportedIps.find(isUsableLanIp);
+  const ip = primaryReportedIp ? ipWithoutCidr(primaryReportedIp) : (k.local_last_ip || "<kiosk-ip>");
   const base = `http://${ip}:${String(k.local_port)}`;
   const sample = `${base}/local/layout/<layout_id>?key=${k.local_key}`;
   const proxy = `${base}/proxy/admin/...`;
@@ -3071,8 +3106,33 @@ export function KioskLocalPanel(props: KioskLocalPanelProps) {
         <strong>Admin proxy (forwards your Bearer to server):</strong>
         <pre style="background:#fafafa; padding:0.5rem; margin:0.25rem 0; font-size:0.75rem; white-space:pre-wrap">{proxy}</pre>
       </div>
+      {k.reported_hostname || reportedInterfaces.length > 0 ? (
+        <div style="font-size:0.8rem; margin-bottom:0.5rem">
+          {k.reported_hostname ? <div><strong>Reported hostname:</strong> <code>{k.reported_hostname}</code></div> : null}
+          {reportedInterfaces.length > 0 ? (
+            <div style="margin-top:0.35rem">
+              <strong>Reported interfaces:</strong>
+              <ul style="margin:0.25rem 0 0; padding-left:1.25rem">
+                {reportedInterfaces.map((iface) => (
+                  <li>
+                    <code>{iface.name}</code>
+                    {iface.operstate ? <> ({iface.operstate})</> : null}
+                    {": "}
+                    {iface.ips.map((ipAddr, idx) => (
+                      <>
+                        {idx > 0 ? ", " : ""}
+                        <code>{ipAddr}</code>
+                      </>
+                    ))}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <div style="font-size:0.75rem; color:#999">
-        Last seen from IP: <code>{k.local_last_ip ?? "—"}</code>. Local key:
+        Heartbeat source IP: <code>{k.local_last_ip ?? "--"}</code>. Local key:
         <code style="margin-left:0.25rem">{k.local_key.slice(0, 8)}…{k.local_key.slice(-4)}</code>
       </div>
     </div>

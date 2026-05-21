@@ -1063,6 +1063,8 @@ export class Repository {
       local_key?: string | null;
       local_port?: number | null;
       local_last_ip?: string | null;
+      reported_hostname?: string | null;
+      network_interfaces_json?: string | null;
     },
   ): void {
     this.prep(
@@ -1082,7 +1084,9 @@ export class Repository {
          disk_used_percent = ?,
          local_key = COALESCE(?, local_key),
          local_port = COALESCE(?, local_port),
-         local_last_ip = COALESCE(?, local_last_ip)
+         local_last_ip = COALESCE(?, local_last_ip),
+         reported_hostname = COALESCE(?, reported_hostname),
+         network_interfaces_json = COALESCE(?, network_interfaces_json)
        WHERE id = ?`,
     ).run(
       isoNow(),
@@ -1101,6 +1105,8 @@ export class Repository {
       patch.local_key ?? null,
       patch.local_port ?? null,
       patch.local_last_ip ?? null,
+      patch.reported_hostname ?? null,
+      patch.network_interfaces_json ?? null,
       id,
     );
   }

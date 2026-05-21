@@ -806,6 +806,8 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "kiosks", "local_key", "TEXT");
     addColumnIfNotExists(db, "kiosks", "local_port", "INTEGER");
     addColumnIfNotExists(db, "kiosks", "local_last_ip", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "reported_hostname", "TEXT");
+    addColumnIfNotExists(db, "kiosks", "network_interfaces_json", "TEXT");
   },
 
   // ---- Audit log -----------------------------------------------------------
@@ -863,5 +865,20 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
   (db: DatabaseSync) => {
     addColumnIfNotExists(db, "displays", "actual_power_state", "TEXT NOT NULL DEFAULT 'unknown'");
     addColumnIfNotExists(db, "displays", "actual_power_state_at", "TEXT");
+  },
+
+  // Backfill any camera type with a direct RTSP URL. Earlier backfill only
+  // covered type=rtsp, but ONVIF imports can also retain rtsp_url.
+  (db: DatabaseSync) => {
+    db.exec(`
+      INSERT INTO camera_streams (camera_id, role, name, rtsp_uri, is_discovered)
+      SELECT c.id, 'main', 'Main', c.rtsp_url, 0
+        FROM cameras c
+       WHERE c.rtsp_url IS NOT NULL
+         AND c.rtsp_url != ''
+         AND NOT EXISTS (
+           SELECT 1 FROM camera_streams s WHERE s.camera_id = c.id
+         )
+    `);
   },
 ];

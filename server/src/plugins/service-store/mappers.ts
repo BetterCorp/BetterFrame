@@ -282,6 +282,8 @@ export function rowToKiosk(r: Row): Kiosk {
     local_key: sn(r["local_key"]),
     local_port: nn(r["local_port"]),
     local_last_ip: sn(r["local_last_ip"]),
+    reported_hostname: sn(r["reported_hostname"]),
+    network_interfaces_json: sn(r["network_interfaces_json"]),
     managed_image: b(r["managed_image"]),
     managed_config_json: sn(r["managed_config_json"]),
     managed_config_version: n(r["managed_config_version"] ?? 0),

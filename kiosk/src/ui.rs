@@ -454,8 +454,31 @@ fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str) {
         return;
     };
     info!("firmware: update {} → {} available", current, info.version);
+    server::report_kiosk_log(
+        server_url,
+        kiosk_key,
+        "info",
+        "firmware update available",
+        serde_json::json!({
+            "current_version": current,
+            "target_version": &info.version,
+            "channel": &info.channel,
+            "release_id": &info.release_id,
+        }),
+    );
     if let Err(err) = firmware::apply(server_url, kiosk_key, &info) {
         warn!("firmware: apply failed: {err}");
+        server::report_kiosk_log(
+            server_url,
+            kiosk_key,
+            "error",
+        "firmware update failed",
+        serde_json::json!({
+                "target_version": &info.version,
+                "release_id": &info.release_id,
+                "error": &err,
+            }),
+        );
         let _ = reqwest::blocking::Client::new()
             .post(format!("{server_url}/api/kiosk/firmware/applied"))
             .header("Authorization", format!("Bearer {kiosk_key}"))

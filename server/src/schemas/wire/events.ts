@@ -34,6 +34,17 @@ export const kioskHeartbeat = av.object(
     active_layout_id: av.optional(av.int().min(1)),
     streams_warm: av.optional(av.int().min(0)),
     streams_hot: av.optional(av.int().min(0)),
+    // Kiosk-reported network identity — host sees only the proxy IP behind
+    // Docker/Angie. reported_hostname lets the admin verify the helper applied
+    // the desired hostname. network_interfaces lists every non-loopback iface
+    // with its IPs (v4/v6, with CIDR), MAC, and operstate from `ip -j addr`.
+    reported_hostname: av.optional(av.string().maxLength(253)),
+    network_interfaces: av.optional(av.array(av.object({
+      name: av.string().minLength(1).maxLength(64),
+      mac: av.optional(av.string().maxLength(32)),
+      operstate: av.optional(av.string().maxLength(32)),
+      ips: av.array(av.string().minLength(1).maxLength(64)),
+    }, { unknownKeys: "strip" }))),
   },
   { unknownKeys: "strip" },
 );

@@ -1,8 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 
 use serde::Deserialize;
+use serde_json::Value;
 use tracing::info;
 
 use crate::bundle::KioskBundle;
@@ -17,6 +19,71 @@ pub struct DisplayReport {
 
 fn kiosk_app_version() -> &'static str {
     option_env!("BF_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
+fn reported_hostname() -> Option<String> {
+    hostname::get()
+        .ok()
+        .map(|h| h.to_string_lossy().trim().to_string())
+        .filter(|h| !h.is_empty())
+}
+
+fn read_network_interfaces() -> Vec<Value> {
+    let out = match Command::new("ip").args(["-j", "addr", "show"]).output() {
+        Ok(out) if out.status.success() => out,
+        Ok(out) => {
+            tracing::warn!("ip -j addr show exited with {}", out.status);
+            return Vec::new();
+        }
+        Err(err) => {
+            tracing::warn!("ip -j addr show failed: {err}");
+            return Vec::new();
+        }
+    };
+
+    let parsed: Value = match serde_json::from_slice(&out.stdout) {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!("ip -j addr show parse failed: {err}");
+            return Vec::new();
+        }
+    };
+
+    let Some(items) = parsed.as_array() else {
+        return Vec::new();
+    };
+
+    items
+        .iter()
+        .filter_map(|item| {
+            let name = item.get("ifname")?.as_str()?;
+            let addr_info = item.get("addr_info")?.as_array()?;
+            let ips: Vec<Value> = addr_info
+                .iter()
+                .filter_map(|addr| {
+                    let family = addr.get("family")?.as_str()?;
+                    if family != "inet" && family != "inet6" {
+                        return None;
+                    }
+                    let local = addr.get("local")?.as_str()?;
+                    let prefix = addr.get("prefixlen").and_then(|v| v.as_u64());
+                    Some(match prefix {
+                        Some(prefix) => Value::String(format!("{local}/{prefix}")),
+                        None => Value::String(local.to_string()),
+                    })
+                })
+                .collect();
+            if ips.is_empty() {
+                return None;
+            }
+            Some(serde_json::json!({
+                "name": name,
+                "mac": item.get("address").and_then(|v| v.as_str()),
+                "operstate": item.get("operstate").and_then(|v| v.as_str()),
+                "ips": ips,
+            }))
+        })
+        .collect()
 }
 
 fn state_dir() -> PathBuf {
@@ -263,6 +330,24 @@ pub fn report_layout_change(
         .send();
 }
 
+pub fn report_kiosk_log(server: &str, key: &str, level: &str, message: &str, payload: Value) {
+    let client = reqwest::blocking::Client::new();
+    let _ = client
+        .post(format!("{server}/api/kiosk/event"))
+        .header("Authorization", format!("Bearer {key}"))
+        .json(&serde_json::json!({
+            "topic": "kiosk.log",
+            "source_type": "system",
+            "payload": {
+                "level": level,
+                "message": message,
+                "context": payload,
+            },
+        }))
+        .timeout(Duration::from_secs(5))
+        .send();
+}
+
 pub fn heartbeat(
     server: &str,
     key: &str,
@@ -286,6 +371,8 @@ pub fn heartbeat(
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(18090);
+    let hostname = reported_hostname();
+    let network_interfaces = read_network_interfaces();
     client
         .post(format!("{server}/api/kiosk/heartbeat"))
         .header("Authorization", format!("Bearer {key}"))
@@ -303,6 +390,8 @@ pub fn heartbeat(
             "disk_used_percent": hw.disk_used_percent,
             "local_key": local_key,
             "local_port": local_port,
+            "reported_hostname": hostname,
+            "network_interfaces": network_interfaces,
         }))
         .timeout(Duration::from_secs(5))
         .send()

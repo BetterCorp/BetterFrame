@@ -908,6 +908,12 @@ export function KiosksPage(props: KiosksProps) {
                 <input id="name_override" name="name_override" type="text" class="form-input" />
               </div>
               <div class="form-group">
+                <label style="font-weight:normal">
+                  <input type="checkbox" name="force" value="1" />
+                  {" "}Force replace (skip hardware / capability / managed-image match check)
+                </label>
+              </div>
+              <div class="form-group">
                 <label for="initial_labels">Initial Labels (new kiosks only)</label>
                 <input id="initial_labels" name="initial_labels" type="text" class="form-input" placeholder="lobby, floor-1" />
                 <div class="form-hint">Comma-separated label names.</div>
@@ -918,12 +924,25 @@ export function KiosksPage(props: KiosksProps) {
             {props.pendingCodes.length > 0 && (
               <div style="margin-top:1.25rem; border-top:1px solid #eee; padding-top:1rem">
                 <div style="font-weight:600; font-size:0.85rem; margin-bottom:0.5rem">Pending Codes</div>
-                {props.pendingCodes.map((pc) => (
-                  <div style="display:flex; justify-content:space-between; font-size:0.85rem; padding:0.25rem 0">
-                    <code>{pc.code}</code>
-                    <span style="color:#666">{formatTime(pc.expires_at)}</span>
-                  </div>
-                ))}
+                {props.pendingCodes.map((pc) => {
+                  const managed = pc.extras?.["managed_image"] === true;
+                  return (
+                    <div style="font-size:0.8rem; padding:0.4rem 0; border-top:1px dashed #eee">
+                      <div style="display:flex; justify-content:space-between">
+                        <code style="font-size:0.95rem">{pc.code}</code>
+                        <span style="color:#666">expires {formatTime(pc.expires_at)}</span>
+                      </div>
+                      <div style="color:#666; margin-top:0.2rem">
+                        {pc.kiosk_proposed_name ? <>name: <code>{pc.kiosk_proposed_name}</code></> : "(no name)"}
+                        {pc.kiosk_hardware_model ? <> · hw: <code>{pc.kiosk_hardware_model}</code></> : null}
+                        {managed ? <> · <span style="color:#080">managed image</span></> : null}
+                      </div>
+                      {pc.kiosk_capabilities?.length > 0 ? (
+                        <div style="color:#666; margin-top:0.15rem">caps: {pc.kiosk_capabilities.join(", ")}</div>
+                      ) : null}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

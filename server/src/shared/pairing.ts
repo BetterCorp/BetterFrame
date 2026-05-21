@@ -114,6 +114,8 @@ export interface PairingConfirmInput {
    * When set, nameOverride and initialLabels are ignored.
    */
   replaceKioskId?: number;
+  /** Bypass replacement-target sanity checks (hardware_model / capabilities / managed_image). */
+  force?: boolean;
 }
 
 export async function confirmPairing(
@@ -137,12 +139,45 @@ export async function confirmPairing(
   if (input.replaceKioskId != null) {
     const existing = repo.getKioskById(input.replaceKioskId);
     if (!existing) throw new Error("replacement target kiosk not found");
+
+    // Sanity-check the incoming device matches the slot it's replacing.
+    // Identity-bearing fields (hardware_model, managed_image) shouldn't drift
+    // on a like-for-like swap. Capabilities CAN narrow legitimately, so warn
+    // but don't block. force=1 from the form bypasses the whole check.
+    if (!input.force) {
+      const mismatches: string[] = [];
+      const newHw = pc.kiosk_hardware_model ?? null;
+      if (existing.hardware_model && newHw && existing.hardware_model !== newHw) {
+        mismatches.push(`hardware_model: ${existing.hardware_model} → ${newHw}`);
+      }
+      const newManaged = pc.extras?.["managed_image"] === true;
+      if (existing.managed_image !== newManaged) {
+        mismatches.push(`managed_image: ${existing.managed_image} → ${newManaged}`);
+      }
+      const lostCaps = existing.capabilities.filter((c) => !pc.kiosk_capabilities.includes(c));
+      if (lostCaps.length > 0) {
+        mismatches.push(`lost capabilities: ${lostCaps.join(", ")}`);
+      }
+      if (mismatches.length > 0) {
+        throw new Error(
+          `replacement device differs from existing kiosk — ${mismatches.join("; ")}. `
+          + `Re-submit with "force replace" to override.`,
+        );
+      }
+    }
+
     repo.replaceKioskKey(existing.id, {
       key_hash: kioskKeyHash,
       key_prefix: kioskKeyPrefix,
       capabilities: pc.kiosk_capabilities,
       hardware_model: pc.kiosk_hardware_model,
     });
+    // managed_image flag follows the new device (handled on row above via
+    // capabilities/hw, but the explicit column is updated separately because
+    // replaceKioskKey doesn't touch it).
+    if (existing.managed_image !== (pc.extras?.["managed_image"] === true)) {
+      repo.updateKiosk(existing.id, { managed_image: pc.extras?.["managed_image"] === true } as any);
+    }
     kioskId = existing.id;
     kioskName = existing.name;
   } else {

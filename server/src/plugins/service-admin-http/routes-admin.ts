@@ -744,6 +744,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const initialLabels = labelsStr ? labelsStr.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
     const replaceIdRaw = (body?.["replace_kiosk_id"] ?? "").trim();
     const replaceKioskId = replaceIdRaw && replaceIdRaw !== "0" ? Number(replaceIdRaw) : undefined;
+    const force = body?.["force"] === "1";
 
     try {
       const result = await confirmPairing(deps.repo, deps.auth, deps.secrets, {
@@ -751,6 +752,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         nameOverride,
         initialLabels,
         replaceKioskId,
+        force,
       });
       audit(deps.repo, event as any, replaceKioskId ? "kiosk.replace" : "kiosk.pair", {
         resource_type: "kiosk",

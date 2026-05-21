@@ -379,6 +379,8 @@ export interface EventLog {
 export interface EventQueryFilters {
   topic?: string;
   kiosk_id?: number;
+  camera_id?: number;
+  source_type?: string;
   from?: string;
   to?: string;
   limit?: number;

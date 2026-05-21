@@ -1734,6 +1734,14 @@ export class Repository {
       where.push("source_kiosk_id = ?");
       params.push(filters.kiosk_id);
     }
+    if (filters.camera_id != null) {
+      where.push("source_camera_id = ?");
+      params.push(filters.camera_id);
+    }
+    if (filters.source_type) {
+      where.push("source_type = ?");
+      params.push(filters.source_type);
+    }
     if (filters.from) {
       where.push("received_at >= ?");
       params.push(filters.from);

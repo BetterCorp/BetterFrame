@@ -212,6 +212,87 @@ function rangesOverlap(aStart: number, aEnd: number, bStart: number, bEnd: numbe
   return aStart < bEnd && bStart < aEnd;
 }
 
+function cellsOverlap(
+  a: { row: number; col: number; row_span: number; col_span: number },
+  b: { row: number; col: number; row_span: number; col_span: number },
+): boolean {
+  return (
+    a.col < b.col + b.col_span &&
+    b.col < a.col + a.col_span &&
+    a.row < b.row + b.row_span &&
+    b.row < a.row + a.row_span
+  );
+}
+
+interface CellPos {
+  id: number;
+  row: number;
+  col: number;
+  row_span: number;
+  col_span: number;
+}
+
+function resolveOverlaps(
+  deps: AdminDeps,
+  layoutId: number,
+  anchorId: number,
+  pushAxis: "row" | "col",
+): void {
+  const all = deps.repo.layoutCells(layoutId);
+  const positions = new Map<number, CellPos>();
+  for (const c of all) {
+    positions.set(c.id, { id: c.id, row: c.row, col: c.col, row_span: c.row_span, col_span: c.col_span });
+  }
+
+  const maxIter = positions.size * positions.size;
+  for (let iter = 0; iter < maxIter; iter++) {
+    let moved = false;
+    const anchor = positions.get(anchorId);
+    if (!anchor) break;
+
+    for (const [id, pos] of positions) {
+      if (id === anchorId) continue;
+      if (!cellsOverlap(anchor, pos)) continue;
+
+      if (pushAxis === "col") {
+        pos.col = anchor.col + anchor.col_span;
+      } else {
+        pos.row = anchor.row + anchor.row_span;
+      }
+      moved = true;
+    }
+    if (!moved) break;
+
+    // Cascade: pushed cells may now overlap each other.
+    // Sort by position on push axis so earlier cells push later ones.
+    const sorted = [...positions.values()].sort((a, b) =>
+      pushAxis === "col" ? a.col - b.col || a.row - b.row : a.row - b.row || a.col - b.col,
+    );
+
+    let cascaded = false;
+    for (let i = 0; i < sorted.length; i++) {
+      for (let j = i + 1; j < sorted.length; j++) {
+        if (sorted[i]!.id === sorted[j]!.id) continue;
+        if (!cellsOverlap(sorted[i]!, sorted[j]!)) continue;
+        if (pushAxis === "col") {
+          sorted[j]!.col = sorted[i]!.col + sorted[i]!.col_span;
+        } else {
+          sorted[j]!.row = sorted[i]!.row + sorted[i]!.row_span;
+        }
+        cascaded = true;
+      }
+    }
+    if (!cascaded) break;
+  }
+
+  for (const pos of positions.values()) {
+    const orig = all.find((c) => c.id === pos.id)!;
+    if (orig.row !== pos.row || orig.col !== pos.col) {
+      deps.repo.updateLayoutCell(pos.id, { row: pos.row, col: pos.col });
+    }
+  }
+}
+
 function shiftCellsForExpansion(
   deps: AdminDeps,
   layoutId: number,
@@ -221,48 +302,20 @@ function shiftCellsForExpansion(
   const cell = deps.repo.getLayoutCellById(cellId);
   if (!cell || cell.layout_id !== layoutId) return;
 
-  const cells = deps.repo.layoutCells(layoutId).filter((c) => c.id !== cellId);
-  const rowStart = cell.row;
-  const rowEnd = cell.row + cell.row_span;
-  const colStart = cell.col;
-  const colEnd = cell.col + cell.col_span;
-
   if (direction === "right") {
-    for (const c of cells) {
-      if (c.col >= colEnd && rangesOverlap(c.row, c.row + c.row_span, rowStart, rowEnd)) {
-        deps.repo.updateLayoutCell(c.id, { col: c.col + 1 });
-      }
-    }
     deps.repo.updateLayoutCell(cell.id, { col_span: cell.col_span + 1 });
+    resolveOverlaps(deps, layoutId, cell.id, "col");
   } else if (direction === "bottom") {
-    for (const c of cells) {
-      if (c.row >= rowEnd && rangesOverlap(c.col, c.col + c.col_span, colStart, colEnd)) {
-        deps.repo.updateLayoutCell(c.id, { row: c.row + 1 });
-      }
-    }
     deps.repo.updateLayoutCell(cell.id, { row_span: cell.row_span + 1 });
+    resolveOverlaps(deps, layoutId, cell.id, "row");
   } else if (direction === "left") {
-    const insertCol = Math.max(0, cell.col - 1);
-    for (const c of cells) {
-      if (c.col >= insertCol && rangesOverlap(c.row, c.row + c.row_span, rowStart, rowEnd)) {
-        deps.repo.updateLayoutCell(c.id, { col: c.col + 1 });
-      }
-    }
-    deps.repo.updateLayoutCell(cell.id, {
-      col: insertCol,
-      col_span: cell.col_span + 1,
-    });
+    const newCol = Math.max(0, cell.col - 1);
+    deps.repo.updateLayoutCell(cell.id, { col: newCol, col_span: cell.col_span + 1 });
+    resolveOverlaps(deps, layoutId, cell.id, "col");
   } else if (direction === "above") {
-    const insertRow = Math.max(0, cell.row - 1);
-    for (const c of cells) {
-      if (c.row >= insertRow && rangesOverlap(c.col, c.col + c.col_span, colStart, colEnd)) {
-        deps.repo.updateLayoutCell(c.id, { row: c.row + 1 });
-      }
-    }
-    deps.repo.updateLayoutCell(cell.id, {
-      row: insertRow,
-      row_span: cell.row_span + 1,
-    });
+    const newRow = Math.max(0, cell.row - 1);
+    deps.repo.updateLayoutCell(cell.id, { row: newRow, row_span: cell.row_span + 1 });
+    resolveOverlaps(deps, layoutId, cell.id, "row");
   }
 }
 
@@ -1032,15 +1085,18 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
     if (Object.keys(dimsPatch).length > 0) {
       deps.repo.updateLayoutCell(cellId, dimsPatch as any);
+      if ("col_span" in dimsPatch || "row_span" in dimsPatch) {
+        const axis = "col_span" in dimsPatch ? "col" as const : "row" as const;
+        resolveOverlaps(deps, layoutId, cellId, axis);
+      }
     }
     notifyKiosks();
 
     if (isHtmxRequest(event)) {
-      const cell = deps.repo.getLayoutCellById(cellId);
-      if (!cell) return new Response("", { headers: { "content-type": "text/html; charset=utf-8" } });
+      const cells = deps.repo.layoutCells(layoutId);
       const cameras = deps.repo.listCameras();
       const entities = deps.repo.listEntities();
-      return htmlFragment(renderCell(layoutId, cell, entities, cameras, "read"));
+      return htmlFragment(renderGrid(layoutId, cells, entities, cameras));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
@@ -1067,6 +1123,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       const next = Math.max(1, current + delta);
       if (next !== current) {
         deps.repo.updateLayoutCell(cellId, { [dim]: next } as any);
+        resolveOverlaps(deps, layoutId, cellId, dim === "col_span" ? "col" : "row");
         notifyKiosks();
       }
     }

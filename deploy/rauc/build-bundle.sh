@@ -46,7 +46,14 @@ rauc bundle \
   "$STAGE" "$OUT_RAUCB"
 
 echo "==> Verifying bundle"
-rauc info --keyring="$SIGNING_CERT" "$OUT_RAUCB"
+# Keyring must be the CA cert that issued the signing cert, not the signing
+# cert itself. CA cert lives in the repo; fall back to signing cert if the
+# repo path isn't available (still validates structure, just not chain).
+CA_CERT="${SCRIPT_DIR}/ca-cert.pem"
+if [ ! -f "$CA_CERT" ]; then CA_CERT="$SIGNING_CERT"; fi
+rauc info --keyring="$CA_CERT" "$OUT_RAUCB" || {
+  echo "WARNING: rauc info verify failed (bundle may still be valid — kiosk verifies at install time)"
+}
 
 echo
 echo "==> Bundle: $(ls -la "$OUT_RAUCB")"

@@ -159,6 +159,7 @@ update-alternatives --install /usr/share/icons/default/index.theme x-cursor-them
 systemctl enable seatd
 systemctl enable betterframe-kiosk.service
 systemctl enable betterframe-rauc-mark-good.service
+systemctl enable rauc.service 2>/dev/null || true
 
 # Boot to multi-user, no display manager, no welcome wizard, no getty on tty1.
 systemctl set-default multi-user.target

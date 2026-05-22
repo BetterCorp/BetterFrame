@@ -121,9 +121,13 @@ impl JournalStream {
         let kill_clone = kill.clone();
 
         std::thread::spawn(move || {
-            // Use sudo so bfkiosk user can read system journal.
-            let mut child = match Command::new("sudo")
-                .args(["journalctl", "-u", "betterframe-kiosk", "-f", "--no-pager", "-o", "short-iso", "-n", "50"])
+            // Use systemd-run to escape NoNewPrivileges and read journal as root.
+            let mut child = match Command::new("systemd-run")
+                .args([
+                    "--pipe", "--quiet", "--service-type=exec",
+                    "--property=User=root",
+                    "journalctl", "-u", "betterframe-kiosk", "-f", "--no-pager", "-o", "short-iso", "-n", "50",
+                ])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -219,18 +223,27 @@ pub struct TerminalSession {
 
 impl TerminalSession {
     pub fn spawn() -> Result<(Self, std::process::ChildStdout, std::process::ChildStderr), String> {
-        // Run as root so the operator can actually fix things (journal,
-        // rauc, systemctl, usermod). The on-screen code + lockout ladder
-        // gates access; once past that, full root is the point.
-        let mut child = Command::new("sudo")
-            .args(["bash", "--login"])
+        // The kiosk runs under NoNewPrivileges=yes (WebKit bwrap needs
+        // it), which blocks sudo/nsenter from this process tree. Use
+        // systemd-run to spawn a SEPARATE service unit that runs bash
+        // as root in its own process tree — not a child of the kiosk.
+        // The --pipe flag connects stdin/stdout/stderr to our process.
+        let mut child = Command::new("systemd-run")
+            .args([
+                "--pipe",       // connect stdio to us
+                "--quiet",      // suppress service info on stderr
+                "--service-type=exec",
+                "--property=User=root",
+                "-E", "TERM=xterm-256color",
+                "-E", "HOME=/root",
+                "bash", "--login",
+            ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("TERM", "xterm-256color")
             .spawn()
             .or_else(|_| {
-                // Fallback if sudo not available / not configured for bfkiosk.
+                // Fallback: plain bash as bfkiosk (limited but something).
                 Command::new("bash")
                     .args(["--login"])
                     .stdin(Stdio::piped())
@@ -239,7 +252,7 @@ impl TerminalSession {
                     .env("TERM", "xterm-256color")
                     .spawn()
             })
-            .map_err(|e| format!("bash spawn: {e}"))?;
+            .map_err(|e| format!("shell spawn: {e}"))?;
 
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let stderr = child.stderr.take().ok_or("no stderr")?;

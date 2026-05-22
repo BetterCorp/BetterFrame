@@ -275,6 +275,9 @@ function registerPairingRoutes(
 
 // ---- Kiosk routes (require Bearer kiosk key) --------------------------------
 
+// Event deduplication cache: key → last-seen timestamp (ms).
+const eventDedupCache = new Map<string, number>();
+
 function registerKioskRoutes(
   app: H3,
   repo: Repository,
@@ -529,6 +532,25 @@ function registerKioskRoutes(
     }>(event);
 
     if (!body?.topic) throw createError({ statusCode: 400, statusMessage: "topic required" });
+
+    // Dedup: Hikvision cameras send duplicate ONVIF events within ~1s.
+    // Key = kiosk_id:camera_id:topic:source_keys_hash. Window = 2s.
+    const dedupKey = `${kiosk.id}:${body.camera_id ?? 0}:${body.topic}:${JSON.stringify(body.payload?.["source"] ?? "")}`;
+    const now = Date.now();
+    if (eventDedupCache.has(dedupKey)) {
+      const lastSeen = eventDedupCache.get(dedupKey)!;
+      if (now - lastSeen < 2000) {
+        return { ok: true, event_id: null, deduplicated: true };
+      }
+    }
+    eventDedupCache.set(dedupKey, now);
+    // Trim cache periodically (prevent unbounded growth).
+    if (eventDedupCache.size > 10_000) {
+      const cutoff = now - 5000;
+      for (const [k, v] of eventDedupCache) {
+        if (v < cutoff) eventDedupCache.delete(k);
+      }
+    }
 
     const eventId = repo.insertEvent({
       source_kiosk_id: kiosk.id,

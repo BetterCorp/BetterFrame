@@ -335,11 +335,18 @@ jobs:
           BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}
         run: |
           set -e
+          # Wait for GitHub CDN to propagate the release asset.
+          sleep 15
           tag="${{ inputs.tag }}"
           repo="${{ github.repository }}"
-          # Direct GH release asset URL — server downloads from here.
           asset_name="$(basename "${{ steps.raucb.outputs.bundle-path }}")"
           asset_url="https://github.com/${repo}/releases/download/${tag}/${asset_name}"
+          # Verify asset is reachable before telling the server to download it.
+          for i in 1 2 3; do
+            if curl -sSf -o /dev/null -I "$asset_url" 2>/dev/null; then break; fi
+            echo "Asset not ready yet, retry $i..."
+            sleep 10
+          done
           payload="$(jq -nc \
             --arg v "${{ inputs.version }}" \
             --arg c "${{ inputs.channel }}" \

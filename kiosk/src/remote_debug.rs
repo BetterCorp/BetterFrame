@@ -164,9 +164,14 @@ pub fn check_terminal_access() -> Result<(), String> {
     if is_locked() {
         return Err("locked".to_string());
     }
-    // Check firmware channel — only dev allowed.
-    let channel = std::env::var("BF_FIRMWARE_CHANNEL").unwrap_or_else(|_| "stable".to_string());
-    if channel != "dev" {
+    // Check firmware channel — only dev allowed. The channel comes from
+    // the server-side kiosk config, delivered via heartbeat. Read from the
+    // cached bundle or the kiosk_app_version string (dev builds contain
+    // "-dev." in the version). No env var dependency.
+    let version = option_env!("BF_BUILD_VERSION")
+        .unwrap_or(env!("CARGO_PKG_VERSION"));
+    let is_dev = version.contains("-dev.");
+    if !is_dev {
         return Err("terminal access requires dev channel".to_string());
     }
     Ok(())

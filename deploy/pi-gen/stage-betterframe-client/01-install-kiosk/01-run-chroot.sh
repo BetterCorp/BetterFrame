@@ -84,6 +84,11 @@ BF_ENABLE_OS_OTA=1
 # (motion, ANPR, analytics, line crossing, etc.) to the BF server +
 # Node-RED. Set to 0 if no ONVIF cameras on the network.
 BF_ENABLE_ONVIF_EVENTS=1
+
+# Firmware channel for this image. Controls terminal access (dev only)
+# and which update channel the kiosk polls. Change to "stable" or "beta"
+# for production deployments.
+BF_FIRMWARE_CHANNEL=dev
 EOF
 
 # Plymouth boot splash

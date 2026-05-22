@@ -216,13 +216,23 @@ export async function confirmPairing(
     kioskName = candidate;
   }
 
-  // Cluster key delivery (shared across pair + replace)
+  // Per-kiosk encryption key: generate a fresh 32-byte key for this kiosk,
+  // store it encrypted with the server's secret, deliver plaintext to the
+  // kiosk (one-time). Replaces shared cluster_key for bundle encryption.
+  const kioskEncryptKey = randomBytes(32).toString("base64url");
+  const kioskEncryptKeyEncrypted = secrets.encryptString(kioskEncryptKey, "kiosk-encrypt");
+  repo.updateKiosk(kioskId, { encrypt_key_encrypted: kioskEncryptKeyEncrypted } as any);
+
+  // Still deliver cluster_key for backward compat (old kiosk binaries
+  // that don't understand encrypt_key yet). Remove once all kiosks are
+  // on the new binary.
   const clusterKeyEncrypted = repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
   const clusterKey = clusterKeyEncrypted ? secrets.decryptString(clusterKeyEncrypted, "cluster") : undefined;
 
   repo.markPairingCodeClaimed(input.code, kioskId, {
     kiosk_key_plaintext: kioskKeyPlaintext,
     cluster_key: clusterKey,
+    encrypt_key: kioskEncryptKey,
   });
 
   return { kioskId, kioskName };

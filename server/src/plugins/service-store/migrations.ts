@@ -960,6 +960,14 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "displays", "active_layout_id", "INTEGER REFERENCES layouts(id) ON DELETE SET NULL");
   },
 
+  // Per-kiosk encryption key. Replaces shared cluster_key for bundle
+  // encryption. Generated at pairing, stored encrypted with server secret,
+  // delivered to kiosk once. Compromised SD → only this kiosk's camera
+  // passwords exposed (not fleet-wide).
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "kiosks", "encrypt_key_encrypted", "TEXT");
+  },
+
   // ONVIF event routing: per-camera event_source (who polls), event_sink
   // (where push callbacks go), and discovered supported topics.
   (db: DatabaseSync) => {

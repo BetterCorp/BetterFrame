@@ -240,6 +240,11 @@ export interface Kiosk {
   local_key: string | null;
   local_port: number | null;
   local_last_ip: string | null;
+  /** Per-kiosk symmetric key for encrypting camera passwords in the bundle.
+   *  Stored server-side encrypted with the server secret. Delivered to the
+   *  kiosk once at pairing. Replaces the shared cluster_key for bundle
+   *  encryption so a compromised SD card only exposes this kiosk's cameras. */
+  encrypt_key_encrypted: string | null;
   reported_hostname: string | null;
   network_interfaces_json: string | null;
   // Managed-image device config. Only meaningful when managed_image=true; for

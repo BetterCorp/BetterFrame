@@ -264,12 +264,23 @@ pub fn initiate_pairing(server: &str) -> (String, String) {
     (resp.code, resp.expires_at)
 }
 
+fn encrypt_key_file() -> PathBuf {
+    state_dir().join("encrypt.key")
+}
+
 #[derive(Deserialize)]
 struct ClaimResp {
     status: String,
     kiosk_key: Option<String>,
     kiosk_name: Option<String>,
     cluster_key: Option<String>,
+    encrypt_key: Option<String>,
+}
+
+/// Load the per-kiosk encryption key. Preferred over cluster_key for
+/// decrypting camera passwords in the bundle.
+pub fn load_encrypt_key() -> Option<String> {
+    crate::at_rest::read_text_maybe_encrypted(&encrypt_key_file())
 }
 
 /// Poll for pairing claim. Returns (name, key) when admin confirms.
@@ -289,9 +300,13 @@ pub fn poll_claim(server: &str, code: &str) -> (String, String) {
                 let name = claim.kiosk_name.unwrap_or_else(|| "kiosk".into());
                 crate::at_rest::write_encrypted(&key_file(), key.as_bytes())
                     .expect("failed to save kiosk key");
-                // Store cluster key for ONVIF password decryption.
+                // Store cluster key for backward compat ONVIF password decryption.
                 if let Some(ref ck) = claim.cluster_key {
                     let _ = crate::at_rest::write_encrypted(&cluster_key_file(), ck.as_bytes());
+                }
+                // Store per-kiosk encryption key (preferred over cluster_key).
+                if let Some(ref ek) = claim.encrypt_key {
+                    let _ = crate::at_rest::write_encrypted(&encrypt_key_file(), ek.as_bytes());
                 }
                 crate::remote_debug::reset_all_lockouts();
                 return (name, key);

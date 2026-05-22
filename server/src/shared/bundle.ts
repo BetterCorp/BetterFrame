@@ -115,6 +115,16 @@ export function generateBundle(
   const kiosk = repo.getKioskById(kioskId);
   if (!kiosk) return null;
 
+  // Per-kiosk encryption key (preferred) — decrypt from server storage.
+  let kioskEncryptKey: string | undefined;
+  if (kiosk.encrypt_key_encrypted) {
+    try {
+      kioskEncryptKey = secrets.decryptString(kiosk.encrypt_key_encrypted, "kiosk-encrypt");
+    } catch {
+      // Decrypt failed — fall back to cluster key.
+    }
+  }
+
   // Find all displays for this kiosk (displays now point to kiosks via kiosk_id)
   const kioskDisplays = repo.listDisplaysForKiosk(kioskId);
   // Fall back to legacy kiosk.display_id if no displays point to this kiosk yet
@@ -224,9 +234,14 @@ export function generateBundle(
         }]
         : []
     );
+    // Encrypt camera password with per-kiosk key if available (stronger
+    // isolation — compromised SD only exposes this kiosk's cameras). Falls
+    // back to shared cluster_key for kiosks that paired before per-kiosk
+    // keys were introduced.
     let onvifPwEncrypted: string | null = null;
-    if (cam.onvif_password && clusterKey) {
-      onvifPwEncrypted = secrets.encryptForCluster(cam.onvif_password, clusterKey);
+    const encryptKey = kioskEncryptKey ?? clusterKey;
+    if (cam.onvif_password && encryptKey) {
+      onvifPwEncrypted = secrets.encryptForCluster(cam.onvif_password, encryptKey);
     }
     return {
       id: cam.id,

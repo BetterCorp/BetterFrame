@@ -98,6 +98,59 @@ install -m 644 /tmp/bf-files/betterframe.script   /usr/share/plymouth/themes/bet
 install -m 644 /tmp/bf-files/logo.png             /usr/share/plymouth/themes/betterframe/logo.png
 plymouth-set-default-theme betterframe || true
 
+# --- Invisible cursor theme ---
+# cage/wlroots renders a stale cursor even when input devices are blocked.
+# XCURSOR_SIZE=1 doesn't reliably hide it on Pi 5 GPU. A transparent
+# cursor theme is the nuclear fix — every cursor shape is a 1x1 transparent
+# pixel so there's literally nothing to render.
+CURSOR_DIR=/usr/share/icons/betterframe-empty/cursors
+install -d -m 755 "$CURSOR_DIR"
+install -m 644 /tmp/bf-files/cursor.theme /usr/share/icons/betterframe-empty/cursor.theme
+# Generate a 1x1 transparent X cursor for every standard cursor name.
+# xcursorgen reads a config file and produces the binary Xcursor format.
+# If xcursorgen is available (from x11-apps), use it; otherwise create
+# a minimal raw Xcursor binary (header + 1px transparent image).
+printf '1 0 0 /tmp/bf-transparent.png\n' > /tmp/bf-cursor.cfg
+convert -size 1x1 xc:transparent /tmp/bf-transparent.png 2>/dev/null \
+  || python3 -c "
+import struct,sys
+# Minimal 1x1 RGBA PNG
+sys.stdout.buffer.write(b'\\x89PNG\\r\\n\\x1a\\n' + bytes([
+  0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,6,0,0,0,31,21,196,137,
+  0,0,0,10,73,68,65,84,120,156,98,0,0,0,2,0,1,226,33,188,51,
+  0,0,0,0,73,69,78,68,174,66,96,130]))
+" > /tmp/bf-transparent.png
+if command -v xcursorgen >/dev/null 2>&1; then
+  for name in default left_ptr arrow watch hand2 text xterm top_left_corner \
+    top_right_corner bottom_left_corner bottom_right_corner sb_h_double_arrow \
+    sb_v_double_arrow fleur crosshair question_arrow; do
+    xcursorgen /tmp/bf-cursor.cfg "$CURSOR_DIR/$name" 2>/dev/null || true
+  done
+else
+  # Minimal Xcursor binary: magic + header + 1x1 ARGB image (4 bytes, all 0)
+  python3 -c "
+import struct, sys, os
+magic = b'Xcur'
+header = struct.pack('<III', 16, 1, 1)  # header_size, version, ntoc
+toc = struct.pack('<III', 0xfffd0002, 36, 28)  # type=image, subtype=1, position
+chunk_header = struct.pack('<IIIII', 36, 0xfffd0002, 1, 1, 1)  # size,type,subtype(nominal),width,height
+xhot_yhot = struct.pack('<II', 0, 0)
+delay = struct.pack('<I', 0)
+pixel = struct.pack('<I', 0)  # 1 ARGB pixel, fully transparent
+data = magic + header + toc + chunk_header + xhot_yhot + delay + pixel
+for name in ['default','left_ptr','arrow','watch','hand2','text','xterm',
+    'top_left_corner','top_right_corner','bottom_left_corner',
+    'bottom_right_corner','sb_h_double_arrow','sb_v_double_arrow',
+    'fleur','crosshair','question_arrow']:
+  path = os.path.join('$CURSOR_DIR', name)
+  with open(path, 'wb') as f: f.write(data)
+" 2>/dev/null || true
+fi
+rm -f /tmp/bf-cursor.cfg /tmp/bf-transparent.png
+# Set as system default cursor theme
+update-alternatives --install /usr/share/icons/default/index.theme x-cursor-theme \
+  /usr/share/icons/betterframe-empty/cursor.theme 100 2>/dev/null || true
+
 # --- Enable services, disable noise ---
 systemctl enable seatd
 systemctl enable betterframe-kiosk.service
@@ -109,16 +162,48 @@ for dm in lightdm gdm gdm3 sddm; do
   systemctl disable "${dm}.service" 2>/dev/null || true
   systemctl mask    "${dm}.service" 2>/dev/null || true
 done
-systemctl disable getty@tty1.service 2>/dev/null || true
-systemctl mask getty@tty1.service ctrl-alt-del.target 2>/dev/null || true
+# Mask ALL gettys — not just tty1. Ctrl+Alt+Fx shouldn't reach a login.
+for tty in 1 2 3 4 5 6; do
+  systemctl disable "getty@tty${tty}.service" 2>/dev/null || true
+  systemctl mask    "getty@tty${tty}.service" 2>/dev/null || true
+done
+# Also mask the serial console + autovt template so logind can't spawn new ones.
+systemctl mask serial-getty@.service getty@.service 2>/dev/null || true
+systemctl mask ctrl-alt-del.target 2>/dev/null || true
+# Disable VT switching entirely via logind: no auto-VTs, no reserved VT.
+mkdir -p /etc/systemd/logind.conf.d
+cat > /etc/systemd/logind.conf.d/betterframe-lockdown.conf <<'LOGIND'
+[Login]
+NAutoVTs=0
+ReserveVT=0
+LOGIND
+# Lock the physical console: block sulogin / emergency shell.
+systemctl mask emergency.service rescue.service emergency.target rescue.target 2>/dev/null || true
+
 systemctl disable ssh.service ssh.socket 2>/dev/null || true
 systemctl mask ssh.service ssh.socket 2>/dev/null || true
 systemctl disable bluetooth.service hciuart.service 2>/dev/null || true
 systemctl mask bluetooth.service hciuart.service 2>/dev/null || true
 
-# piwiz first-run wizard + userconf-pi → out.
-apt-get -y purge piwiz userconf-pi 2>/dev/null || true
+# Kill EVERY first-run wizard / setup screen Pi OS ships. Purge the
+# packages AND nuke any leftover desktop/autostart files so nothing
+# survives to flash "configure your raspberry" on screen.
+apt-get -y purge piwiz userconf-pi pi-greeter rpd-plym-splash \
+  initial-setup initial-setup-gui 2>/dev/null || true
 rm -f /etc/xdg/autostart/piwiz.desktop
+rm -f /etc/xdg/autostart/setup-wizard.desktop
+rm -f /etc/xdg/autostart/initial-setup*.desktop
+rm -rf /usr/share/applications/piwiz.desktop
+rm -rf /usr/share/applications/initial-setup*.desktop
+# userconf-pi drops a first-boot service that prompts for user/pass.
+systemctl disable userconfig.service 2>/dev/null || true
+systemctl mask userconfig.service 2>/dev/null || true
+# Pi OS Bookworm+ uses rpi-first-boot-wizard.
+apt-get -y purge rpi-first-boot-wizard 2>/dev/null || true
+systemctl disable rpi-first-boot-wizard.service 2>/dev/null || true
+systemctl mask rpi-first-boot-wizard.service 2>/dev/null || true
+# Remove any login program on console.
+rm -f /etc/systemd/system/getty.target.wants/* 2>/dev/null || true
 
 # Suppress console motd / issue.
 : > /etc/motd

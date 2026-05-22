@@ -33,6 +33,9 @@ Environment=GST_DEBUG=1
 # and first kiosk frame. Collapse to 1px transparent + force software
 # fallback so XCURSOR_SIZE actually applies (HW cursors ignore size on
 # some GPUs, leaving a default white-arrow visible in the corner).
+# Invisible cursor: transparent theme + 1px size + software fallback.
+# Three layers because Pi 5 GPU ignores XCURSOR_SIZE for HW cursors.
+Environment=XCURSOR_THEME=betterframe-empty
 Environment=XCURSOR_SIZE=1
 Environment=WLR_NO_HARDWARE_CURSORS=1
 # Let the unprivileged kiosk process control the Pi fan PWM sysfs files.
@@ -41,6 +44,13 @@ ExecStartPre=+/usr/local/sbin/betterframe-firmware-rollback.sh
 ExecStart=/usr/bin/cage -s -- /opt/betterframe/kiosk/betterframe-kiosk
 Restart=always
 RestartSec=2
+# If cage/kiosk exits or crashes and systemd can't restart it after the
+# burst limit (10 in 60s per [Unit]), force a full system reboot. This
+# covers scenarios where the app isn't foreground (e.g. cage died, VT
+# switched, GPU fault) — the kiosk should NEVER show anything other than
+# our app. A reboot is less alarming than a login prompt or blank screen.
+FailureAction=reboot-force
+StartLimitAction=reboot-force
 
 # WebKitGTK uses bubblewrap for its web-content sandbox. bwrap aborts with
 # "Unexpected capabilities but not setuid" when launched from a process that

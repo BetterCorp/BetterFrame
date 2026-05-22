@@ -195,6 +195,9 @@ jobs:
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/plymouth/betterframe/betterframe.script \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          # Transparent cursor theme
+          cp deploy/cursor-theme/betterframe-empty/cursor.theme \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/cursor.theme
           # RAUC config + custom bootloader backend
           cp deploy/rauc/system.conf \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/rauc-system.conf

@@ -1,0 +1,4 @@
+[Icon Theme]
+Name=betterframe-empty
+Comment=Invisible cursor for kiosk mode
+Inherits=default

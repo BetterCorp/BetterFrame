@@ -1743,7 +1743,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         function connect(){
           // WS to coordinator — proxied through Angie at /ws/admin/debug/:id
           var proto=location.protocol==='https:'?'wss:':'ws:';
-          ws=new WebSocket(proto+'//'+location.host+'/ws/admin/debug/${id}');
+          ws=new WebSocket(proto+'//'+location.host+'/admin/ws/debug/${id}');
           ws.onmessage=function(e){
             try{var m=JSON.parse(e.data);
               if(m.type==='journal-line'){log.textContent+=m.line+'\\n';log.scrollTop=log.scrollHeight;}
@@ -1794,7 +1794,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         var ws;
         function connect(){
           var proto=location.protocol==='https:'?'wss:':'ws:';
-          ws=new WebSocket(proto+'//'+location.host+'/ws/admin/debug/${id}');
+          ws=new WebSocket(proto+'//'+location.host+'/admin/ws/debug/${id}');
           ws.onopen=function(){status.textContent='Connected (not authed)';};
           ws.onmessage=function(e){
             try{var m=JSON.parse(e.data);

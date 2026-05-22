@@ -246,7 +246,13 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
             }
           }
           if (!authed) throw new Error("unauthorized");
-        } catch {
+        } catch (authErr) {
+          obs.log.warn("admin debug WS auth failed for kiosk {id}: {err} (cookie present: {hasCookie}, cookieName: {cn})", {
+            id: kioskId,
+            err: (authErr as Error).message,
+            hasCookie: cookieHeader.length > 0,
+            cn: cookieName,
+          });
           socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
           socket.destroy();
           return;

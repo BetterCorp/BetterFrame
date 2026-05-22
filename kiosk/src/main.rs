@@ -28,6 +28,8 @@ pub enum ServerMsg {
     },
     /// Server-pushed "go check for a firmware update now".
     FirmwareCheck,
+    /// Server-pushed "go check for an OS update now".
+    OsCheck,
     /// Show terminal auth code on screen (overlay).
     ShowTerminalCode(String),
     /// Dismiss the terminal code overlay.

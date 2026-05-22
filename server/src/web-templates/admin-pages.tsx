@@ -3827,8 +3827,16 @@ export function KioskOsUpdatePanel(props: KioskOsUpdatePanelProps) {
             ))}
           </select>
         </div>
-        <div style="grid-column:1/-1">
+        <div style="grid-column:1/-1; display:flex; gap:0.5rem">
           <button type="submit" class="btn btn-primary">Save</button>
+          <button
+            type="button"
+            class="btn"
+            {...{
+              "hx-post": `/admin/kiosks/${String(k.id)}/os-update/push`,
+              "hx-swap": "none",
+            }}
+          >Push OS update now</button>
         </div>
       </form>
     </div>

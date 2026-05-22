@@ -265,6 +265,9 @@ fn activate(app: &Application) {
                     ServerMsg::FirmwareCheck => {
                         maybe_apply_firmware_update(&server_for_reload, &key_for_reload);
                     }
+                    ServerMsg::OsCheck => {
+                        maybe_apply_os_update(&server_for_reload, &key_for_reload);
+                    }
                     ServerMsg::ShowTerminalCode(code) => {
                         let _ = tx_for_reload.send(WorkerMsg::ShowTerminalCode(code));
                     }

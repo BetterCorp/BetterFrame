@@ -63,6 +63,14 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
     return htmlFragment(KioskOsUpdatePanel({ kiosk: k, releases }));
   });
 
+  // Push OS update now: server pings the kiosk via WS coordinator.
+  app.post("/admin/kiosks/:id/os-update/push", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const { getCoordinator } = require("../../shared/coordinator-registry.js");
+    const dispatched = getCoordinator().sendToKiosk(id, { type: "os_check" });
+    return { ok: true, dispatched };
+  });
+
   // ---- Rollouts -----------------------------------------------------------
   app.get("/admin/os-updates/rollouts", (event) => {
     const user = event.context.user!;

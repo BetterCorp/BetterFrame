@@ -173,6 +173,8 @@ async fn handle_message(
         }
     } else if text.contains("\"type\":\"firmware_check\"") {
         let _ = tx.send(ServerMsg::FirmwareCheck);
+    } else if text.contains("\"type\":\"os_check\"") {
+        let _ = tx.send(ServerMsg::OsCheck);
     } else if text.contains("\"type\":\"fan\"") {
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else { return };
         let pwm = if msg.get("mode").and_then(|v| v.as_str()) == Some("auto") {

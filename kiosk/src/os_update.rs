@@ -253,7 +253,7 @@ pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
     let got_sha = hex_lower(&digest);
     if got_sha != info.sha256 {
         let _ = fs::remove_file(&bundle_path);
-        return Err(format!("sha256 mismatch: expected {}, got {got_sha}"));
+        return Err(format!("sha256 mismatch: expected {}, got {got_sha}", info.sha256));
     }
 
     // 4. Hand off to rauc. `rauc install` blocks until the bundle is fully

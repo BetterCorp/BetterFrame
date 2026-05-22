@@ -5,9 +5,9 @@ FROM node:24-trixie-slim AS builder
 
 WORKDIR /app
 
-# Build deps for argon2 + bsb-plugin-cli + git for version stamping
+# Build deps for argon2 + bsb-plugin-cli
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential python3 git \
+    build-essential python3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
@@ -21,19 +21,14 @@ COPY server ./server
 WORKDIR /app/server
 RUN npm run build
 
-# Derive version from git. Coolify clones the repo with .git intact so
-# git describe / rev-parse work. Falls back to package.json version if
-# .git is missing (e.g. if a .dockerignore later excludes it).
-COPY .git /app/.git
-RUN cd /app && \
-    GIT_VER="$(git describe --tags --always --dirty 2>/dev/null || echo '')" && \
-    if [ -z "$GIT_VER" ]; then GIT_VER="$(git rev-parse --short HEAD 2>/dev/null || echo '')"; fi && \
-    if [ -z "$GIT_VER" ]; then GIT_VER="$(node -p 'require("./package.json").version' 2>/dev/null || echo 'dev')"; fi && \
-    echo "$GIT_VER" > /app/server/.bf-version && \
-    echo "Baked version: $GIT_VER"
-
 # ---- Runtime image ----
 FROM node:24-trixie-slim
+
+# Version baked at build time. Coolify doesn't include .git in build context
+# so we can't derive from git inside Docker. Instead, compose passes it as a
+# build arg from SOURCE_COMMIT / COOLIFY_GIT_COMMIT env vars that Coolify
+# DOES inject into the build environment.
+ARG BF_SERVER_VERSION=dev
 
 # ffmpeg for camera snapshot capture (optional but needed for /admin/entities/:id/snapshot)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -52,6 +47,9 @@ COPY --from=builder /app/package.json ./
 # Default sec-config baked into image. BF_* env vars in compose override at
 # runtime (see shared/env-overrides.ts). No host bind mount needed.
 COPY deploy/docker/sec-config.yaml /app/server/sec-config.yaml
+
+# Bake version into a file readable by version.ts at runtime.
+RUN echo "$BF_SERVER_VERSION" > /app/server/.bf-version
 
 RUN mkdir -p /var/lib/betterframe && chown betterframe:betterframe /var/lib/betterframe
 VOLUME /var/lib/betterframe

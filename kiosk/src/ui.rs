@@ -750,7 +750,8 @@ fn render_bundle(
 
     // (Re)start ONVIF event subscriptions for all ONVIF cameras in the bundle.
     // Workers self-terminate when a new start() call replaces the generation.
-    onvif_events::start(&bundle.cameras, None, server_url, kiosk_key);
+    let cluster_key = server::load_cluster_key();
+    onvif_events::start(&bundle.cameras, cluster_key.as_deref(), server_url, kiosk_key);
 
     let displays = bundle.normalized_displays();
     if displays.is_empty() {

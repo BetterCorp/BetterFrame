@@ -102,6 +102,9 @@ fn server_file() -> PathBuf {
 fn bundle_cache_path() -> PathBuf {
     state_dir().join("bundle.json")
 }
+fn cluster_key_file() -> PathBuf {
+    state_dir().join("cluster.key")
+}
 fn local_key_file() -> PathBuf {
     state_dir().join("local.key")
 }
@@ -208,6 +211,11 @@ pub fn is_paired() -> bool {
     key_file().exists()
 }
 
+/// Load cluster key (if stored from pairing). Used for ONVIF password decrypt.
+pub fn load_cluster_key() -> Option<String> {
+    crate::at_rest::read_text_maybe_encrypted(&cluster_key_file())
+}
+
 /// Read stored kiosk key. Detects legacy plaintext (kiosks upgraded from
 /// a pre-at_rest build) and re-stores it ciphertext in place so subsequent
 /// SD-card extractions don't see the bearer token.
@@ -261,6 +269,7 @@ struct ClaimResp {
     status: String,
     kiosk_key: Option<String>,
     kiosk_name: Option<String>,
+    cluster_key: Option<String>,
 }
 
 /// Poll for pairing claim. Returns (name, key) when admin confirms.
@@ -280,7 +289,10 @@ pub fn poll_claim(server: &str, code: &str) -> (String, String) {
                 let name = claim.kiosk_name.unwrap_or_else(|| "kiosk".into());
                 crate::at_rest::write_encrypted(&key_file(), key.as_bytes())
                     .expect("failed to save kiosk key");
-                // Successful pairing resets all terminal lockout state.
+                // Store cluster key for ONVIF password decryption.
+                if let Some(ref ck) = claim.cluster_key {
+                    let _ = crate::at_rest::write_encrypted(&cluster_key_file(), ck.as_bytes());
+                }
                 crate::remote_debug::reset_all_lockouts();
                 return (name, key);
             }

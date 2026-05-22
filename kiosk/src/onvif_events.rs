@@ -35,10 +35,6 @@ pub fn start(
     server_url: &str,
     kiosk_key: &str,
 ) {
-    if std::env::var("BF_ENABLE_ONVIF_EVENTS").as_deref() != Ok("1") {
-        return;
-    }
-
     let onvif_cams: Vec<_> = cameras
         .iter()
         .filter(|c| c.cam_type == "onvif" && c.onvif_host.is_some())
@@ -450,13 +446,41 @@ fn forward_event(server: &str, kiosk_key: &str, camera_id: u32, evt: &OnvifEvent
 
 // ---- Cluster key decryption ------------------------------------------------
 
-fn decrypt_cluster(ciphertext: &str, _cluster_key: &str) -> Option<String> {
-    // TODO: AES-256-GCM decrypt using the cluster key delivered at pairing.
-    // For now, RTSP URIs in the bundle already have plaintext credentials
-    // embedded, so most deployments work without this path. Full cluster-key
-    // decrypt needs the same HKDF + AES-GCM as the server's secrets.ts.
-    let _ = ciphertext;
-    None
+/// Decrypt a value encrypted with secrets.encryptForCluster on the server.
+/// Format: "v1.<iv_b64u>.<tag_b64u>.<ct_b64u>". AES-256-GCM.
+/// cluster_key is base64url-encoded 32-byte key.
+fn decrypt_cluster(ciphertext: &str, cluster_key_b64u: &str) -> Option<String> {
+    use aes_gcm::{Aes256Gcm, Key, Nonce, aead::{Aead, KeyInit}};
+    use base64::Engine;
+
+    let b64u = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let parts: Vec<&str> = ciphertext.split('.').collect();
+    if parts.len() != 4 || parts[0] != "v1" {
+        warn!("decrypt_cluster: bad format: {}", ciphertext.chars().take(20).collect::<String>());
+        return None;
+    }
+    let iv = b64u.decode(parts[1]).ok()?;
+    let tag = b64u.decode(parts[2]).ok()?;
+    let ct = b64u.decode(parts[3]).ok()?;
+    let key_bytes = b64u.decode(cluster_key_b64u).ok()?;
+    if key_bytes.len() != 32 || iv.len() != 12 || tag.len() != 16 {
+        warn!("decrypt_cluster: bad lengths key={} iv={} tag={}", key_bytes.len(), iv.len(), tag.len());
+        return None;
+    }
+
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+    let nonce = Nonce::from_slice(&iv);
+    // AES-GCM ciphertext+tag concatenated for decryption.
+    let mut combined = ct;
+    combined.extend_from_slice(&tag);
+    match cipher.decrypt(nonce, combined.as_ref()) {
+        Ok(plaintext) => String::from_utf8(plaintext).ok(),
+        Err(e) => {
+            warn!("decrypt_cluster: decrypt failed: {e}");
+            None
+        }
+    }
 }
 
 fn chrono_now() -> String {

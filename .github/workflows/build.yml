@@ -121,11 +121,17 @@ jobs:
             --rawfile b "${bin}.b64" \
             '{version:$v, channel:$c, arch:$a, release_notes:$n, content_b64:$b}' \
             > "${bin}.import.json"
-          curl -sSf -X POST \
-            -H "Authorization: Bearer ${BF_AUTOIMPORT_API_KEY}" \
-            -H "Content-Type: application/json" \
-            --data-binary @"${bin}.import.json" \
-            "${BF_AUTOIMPORT_URL}/api/admin/firmware/import"
+          for attempt in 1 2 3; do
+            if curl -sSf --retry 2 --retry-delay 5 -X POST \
+              -H "Authorization: Bearer ${BF_AUTOIMPORT_API_KEY}" \
+              -H "Content-Type: application/json" \
+              --data-binary @"${bin}.import.json" \
+              "${BF_AUTOIMPORT_URL}/api/admin/firmware/import"; then
+              break
+            fi
+            echo "Import attempt $attempt failed, retrying in 10s..."
+            sleep 10
+          done
 
       - name: Upload artifact (always)
         uses: actions/upload-artifact@v7

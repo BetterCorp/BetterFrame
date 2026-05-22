@@ -5,7 +5,7 @@ description=BetterFrame OS @VERSION@
 build=@GIT_SHA@
 
 [bundle]
-format=verity
+format=plain
 
 [image.bootfs]
 filename=bootfs.vfat

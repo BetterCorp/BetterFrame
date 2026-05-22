@@ -174,6 +174,8 @@ function parseDiscoveredStreams(raw: string): DiscoverAddStream[] {
 function importDiscoveredCamera(
   deps: AdminDeps,
   rawName: string,
+  onvifHost: string,
+  onvifPort: number,
   username: string,
   password: string,
   streams: DiscoverAddStream[],
@@ -185,9 +187,13 @@ function importDiscoveredCamera(
 
   const cam = deps.repo.createCamera({
     name,
-    type: "rtsp",
+    type: "onvif",
     rtsp_url: mainRtspUrl,
-  });
+    onvif_host: onvifHost,
+    onvif_port: onvifPort,
+    onvif_username: username,
+    onvif_password: password,
+  } as any);
   for (const stream of streams) {
     const width = stream.width == null ? null : Number(stream.width);
     const height = stream.height == null ? null : Number(stream.height);
@@ -587,6 +593,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       return htmlPage(CameraDiscoverResultsPage({
         user: user.username,
         host,
+        port,
         username,
         password,
         cameras,
@@ -603,6 +610,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.post("/admin/cameras/discover/add", async (event) => {
     const body = await readBody<Record<string, string | string[]>>(event);
+    const onvifHost = formValue(body?.["host"]).trim();
+    const onvifPort = parseInt(formValue(body?.["port"]) || "80", 10) || 80;
     const username = formValue(body?.["username"]).trim();
     const password = formValue(body?.["password"]);
     let imported = 0;
@@ -613,7 +622,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         const rawName = formValue(body?.[`camera_${idx}_name`]).trim() || "ONVIF camera";
         const streams = parseDiscoveredStreams(formValue(body?.[`camera_${idx}_streams_json`]));
         if (streams.length === 0) continue;
-        const camId = importDiscoveredCamera(deps, rawName, username, password, streams);
+        const camId = importDiscoveredCamera(deps, rawName, onvifHost, onvifPort, username, password, streams);
         if (camId != null) {
           deps.nodered.forward("camera.changed", { camera_id: camId, event: "created", source: "server" });
         }
@@ -623,7 +632,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       const rawName = formValue(body?.["name"]).trim() || "ONVIF camera";
       const streams = parseDiscoveredStreams(formValue(body?.["streams_json"]));
       if (streams.length > 0) {
-        const camId = importDiscoveredCamera(deps, rawName, username, password, streams);
+        const camId = importDiscoveredCamera(deps, rawName, onvifHost, onvifPort, username, password, streams);
         if (camId != null) {
           deps.nodered.forward("camera.changed", { camera_id: camId, event: "created", source: "server" });
         }

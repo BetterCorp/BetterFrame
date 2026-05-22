@@ -313,6 +313,7 @@ interface DiscoveredCameraRow {
 interface CameraDiscoverResultsProps {
   user: string;
   host: string;
+  port?: number;
   username: string;
   password: string;
   cameras: DiscoveredCameraRow[];
@@ -438,6 +439,8 @@ export function CameraDiscoverResultsPage(props: CameraDiscoverResultsProps) {
           <div class="card" style="text-align:center; color:#999; padding:2rem">No profiles returned</div>
         ) : (
           <form method="post" action="/admin/cameras/discover/add">
+            <input type="hidden" name="host" value={props.host} />
+            <input type="hidden" name="port" value={String(props.port ?? 80)} />
             <input type="hidden" name="username" value={props.username} />
             <input type="hidden" name="password" value={props.password} />
             <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:1rem; flex-wrap:wrap">

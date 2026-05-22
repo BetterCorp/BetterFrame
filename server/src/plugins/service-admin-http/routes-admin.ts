@@ -489,10 +489,12 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const user = event.context.user!;
     const cameras = deps.repo.listCameras();
     const streamCounts = new Map<number, number>();
+    const activeKiosks = new Map<number, number>(); // camera_id → count of kiosks rendering
     for (const cam of cameras) {
       streamCounts.set(cam.id, deps.repo.listCameraStreams(cam.id).length);
+      activeKiosks.set(cam.id, deps.repo.listKiosksRenderingCamera(cam.id).length);
     }
-    return htmlPage(CamerasPage({ user: user.username, cameras, streamCounts }));
+    return htmlPage(CamerasPage({ user: user.username, cameras, streamCounts, activeKiosks }));
   });
 
   app.get("/admin/cameras/new", (event) => {

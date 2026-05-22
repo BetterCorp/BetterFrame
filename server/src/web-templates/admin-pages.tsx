@@ -114,6 +114,7 @@ interface CamerasProps {
   user: string;
   cameras: Camera[];
   streamCounts: Map<number, number>;
+  activeKiosks: Map<number, number>;
 }
 
 export function CamerasPage(props: CamerasProps) {
@@ -137,19 +138,29 @@ export function CamerasPage(props: CamerasProps) {
             {props.cameras.length === 0 ? (
               <tr><td colspan="4" style="text-align:center; color:#999; padding:2rem">No cameras configured</td></tr>
             ) : (
-              props.cameras.map((cam) => (
-                <tr>
-                  <td><a href={`/admin/cameras/${cam.id}`}><strong>{cam.name}</strong></a></td>
-                  <td><span class="badge badge-blue">{cam.type.toUpperCase()}</span></td>
-                  <td>{String(props.streamCounts.get(cam.id) ?? 0)}</td>
-                  <td>
-                    {cam.enabled
-                      ? <span class="badge badge-green">Enabled</span>
-                      : <span class="badge badge-gray">Disabled</span>
-                    }
-                  </td>
-                </tr>
-              ))
+              props.cameras.map((cam) => {
+                const streams = props.streamCounts.get(cam.id) ?? 0;
+                const active = props.activeKiosks.get(cam.id) ?? 0;
+                const health = !cam.enabled ? "gray"
+                  : streams === 0 ? "red"
+                  : active > 0 ? "green"
+                  : "yellow";
+                const healthLabel = !cam.enabled ? "Disabled"
+                  : streams === 0 ? "No streams"
+                  : active > 0 ? `Live (${active} kiosk${active > 1 ? "s" : ""})`
+                  : "Idle";
+                return (
+                  <tr>
+                    <td>
+                      <span style={`display:inline-block;width:8px;height:8px;border-radius:50%;background:${health === "green" ? "#2a2" : health === "yellow" ? "#ca0" : health === "red" ? "#c22" : "#888"};margin-right:8px;vertical-align:middle`} />
+                      <a href={`/admin/cameras/${cam.id}`}><strong>{cam.name}</strong></a>
+                    </td>
+                    <td><span class="badge badge-blue">{cam.type.toUpperCase()}</span></td>
+                    <td>{String(streams)}</td>
+                    <td><span class={`badge badge-${health}`}>{healthLabel}</span></td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>

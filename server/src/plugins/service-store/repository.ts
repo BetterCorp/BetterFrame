@@ -1722,6 +1722,34 @@ export class Repository {
     this.prep("UPDATE event_log SET forwarded_to_nodered = 1 WHERE id = ?").run(eventId);
   }
 
+  /**
+   * Delete event_log rows older than `days` AND trim to `maxRows` total.
+   * Returns the number of rows deleted.
+   */
+  purgeEventLog(days: number = 30, maxRows: number = 100_000): number {
+    const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+    const r1 = this.db.prepare("DELETE FROM event_log WHERE received_at < ?").run(cutoff);
+    // Trim to maxRows by deleting oldest beyond the cap.
+    const r2 = this.db.prepare(
+      `DELETE FROM event_log WHERE id NOT IN (
+        SELECT id FROM event_log ORDER BY received_at DESC LIMIT ?
+      )`,
+    ).run(maxRows);
+    return Number(r1.changes) + Number(r2.changes);
+  }
+
+  purgeAuditLog(days: number = 90): number {
+    const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+    const r = this.db.prepare("DELETE FROM audit_log WHERE ts < ?").run(cutoff);
+    return Number(r.changes);
+  }
+
+  purgeKioskLogs(days: number = 14): number {
+    const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+    const r = this.db.prepare("DELETE FROM kiosk_logs WHERE received_at < ?").run(cutoff);
+    return Number(r.changes);
+  }
+
   queryEvents(filters: EventQueryFilters): { events: EventLog[]; total: number } {
     const where: string[] = [];
     const params: (string | number)[] = [];

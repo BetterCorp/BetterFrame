@@ -175,22 +175,26 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
     registerRepo(this._repo);
 
-    const purged = this._repo.purgeOldKioskLogs(2);
-    if (purged > 0) {
-      obs.log.info("purged {count} kiosk logs older than 2h", { count: purged });
-    }
+    // Startup purge
+    this.runPurge(obs);
 
     obs.log.info("store ready");
   }
 
+  private runPurge(obs: Observable): void {
+    if (!this._repo) return;
+    const r = this._repo;
+    const kl = r.purgeKioskLogs(14);
+    const el = r.purgeEventLog(30, 100_000);
+    const al = r.purgeAuditLog(90);
+    if (kl + el + al > 0) {
+      obs.log.info("purge: {kl} kiosk_logs, {el} event_log, {al} audit_log", { kl, el, al });
+    }
+  }
+
   async run(obs: Observable): Promise<void> {
-    this.purgeTimer = setInterval(() => {
-      if (!this._repo) return;
-      const purged = this._repo.purgeOldKioskLogs(2);
-      if (purged > 0) {
-        obs.log.info("purged {count} kiosk logs older than 2h", { count: purged });
-      }
-    }, 10 * 60 * 1000);
+    // Purge every 6 hours.
+    this.purgeTimer = setInterval(() => this.runPurge(obs), 6 * 60 * 60 * 1000);
   }
 
   async dispose(): Promise<void> {

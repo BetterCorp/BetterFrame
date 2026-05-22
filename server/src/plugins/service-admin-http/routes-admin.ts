@@ -1721,9 +1721,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
     const user = event.context.user!;
     // Get or create an API key for the WS connection.
-    // WS auth: pass session cookie name so JS can read it for the WS query param.
-    // The coordinator WS endpoint also accepts session-based auth.
-    const wsToken = "";
+    // WS auth: browser sends session cookie automatically on WS upgrade.
+    // Coordinator WS endpoint validates via resolveSession.
     return htmlPage(`<html><head><title>Logs: ${kiosk.name}</title>
       <style>body{margin:0;background:#111;color:#0f0;font-family:monospace;font-size:13px;padding:1rem}
       pre{white-space:pre-wrap;word-break:break-all}
@@ -1744,7 +1743,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         function connect(){
           // WS to coordinator — proxied through Angie at /ws/admin/debug/:id
           var proto=location.protocol==='https:'?'wss:':'ws:';
-          ws=new WebSocket(proto+'//'+location.host+'/ws/admin/debug/${id}?token=${wsToken}');
+          ws=new WebSocket(proto+'//'+location.host+'/ws/admin/debug/${id}');
           ws.onmessage=function(e){
             try{var m=JSON.parse(e.data);
               if(m.type==='journal-line'){log.textContent+=m.line+'\\n';log.scrollTop=log.scrollHeight;}
@@ -1768,9 +1767,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = Number(getRouterParam(event, "id"));
     const kiosk = deps.repo.getKioskById(id);
     if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
-    // WS auth: pass session cookie name so JS can read it for the WS query param.
-    // The coordinator WS endpoint also accepts session-based auth.
-    const wsToken = "";
+    // WS auth: browser sends session cookie automatically on WS upgrade.
+    // Coordinator WS endpoint validates via resolveSession.
     return htmlPage(`<html><head><title>Terminal: ${kiosk.name}</title>
       <style>body{margin:0;background:#000;color:#fff;font-family:monospace;font-size:14px;padding:1rem}
       #term{white-space:pre-wrap;word-break:break-all;height:calc(100vh - 120px);overflow-y:auto;background:#111;padding:8px;border:1px solid #333}
@@ -1796,7 +1794,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         var ws;
         function connect(){
           var proto=location.protocol==='https:'?'wss:':'ws:';
-          ws=new WebSocket(proto+'//'+location.host+'/ws/admin/debug/${id}?token=${wsToken}');
+          ws=new WebSocket(proto+'//'+location.host+'/ws/admin/debug/${id}');
           ws.onopen=function(){status.textContent='Connected (not authed)';};
           ws.onmessage=function(e){
             try{var m=JSON.parse(e.data);

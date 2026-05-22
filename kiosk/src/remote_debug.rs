@@ -195,6 +195,8 @@ pub fn validate_terminal_code(expected: &str, provided: &str) -> bool {
         record_failed_attempt();
         return false;
     }
+    // Successful terminal auth resets all lockout state.
+    let _ = std::fs::remove_file(lockout_path());
     true
 }
 

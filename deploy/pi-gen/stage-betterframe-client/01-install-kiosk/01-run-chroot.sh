@@ -7,15 +7,11 @@
 if ! id -u bfkiosk >/dev/null 2>&1; then
   useradd -m -s /usr/sbin/nologin bfkiosk
 fi
-for grp in video render input audio; do
+for grp in video render input audio systemd-journal; do
   if getent group "$grp" >/dev/null; then
     usermod -a -G "$grp" bfkiosk
   fi
 done
-
-# --- Passwordless sudo for bfkiosk (remote terminal runs as root) ---
-echo 'bfkiosk ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/betterframe-kiosk
-chmod 440 /etc/sudoers.d/betterframe-kiosk
 
 # --- Binary ---
 install -d -o bfkiosk -g bfkiosk -m 755 /opt/betterframe/kiosk

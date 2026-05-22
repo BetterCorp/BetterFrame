@@ -121,21 +121,11 @@ impl JournalStream {
         let kill_clone = kill.clone();
 
         std::thread::spawn(move || {
-            // Use systemd-run to escape NoNewPrivileges and read journal as root.
-            let mut child = match Command::new("systemd-run")
-                .args([
-                    "--pipe", "--quiet", "--service-type=exec",
-                    "--property=User=root",
-                    "journalctl", "-u", "betterframe-kiosk", "-f", "--no-pager", "-o", "short-iso", "-n", "50",
-                ])
+            let mut child = match Command::new("journalctl")
+                .args(["-f", "--no-pager", "-o", "short-iso", "-n", "50"])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .or_else(|_| Command::new("journalctl")
-                    .args(["-f", "--no-pager", "-o", "short-iso", "-n", "50"])
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn())
             {
                 Ok(c) => c,
                 Err(e) => {
@@ -223,36 +213,14 @@ pub struct TerminalSession {
 
 impl TerminalSession {
     pub fn spawn() -> Result<(Self, std::process::ChildStdout, std::process::ChildStderr), String> {
-        // The kiosk runs under NoNewPrivileges=yes (WebKit bwrap needs
-        // it), which blocks sudo/nsenter from this process tree. Use
-        // systemd-run to spawn a SEPARATE service unit that runs bash
-        // as root in its own process tree — not a child of the kiosk.
-        // The --pipe flag connects stdin/stdout/stderr to our process.
-        let mut child = Command::new("systemd-run")
-            .args([
-                "--pipe",       // connect stdio to us
-                "--quiet",      // suppress service info on stderr
-                "--service-type=exec",
-                "--property=User=root",
-                "-E", "TERM=xterm-256color",
-                "-E", "HOME=/root",
-                "bash", "--login",
-            ])
+        let mut child = Command::new("bash")
+            .args(["--login"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .env("TERM", "xterm-256color")
             .spawn()
-            .or_else(|_| {
-                // Fallback: plain bash as bfkiosk (limited but something).
-                Command::new("bash")
-                    .args(["--login"])
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .env("TERM", "xterm-256color")
-                    .spawn()
-            })
-            .map_err(|e| format!("shell spawn: {e}"))?;
+            .map_err(|e| format!("bash spawn: {e}"))?;
 
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let stderr = child.stderr.take().ok_or("no stderr")?;

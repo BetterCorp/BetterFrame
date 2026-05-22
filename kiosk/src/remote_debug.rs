@@ -164,14 +164,12 @@ pub fn check_terminal_access() -> Result<(), String> {
     if is_locked() {
         return Err("locked".to_string());
     }
-    // Check firmware channel — only dev allowed. The channel comes from
-    // the server-side kiosk config, delivered via heartbeat. Read from the
-    // cached bundle or the kiosk_app_version string (dev builds contain
-    // "-dev." in the version). No env var dependency.
-    let version = option_env!("BF_BUILD_VERSION")
-        .unwrap_or(env!("CARGO_PKG_VERSION"));
-    let is_dev = version.contains("-dev.");
-    if !is_dev {
+    // Check channel — terminal allowed when EITHER firmware or OS channel
+    // is "dev". Channels pushed from server via heartbeat response, cached
+    // in server.rs. No env var, no build-time check.
+    let fw = crate::server::cached_firmware_channel();
+    let os = crate::server::cached_os_channel();
+    if fw != "dev" && os != "dev" {
         return Err("terminal access requires dev channel".to_string());
     }
     Ok(())

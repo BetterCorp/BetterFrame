@@ -418,6 +418,31 @@ pub fn heartbeat(
         }))
         .timeout(Duration::from_secs(5))
         .send()
-        .map(|r| r.status().is_success())
+        .and_then(|r| {
+            if !r.status().is_success() {
+                return Ok(false);
+            }
+            // Parse channels from heartbeat response and cache for terminal access check.
+            if let Ok(body) = r.json::<serde_json::Value>() {
+                if let Some(fc) = body.get("firmware_channel").and_then(|v| v.as_str()) {
+                    CACHED_FIRMWARE_CHANNEL.lock().unwrap().replace(fc.to_string());
+                }
+                if let Some(oc) = body.get("os_update_channel").and_then(|v| v.as_str()) {
+                    CACHED_OS_CHANNEL.lock().unwrap().replace(oc.to_string());
+                }
+            }
+            Ok(true)
+        })
         .unwrap_or(false)
+}
+
+use std::sync::Mutex as StdMutex;
+static CACHED_FIRMWARE_CHANNEL: StdMutex<Option<String>> = StdMutex::new(None);
+static CACHED_OS_CHANNEL: StdMutex<Option<String>> = StdMutex::new(None);
+
+pub fn cached_firmware_channel() -> String {
+    CACHED_FIRMWARE_CHANNEL.lock().unwrap().clone().unwrap_or_else(|| "stable".to_string())
+}
+pub fn cached_os_channel() -> String {
+    CACHED_OS_CHANNEL.lock().unwrap().clone().unwrap_or_else(|| "stable".to_string())
 }

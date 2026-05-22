@@ -479,6 +479,8 @@ function registerKioskRoutes(
     return {
       ok: true,
       now: new Date().toISOString(),
+      firmware_channel: fresh?.firmware_channel ?? "stable",
+      os_update_channel: fresh?.os_update_channel ?? "stable",
       ...(pendingConfig ? { pending_config: pendingConfig } : {}),
     };
   });

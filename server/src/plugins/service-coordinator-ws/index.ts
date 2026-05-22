@@ -85,6 +85,40 @@ const pendingRequests = new Map<string, {
   timer: ReturnType<typeof setTimeout>;
 }>();
 
+// Admin debug subscribers: admin WS connections subscribed to a kiosk's
+// journal/terminal output. Keyed by kiosk id → set of admin WebSockets.
+const debugSubscribers = new Map<number, Set<WebSocket>>();
+
+function addDebugSubscriber(kioskId: number, adminWs: WebSocket): void {
+  let subs = debugSubscribers.get(kioskId);
+  if (!subs) { subs = new Set(); debugSubscribers.set(kioskId, subs); }
+  subs.add(adminWs);
+  adminWs.on("close", () => {
+    subs!.delete(adminWs);
+    if (subs!.size === 0) {
+      debugSubscribers.delete(kioskId);
+      sendToKiosk(kioskId, { type: "journal-stop" });
+      sendToKiosk(kioskId, { type: "terminal-close" });
+    }
+  });
+}
+
+function relayToDebugSubscribers(kioskId: number, message: string): void {
+  const subs = debugSubscribers.get(kioskId);
+  if (!subs) return;
+  for (const ws of subs) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(message);
+  }
+}
+
+function parseCookieValue(header: string, name: string): string | null {
+  for (const pair of header.split(";")) {
+    const [k, ...rest] = pair.trim().split("=");
+    if (k?.trim() === name) return rest.join("=").trim() || null;
+  }
+  return null;
+}
+
 function sendToKiosk(kioskId: number, message: object): boolean {
   const k = connectedKiosks.get(kioskId);
   if (!k || k.ws.readyState !== WebSocket.OPEN) return false;
@@ -184,6 +218,57 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
     httpServer.on("upgrade", async (req: IncomingMessage, socket, head) => {
       const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+
+      // Admin debug WS: /ws/admin/debug/:kioskId?token=<admin_api_key>
+      // Subscribes to a kiosk's journal + terminal output stream.
+      if (url.pathname.startsWith("/ws/admin/debug/")) {
+        const kioskIdStr = url.pathname.split("/").pop() ?? "";
+        const kioskId = Number(kioskIdStr);
+        if (!Number.isInteger(kioskId) || kioskId <= 0) {
+          socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        // Auth: try API key from query param, then session cookie.
+        const adminToken = url.searchParams.get("token");
+        const cookieHeader = req.headers.cookie ?? "";
+        try {
+          let authed = false;
+          if (adminToken) {
+            const key = await auth.verifyApiKey(adminToken, null);
+            if (key) authed = true;
+          }
+          if (!authed && cookieHeader) {
+            const cookieVal = parseCookieValue(cookieHeader, cookieName);
+            if (cookieVal) {
+              const result = auth.resolveSession(cookieVal);
+              if (result) authed = true;
+            }
+          }
+          if (!authed) throw new Error("unauthorized");
+        } catch {
+          socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        wss.handleUpgrade(req, socket, head, (adminWs) => {
+          addDebugSubscriber(kioskId, adminWs);
+          obs.log.info("admin debug WS connected for kiosk {id}", { id: kioskId });
+          // Relay admin → kiosk messages (terminal-auth, terminal-data, terminal-close, journal-start/stop).
+          adminWs.on("message", (data) => {
+            try {
+              const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+              const relayTypes = ["journal-start", "journal-stop", "terminal-request",
+                "terminal-auth", "terminal-data", "terminal-close"];
+              if (relayTypes.includes(msg["type"] as string)) {
+                sendToKiosk(kioskId, msg);
+              }
+            } catch { /* ignore */ }
+          });
+        });
+        return;
+      }
+
       if (url.pathname !== "/ws/kiosk") {
         socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
         socket.destroy();
@@ -235,6 +320,13 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
                 } else {
                   pending.resolve(msg);
                 }
+                return;
+              }
+              // Relay debug messages (journal + terminal) to admin subscribers.
+              const debugTypes = ["journal-line", "terminal-challenge", "terminal-granted",
+                "terminal-denied", "terminal-data"];
+              if (debugTypes.includes(msg["type"] as string)) {
+                relayToDebugSubscribers(kiosk.id, data.toString());
                 return;
               }
               if (msg["type"] === "status") {

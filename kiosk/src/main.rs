@@ -8,6 +8,7 @@ mod local_server;
 mod onvif_events;
 mod os_update;
 mod pipeline;
+mod remote_debug;
 mod server;
 mod ui;
 mod ws_client;
@@ -27,6 +28,10 @@ pub enum ServerMsg {
     },
     /// Server-pushed "go check for a firmware update now".
     FirmwareCheck,
+    /// Show terminal auth code on screen (overlay).
+    ShowTerminalCode(String),
+    /// Dismiss the terminal code overlay.
+    DismissTerminalCode,
 }
 
 use gstreamer::prelude::PluginFeatureExtManual;

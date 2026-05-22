@@ -1711,6 +1711,130 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
   });
 
+  // ---- Kiosk debug (journal + terminal) pages ----------------------------
+  // These are simple HTML pages that connect to the admin debug WS at
+  // /ws/admin/debug/:kioskId and render output. The WS connection is
+  // authenticated via the admin's API key.
+  app.get("/admin/kiosks/:id/logs", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const kiosk = deps.repo.getKioskById(id);
+    if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
+    const user = event.context.user!;
+    // Get or create an API key for the WS connection.
+    // WS auth: pass session cookie name so JS can read it for the WS query param.
+    // The coordinator WS endpoint also accepts session-based auth.
+    const wsToken = "";
+    return htmlPage(`<html><head><title>Logs: ${kiosk.name}</title>
+      <style>body{margin:0;background:#111;color:#0f0;font-family:monospace;font-size:13px;padding:1rem}
+      pre{white-space:pre-wrap;word-break:break-all}
+      .controls{margin-bottom:1rem}
+      button{background:#333;color:#fff;border:1px solid #555;padding:4px 12px;cursor:pointer;margin-right:8px}
+      </style></head><body>
+      <div class="controls">
+        <a href="/admin/kiosks/${id}" style="color:#0f0">← ${kiosk.name}</a>
+        <button id="btn-start">Start streaming</button>
+        <button id="btn-stop">Stop</button>
+        <button id="btn-clear">Clear</button>
+      </div>
+      <pre id="log"></pre>
+      <script>
+      (function(){
+        var log=document.getElementById('log');
+        var ws;
+        function connect(){
+          // WS to coordinator — proxied through Angie at /ws/admin/debug/:id
+          var proto=location.protocol==='https:'?'wss:':'ws:';
+          ws=new WebSocket(proto+'//'+location.host+'/ws/admin/debug/${id}?token=${wsToken}');
+          ws.onmessage=function(e){
+            try{var m=JSON.parse(e.data);
+              if(m.type==='journal-line'){log.textContent+=m.line+'\\n';log.scrollTop=log.scrollHeight;}
+            }catch{}
+          };
+          ws.onclose=function(){setTimeout(connect,3000)};
+        }
+        document.getElementById('btn-start').onclick=function(){
+          if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'journal-start'}));
+        };
+        document.getElementById('btn-stop').onclick=function(){
+          if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'journal-stop'}));
+        };
+        document.getElementById('btn-clear').onclick=function(){log.textContent='';};
+        connect();
+      })();
+      </script></body></html>`);
+  });
+
+  app.get("/admin/kiosks/:id/terminal", (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const kiosk = deps.repo.getKioskById(id);
+    if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
+    // WS auth: pass session cookie name so JS can read it for the WS query param.
+    // The coordinator WS endpoint also accepts session-based auth.
+    const wsToken = "";
+    return htmlPage(`<html><head><title>Terminal: ${kiosk.name}</title>
+      <style>body{margin:0;background:#000;color:#fff;font-family:monospace;font-size:14px;padding:1rem}
+      #term{white-space:pre-wrap;word-break:break-all;height:calc(100vh - 120px);overflow-y:auto;background:#111;padding:8px;border:1px solid #333}
+      .controls{margin-bottom:1rem;display:flex;gap:8px;align-items:center}
+      button{background:#333;color:#fff;border:1px solid #555;padding:4px 12px;cursor:pointer}
+      input{background:#222;color:#fff;border:1px solid #555;padding:4px 8px;font-family:monospace;width:200px}
+      .status{color:#888;font-size:12px;margin-left:12px}
+      </style></head><body>
+      <div class="controls">
+        <a href="/admin/kiosks/${id}" style="color:#0af">← ${kiosk.name}</a>
+        <button id="btn-request">Request Terminal</button>
+        <input id="code-input" placeholder="Enter code from kiosk screen" style="display:none" />
+        <button id="btn-auth" style="display:none">Authenticate</button>
+        <span class="status" id="status">Disconnected</span>
+      </div>
+      <div id="term"></div>
+      <input id="cmd-input" placeholder="Type here..." style="width:100%;background:#222;color:#fff;border:1px solid #333;padding:6px;font-family:monospace;margin-top:4px;display:none" />
+      <script>
+      (function(){
+        var term=document.getElementById('term'),status=document.getElementById('status');
+        var codeInput=document.getElementById('code-input'),authBtn=document.getElementById('btn-auth');
+        var cmdInput=document.getElementById('cmd-input');
+        var ws;
+        function connect(){
+          var proto=location.protocol==='https:'?'wss:':'ws:';
+          ws=new WebSocket(proto+'//'+location.host+'/ws/admin/debug/${id}?token=${wsToken}');
+          ws.onopen=function(){status.textContent='Connected (not authed)';};
+          ws.onmessage=function(e){
+            try{var m=JSON.parse(e.data);
+              if(m.type==='terminal-challenge'){
+                status.textContent='Code displayed on kiosk screen';
+                codeInput.style.display='';authBtn.style.display='';
+              }else if(m.type==='terminal-granted'){
+                status.textContent='Terminal active';
+                codeInput.style.display='none';authBtn.style.display='none';
+                cmdInput.style.display='';cmdInput.focus();
+              }else if(m.type==='terminal-denied'){
+                status.textContent='Denied: '+(m.reason||'unknown');
+              }else if(m.type==='terminal-data'){
+                var bytes=atob(m.data);term.textContent+=bytes;term.scrollTop=term.scrollHeight;
+              }
+            }catch{}
+          };
+          ws.onclose=function(){status.textContent='Disconnected';setTimeout(connect,3000)};
+        }
+        document.getElementById('btn-request').onclick=function(){
+          if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'terminal-request'}));
+          status.textContent='Requesting...';
+        };
+        authBtn.onclick=function(){
+          if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'terminal-auth',code:codeInput.value.toUpperCase()}));
+        };
+        cmdInput.onkeydown=function(e){
+          if(e.key==='Enter'){
+            var text=cmdInput.value+'\\n';
+            if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'terminal-data',data:btoa(text)}));
+            cmdInput.value='';
+          }
+        };
+        connect();
+      })();
+      </script></body></html>`);
+  });
+
   // ---- Layout switch ----------------------------------------------------
   const emitLayoutChanged = (displayId: number | null, kioskId: number | null, layoutId: number) => {
     const layout = deps.repo.getLayoutById(layoutId);

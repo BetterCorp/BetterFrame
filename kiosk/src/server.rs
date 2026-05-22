@@ -280,6 +280,8 @@ pub fn poll_claim(server: &str, code: &str) -> (String, String) {
                 let name = claim.kiosk_name.unwrap_or_else(|| "kiosk".into());
                 crate::at_rest::write_encrypted(&key_file(), key.as_bytes())
                     .expect("failed to save kiosk key");
+                // Successful pairing resets all terminal lockout state.
+                crate::remote_debug::reset_all_lockouts();
                 return (name, key);
             }
         }

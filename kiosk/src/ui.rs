@@ -20,6 +20,7 @@ use crate::hwmon;
 use crate::local_server;
 use crate::onvif_events;
 use crate::os_update;
+use crate::remote_debug;
 use crate::pipeline;
 use crate::server;
 use crate::ws_client;
@@ -264,6 +265,19 @@ fn activate(app: &Application) {
                     ServerMsg::FirmwareCheck => {
                         maybe_apply_firmware_update(&server_for_reload, &key_for_reload);
                     }
+                    ServerMsg::ShowTerminalCode(code) => {
+                        // Overlay on all windows: big centered code text.
+                        // NOT logged — security requirement.
+                        let code_clone = code.clone();
+                        gtk::glib::idle_add_local_once(move || {
+                            show_terminal_code_overlay(&code_clone);
+                        });
+                    }
+                    ServerMsg::DismissTerminalCode => {
+                        gtk::glib::idle_add_local_once(|| {
+                            dismiss_terminal_code_overlay();
+                        });
+                    }
                 }
             }
         });
@@ -271,6 +285,9 @@ fn activate(app: &Application) {
         // Heartbeat loop — reports display geometry + hwmon, also checks for
         // firmware + OS bundle updates so kiosks pick up new builds without
         // admin push.
+        // Reset terminal auth boot-attempt counter (lockout_count persists).
+        remote_debug::reset_boot_attempts();
+
         let mut first_iter = true;
         loop {
             let heartbeat_ok = send_heartbeat_now(&server, &key);
@@ -1896,4 +1913,52 @@ fn add_css(widget: &impl IsA<gtk::Widget>, css: &str) {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+}
+
+// ---- Terminal code overlay --------------------------------------------------
+// Shown when admin requests terminal access. Big centered code on a dark
+// semi-transparent backdrop over all kiosk windows. The code is NOT logged
+// anywhere (security requirement — physical presence only).
+
+thread_local! {
+    static TERMINAL_CODE_OVERLAY: RefCell<Option<gtk::Window>> = const { RefCell::new(None) };
+}
+
+fn show_terminal_code_overlay(code: &str) {
+    dismiss_terminal_code_overlay();
+
+    let win = gtk::Window::builder()
+        .title("Terminal Auth")
+        .decorated(false)
+        .modal(true)
+        .build();
+
+    let label = Label::new(Some(code));
+    add_css(&label, "label { font-size: 72px; font-weight: 800; font-family: monospace; color: #fff; letter-spacing: 12px; }");
+
+    let hint = Label::new(Some("Enter this code in the admin UI to authorize terminal access"));
+    add_css(&hint, "label { font-size: 16px; color: #aaa; margin-top: 24px; }");
+
+    let vbox = GtkBox::new(Orientation::Vertical, 16);
+    vbox.set_valign(gtk::Align::Center);
+    vbox.set_halign(gtk::Align::Center);
+    vbox.set_vexpand(true);
+    vbox.set_hexpand(true);
+    vbox.append(&label);
+    vbox.append(&hint);
+
+    add_css(&vbox, "box { background: rgba(0,0,0,0.85); }");
+    win.set_child(Some(&vbox));
+    win.set_fullscreened(true);
+    win.present();
+
+    TERMINAL_CODE_OVERLAY.with(|o| *o.borrow_mut() = Some(win));
+}
+
+fn dismiss_terminal_code_overlay() {
+    TERMINAL_CODE_OVERLAY.with(|o| {
+        if let Some(win) = o.borrow_mut().take() {
+            win.close();
+        }
+    });
 }

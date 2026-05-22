@@ -1045,10 +1045,10 @@ fn render_layout(display_id: u32, layout_id: u32) {
                             }
                             overlay.upcast()
                         } else {
-                            placeholder(Some(&format!("{} (no stream)", cam.name)))
+                            camera_error_cell(&cam.name, "Stream unavailable")
                         }
                     } else {
-                        placeholder(Some("Unknown camera"))
+                        camera_error_cell("Unknown", "Camera not in bundle")
                     }
                 } else {
                     none_cell()
@@ -1907,6 +1907,34 @@ fn spinner(px: i32) -> gtk::Spinner {
 
 fn none_cell() -> gtk::Widget {
     placeholder(None)
+}
+
+fn camera_error_cell(name: &str, reason: &str) -> gtk::Widget {
+    let vbox = GtkBox::new(Orientation::Vertical, 8);
+    add_css(&vbox, ".bf-cam-error { background-color: #1a0000; }");
+    vbox.add_css_class("bf-cam-error");
+    vbox.set_valign(gtk::Align::Center);
+    vbox.set_halign(gtk::Align::Center);
+    vbox.set_vexpand(true);
+    vbox.set_hexpand(true);
+
+    let icon = Label::new(Some("⚠"));
+    add_css(&icon, "label { font-size: 36px; color: #c33; }");
+    vbox.append(&icon);
+
+    let name_label = Label::new(Some(name));
+    add_css(&name_label, "label { font-size: 14px; color: #c33; font-weight: 600; }");
+    vbox.append(&name_label);
+
+    let reason_label = Label::new(Some(reason));
+    add_css(&reason_label, "label { font-size: 12px; color: #666; margin-top: 4px; }");
+    vbox.append(&reason_label);
+
+    let retry_label = Label::new(Some("Retries on next layout render"));
+    add_css(&retry_label, "label { font-size: 10px; color: #444; margin-top: 8px; }");
+    vbox.append(&retry_label);
+
+    vbox.upcast()
 }
 
 fn placeholder(text: Option<&str>) -> gtk::Widget {

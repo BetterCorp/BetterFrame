@@ -17,7 +17,7 @@ export interface OsUpdateApi {
   storeBuffer(bytes: Buffer, expectedSha256?: string | null): Promise<StoredOsBundle>;
   storeFromUrl(url: string, expectedSha256?: string | null): Promise<StoredOsBundle>;
   readBundle(path: string, expectedSha256: string): Promise<Buffer>;
-  streamBundle(path: string): Promise<{ body: ReadableStream<Uint8Array>; size: number }>;
+  streamBundle(path: string, start?: number, end?: number): Promise<{ body: ReadableStream<Uint8Array>; size: number }>;
   removeBundle(path: string): Promise<void>;
 }
 
@@ -99,10 +99,14 @@ export function initOsUpdates(config: OsUpdateConfig): OsUpdateApi {
     return buf;
   }
 
-  async function streamBundle(path: string): Promise<{ body: ReadableStream<Uint8Array>; size: number }> {
-    const size = (await stat(path)).size;
+  async function streamBundle(path: string, start?: number, end?: number): Promise<{ body: ReadableStream<Uint8Array>; size: number }> {
+    const totalSize = (await stat(path)).size;
+    const opts = (start != null || end != null)
+      ? { start: start ?? 0, end: end ?? totalSize - 1 }
+      : undefined;
+    const size = opts ? (opts.end - opts.start + 1) : totalSize;
     return {
-      body: Readable.toWeb(createReadStream(path)) as ReadableStream<Uint8Array>,
+      body: Readable.toWeb(createReadStream(path, opts)) as ReadableStream<Uint8Array>,
       size,
     };
   }

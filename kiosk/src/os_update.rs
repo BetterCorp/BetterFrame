@@ -129,46 +129,132 @@ pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
         info.version, info.size_bytes, info.release_id
     );
 
-    // 1. Download
+    // 1. Download with chunked streaming + resume support.
+    // Streams directly to disk (no 1.2GB in RAM). On network failure,
+    // resumes from where it left off using Range header. Retries up to
+    // 5 times with 10s backoff between attempts.
     let url = format!("{}{}", server, info.download_url);
-    let client = reqwest::blocking::Client::new();
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {key}"))
-        .timeout(Duration::from_secs(600)) // OS bundles run hundreds of MB
-        .send()
-        .map_err(|e| format!("download request: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("download HTTP {}", resp.status()));
-    }
-    let bytes = resp.bytes().map_err(|e| format!("download body: {e}"))?;
-    if bytes.len() as u64 != info.size_bytes {
-        return Err(format!(
-            "size mismatch: expected {}, got {}",
-            info.size_bytes,
-            bytes.len()
-        ));
-    }
-
-    // 2. sha256 (catch transport corruption; RAUC will re-verify the CMS
-    // signature separately when it opens the bundle).
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let digest = hasher.finalize();
-    let got_sha = hex_lower(&digest);
-    if got_sha != info.sha256 {
-        return Err(format!(
-            "sha256 mismatch: expected {}, got {}",
-            info.sha256, got_sha
-        ));
-    }
-
-    // 3. Stage on disk for `rauc install` (it expects a file path, not a fd).
-    // /var/tmp survives /tmp's potential tmpfs size cap; bundles can be big.
     let staging_dir = PathBuf::from("/var/tmp/betterframe");
     fs::create_dir_all(&staging_dir).map_err(|e| format!("mkdir staging: {e}"))?;
     let bundle_path = staging_dir.join(format!("os-{}.raucb", info.release_id));
-    fs::write(&bundle_path, &bytes).map_err(|e| format!("write bundle: {e}"))?;
+
+    let max_retries = 5;
+    for attempt in 1..=max_retries {
+        let existing_bytes = fs::metadata(&bundle_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        // If we already have the full file from a previous attempt, skip download.
+        if existing_bytes >= info.size_bytes {
+            break;
+        }
+
+        info!(
+            "os-update: download attempt {attempt}/{max_retries} (resuming from {existing_bytes} / {} bytes)",
+            info.size_bytes
+        );
+
+        let client = reqwest::blocking::Client::new();
+        let mut req = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {key}"));
+        if existing_bytes > 0 {
+            req = req.header("Range", format!("bytes={existing_bytes}-"));
+        }
+
+        let resp = match req.timeout(Duration::from_secs(300)).send() {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("os-update: download request failed (attempt {attempt}): {e}");
+                if attempt < max_retries {
+                    std::thread::sleep(Duration::from_secs(10));
+                    continue;
+                }
+                return Err(format!("download failed after {max_retries} attempts: {e}"));
+            }
+        };
+
+        let status = resp.status().as_u16();
+        if status != 200 && status != 206 {
+            return Err(format!("download HTTP {status}"));
+        }
+
+        // Stream chunks to disk.
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&bundle_path)
+            .map_err(|e| format!("open bundle file: {e}"))?;
+
+        let mut reader = resp;
+        let mut buf = vec![0u8; 256 * 1024]; // 256KB chunks
+        let mut downloaded = existing_bytes;
+        let mut stream_ok = true;
+
+        loop {
+            match std::io::Read::read(&mut reader, &mut buf) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    file.write_all(&buf[..n]).map_err(|e| format!("write chunk: {e}"))?;
+                    downloaded += n as u64;
+                    // Log progress every ~50MB
+                    if downloaded % (50 * 1024 * 1024) < (256 * 1024) as u64 {
+                        info!("os-update: {downloaded} / {} bytes ({:.0}%)",
+                            info.size_bytes,
+                            (downloaded as f64 / info.size_bytes as f64) * 100.0);
+                    }
+                }
+                Err(e) => {
+                    warn!("os-update: stream error at {downloaded} bytes (attempt {attempt}): {e}");
+                    stream_ok = false;
+                    break;
+                }
+            }
+        }
+        file.sync_all().ok();
+
+        if stream_ok && downloaded >= info.size_bytes {
+            break; // Download complete
+        }
+
+        if attempt < max_retries {
+            info!("os-update: retrying in 10s...");
+            std::thread::sleep(Duration::from_secs(10));
+        } else {
+            return Err(format!("download incomplete after {max_retries} attempts ({downloaded}/{} bytes)", info.size_bytes));
+        }
+    }
+
+    // 2. sha256 verify the complete file on disk.
+    let file_size = fs::metadata(&bundle_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    if file_size != info.size_bytes {
+        let _ = fs::remove_file(&bundle_path);
+        return Err(format!("size mismatch: expected {}, got {file_size}", info.size_bytes));
+    }
+
+    let mut hasher = Sha256::new();
+    let mut f = fs::File::open(&bundle_path).map_err(|e| format!("open for hash: {e}"))?;
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        match std::io::Read::read(&mut f, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(e) => {
+                let _ = fs::remove_file(&bundle_path);
+                return Err(format!("read for hash: {e}"));
+            }
+        }
+    }
+    drop(f);
+    let digest = hasher.finalize();
+    let got_sha = hex_lower(&digest);
+    if got_sha != info.sha256 {
+        let _ = fs::remove_file(&bundle_path);
+        return Err(format!("sha256 mismatch: expected {}, got {got_sha}"));
+    }
 
     // 4. Hand off to rauc. `rauc install` blocks until the bundle is fully
     // copied into the inactive slot and bootloader is flipped. Exit code 0

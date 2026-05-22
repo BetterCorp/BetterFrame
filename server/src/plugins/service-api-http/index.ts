@@ -858,11 +858,39 @@ function registerKioskRoutes(
     }
 
     const bundle = await osUpdates.streamBundle(release.artifact_path);
+    const totalSize = bundle.size;
+
+    // Support Range requests for resumable downloads.
+    const rangeHeader = getRequestHeader(event, "range");
+    if (rangeHeader) {
+      const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+      if (match) {
+        const start = Number(match[1]);
+        const end = match[2] ? Number(match[2]) : totalSize - 1;
+        if (start >= totalSize) {
+          return new Response(null, { status: 416, headers: { "content-range": `bytes */${totalSize}` } });
+        }
+        const rangeBundle = await osUpdates.streamBundle(release.artifact_path, start, end);
+        return new Response(rangeBundle.body, {
+          status: 206,
+          headers: {
+            "content-type": "application/vnd.rauc",
+            "content-length": String(end - start + 1),
+            "content-range": `bytes ${start}-${end}/${totalSize}`,
+            "accept-ranges": "bytes",
+            "x-bf-sha256": release.sha256,
+            "x-bf-version": release.version,
+          },
+        });
+      }
+    }
+
     return new Response(bundle.body, {
       status: 200,
       headers: {
         "content-type": "application/vnd.rauc",
-        "content-length": String(bundle.size),
+        "content-length": String(totalSize),
+        "accept-ranges": "bytes",
         "x-bf-sha256": release.sha256,
         "x-bf-version": release.version,
         "x-bf-compatibility": release.compatibility,

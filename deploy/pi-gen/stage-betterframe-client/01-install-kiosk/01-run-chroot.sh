@@ -106,47 +106,29 @@ plymouth-set-default-theme betterframe || true
 CURSOR_DIR=/usr/share/icons/betterframe-empty/cursors
 install -d -m 755 "$CURSOR_DIR"
 install -m 644 /tmp/bf-files/cursor.theme /usr/share/icons/betterframe-empty/cursor.theme
-# Generate a 1x1 transparent X cursor for every standard cursor name.
-# xcursorgen reads a config file and produces the binary Xcursor format.
-# If xcursorgen is available (from x11-apps), use it; otherwise create
-# a minimal raw Xcursor binary (header + 1px transparent image).
-printf '1 0 0 /tmp/bf-transparent.png\n' > /tmp/bf-cursor.cfg
-convert -size 1x1 xc:transparent /tmp/bf-transparent.png 2>/dev/null \
-  || python3 -c "
-import struct,sys
-# Minimal 1x1 RGBA PNG
-sys.stdout.buffer.write(b'\\x89PNG\\r\\n\\x1a\\n' + bytes([
-  0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,6,0,0,0,31,21,196,137,
-  0,0,0,10,73,68,65,84,120,156,98,0,0,0,2,0,1,226,33,188,51,
-  0,0,0,0,73,69,78,68,174,66,96,130]))
-" > /tmp/bf-transparent.png
-if command -v xcursorgen >/dev/null 2>&1; then
-  for name in default left_ptr arrow watch hand2 text xterm top_left_corner \
-    top_right_corner bottom_left_corner bottom_right_corner sb_h_double_arrow \
-    sb_v_double_arrow fleur crosshair question_arrow; do
-    xcursorgen /tmp/bf-cursor.cfg "$CURSOR_DIR/$name" 2>/dev/null || true
-  done
-else
-  # Minimal Xcursor binary: magic + header + 1x1 ARGB image (4 bytes, all 0)
-  python3 -c "
-import struct, sys, os
-magic = b'Xcur'
-header = struct.pack('<III', 16, 1, 1)  # header_size, version, ntoc
-toc = struct.pack('<III', 0xfffd0002, 36, 28)  # type=image, subtype=1, position
-chunk_header = struct.pack('<IIIII', 36, 0xfffd0002, 1, 1, 1)  # size,type,subtype(nominal),width,height
-xhot_yhot = struct.pack('<II', 0, 0)
-delay = struct.pack('<I', 0)
-pixel = struct.pack('<I', 0)  # 1 ARGB pixel, fully transparent
-data = magic + header + toc + chunk_header + xhot_yhot + delay + pixel
+# Generate valid 1x1 transparent Xcursor files. Previous generator had a
+# missing version field → malformed → wlroots fell back to default cursor.
+# Xcursor format: file header (16) + TOC entry (12) + image chunk (36+4=40) = 68 bytes.
+python3 -c "
+import struct, os
+# File header: magic + header_size + version(1.0) + ntoc
+hdr = b'Xcur' + struct.pack('<III', 16, 0x00010000, 1)
+# TOC: type(image=0xfffd0002) + subtype(nominal=1) + position(28)
+toc = struct.pack('<III', 0xfffd0002, 1, 28)
+# Image chunk header (36 bytes): header_size + type + nominal + version + w + h + xhot + yhot + delay
+img = struct.pack('<IIIIIIIII', 36, 0xfffd0002, 1, 1, 1, 1, 0, 0, 0)
+# 1 ARGB pixel, fully transparent
+px = struct.pack('<I', 0)
+data = hdr + toc + img + px
 for name in ['default','left_ptr','arrow','watch','hand2','text','xterm',
     'top_left_corner','top_right_corner','bottom_left_corner',
     'bottom_right_corner','sb_h_double_arrow','sb_v_double_arrow',
-    'fleur','crosshair','question_arrow']:
-  path = os.path.join('$CURSOR_DIR', name)
-  with open(path, 'wb') as f: f.write(data)
-" 2>/dev/null || true
-fi
-rm -f /tmp/bf-cursor.cfg /tmp/bf-transparent.png
+    'fleur','crosshair','question_arrow','x_cursor','pirate',
+    'sb_left_arrow','sb_right_arrow','sb_up_arrow','sb_down_arrow',
+    'top_side','bottom_side','left_side','right_side']:
+  with open(os.path.join('$CURSOR_DIR', name), 'wb') as f:
+    f.write(data)
+"
 # Set as system default cursor theme
 update-alternatives --install /usr/share/icons/default/index.theme x-cursor-theme \
   /usr/share/icons/betterframe-empty/cursor.theme 100 2>/dev/null || true

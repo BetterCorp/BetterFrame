@@ -1770,45 +1770,98 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     // WS auth: browser sends session cookie automatically on WS upgrade.
     // Coordinator WS endpoint validates via resolveSession.
     return htmlPage(`<html><head><title>Terminal: ${kiosk.name}</title>
-      <style>body{margin:0;background:#000;color:#fff;font-family:monospace;font-size:14px;padding:1rem}
-      #term{white-space:pre-wrap;word-break:break-all;height:calc(100vh - 120px);overflow-y:auto;background:#111;padding:8px;border:1px solid #333}
-      .controls{margin-bottom:1rem;display:flex;gap:8px;align-items:center}
-      button{background:#333;color:#fff;border:1px solid #555;padding:4px 12px;cursor:pointer}
-      input{background:#222;color:#fff;border:1px solid #555;padding:4px 8px;font-family:monospace;width:200px}
-      .status{color:#888;font-size:12px;margin-left:12px}
+      <style>
+        body{margin:0;background:#1a1a1a;color:#e0e0e0;font-family:'Cascadia Code','Fira Code',monospace;font-size:13px;padding:1rem}
+        #term{height:calc(100vh - 100px);overflow-y:auto;background:#0d0d0d;padding:12px;border:1px solid #333;border-radius:4px}
+        .line{margin:0;white-space:pre-wrap;word-break:break-all;line-height:1.5}
+        .prompt{color:#5faf5f}
+        .cmd{color:#fff}
+        .output{color:#b0b0b0}
+        .controls{margin-bottom:0.75rem;display:flex;gap:8px;align-items:center}
+        button{background:#333;color:#fff;border:1px solid #555;padding:4px 12px;cursor:pointer;border-radius:3px}
+        button:hover{background:#444}
+        input{background:#222;color:#fff;border:1px solid #555;padding:4px 8px;font-family:inherit;border-radius:3px}
+        #code-input{width:180px}
+        .status{color:#666;font-size:11px;margin-left:12px}
+        .cmd-line{display:flex;align-items:center;margin-top:4px;background:#0d0d0d;border:1px solid #333;border-radius:4px;padding:4px 8px}
+        .cmd-line .prompt-label{color:#5faf5f;margin-right:8px;white-space:nowrap}
+        .cmd-line input{flex:1;background:transparent;border:none;color:#fff;outline:none;font-family:inherit;font-size:13px;padding:2px 0}
       </style></head><body>
       <div class="controls">
-        <a href="/admin/kiosks/${id}" style="color:#0af">← ${kiosk.name}</a>
+        <a href="/admin/kiosks/${id}" style="color:#5fafff;text-decoration:none">← ${kiosk.name}</a>
         <button id="btn-request">Request Terminal</button>
-        <input id="code-input" placeholder="Enter code from kiosk screen" style="display:none" />
-        <button id="btn-auth" style="display:none">Authenticate</button>
+        <input id="code-input" placeholder="Enter code from screen" style="display:none" />
+        <button id="btn-auth" style="display:none">Auth</button>
         <span class="status" id="status">Disconnected</span>
       </div>
       <div id="term"></div>
-      <input id="cmd-input" placeholder="Type here..." style="width:100%;background:#222;color:#fff;border:1px solid #333;padding:6px;font-family:monospace;margin-top:4px;display:none" />
+      <div class="cmd-line" id="cmd-row" style="display:none">
+        <span class="prompt-label" id="prompt-label">$</span>
+        <input id="cmd-input" placeholder="" autofocus />
+      </div>
       <script>
       (function(){
         var term=document.getElementById('term'),status=document.getElementById('status');
         var codeInput=document.getElementById('code-input'),authBtn=document.getElementById('btn-auth');
-        var cmdInput=document.getElementById('cmd-input');
-        var ws;
+        var cmdInput=document.getElementById('cmd-input'),cmdRow=document.getElementById('cmd-row');
+        var promptLabel=document.getElementById('prompt-label');
+        var ws,cwd='~',outputBuf='';
+
+        function appendOutput(){
+          if(!outputBuf)return;
+          var div=document.createElement('div');
+          div.className='line output';
+          div.textContent=outputBuf;
+          term.appendChild(div);
+          outputBuf='';
+          term.scrollTop=term.scrollHeight;
+        }
+
+        function appendCmd(cmd){
+          appendOutput();
+          var div=document.createElement('div');
+          div.className='line';
+          var p=document.createElement('span');
+          p.className='prompt';
+          p.textContent=cwd+'$ ';
+          var c=document.createElement('span');
+          c.className='cmd';
+          c.textContent=cmd;
+          div.appendChild(p);
+          div.appendChild(c);
+          term.appendChild(div);
+          term.scrollTop=term.scrollHeight;
+        }
+
         function connect(){
           var proto=location.protocol==='https:'?'wss:':'ws:';
           ws=new WebSocket(proto+'//'+location.host+'/admin/ws/debug/${id}');
-          ws.onopen=function(){status.textContent='Connected (not authed)';};
+          ws.onopen=function(){status.textContent='Connected';};
           ws.onmessage=function(e){
             try{var m=JSON.parse(e.data);
               if(m.type==='terminal-challenge'){
-                status.textContent='Code displayed on kiosk screen';
-                codeInput.style.display='';authBtn.style.display='';
+                status.textContent='Enter code from kiosk screen';
+                codeInput.style.display='';authBtn.style.display='';codeInput.focus();
               }else if(m.type==='terminal-granted'){
                 status.textContent='Terminal active';
                 codeInput.style.display='none';authBtn.style.display='none';
-                cmdInput.style.display='';cmdInput.focus();
+                cmdRow.style.display='flex';cmdInput.focus();
+                // Get initial pwd
+                ws.send(JSON.stringify({type:'terminal-data',data:btoa('pwd\\n')}));
               }else if(m.type==='terminal-denied'){
                 status.textContent='Denied: '+(m.reason||'unknown');
               }else if(m.type==='terminal-data'){
-                var bytes=atob(m.data);term.textContent+=bytes;term.scrollTop=term.scrollHeight;
+                var bytes=atob(m.data);
+                outputBuf+=bytes;
+                // Try to detect pwd from output (last non-empty line after command)
+                var lines=outputBuf.split('\\n');
+                for(var i=lines.length-1;i>=0;i--){
+                  var l=lines[i].trim();
+                  if(l&&l.startsWith('/')){cwd=l.replace(/^\\/home\\/bfkiosk/,'~');break;}
+                }
+                // Flush to display
+                appendOutput();
+                promptLabel.textContent=cwd+'$ ';
               }
             }catch{}
           };
@@ -1821,10 +1874,18 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         authBtn.onclick=function(){
           if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'terminal-auth',code:codeInput.value.toUpperCase()}));
         };
+        codeInput.onkeydown=function(e){
+          if(e.key==='Enter')authBtn.click();
+        };
         cmdInput.onkeydown=function(e){
-          if(e.key==='Enter'){
-            var text=cmdInput.value+'\\n';
-            if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'terminal-data',data:btoa(text)}));
+          if(e.key==='Enter'&&cmdInput.value){
+            var cmd=cmdInput.value;
+            appendCmd(cmd);
+            ws.send(JSON.stringify({type:'terminal-data',data:btoa(cmd+'\\n')}));
+            // After each command, get pwd for prompt update
+            setTimeout(function(){
+              ws.send(JSON.stringify({type:'terminal-data',data:btoa('pwd\\n')}));
+            },200);
             cmdInput.value='';
           }
         };

@@ -1948,23 +1948,40 @@ fn show_terminal_code_overlay(code: &str) {
             TERMINAL_CODE_SAVED_CHILD.with(|s| *s.borrow_mut() = Some((display_id, c.clone())));
         }
 
-        let label = Label::new(Some(code));
-        add_css(&label, "label { font-size: 72px; font-weight: 800; font-family: monospace; color: #fff; letter-spacing: 12px; }");
-
-        let hint = Label::new(Some("Enter this code in the admin UI\nto authorize terminal access"));
-        add_css(&hint, "label { font-size: 18px; color: #aaa; margin-top: 24px; text-align: center; }");
-
-        let timeout_hint = Label::new(Some("Code expires in 60 seconds"));
-        add_css(&timeout_hint, "label { font-size: 14px; color: #666; margin-top: 12px; }");
-
-        let vbox = GtkBox::new(Orientation::Vertical, 16);
+        // Match the pairing screen layout but with red warning theme.
+        let vbox = GtkBox::new(Orientation::Vertical, 20);
         vbox.set_valign(gtk::Align::Center);
         vbox.set_halign(gtk::Align::Center);
         vbox.set_vexpand(true);
         vbox.set_hexpand(true);
-        vbox.append(&label);
+
+        // Warning banner
+        let warning = Label::new(Some("⚠  REMOTE TERMINAL ACCESS  ⚠"));
+        add_css(&warning, ".term-warn { font-size: 20px; color: #ff4444; font-weight: 700; letter-spacing: 2px; }");
+        warning.add_css_class("term-warn");
+
+        // Logo (same as pairing screen)
+        let logo = logo_picture(BETTERFRAME_LOGO_SVG, 360, 88, "terminal-logo");
+
+        // Code label (same style as pairing but red)
+        let code_label = Label::new(Some(code));
+        add_css(&code_label, ".term-code { font-size: 72px; color: #ff4444; font-weight: 700; letter-spacing: 12px; font-family: monospace; }");
+        code_label.add_css_class("term-code");
+
+        let hint = Label::new(Some("Enter this code in BetterFrame admin to authorize terminal"));
+        add_css(&hint, ".term-hint { font-size: 14px; color: #888; }");
+        hint.add_css_class("term-hint");
+
+        let timeout_label = Label::new(Some("Code expires in 60 seconds"));
+        add_css(&timeout_label, ".term-timeout { font-size: 12px; color: #555; margin-top: 8px; }");
+        timeout_label.add_css_class("term-timeout");
+
+        vbox.append(&warning);
+        vbox.append(&logo);
+        vbox.append(&code_label);
         vbox.append(&hint);
-        vbox.append(&timeout_hint);
+        vbox.append(&spinner(28));
+        vbox.append(&timeout_label);
 
         add_css(&vbox, "box { background: #000; }");
         win.set_child(Some(&vbox));

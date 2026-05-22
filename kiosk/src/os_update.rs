@@ -49,6 +49,8 @@ fn compatibility() -> String {
     std::env::var("BF_RAUC_COMPATIBILITY").unwrap_or_else(|_| DEFAULT_COMPATIBILITY.to_string())
 }
 
+pub fn current_os_version_public() -> String { current_os_version() }
+
 fn current_os_version() -> String {
     if let Ok(s) = fs::read_to_string("/etc/betterframe/os-version") {
         let trimmed = s.trim();

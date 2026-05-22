@@ -400,6 +400,7 @@ pub fn heartbeat(
         .header("Authorization", format!("Bearer {key}"))
         .json(&serde_json::json!({
             "kiosk_app_version": kiosk_app_version(),
+            "os_version": crate::os_update::current_os_version_public(),
             "displays": display_info,
             "cpu_temp_c": hw.cpu_temp_c,
             "cpu_load_percent": hw.cpu_load_percent,

@@ -41,7 +41,6 @@ jobs:
       channel: ${{ steps.compute.outputs.channel }}
       ref:     ${{ steps.compute.outputs.ref }}
       build_image: ${{ steps.compute.outputs.build_image }}
-      needs_build: ${{ steps.compute.outputs.needs_build }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -92,24 +91,12 @@ jobs:
           esac
           tag="v${version}"
           build_image=true
-          needs_build=true
-
-          # Skip kiosk+image builds on master push when only server code changed
-          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == refs/heads/master ]]; then
-            kiosk_relevant=$(git diff --name-only HEAD~1 HEAD -- kiosk/ deploy/ .github/ | wc -l)
-            if [[ "$kiosk_relevant" -eq 0 ]]; then
-              echo "::notice::No kiosk/deploy/.github changes — skipping binary + image builds"
-              needs_build=false
-              build_image=false
-            fi
-          fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag"           >> "$GITHUB_OUTPUT"
           echo "channel=$channel"   >> "$GITHUB_OUTPUT"
           echo "ref=$GITHUB_SHA"    >> "$GITHUB_OUTPUT"
           echo "build_image=$build_image" >> "$GITHUB_OUTPUT"
-          echo "needs_build=$needs_build" >> "$GITHUB_OUTPUT"
 
       - name: Create / ensure release record (lightweight tag for master pushes)
         env:
@@ -141,7 +128,6 @@ jobs:
   # ---- Build assets ---------------------------------------------------------
   build:
     needs: meta
-    if: needs.meta.outputs.needs_build == 'true'
     uses: ./.github/workflows/build.yml
     with:
       version: ${{ needs.meta.outputs.version }}

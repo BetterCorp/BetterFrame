@@ -1921,44 +1921,76 @@ fn add_css(widget: &impl IsA<gtk::Widget>, css: &str) {
 // anywhere (security requirement — physical presence only).
 
 thread_local! {
-    static TERMINAL_CODE_OVERLAY: RefCell<Option<gtk::Window>> = const { RefCell::new(None) };
+    static TERMINAL_CODE_WIDGET: RefCell<Option<gtk::Widget>> = const { RefCell::new(None) };
+    static TERMINAL_CODE_SAVED_CHILD: RefCell<Option<(u32, gtk::Widget)>> = const { RefCell::new(None) };
 }
 
 fn show_terminal_code_overlay(code: &str) {
     dismiss_terminal_code_overlay();
 
-    let win = gtk::Window::builder()
-        .title("Terminal Auth")
-        .decorated(false)
-        .modal(true)
-        .build();
+    // Cage is a single-window compositor. We can't open a new window.
+    // Instead, replace the first display window's child with the code
+    // overlay and restore it when dismissed.
+    let display_id = DISPLAYS.with(|ds| {
+        ds.borrow().keys().next().copied()
+    });
+    let Some(display_id) = display_id else { return };
 
-    let label = Label::new(Some(code));
-    add_css(&label, "label { font-size: 72px; font-weight: 800; font-family: monospace; color: #fff; letter-spacing: 12px; }");
+    DISPLAYS.with(|ds| {
+        let ds = ds.borrow();
+        let Some(st) = ds.get(&display_id) else { return };
+        let win = &st.window;
 
-    let hint = Label::new(Some("Enter this code in the admin UI to authorize terminal access"));
-    add_css(&hint, "label { font-size: 16px; color: #aaa; margin-top: 24px; }");
+        // Save current child for restore.
+        let old_child = win.child();
+        if let Some(ref c) = old_child {
+            TERMINAL_CODE_SAVED_CHILD.with(|s| *s.borrow_mut() = Some((display_id, c.clone())));
+        }
 
-    let vbox = GtkBox::new(Orientation::Vertical, 16);
-    vbox.set_valign(gtk::Align::Center);
-    vbox.set_halign(gtk::Align::Center);
-    vbox.set_vexpand(true);
-    vbox.set_hexpand(true);
-    vbox.append(&label);
-    vbox.append(&hint);
+        let label = Label::new(Some(code));
+        add_css(&label, "label { font-size: 72px; font-weight: 800; font-family: monospace; color: #fff; letter-spacing: 12px; }");
 
-    add_css(&vbox, "box { background: rgba(0,0,0,0.85); }");
-    win.set_child(Some(&vbox));
-    win.set_fullscreened(true);
-    win.present();
+        let hint = Label::new(Some("Enter this code in the admin UI\nto authorize terminal access"));
+        add_css(&hint, "label { font-size: 18px; color: #aaa; margin-top: 24px; text-align: center; }");
 
-    TERMINAL_CODE_OVERLAY.with(|o| *o.borrow_mut() = Some(win));
+        let timeout_hint = Label::new(Some("Code expires in 60 seconds"));
+        add_css(&timeout_hint, "label { font-size: 14px; color: #666; margin-top: 12px; }");
+
+        let vbox = GtkBox::new(Orientation::Vertical, 16);
+        vbox.set_valign(gtk::Align::Center);
+        vbox.set_halign(gtk::Align::Center);
+        vbox.set_vexpand(true);
+        vbox.set_hexpand(true);
+        vbox.append(&label);
+        vbox.append(&hint);
+        vbox.append(&timeout_hint);
+
+        add_css(&vbox, "box { background: #000; }");
+        win.set_child(Some(&vbox));
+
+        TERMINAL_CODE_WIDGET.with(|w| *w.borrow_mut() = Some(vbox.upcast()));
+    });
+
+    // Auto-dismiss after 60s (timeout doesn't count as failed attempt).
+    gtk::glib::timeout_add_local_once(Duration::from_secs(60), || {
+        dismiss_terminal_code_overlay();
+    });
 }
 
 fn dismiss_terminal_code_overlay() {
-    TERMINAL_CODE_OVERLAY.with(|o| {
-        if let Some(win) = o.borrow_mut().take() {
-            win.close();
+    // Restore previous content.
+    TERMINAL_CODE_WIDGET.with(|w| {
+        if w.borrow().is_none() { return; }
+        *w.borrow_mut() = None;
+    });
+    TERMINAL_CODE_SAVED_CHILD.with(|s| {
+        if let Some((display_id, child)) = s.borrow_mut().take() {
+            DISPLAYS.with(|ds| {
+                let ds = ds.borrow();
+                if let Some(st) = ds.get(&display_id) {
+                    st.window.set_child(Some(&child));
+                }
+            });
         }
     });
 }

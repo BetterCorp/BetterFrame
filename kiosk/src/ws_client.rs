@@ -212,6 +212,16 @@ async fn handle_message(
                 Ok(code) => {
                     *pending_code.lock().unwrap() = Some(code.clone());
                     let _ = tx.send(ServerMsg::ShowTerminalCode(code));
+                    // Auto-expire code after 60s. Timeout does NOT count as failed attempt.
+                    let pc_timeout = pending_code.clone();
+                    let tx_timeout = tx.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        if pc_timeout.lock().unwrap().take().is_some() {
+                            info!("ws: terminal code expired (60s timeout)");
+                            let _ = tx_timeout.send(ServerMsg::DismissTerminalCode);
+                        }
+                    });
                     ws_send(writer, serde_json::json!({ "type": "terminal-challenge" })).await;
                 }
                 Err(e) => {

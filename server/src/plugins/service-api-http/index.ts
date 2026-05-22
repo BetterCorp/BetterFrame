@@ -297,7 +297,24 @@ function registerKioskRoutes(
     const bundle = generateBundle(repo, secrets, kiosk.id, clusterKey);
     if (!bundle) throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
 
-    return bundle;
+    // Content-hash ETag: kiosk sends If-None-Match on subsequent fetches.
+    // If bundle hasn't changed → 304 Not Modified (no body, saves bandwidth).
+    const json = JSON.stringify(bundle);
+    const hash = createHash("sha256").update(json).digest("hex").slice(0, 16);
+    const etag = `"${hash}"`;
+    const ifNoneMatch = getRequestHeader(event, "if-none-match");
+    if (ifNoneMatch === etag) {
+      return new Response(null, { status: 304 });
+    }
+
+    return new Response(json, {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "etag": etag,
+        "x-bf-bundle-version": bundle.version,
+      },
+    });
   });
 
   // Heartbeat

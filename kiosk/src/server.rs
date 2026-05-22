@@ -303,14 +303,20 @@ pub fn poll_claim(server: &str, code: &str) -> (String, String) {
 
 /// Fetch bundle from server. Returns None on network/HTTP/parse failure.
 /// On success, also writes the bundle to the on-disk cache.
+/// Cached ETag from the last bundle fetch. Sent as If-None-Match so the
+/// server can return 304 when the bundle hasn't changed.
+static BUNDLE_ETAG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
     let client = reqwest::blocking::Client::new();
-    let resp = match client
+    let mut req = client
         .get(format!("{server}/api/kiosk/bundle"))
         .header("Authorization", format!("Bearer {key}"))
-        .timeout(Duration::from_secs(10))
-        .send()
-    {
+        .timeout(Duration::from_secs(10));
+    if let Some(etag) = BUNDLE_ETAG.lock().unwrap().as_deref() {
+        req = req.header("If-None-Match", etag);
+    }
+    let resp = match req.send() {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("bundle fetch failed: {e}");
@@ -318,9 +324,19 @@ pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
         }
     };
 
+    // 304 Not Modified — bundle unchanged, use cached.
+    if resp.status().as_u16() == 304 {
+        return load_cached_bundle();
+    }
+
     if !resp.status().is_success() {
         tracing::warn!("bundle fetch returned {}", resp.status());
         return None;
+    }
+
+    // Cache the ETag for next request.
+    if let Some(etag) = resp.headers().get("etag").and_then(|v| v.to_str().ok()) {
+        *BUNDLE_ETAG.lock().unwrap() = Some(etag.to_string());
     }
 
     match resp.json::<KioskBundle>() {

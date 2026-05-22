@@ -121,15 +121,22 @@ impl JournalStream {
         let kill_clone = kill.clone();
 
         std::thread::spawn(move || {
+            // Try unit-scoped first, fall back to all journal if permission denied.
             let mut child = match Command::new("journalctl")
-                .args(["-u", "betterframe-kiosk", "-f", "--no-pager", "-o", "short-iso", "-n", "50"])
+                .args(["--user-unit", "betterframe-kiosk", "-f", "--no-pager", "-o", "short-iso", "-n", "50"])
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null())
+                .stderr(Stdio::piped())
                 .spawn()
+                .or_else(|_| Command::new("journalctl")
+                    .args(["-f", "--no-pager", "-o", "short-iso", "-n", "50"])
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn())
             {
                 Ok(c) => c,
                 Err(e) => {
                     warn!("remote-debug: journalctl spawn failed: {e}");
+                    on_line(&format!("[ERROR] journalctl spawn failed: {e}"));
                     return;
                 }
             };

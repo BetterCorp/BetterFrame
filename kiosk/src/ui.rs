@@ -266,17 +266,10 @@ fn activate(app: &Application) {
                         maybe_apply_firmware_update(&server_for_reload, &key_for_reload);
                     }
                     ServerMsg::ShowTerminalCode(code) => {
-                        // Overlay on all windows: big centered code text.
-                        // NOT logged — security requirement.
-                        let code_clone = code.clone();
-                        gtk::glib::idle_add_local_once(move || {
-                            show_terminal_code_overlay(&code_clone);
-                        });
+                        let _ = tx_for_reload.send(WorkerMsg::ShowTerminalCode(code));
                     }
                     ServerMsg::DismissTerminalCode => {
-                        gtk::glib::idle_add_local_once(|| {
-                            dismiss_terminal_code_overlay();
-                        });
+                        let _ = tx_for_reload.send(WorkerMsg::DismissTerminalCode);
                     }
                 }
             }
@@ -334,6 +327,8 @@ fn activate(app: &Application) {
                 }
                 WorkerMsg::Standby(display_id) => standby_display(display_id),
                 WorkerMsg::Wake(display_id) => wake_display(display_id),
+                WorkerMsg::ShowTerminalCode(code) => show_terminal_code_overlay(&code),
+                WorkerMsg::DismissTerminalCode => dismiss_terminal_code_overlay(),
             }
         }
         gtk::glib::ControlFlow::Continue
@@ -349,6 +344,8 @@ pub enum WorkerMsg {
     },
     Standby(Option<u32>),
     Wake(Option<u32>),
+    ShowTerminalCode(String),
+    DismissTerminalCode,
 }
 
 fn output_name_for_display(display_id: u32) -> Option<String> {

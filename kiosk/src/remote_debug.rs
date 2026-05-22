@@ -121,9 +121,9 @@ impl JournalStream {
         let kill_clone = kill.clone();
 
         std::thread::spawn(move || {
-            // Try unit-scoped first, fall back to all journal if permission denied.
-            let mut child = match Command::new("journalctl")
-                .args(["--user-unit", "betterframe-kiosk", "-f", "--no-pager", "-o", "short-iso", "-n", "50"])
+            // Use sudo so bfkiosk user can read system journal.
+            let mut child = match Command::new("sudo")
+                .args(["journalctl", "-u", "betterframe-kiosk", "-f", "--no-pager", "-o", "short-iso", "-n", "50"])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -219,13 +219,26 @@ pub struct TerminalSession {
 
 impl TerminalSession {
     pub fn spawn() -> Result<(Self, std::process::ChildStdout, std::process::ChildStderr), String> {
-        let mut child = Command::new("bash")
-            .args(["--login"])
+        // Run as root so the operator can actually fix things (journal,
+        // rauc, systemctl, usermod). The on-screen code + lockout ladder
+        // gates access; once past that, full root is the point.
+        let mut child = Command::new("sudo")
+            .args(["bash", "--login"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env("TERM", "xterm-256color")
             .spawn()
+            .or_else(|_| {
+                // Fallback if sudo not available / not configured for bfkiosk.
+                Command::new("bash")
+                    .args(["--login"])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .env("TERM", "xterm-256color")
+                    .spawn()
+            })
             .map_err(|e| format!("bash spawn: {e}"))?;
 
         let stdout = child.stdout.take().ok_or("no stdout")?;

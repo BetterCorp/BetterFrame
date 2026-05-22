@@ -181,8 +181,18 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
 function extractBearerToken(event: any): string | null {
   const hdr = getRequestHeader(event, "authorization");
-  if (!hdr?.startsWith("Bearer ")) return null;
-  return hdr.slice(7);
+  if (hdr?.startsWith("Bearer ")) return hdr.slice(7);
+  // Fallback: check betterframe_kiosk_key cookie (WebView sub-resource
+  // requests don't carry the Authorization header — only cookies persist).
+  const cookieHeader = getRequestHeader(event, "cookie") ?? "";
+  for (const pair of cookieHeader.split(";")) {
+    const [k, ...rest] = pair.trim().split("=");
+    if (k?.trim() === "betterframe_kiosk_key") {
+      const val = rest.join("=").trim();
+      if (val) return val;
+    }
+  }
+  return null;
 }
 
 function getClusterKey(repo: Repository, secrets: SecretsApi): string | undefined {

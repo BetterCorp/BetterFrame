@@ -119,11 +119,35 @@ function parseCookieValue(header: string, name: string): string | null {
   return null;
 }
 
+// Per-kiosk message queue: if kiosk is offline, buffer messages here.
+// Drain on reconnect. FIFO, cap at 100 messages per kiosk.
+const MESSAGE_QUEUE_CAP = 100;
+const offlineQueues = new Map<number, string[]>();
+
 function sendToKiosk(kioskId: number, message: object): boolean {
   const k = connectedKiosks.get(kioskId);
-  if (!k || k.ws.readyState !== WebSocket.OPEN) return false;
-  k.ws.send(JSON.stringify(message));
+  const payload = JSON.stringify(message);
+  if (!k || k.ws.readyState !== WebSocket.OPEN) {
+    // Queue for later delivery.
+    let q = offlineQueues.get(kioskId);
+    if (!q) { q = []; offlineQueues.set(kioskId, q); }
+    q.push(payload);
+    if (q.length > MESSAGE_QUEUE_CAP) q.shift(); // FIFO eviction
+    return false;
+  }
+  k.ws.send(payload);
   return true;
+}
+
+function drainOfflineQueue(kioskId: number): void {
+  const q = offlineQueues.get(kioskId);
+  if (!q || q.length === 0) return;
+  const k = connectedKiosks.get(kioskId);
+  if (!k || k.ws.readyState !== WebSocket.OPEN) return;
+  for (const msg of q) {
+    try { k.ws.send(msg); } catch { break; }
+  }
+  offlineQueues.delete(kioskId);
 }
 
 function requestKiosk<T = unknown>(kioskId: number, message: object, timeoutMs = 10000): Promise<T> {
@@ -303,6 +327,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           connectedKiosks.set(kiosk.id, { id: kiosk.id, name: kioskData.name, ws });
           obs.log.info("kiosk connected: {name}", { name: kioskData.name });
           ws.send(JSON.stringify({ type: "connected", kiosk_id: kiosk.id }));
+          drainOfflineQueue(kiosk.id);
           nodered.forward("kiosk.changed", {
             kiosk_id: kiosk.id,
             kiosk_name: kioskData.name,

@@ -120,6 +120,10 @@ pub struct BundleCamera {
     pub onvif_username: Option<String>,
     #[serde(default)]
     pub onvif_password_encrypted: Option<String>,
+    #[serde(default)]
+    pub event_source: Option<String>,
+    #[serde(default)]
+    pub event_sink: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

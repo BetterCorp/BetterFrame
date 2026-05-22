@@ -162,6 +162,9 @@ export function rowToCamera(r: Row): Camera {
     enabled: b(r["enabled"]),
     last_seen_at: sn(r["last_seen_at"]),
     created_at: s(r["created_at"]),
+    event_source: s(r["event_source"] ?? "auto"),
+    event_sink: s(r["event_sink"] ?? "auto"),
+    supported_event_topics: j<string[]>(r["supported_event_topics"], []),
   };
 }
 

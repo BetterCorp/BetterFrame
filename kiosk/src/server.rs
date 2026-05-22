@@ -427,6 +427,7 @@ pub fn heartbeat(
             "local_port": local_port,
             "reported_hostname": hostname,
             "network_interfaces": network_interfaces,
+            "onvif_subscriptions": serde_json::to_value(crate::onvif_events::get_statuses()).unwrap_or_default(),
         }))
         .timeout(Duration::from_secs(5))
         .send()

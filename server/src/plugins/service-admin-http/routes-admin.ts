@@ -35,7 +35,7 @@ import {
   renderDisplayLayouts,
   renderDefaultLayoutSelect,
 } from "../../web-templates/admin-pages.js";
-import { discover as onvifDiscover } from "../../shared/onvif.js";
+import { discover as onvifDiscover, getEventProperties as onvifGetEventProperties } from "../../shared/onvif.js";
 import { generateBundle } from "../../shared/bundle.js";
 import { captureSnapshot } from "../../shared/snapshot.js";
 import { stripSecrets } from "../../shared/strip-secrets.js";
@@ -1390,6 +1390,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       patch["onvif_username"] = body?.["onvif_username"] || null;
       if (body?.["onvif_password"]) patch["onvif_password"] = body["onvif_password"];
     }
+    // Event routing config
+    if (body?.["event_source"] != null) patch["event_source"] = body["event_source"] || "auto";
+    if (body?.["event_sink"] != null) patch["event_sink"] = body["event_sink"] || "auto";
     deps.repo.updateCamera(id, patch as any);
 
     // Also update main stream URI for RTSP cameras
@@ -1449,6 +1452,40 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       return htmlFragment(renderCameraLabels(camId, deps.repo.cameraLabelIds(camId), deps.repo.listLabels()));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/cameras/${camId}` } });
+  });
+
+  // Refresh supported ONVIF event topics from the camera.
+  app.post("/admin/cameras/:id/refresh-events", async (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const cam = deps.repo.getCameraById(id);
+    if (!cam || cam.type !== "onvif" || !cam.onvif_host) {
+      return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
+    }
+    // Determine which kiosk (or server) to run the SOAP call through.
+    const runner = cam.event_source === "server" ? "server"
+      : cam.event_source.startsWith("kiosk:") ? cam.event_source
+      : (() => {
+          // Auto: pick a kiosk that has this camera in its bundle.
+          const kiosks = deps.repo.listKiosksWithCameraInBundle(id);
+          const online = kiosks.find((k) => k.last_seen_at && Date.now() - new Date(k.last_seen_at).getTime() < 120_000);
+          return online ? `kiosk:${online.id}` : "server";
+        })();
+    const soapTransport = runner.startsWith("kiosk:")
+      ? kioskOnvifSoapTransport(Number(runner.slice("kiosk:".length)))
+      : undefined;
+    try {
+      const topics = await onvifGetEventProperties({
+        host: cam.onvif_host,
+        port: cam.onvif_port ?? 80,
+        username: cam.onvif_username ?? "",
+        password: cam.onvif_password ?? "",
+        soapTransport,
+      });
+      deps.repo.updateCamera(id, { supported_event_topics: JSON.stringify(topics) } as any);
+    } catch {
+      // Camera offline or events not supported — leave existing topics.
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
   });
 
   app.post("/admin/cameras/:id/delete", (event) => {

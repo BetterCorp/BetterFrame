@@ -106,6 +106,9 @@ export interface Display {
   active_layout_id: number | null;
 }
 
+export type EventSourceMode = "auto" | "server" | string; // string = "kiosk:<id>"
+export type EventSinkMode = "auto" | "server" | string;
+
 export interface Camera {
   id: number;
   name: string;
@@ -114,12 +117,15 @@ export interface Camera {
   onvif_host: string | null;
   onvif_port: number | null;
   onvif_username: string | null;
-  onvif_password: string | null; // fernet-encrypted ciphertext
+  onvif_password: string | null;
   capabilities: string[];
   stream_policy: StreamPolicy;
   enabled: boolean;
   last_seen_at: string | null;
   created_at: string;
+  event_source: EventSourceMode;
+  event_sink: EventSinkMode;
+  supported_event_topics: string[];
 }
 
 export interface CameraStream {

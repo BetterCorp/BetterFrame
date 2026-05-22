@@ -429,3 +429,77 @@ export async function discover(input: DiscoverInput): Promise<DiscoveredCamera[]
 
   return groupProfiles(input.host, deviceName, out);
 }
+
+/**
+ * Query the camera's supported ONVIF event topics via GetEventProperties.
+ * Returns a list of topic strings the camera can produce (e.g.
+ * "tns1:RuleEngine/CellMotionDetector/Motion",
+ * "tns1:RuleEngine/LicensePlateRecognition/Plate", etc.).
+ *
+ * Best-effort: returns [] on failure (camera might not support events,
+ * auth might fail, event service might be at a non-standard path).
+ */
+export async function getEventProperties(input: DiscoverInput): Promise<string[]> {
+  const timeoutMs = input.timeoutMs ?? 8000;
+  const endpoint = normalizeEndpoint(input);
+  const header = wsseHeader(input.username, input.password);
+  const eventUrl = `${endpoint.origin}/onvif/event_service`;
+
+  const body = buildEnvelope(header,
+    `<tev:GetEventProperties xmlns:tev="http://www.onvif.org/ver10/events/wsdl"/>`);
+
+  let xml: string;
+  try {
+    xml = await soap(eventUrl,
+      "http://www.onvif.org/ver10/events/wsdl/EventPortType/GetEventPropertiesRequest",
+      body, timeoutMs, input.soapTransport);
+  } catch {
+    return [];
+  }
+
+  // Parse TopicSet — extract all topic paths. ONVIF nests topics as XML
+  // elements under TopicSet. Each leaf element with wstop:topic="true" is
+  // a subscribable topic. The full path is the concatenation of ancestor
+  // element names separated by "/".
+  const topics: string[] = [];
+
+  // Strategy: find all elements with topic="true" attribute and walk
+  // their path. Simpler: extract all text between <TopicSet> and
+  // </TopicSet>, find elements with topic="true", reconstruct paths.
+  const topicSetMatch = xml.match(/<[^:]*:?TopicSet[^>]*>([\s\S]*?)<\/[^:]*:?TopicSet>/);
+  if (!topicSetMatch) return topics;
+  const topicSetXml = topicSetMatch[1] ?? "";
+
+  // Walk the XML naively: track element depth + names.
+  const stack: string[] = [];
+  const tagRe = /<\/?([^\s>\/]+)[^>]*?(\/?)>/g;
+  let match;
+  while ((match = tagRe.exec(topicSetXml)) !== null) {
+    const full = match[0]!;
+    const tagName = match[1]!;
+    const selfClose = match[2] === "/";
+    const isClose = full.startsWith("</");
+
+    // Strip namespace prefix for the path name.
+    const localName = tagName.includes(":") ? tagName.split(":").pop()! : tagName;
+
+    if (isClose) {
+      stack.pop();
+    } else {
+      stack.push(localName);
+      // Check if this element has topic="true"
+      if (full.includes('topic="true"') || full.includes("topic='true'")) {
+        // Reconstruct topic path: tns1:TopLevel/Sub/Leaf
+        // Convention: first element under TopicSet gets "tns1:" prefix.
+        const path = stack.join("/");
+        const topicPath = stack.length > 0 ? `tns1:${path}` : path;
+        topics.push(topicPath);
+      }
+      if (selfClose) {
+        stack.pop();
+      }
+    }
+  }
+
+  return topics;
+}

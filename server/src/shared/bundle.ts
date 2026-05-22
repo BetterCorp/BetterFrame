@@ -17,6 +17,8 @@ export interface BundleCamera {
   onvif_port: number | null;
   onvif_username: string | null;
   onvif_password_encrypted: string | null;
+  event_source: string;
+  event_sink: string;
   stream_policy: string;
   streams: Array<{
     id: number;
@@ -235,6 +237,8 @@ export function generateBundle(
       onvif_port: cam.onvif_port,
       onvif_username: cam.onvif_username,
       onvif_password_encrypted: onvifPwEncrypted,
+      event_source: cam.event_source,
+      event_sink: cam.event_sink,
       stream_policy: cam.stream_policy,
       streams: effectiveStreams.map((s) => ({
         id: s.id,

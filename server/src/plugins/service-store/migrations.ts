@@ -959,4 +959,12 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     // --- display active layout ---
     addColumnIfNotExists(db, "displays", "active_layout_id", "INTEGER REFERENCES layouts(id) ON DELETE SET NULL");
   },
+
+  // ONVIF event routing: per-camera event_source (who polls), event_sink
+  // (where push callbacks go), and discovered supported topics.
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "cameras", "event_source", "TEXT NOT NULL DEFAULT 'auto'");
+    addColumnIfNotExists(db, "cameras", "event_sink", "TEXT NOT NULL DEFAULT 'auto'");
+    addColumnIfNotExists(db, "cameras", "supported_event_topics", "TEXT NOT NULL DEFAULT '[]'");
+  },
 ];

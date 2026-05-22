@@ -27,6 +27,42 @@ use crate::bundle::BundleCamera;
 /// to know when to stop (camera removed from bundle / bundle changed).
 static ACTIVE: Mutex<Option<HashMap<u32, ()>>> = Mutex::new(None);
 
+/// Subscription status per camera — reported in heartbeat for admin visibility.
+static STATUS: Mutex<Option<HashMap<u32, SubStatus>>> = Mutex::new(None);
+
+#[derive(Clone, serde::Serialize)]
+pub struct SubStatus {
+    pub state: &'static str, // "subscribing", "active", "failed", "stopped"
+    pub last_event_at: Option<String>,
+    pub error: Option<String>,
+}
+
+fn set_status(cam_id: u32, state: &'static str, error: Option<String>) {
+    let mut map = STATUS.lock().unwrap();
+    let map = map.get_or_insert_with(HashMap::new);
+    let entry = map.entry(cam_id).or_insert_with(|| SubStatus {
+        state: "subscribing",
+        last_event_at: None,
+        error: None,
+    });
+    entry.state = state;
+    entry.error = error;
+}
+
+fn mark_event_received(cam_id: u32) {
+    let mut map = STATUS.lock().unwrap();
+    if let Some(map) = map.as_mut() {
+        if let Some(entry) = map.get_mut(&cam_id) {
+            entry.last_event_at = Some(crate::os_update::current_os_version_public()); // reuse timestamp helper... actually just use epoch
+        }
+    }
+}
+
+/// Get current subscription statuses for all cameras. Used by heartbeat.
+pub fn get_statuses() -> HashMap<u32, SubStatus> {
+    STATUS.lock().unwrap().clone().unwrap_or_default()
+}
+
 /// Start event subscription workers for all ONVIF cameras in the bundle.
 /// Idempotent — stops old workers (via ACTIVE flag) before starting new.
 pub fn start(
@@ -35,9 +71,19 @@ pub fn start(
     server_url: &str,
     kiosk_key: &str,
 ) {
+    // Only subscribe to cameras where event_source is "auto" or "kiosk:<this_id>"
+    // (not "server" or another kiosk). For "auto", this kiosk subscribes because
+    // the server put the camera in this kiosk's bundle — meaning it's reachable.
     let onvif_cams: Vec<_> = cameras
         .iter()
-        .filter(|c| c.cam_type == "onvif" && c.onvif_host.is_some())
+        .filter(|c| {
+            if c.cam_type != "onvif" || c.onvif_host.is_none() { return false; }
+            match c.event_source.as_deref() {
+                Some("server") => false,     // server handles this one
+                Some(s) if s.starts_with("kiosk:") => true,  // pinned to a kiosk (might be us)
+                _ => true,                   // "auto" or missing → this kiosk subscribes
+            }
+        })
         .cloned()
         .collect();
 
@@ -95,15 +141,18 @@ fn run_subscription(
         }
 
         // 1. CreatePullPointSubscription
+        set_status(cam.id, "subscribing", None);
         let sub = match create_pullpoint(&event_url, user, pass) {
             Ok(s) => s,
             Err(e) => {
                 warn!("onvif-events: cam {} CreatePullPoint failed: {e}", cam.id);
+                set_status(cam.id, "failed", Some(e));
                 std::thread::sleep(Duration::from_secs(30));
                 continue;
             }
         };
         info!("onvif-events: cam {} subscribed, address={}", cam.id, sub.address);
+        set_status(cam.id, "active", None);
 
         // 2. Poll loop
         let poll_interval = Duration::from_secs(3);

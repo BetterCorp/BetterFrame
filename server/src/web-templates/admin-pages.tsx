@@ -1298,10 +1298,69 @@ export function CameraEditPage(props: CameraEditProps) {
                 {" "}Enabled
               </label>
             </div>
+            {cam.type === "onvif" && (
+              <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
+                <h3 style="margin:0 0 0.5rem; font-size:0.95rem">Event Routing</h3>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem">
+                  <div class="form-group">
+                    <label for="event_source">Event Source (who polls)</label>
+                    <select id="event_source" name="event_source" class="form-input">
+                      <option value="auto" selected={cam.event_source === "auto"}>Auto (nearest kiosk)</option>
+                      <option value="server" selected={cam.event_source === "server"}>Server</option>
+                      {props.subscriptions.map((sub) => (
+                        <option value={`kiosk:${sub.kiosk.id}`} selected={cam.event_source === `kiosk:${sub.kiosk.id}`}>
+                          Kiosk: {sub.kiosk.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="event_sink">Event Sink (push target)</label>
+                    <select id="event_sink" name="event_sink" class="form-input">
+                      <option value="auto" selected={cam.event_sink === "auto"}>Auto (same subnet → kiosk, else server)</option>
+                      <option value="server" selected={cam.event_sink === "server"}>Server</option>
+                      {props.subscriptions.map((sub) => (
+                        <option value={`kiosk:${sub.kiosk.id}`} selected={cam.event_sink === `kiosk:${sub.kiosk.id}`}>
+                          Kiosk: {sub.kiosk.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <button type="submit" class="btn btn-primary">Save</button>
             <a href="/admin/cameras" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
           </form>
         </div>
+
+        {cam.type === "onvif" && (
+          <div class="card" style="margin-bottom:1.5rem">
+            <h2 style="margin:0 0 1rem; font-size:1.1rem">Supported Event Topics</h2>
+            <p style="color:#666; font-size:0.85rem; margin-bottom:0.75rem">
+              Topics this camera advertises via GetEventProperties. Click refresh
+              to re-query the camera (via the designated event source).
+            </p>
+            <form method="post" action={`/admin/cameras/${cam.id}/refresh-events`} style="margin-bottom:0.75rem">
+              <button type="submit" class="btn btn-sm">Refresh from camera</button>
+            </form>
+            {cam.supported_event_topics.length > 0 ? (
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Topic</th></tr></thead>
+                  <tbody>
+                    {cam.supported_event_topics.map((t) => (
+                      <tr><td><code style="font-size:0.8rem">{t}</code></td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p style="color:#999">No topics discovered yet. Click refresh above.</p>
+            )}
+          </div>
+        )}
 
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Labels</h2>

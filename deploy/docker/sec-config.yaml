@@ -59,6 +59,7 @@ default:
         port: 18082
         noderedUrl: http://nodered:1880
         dataDir: /var/lib/betterframe
+        cookieName: betterframe_session
         argon2Memory: 65536
         argon2TimeCost: 3
         argon2Parallelism: 2

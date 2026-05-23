@@ -32,17 +32,16 @@ export const VENDOR_LABELS: Record<CloudVendor, string> = {
   tplink: "TP-Link (Tapo/VIGI)",
 };
 
+export type CloudStreamType = "rtsp" | "hls" | "rtmp" | null;
+
 export interface CloudCamera {
-  /** Vendor-specific unique ID for this camera. */
   vendor_id: string;
   name: string;
   model: string | null;
-  /** Direct RTSP URL if the vendor provides one. */
   rtsp_url: string | null;
-  /** Vendor-specific relay/streaming URL (e.g. HLS, RTMP). */
   relay_url: string | null;
   online: boolean;
-  /** Additional vendor-specific metadata. */
+  stream_type: CloudStreamType;
   extra: Record<string, unknown>;
 }
 

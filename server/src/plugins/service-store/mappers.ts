@@ -167,6 +167,10 @@ export function rowToCamera(r: Row): Camera {
     event_source: s(r["event_source"] ?? "auto"),
     event_sink: s(r["event_sink"] ?? "auto"),
     supported_event_topics: j<string[]>(r["supported_event_topics"], []),
+    cloud_account_id: sn(r["cloud_account_id"]),
+    cloud_vendor_camera_id: sn(r["cloud_vendor_camera_id"]),
+    cloud_stream_url: sn(r["cloud_stream_url"]),
+    cloud_stream_type: sn(r["cloud_stream_type"]),
   };
 }
 

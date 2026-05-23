@@ -1013,4 +1013,65 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "cameras", "event_sink", "TEXT NOT NULL DEFAULT 'auto'");
     addColumnIfNotExists(db, "cameras", "supported_event_topics", "TEXT NOT NULL DEFAULT '[]'");
   },
+
+  // Cloud camera type + cloud-linked fields. Rebuild cameras table to add
+  // 'cloud' to type CHECK. Cloud cameras are managed by sync — not editable.
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "cameras", "cloud_account_id", "TEXT");
+    addColumnIfNotExists(db, "cameras", "cloud_vendor_camera_id", "TEXT");
+    addColumnIfNotExists(db, "cameras", "cloud_stream_url", "TEXT");
+    addColumnIfNotExists(db, "cameras", "cloud_stream_type", "TEXT");
+
+    // Rebuild to widen CHECK constraint to include 'cloud'.
+    const row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cameras'")
+      .get() as { sql?: string } | undefined;
+    if (!row?.sql || row.sql.includes("'cloud'")) return;
+
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec(`
+      CREATE TABLE cameras_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        type TEXT NOT NULL CHECK(type IN ('rtsp', 'onvif', 'cloud')),
+        rtsp_url TEXT,
+        onvif_host TEXT,
+        onvif_port INTEGER,
+        onvif_username TEXT,
+        onvif_password TEXT,
+        capabilities TEXT NOT NULL DEFAULT '[]',
+        stream_policy TEXT NOT NULL DEFAULT 'auto'
+          CHECK(stream_policy IN ('auto', 'always_main', 'always_sub')),
+        enabled INTEGER NOT NULL DEFAULT 1,
+        last_seen_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        event_source TEXT NOT NULL DEFAULT 'auto',
+        event_sink TEXT NOT NULL DEFAULT 'auto',
+        supported_event_topics TEXT NOT NULL DEFAULT '[]',
+        cloud_account_id TEXT,
+        cloud_vendor_camera_id TEXT,
+        cloud_stream_url TEXT,
+        cloud_stream_type TEXT
+      ) STRICT;
+
+      INSERT INTO cameras_new (
+        id, name, type, rtsp_url, onvif_host, onvif_port, onvif_username, onvif_password,
+        capabilities, stream_policy, enabled, last_seen_at, created_at,
+        event_source, event_sink, supported_event_topics,
+        cloud_account_id, cloud_vendor_camera_id, cloud_stream_url, cloud_stream_type
+      )
+      SELECT
+        id, name, type, rtsp_url, onvif_host, onvif_port, onvif_username, onvif_password,
+        capabilities, stream_policy, enabled, last_seen_at, created_at,
+        event_source, event_sink, supported_event_topics,
+        cloud_account_id, cloud_vendor_camera_id, cloud_stream_url, cloud_stream_type
+      FROM cameras;
+
+      DROP TABLE cameras;
+      ALTER TABLE cameras_new RENAME TO cameras;
+    `);
+    db.exec("PRAGMA foreign_keys = ON");
+  },
+  `CREATE INDEX IF NOT EXISTS idx_cameras_cloud_account ON cameras(cloud_account_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_cameras_cloud_vendor ON cameras(cloud_account_id, cloud_vendor_camera_id)`,
 ];

@@ -12,7 +12,7 @@ import {
   createEventSchemas,
   type Observable,
 } from "@bsb/base";
-import { H3, serve, readBody, getRequestHeader, createError } from "h3";
+import { H3, serve, readBody, getRequestHeader, getRouterParam, createError } from "h3";
 import type { Server } from "srvx";
 
 import { getRepo } from "../../shared/plugin-registry.js";
@@ -931,6 +931,42 @@ function registerKioskRoutes(
       forwarded_to_nodered: false,
     });
     return { ok: true };
+  });
+
+  app.get("/api/kiosk/cameras/:id/stream", async (event) => {
+    const token = extractBearerToken(event);
+    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
+    const kiosk = await auth.verifyKioskKey(token);
+    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+
+    const cameraId = Number(getRouterParam(event, "id"));
+    const camera = await repo.getCameraById(cameraId);
+    if (!camera || camera.type !== "cloud" || !camera.cloud_account_id || !camera.cloud_vendor_camera_id) {
+      throw createError({ statusCode: 404, statusMessage: "Cloud camera not found" });
+    }
+
+    const account = await repo.getCloudAccount(camera.cloud_account_id);
+    if (!account) throw createError({ statusCode: 404, statusMessage: "Cloud account not found" });
+
+    const { getProvider: gp } = await import("../../shared/cloud-cameras/index.js");
+    const provider = gp(account.vendor as any);
+    if (!provider) throw createError({ statusCode: 500, statusMessage: "Unknown vendor" });
+
+    let creds: Record<string, string>;
+    try {
+      creds = JSON.parse(secrets.decryptString(account.credentials_encrypted, "cloud-creds"));
+    } catch {
+      throw createError({ statusCode: 500, statusMessage: "Credential decrypt failed" });
+    }
+
+    const url = await provider.getStreamUrl(creds, camera.cloud_vendor_camera_id);
+    if (!url) throw createError({ statusCode: 503, statusMessage: "Stream URL unavailable" });
+
+    if (url !== camera.cloud_stream_url) {
+      await repo.updateCamera(camera.id, { cloud_stream_url: url } as any);
+    }
+
+    return { url, stream_type: camera.cloud_stream_type ?? "hls" };
   });
 }
 

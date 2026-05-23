@@ -7,7 +7,7 @@
 
 export type UserRole = "admin" | "operator";
 export type ApiKeyScope = "read" | "control" | "admin";
-export type CameraType = "rtsp" | "onvif";
+export type CameraType = "rtsp" | "onvif" | "cloud";
 export type StreamRole = "main" | "sub" | "other";
 export type StreamSelector = "auto" | "main" | "sub";
 export type StreamPolicy = "auto" | "always_main" | "always_sub";
@@ -126,6 +126,10 @@ export interface Camera {
   event_source: EventSourceMode;
   event_sink: EventSinkMode;
   supported_event_topics: string[];
+  cloud_account_id: string | null;
+  cloud_vendor_camera_id: string | null;
+  cloud_stream_url: string | null;
+  cloud_stream_type: string | null;
 }
 
 export interface CameraStream {

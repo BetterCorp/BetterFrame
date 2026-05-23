@@ -1404,8 +1404,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.post("/admin/cameras/:id", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const body = await readBody<Record<string, string>>(event);
     const cam = await deps.repo.getCameraById(id);
+    if (cam?.type === "cloud") {
+      return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
+    }
+    const body = await readBody<Record<string, string>>(event);
 
     let rtspUrl: string | null = null;
     if (cam?.type === "rtsp") {

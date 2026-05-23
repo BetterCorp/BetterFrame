@@ -57,6 +57,7 @@ export class UniviewProvider implements CloudCameraProvider {
           rtsp_url: `rtsp://${creds["username"]}:${creds["password"]}@${creds["host"]}:554/media/video${chId}`,
           relay_url: null,
           online: ch.Online === true || ch.Status === "Online",
+          stream_type: "rtsp",
           extra: { channel_id: chId },
         });
       }
@@ -69,6 +70,7 @@ export class UniviewProvider implements CloudCameraProvider {
         rtsp_url: `rtsp://${creds["username"]}:${creds["password"]}@${creds["host"]}:554/media/video1`,
         relay_url: null,
         online: true,
+        stream_type: "rtsp",
         extra: {},
       });
     }

@@ -1245,6 +1245,30 @@ export function CameraEditPage(props: CameraEditProps) {
       }
     >
       <div style="max-width:700px">
+        {cam.type === "cloud" && (
+          <div class="card" style="margin-bottom:1.5rem">
+            <h2 style="margin:0 0 1rem; font-size:1.1rem">
+              <span class="badge badge-blue" style="margin-right:0.5rem">Cloud</span>
+              {cam.name}
+            </h2>
+            <p style="color:#666; font-size:0.85rem; margin-bottom:1rem">
+              This camera is managed by a cloud account sync. It cannot be edited manually.
+              Changes are applied automatically when the cloud account is synced.
+            </p>
+            <div style="font-size:0.85rem; display:grid; gap:0.35rem; color:#444">
+              <div><strong>Type:</strong> Cloud ({cam.cloud_stream_type ?? "unknown stream"})</div>
+              <div><strong>Vendor Camera ID:</strong> <code>{cam.cloud_vendor_camera_id ?? "—"}</code></div>
+              {cam.cloud_stream_url && (
+                <div><strong>Stream URL:</strong> <code style="font-size:0.8rem; word-break:break-all">{cam.cloud_stream_url}</code></div>
+              )}
+              <div><strong>Status:</strong> {cam.enabled ? <span class="badge badge-green">Enabled</span> : <span class="badge badge-red">Disabled</span>}</div>
+              <div><strong>Last seen:</strong> {cam.last_seen_at ? formatTime(cam.last_seen_at) : "Never"}</div>
+            </div>
+            <a href="/admin/cameras" class="btn btn-ghost" style="margin-top:1rem">Back</a>
+          </div>
+        )}
+
+        {cam.type !== "cloud" && (<>
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Edit Camera</h2>
           <form method="post" action={`/admin/cameras/${cam.id}`}>
@@ -1459,6 +1483,7 @@ export function CameraEditPage(props: CameraEditProps) {
         <form method="post" action={`/admin/cameras/${cam.id}/delete`} style="margin-top:1rem">
           <button type="submit" class="btn btn-danger" {...{"onclick": "return confirm('Delete this camera?')"}}>Delete Camera</button>
         </form>
+        </>)}
       </div>
     </Layout>
   );
@@ -3956,13 +3981,10 @@ export function CloudAccountsPage(props: CloudAccountsPageProps) {
                       </td>
                       <td>
                         <form method="post" action={`/admin/cloud-accounts/${a.id}/sync`} style="display:inline">
-                          <button type="submit" class="btn btn-sm btn-ghost">Sync</button>
-                        </form>
-                        <form method="post" action={`/admin/cloud-accounts/${a.id}/import`} style="display:inline; margin-left:0.25rem">
-                          <button type="submit" class="btn btn-sm btn-primary">Import</button>
+                          <button type="submit" class="btn btn-sm btn-primary">Sync</button>
                         </form>
                         <form method="post" action={`/admin/cloud-accounts/${a.id}/delete`} style="display:inline; margin-left:0.25rem"
-                          {...{"onsubmit": "return confirm('Delete this cloud account?')"}}>
+                          {...{"onsubmit": "return confirm('Delete this cloud account and all its synced cameras?')"}}>
                           <button type="submit" class="btn btn-sm btn-danger">Delete</button>
                         </form>
                       </td>

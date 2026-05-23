@@ -46,6 +46,7 @@ export class TpLinkProvider implements CloudCameraProvider {
       rtsp_url: `rtsp://${creds["username"]}:${creds["password"]}@${creds["host"]}/stream1`,
       relay_url: null,
       online: true,
+      stream_type: "rtsp",
       extra: {},
     }];
   }

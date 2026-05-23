@@ -52,17 +52,27 @@ export class TuyaProvider implements CloudCameraProvider {
     if (!resp) return [];
 
     const devices = resp.result ?? [];
-    return devices
-      .filter((d: any) => d.category === "sp" || d.category === "ipc") // smart camera categories
-      .map((d: any) => ({
+    const cameraDevices = devices.filter(
+      (d: any) => d.category === "sp" || d.category === "ipc",
+    );
+    const cameras: CloudCamera[] = [];
+    for (const d of cameraDevices) {
+      let streamUrl: string | null = null;
+      if (d.online === true) {
+        streamUrl = await this.getStreamUrl(creds, d.id);
+      }
+      cameras.push({
         vendor_id: d.id,
         name: d.name ?? "Tuya Camera",
         model: d.product_name ?? d.model ?? null,
-        rtsp_url: null, // fetched on demand via getStreamUrl
-        relay_url: null,
+        rtsp_url: null,
+        relay_url: streamUrl,
         online: d.online === true,
-        extra: { category: d.category, product_id: d.product_id },
-      }));
+        stream_type: streamUrl ? "rtsp" : null,
+        extra: { category: d.category, product_id: d.product_id, local_ip: d.ip ?? null },
+      });
+    }
+    return cameras;
   }
 
   async getStreamUrl(creds: Record<string, string>, vendorCameraId: string): Promise<string | null> {

@@ -29,7 +29,7 @@ services:
       - BF_SELF_URL=http://server:18080
       - BF_SERVER_VERSION=${BF_SERVER_VERSION:-${COOLIFY_GIT_COMMIT:-${SOURCE_COMMIT:-dev}}}
       # PostgreSQL: set BF_DB=postgres to switch from SQLite.
-      - BF_DB=${BF_DB:-sqlite}
+      - BF_DB=postgres
       - BF_PG_URL=${BF_PG_URL:-postgres://${BF_PG_USER:-betterframe}:${BF_PG_PASSWORD:-betterframe}@postgres:5432/${BF_PG_DB:-betterframe}}
     volumes:
       - betterframe-data:/var/lib/betterframe
@@ -37,6 +37,9 @@ services:
       - "18080"
       - "18081"
       - "18082"
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:18080/healthz || exit 1"]
       interval: 30s
@@ -83,10 +86,8 @@ services:
     networks:
       - betterframe
 
-  # PostgreSQL — optional. Set BF_DB=postgres to switch from SQLite.
-  # Omit or disable this service to keep using SQLite (default).
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     container_name: betterframe-postgres
     restart: unless-stopped
     environment:
@@ -105,8 +106,6 @@ services:
       start_period: 10s
     networks:
       - betterframe
-    profiles:
-      - postgres
 
 volumes:
   betterframe-data:

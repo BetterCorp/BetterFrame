@@ -149,7 +149,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS cameras (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
-    type TEXT NOT NULL CHECK(type IN ('rtsp', 'onvif')),
+    type TEXT NOT NULL CHECK(type IN ('rtsp', 'onvif', 'cloud')),
     rtsp_url TEXT,
     onvif_host TEXT,
     onvif_port INTEGER,
@@ -163,8 +163,13 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     event_source TEXT NOT NULL DEFAULT 'auto',
     event_sink TEXT NOT NULL DEFAULT 'auto',
-    supported_event_topics JSONB NOT NULL DEFAULT '[]'
+    supported_event_topics JSONB NOT NULL DEFAULT '[]',
+    cloud_account_id TEXT,
+    cloud_vendor_camera_id TEXT,
+    cloud_stream_url TEXT,
+    cloud_stream_type TEXT
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_cameras_cloud_account ON cameras(cloud_account_id)`,
 
   `CREATE TABLE IF NOT EXISTS camera_streams (
     id SERIAL PRIMARY KEY,

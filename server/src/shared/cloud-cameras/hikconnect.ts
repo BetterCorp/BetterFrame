@@ -1,16 +1,12 @@
 /**
  * Hik-Connect (Hikvision cloud) integration.
  *
- * Hikvision uses a proprietary cloud API at api.hik-connect.com.
- * Auth: username/password → session token. No public OAuth.
- * Camera list: GET /v3/userdevices/v1/devices/list
- * Streaming: cameras expose RTSP locally; cloud relay uses P2P via
- * Hik-Connect SDK (native, not web-friendly). For BetterFrame we
- * extract the device serial + verify credentials, then assume
- * local RTSP access (most Hik-Connect cameras are on the same LAN
- * as the kiosk). If not on LAN, need ISAPI relay.
+ * Hikvision cloud API at api.hik-connect.com. Auth via username/password
+ * → access token. Device list returns serials, names, online status.
+ * Streaming: request HLS preview URL via /v3/open/devices/:serial/previewURLs.
+ * URLs are session-based and expire — kiosk must refresh via server API.
  *
- * Auth keys stay on server — kiosk only gets RTSP URLs.
+ * All auth on server — kiosk only gets HLS URLs in the bundle.
  */
 import type { CloudCameraProvider, CloudCamera, CloudVendor } from "./types.js";
 
@@ -50,31 +46,58 @@ export class HikConnectProvider implements CloudCameraProvider {
       if (!resp.ok) return [];
       const data = await resp.json() as any;
       const devices = data?.data?.list ?? data?.deviceList ?? [];
-      return devices.map((d: any) => ({
-        vendor_id: d.deviceSerial ?? d.serial ?? String(d.id),
-        name: d.deviceName ?? d.name ?? "Hikvision Camera",
-        model: d.deviceModel ?? d.model ?? null,
-        rtsp_url: null, // Hik-Connect doesn't expose RTSP URLs — local ONVIF needed
-        relay_url: null,
-        online: d.status === "online" || d.online === true,
-        extra: { serial: d.deviceSerial, type: d.deviceType },
-      }));
+      const cameras: CloudCamera[] = [];
+
+      for (const d of devices) {
+        const serial = d.deviceSerial ?? d.serial ?? String(d.id);
+        const streamUrl = await this.fetchPreviewUrl(this.apiBase(creds), token, serial);
+        cameras.push({
+          vendor_id: serial,
+          name: d.deviceName ?? d.name ?? "Hikvision Camera",
+          model: d.deviceModel ?? d.model ?? null,
+          rtsp_url: null,
+          relay_url: streamUrl,
+          online: d.status === "online" || d.online === true,
+          stream_type: streamUrl ? "hls" : null,
+          extra: { serial, type: d.deviceType, local_ip: d.localIp ?? d.ip ?? null },
+        });
+      }
+      return cameras;
     } catch {
       return [];
     }
   }
 
   async getStreamUrl(creds: Record<string, string>, vendorCameraId: string): Promise<string | null> {
-    // Hik-Connect uses P2P relay via native SDK — no direct RTSP from cloud.
-    // Kiosk needs local ONVIF/RTSP access. Return null to signal "use local".
-    return null;
+    const token = await this.login(creds);
+    if (!token) return null;
+    return this.fetchPreviewUrl(this.apiBase(creds), token, vendorCameraId);
+  }
+
+  private async fetchPreviewUrl(base: string, token: string, serial: string): Promise<string | null> {
+    try {
+      const resp = await fetch(`${base}/v3/open/devices/${serial}/previewURLs`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ protocol: "hls", quality: 1 }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json() as any;
+      return data?.data?.url ?? data?.url ?? null;
+    } catch {
+      return null;
+    }
   }
 
   private apiBase(creds: Record<string, string>): string {
     const region = (creds["region"] ?? "eu").toLowerCase();
     if (region === "us") return "https://api.hik-connect.com";
     if (region === "ap") return "https://api.hik-connect.com";
-    return "https://api.hik-connect.com"; // EU is default
+    return API_BASE;
   }
 
   private async login(creds: Record<string, string>): Promise<string | null> {
@@ -88,7 +111,7 @@ export class HikConnectProvider implements CloudCameraProvider {
         body: JSON.stringify({
           account: username,
           password,
-          featureCode: "deadbeef", // required by API
+          featureCode: "deadbeef",
         }),
       });
       if (!resp.ok) return null;

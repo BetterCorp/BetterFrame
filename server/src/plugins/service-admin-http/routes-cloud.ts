@@ -14,6 +14,60 @@ import type { AdminDeps } from "./index.js";
 import { CLOUD_VENDORS, VENDOR_LABELS, getProvider, listProviders, type CloudVendor } from "../../shared/cloud-cameras/index.js";
 import { CloudAccountsPage } from "../../web-templates/admin-pages.js";
 
+/**
+ * Full bidirectional sync: cloud state → local cameras.
+ * Creates new cameras, updates existing, deletes removed.
+ */
+async function syncCloudAccount(accountId: string, deps: AdminDeps): Promise<void> {
+  const account = await deps.repo.getCloudAccount(accountId);
+  if (!account) return;
+
+  const provider = getProvider(account.vendor as CloudVendor);
+  if (!provider) {
+    await deps.repo.updateCloudAccount(accountId, { last_sync_error: "unknown vendor" } as any);
+    return;
+  }
+
+  let creds: Record<string, string>;
+  try {
+    creds = JSON.parse(deps.secrets.decryptString(account.credentials_encrypted, "cloud-creds"));
+  } catch {
+    await deps.repo.updateCloudAccount(accountId, { last_sync_error: "credential decrypt failed" } as any);
+    return;
+  }
+
+  try {
+    const cloudCameras = await provider.listCameras(creds);
+    const vendorIds: string[] = [];
+
+    for (const cam of cloudCameras) {
+      vendorIds.push(cam.vendor_id);
+      const streamUrl = cam.rtsp_url ?? cam.relay_url ?? null;
+      await deps.repo.upsertCloudCamera({
+        cloud_account_id: accountId,
+        cloud_vendor_camera_id: cam.vendor_id,
+        name: `${account.name}: ${cam.name}`,
+        cloud_stream_url: streamUrl,
+        cloud_stream_type: cam.stream_type ?? (streamUrl ? "rtsp" : null),
+        enabled: cam.online,
+      });
+    }
+
+    const removed = await deps.repo.deleteCloudCamerasNotIn(accountId, vendorIds);
+
+    await deps.repo.updateCloudAccount(accountId, {
+      camera_count: cloudCameras.length,
+      last_sync_at: new Date().toISOString(),
+      last_sync_error: null,
+    } as any);
+  } catch (err) {
+    await deps.repo.updateCloudAccount(accountId, {
+      last_sync_error: (err as Error).message,
+      last_sync_at: new Date().toISOString(),
+    } as any);
+  }
+}
+
 export function registerCloudRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/cloud-accounts", async (event) => {
@@ -80,79 +134,8 @@ export function registerCloudRoutes(app: H3, deps: AdminDeps): void {
 
   app.post("/admin/cloud-accounts/:id/sync", async (event) => {
     const id = String(getRouterParam(event, "id"));
-    const account = await deps.repo.getCloudAccount(id);
-    if (!account) return new Response(null, { status: 302, headers: { location: "/admin/cloud-accounts" } });
-
-    const provider = getProvider(account.vendor as CloudVendor);
-    if (!provider) {
-      await deps.repo.updateCloudAccount(id, { last_sync_error: "unknown vendor" });
-      return new Response(null, { status: 302, headers: { location: "/admin/cloud-accounts" } });
-    }
-
-    let creds: Record<string, string>;
-    try {
-      creds = JSON.parse(deps.secrets.decryptString(account.credentials_encrypted, "cloud-creds"));
-    } catch {
-      await deps.repo.updateCloudAccount(id, { last_sync_error: "credential decrypt failed" });
-      return new Response(null, { status: 302, headers: { location: "/admin/cloud-accounts" } });
-    }
-
-    try {
-      const cameras = await provider.listCameras(creds);
-      await deps.repo.updateCloudAccount(id, {
-        camera_count: cameras.length,
-        last_sync_at: new Date().toISOString(),
-        last_sync_error: null,
-      } as any);
-    } catch (err) {
-      await deps.repo.updateCloudAccount(id, {
-        last_sync_error: (err as Error).message,
-        last_sync_at: new Date().toISOString(),
-      } as any);
-    }
-
+    await syncCloudAccount(id, deps);
     return new Response(null, { status: 302, headers: { location: "/admin/cloud-accounts" } });
-  });
-
-  app.post("/admin/cloud-accounts/:id/import", async (event) => {
-    const id = String(getRouterParam(event, "id"));
-    const account = await deps.repo.getCloudAccount(id);
-    if (!account) return new Response(null, { status: 302, headers: { location: "/admin/cloud-accounts" } });
-
-    const provider = getProvider(account.vendor as CloudVendor);
-    if (!provider) return new Response(null, { status: 302, headers: { location: "/admin/cloud-accounts" } });
-
-    let creds: Record<string, string>;
-    try {
-      creds = JSON.parse(deps.secrets.decryptString(account.credentials_encrypted, "cloud-creds"));
-    } catch {
-      return new Response(null, { status: 302, headers: { location: "/admin/cloud-accounts" } });
-    }
-
-    const cameras = await provider.listCameras(creds);
-    let imported = 0;
-    for (const cam of cameras) {
-      if (!cam.rtsp_url && !cam.relay_url) continue;
-      // Check if already imported (by vendor_id in camera name prefix).
-      const existingName = `${account.name}: ${cam.name}`;
-      const existing = await deps.repo.getCameraByName(existingName);
-      if (existing) continue;
-
-      await deps.repo.createCamera({
-        name: existingName,
-        type: "rtsp",
-        rtsp_url: cam.rtsp_url ?? cam.relay_url ?? null,
-      });
-      imported++;
-    }
-
-    await deps.repo.updateCloudAccount(id, {
-      camera_count: cameras.length,
-      last_sync_at: new Date().toISOString(),
-      last_sync_error: null,
-    } as any);
-
-    return new Response(null, { status: 302, headers: { location: `/admin/cloud-accounts` } });
   });
 
   app.post("/admin/cloud-accounts/:id/delete", async (event) => {

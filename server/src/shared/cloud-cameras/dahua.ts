@@ -62,6 +62,7 @@ export class DahuaProvider implements CloudCameraProvider {
           rtsp_url: rtspUrl,
           relay_url: null,
           online: true,
+          stream_type: "rtsp",
           extra: { channel: ch },
         });
       }

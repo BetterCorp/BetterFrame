@@ -920,6 +920,66 @@ export class Repository {
     return c;
   }
 
+  async upsertCloudCamera(input: {
+    cloud_account_id: string;
+    cloud_vendor_camera_id: string;
+    name: string;
+    cloud_stream_url: string | null;
+    cloud_stream_type: string | null;
+    enabled: boolean;
+  }): Promise<Camera> {
+    const existing = await this._get(
+      "SELECT * FROM cameras WHERE cloud_account_id = ? AND cloud_vendor_camera_id = ?",
+      [input.cloud_account_id, input.cloud_vendor_camera_id],
+    );
+    if (existing) {
+      const cam = rowToCamera(existing as Record<string, unknown>);
+      await this._run(
+        `UPDATE cameras SET name = ?, cloud_stream_url = ?, cloud_stream_type = ?, enabled = ? WHERE id = ?`,
+        [input.name, input.cloud_stream_url, input.cloud_stream_type, B(input.enabled), cam.id],
+      );
+      void this.notify("cameras", "update", cam.id);
+      return (await this.getCameraById(cam.id))!;
+    }
+    const result = await this._run(
+      `INSERT INTO cameras
+         (name, type, cloud_account_id, cloud_vendor_camera_id, cloud_stream_url, cloud_stream_type, enabled)
+       VALUES (?, 'cloud', ?, ?, ?, ?, ?)`,
+      [input.name, input.cloud_account_id, input.cloud_vendor_camera_id,
+       input.cloud_stream_url, input.cloud_stream_type, B(input.enabled)],
+    );
+    const id = Number(result.lastInsertRowid);
+    void this.notify("cameras", "create", id);
+    const c = await this.getCameraById(id);
+    if (!c) throw new Error("cloud camera vanished after insert");
+    await this.ensureCameraEntity(c);
+    return c;
+  }
+
+  async listCloudCamerasByAccount(accountId: string): Promise<Camera[]> {
+    const rs = await this._all(
+      "SELECT * FROM cameras WHERE cloud_account_id = ? ORDER BY name",
+      [accountId],
+    );
+    return rs.map((r) => rowToCamera(r as Record<string, unknown>));
+  }
+
+  async deleteCloudCamerasNotIn(accountId: string, keepVendorIds: string[]): Promise<number> {
+    if (keepVendorIds.length === 0) {
+      const result = await this._run(
+        "DELETE FROM cameras WHERE cloud_account_id = ?",
+        [accountId],
+      );
+      return result.changes;
+    }
+    const placeholders = keepVendorIds.map(() => "?").join(",");
+    const result = await this._run(
+      `DELETE FROM cameras WHERE cloud_account_id = ? AND cloud_vendor_camera_id NOT IN (${placeholders})`,
+      [accountId, ...keepVendorIds],
+    );
+    return result.changes;
+  }
+
   async listCameraStreams(cameraId: number): Promise<CameraStream[]> {
     const rs = await this._all(
       "SELECT * FROM camera_streams WHERE camera_id = ?",

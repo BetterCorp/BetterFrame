@@ -531,6 +531,10 @@ fn forward_event(server: &str, kiosk_key: &str, camera_id: u32, evt: &OnvifEvent
 /// Decrypt a value encrypted with secrets.encryptForCluster on the server.
 /// Format: "v1.<iv_b64u>.<tag_b64u>.<ct_b64u>". AES-256-GCM.
 /// cluster_key is base64url-encoded 32-byte key.
+pub fn decrypt_cluster_public(ciphertext: &str, key: &str) -> Option<String> {
+    decrypt_cluster(ciphertext, key)
+}
+
 fn decrypt_cluster(ciphertext: &str, cluster_key_b64u: &str) -> Option<String> {
     use aes_gcm::{Aes256Gcm, Key, Nonce, aead::{Aead, KeyInit}};
     use base64::Engine;

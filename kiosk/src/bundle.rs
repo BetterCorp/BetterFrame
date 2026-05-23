@@ -97,9 +97,40 @@ pub struct BundleCell {
     pub cooling_timeout_seconds: Option<u32>,
     #[serde(default = "default_fit")]
     pub fit: String,
+    #[serde(default)]
+    pub smart_url: Option<SmartUrlConfig>,
 }
 
 fn default_fit() -> String { "cover".to_string() }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SmartUrlConfig {
+    pub steps: Vec<SmartUrlStep>,
+    #[serde(default)]
+    pub login_detect_url: Option<String>,
+    #[serde(default)]
+    pub session_check_interval_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SmartUrlStep {
+    #[serde(rename = "type")]
+    pub step_type: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub value_encrypted: Option<String>,
+    #[serde(default)]
+    pub delay_ms: Option<u32>,
+    #[serde(default)]
+    pub timeout_ms: Option<u32>,
+    #[serde(default)]
+    pub script: Option<String>,
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleCamera {

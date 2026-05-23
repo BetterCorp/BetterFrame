@@ -1070,7 +1070,14 @@ fn render_layout(display_id: u32, layout_id: u32) {
                     none_cell()
                 } else {
                     let key = format!("web:{url}");
-                    ensure_web(key, WebSource::Url(url), server_url, kiosk_key).upcast()
+                    let wv = ensure_web(key, WebSource::Url(url), server_url, kiosk_key);
+                    // Smart URL: execute login/navigation steps after page loads.
+                    if let Some(ref smart) = cell.smart_url {
+                        let decrypt_key = server::load_encrypt_key()
+                            .or_else(|| server::load_cluster_key());
+                        execute_smart_url_steps(&wv, smart, decrypt_key.as_deref());
+                    }
+                    wv.upcast()
                 }
             }
             "none" => none_cell(),
@@ -1540,6 +1547,88 @@ fn load_webview_url(webview: &webkit6::WebView, url: &str, server_url: &str, kio
     }
 
     webkit6::prelude::WebViewExt::load_uri(webview, url);
+}
+
+/// Execute smart URL steps on a WebView after loading. Steps run
+/// sequentially via JS injection. Used for auto-login, cookie accept,
+/// multi-step navigation before showing the final page.
+fn execute_smart_url_steps(
+    webview: &webkit6::WebView,
+    config: &crate::bundle::SmartUrlConfig,
+    decrypt_key: Option<&str>,
+) {
+    let mut js_parts: Vec<String> = Vec::new();
+
+    for step in &config.steps {
+        match step.step_type.as_str() {
+            "navigate" => {
+                if let Some(url) = &step.url {
+                    js_parts.push(format!("window.location.href = {};", js_string_lit(url)));
+                    js_parts.push("await new Promise(r => setTimeout(r, 1000));".to_string());
+                }
+            }
+            "fill" => {
+                if let Some(sel) = &step.selector {
+                    let value = step.value.clone().or_else(|| {
+                        step.value_encrypted.as_ref().and_then(|enc| {
+                            decrypt_key.and_then(|k| {
+                                crate::onvif_events::decrypt_cluster_public(enc, k)
+                            })
+                        })
+                    }).unwrap_or_default();
+                    js_parts.push(format!(
+                        "{{ var el = document.querySelector({}); if (el) {{ el.value = {}; el.dispatchEvent(new Event('input', {{bubbles:true}})); }} }}",
+                        js_string_lit(sel), js_string_lit(&value)
+                    ));
+                }
+            }
+            "click" => {
+                if let Some(sel) = &step.selector {
+                    js_parts.push(format!(
+                        "{{ var el = document.querySelector({}); if (el) el.click(); }}",
+                        js_string_lit(sel)
+                    ));
+                }
+            }
+            "wait" => {
+                let ms = step.delay_ms.unwrap_or(1000);
+                js_parts.push(format!("await new Promise(r => setTimeout(r, {ms}));"));
+            }
+            "wait_for" => {
+                if let Some(sel) = &step.selector {
+                    let timeout = step.timeout_ms.unwrap_or(10000);
+                    js_parts.push(format!(
+                        "await new Promise((resolve) => {{ var deadline = Date.now() + {timeout}; (function check() {{ if (document.querySelector({sel})) return resolve(); if (Date.now() > deadline) return resolve(); setTimeout(check, 200); }})(); }});",
+                        sel = js_string_lit(sel)
+                    ));
+                }
+            }
+            "javascript" => {
+                if let Some(script) = &step.script {
+                    js_parts.push(script.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if js_parts.is_empty() { return; }
+
+    let full_js = format!("(async () => {{ {} }})();", js_parts.join("\n"));
+    let wv = webview.clone();
+
+    // Execute after the page loads — wait for load-changed signal.
+    use webkit6::prelude::*;
+    wv.connect_load_changed(move |wv, event| {
+        if event == webkit6::LoadEvent::Finished {
+            let js = full_js.clone();
+            wv.evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
+        }
+    });
+}
+
+fn js_string_lit(s: &str) -> String {
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n"))
 }
 
 /// Set a cookie in WebKit's cookie jar so all requests to the server

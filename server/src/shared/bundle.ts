@@ -44,6 +44,21 @@ export interface BundleCell {
   html_content: string | null;
   cooling_timeout_seconds: number | null;
   fit: "cover" | "contain" | "fill";
+  /** Smart URL action steps — automated login/navigation sequence. */
+  smart_url?: {
+    steps: Array<{
+      type: string;
+      url?: string;
+      selector?: string;
+      value?: string;
+      value_encrypted?: string;
+      delay_ms?: number;
+      timeout_ms?: number;
+      script?: string;
+    }>;
+    login_detect_url?: string;
+    session_check_interval_ms?: number;
+  };
 }
 
 export interface BundleLayout {
@@ -193,6 +208,26 @@ export async function generateBundle(
           html_content: htmlContent,
           cooling_timeout_seconds: c.cooling_timeout_seconds,
           fit: c.fit,
+          // Smart URL: encrypted credentials use per-kiosk key so each
+          // kiosk's bundle has uniquely encrypted values.
+          smart_url: c.options?.["smart_url"] ? (() => {
+            const raw = c.options["smart_url"] as any;
+            const steps = Array.isArray(raw.steps) ? raw.steps.map((s: any) => {
+              const step = { ...s };
+              // Encrypt plaintext values with per-kiosk key for transport.
+              const ek = kioskEncryptKey ?? clusterKey;
+              if (step.value && step.type === "fill" && ek) {
+                step.value_encrypted = secrets.encryptForCluster(step.value, ek);
+                delete step.value;
+              }
+              return step;
+            }) : [];
+            return {
+              steps,
+              login_detect_url: raw.login_detect_url,
+              session_check_interval_ms: raw.session_check_interval_ms,
+            };
+          })() : undefined,
         });
       }
       result.push({

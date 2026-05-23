@@ -25,6 +25,7 @@ services:
       - TZ=UTC
     volumes:
       - betterframe-data:/var/lib/betterframe
+      - ./sec-config.yaml:/app/sec-config.yaml:ro
     expose:
       - "18080"
       - "18081"

@@ -1,11 +1,16 @@
-# BetterFrame server image — Node 24 + native deps for argon2/sqlite.
-# Trixie base (Debian 13, latest stable) — matches the host distro we
-# recommend in deploy/README.md.
+# BetterFrame server — BSB container with built plugins.
+#
+# sec-config.yaml is NOT baked in — mount it at runtime:
+#   volumes:
+#     - ./sec-config.yaml:/app/sec-config.yaml:ro
+#
+# Builder stage compiles TS + native deps (argon2).
+# Runtime stage uses the official BSB container.
+
 FROM node:24-trixie-slim AS builder
 
 WORKDIR /app
 
-# Build deps for argon2 + bsb-plugin-cli
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential python3 \
     && rm -rf /var/lib/apt/lists/*
@@ -17,48 +22,40 @@ RUN npm ci && npm rebuild argon2
 
 COPY server ./server
 
-# Run BSB build — extracts schemas + compiles TS + generates plugin manifests
 WORKDIR /app/server
 RUN npm run build
 
-# ---- Runtime image ----
-FROM node:24-trixie-slim
+# ---- Runtime ----
+FROM betterweb/service-base:node
 
-# Version baked at build time. Coolify doesn't include .git in build context
-# so we can't derive from git inside Docker. Instead, compose passes it as a
-# build arg from SOURCE_COMMIT / COOLIFY_GIT_COMMIT env vars that Coolify
-# DOES inject into the build environment.
 ARG BF_SERVER_VERSION=dev
 
-# ffmpeg for camera snapshot capture (optional but needed for /admin/entities/:id/snapshot)
+USER root
+
+# ffmpeg for camera snapshot capture
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates ffmpeg wget \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m -d /var/lib/betterframe -s /bin/false betterframe
+RUN mkdir -p /var/lib/betterframe && chown node:node /var/lib/betterframe
 
 WORKDIR /app
 
+# Copy built plugin + deps
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/server ./server
-COPY --from=builder /app/tsconfig.base.json ./
-COPY --from=builder /app/package.json ./
+COPY --from=builder /app/server/lib ./lib
+COPY --from=builder /app/server/bsb-plugin.json ./bsb-plugin.json
+COPY --from=builder /app/server/package.json ./package.json
+COPY --from=builder /app/tsconfig.base.json ./tsconfig.base.json
 
-# Default sec-config baked into image. BF_* env vars in compose override at
-# runtime (see shared/env-overrides.ts). No host bind mount needed.
-COPY deploy/docker/sec-config.yaml /app/server/sec-config.yaml
+# Static web assets served by admin-http
+COPY --from=builder /app/server/lib/web-static ./lib/web-static
 
-# Bake version into a file readable by version.ts at runtime.
-RUN echo "$BF_SERVER_VERSION" > /app/server/.bf-version
+# Bake version
+RUN echo "$BF_SERVER_VERSION" > /app/.bf-version
 
-RUN mkdir -p /var/lib/betterframe && chown betterframe:betterframe /var/lib/betterframe
 VOLUME /var/lib/betterframe
 
 EXPOSE 18080 18081 18082
 
-USER betterframe
-WORKDIR /app/server
-
-ENV NODE_OPTIONS=--import=tsx
-
-CMD ["node", "--import", "tsx", "/app/node_modules/@bsb/base/lib/scripts/bsb-plugin-cli.js", "start"]
+USER node

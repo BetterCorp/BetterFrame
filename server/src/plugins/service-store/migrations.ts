@@ -968,6 +968,22 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "kiosks", "encrypt_key_encrypted", "TEXT");
   },
 
+  // Cloud camera accounts: per-vendor, multiple accounts per vendor.
+  // Credentials encrypted with server secret. Sync runs server-side,
+  // streaming URLs delivered to kiosks via the bundle.
+  `CREATE TABLE IF NOT EXISTS cloud_accounts (
+    id TEXT PRIMARY KEY,
+    vendor TEXT NOT NULL,
+    name TEXT NOT NULL,
+    credentials_encrypted TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    last_sync_at TEXT,
+    last_sync_error TEXT,
+    camera_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_cloud_accounts_vendor ON cloud_accounts(vendor)`,
+
   // ONVIF event routing: per-camera event_source (who polls), event_sink
   // (where push callbacks go), and discovered supported topics.
   (db: DatabaseSync) => {

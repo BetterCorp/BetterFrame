@@ -13,6 +13,9 @@
  *   - JSON stored as JSONB for indexing
  *   - Boolean is native BOOLEAN, not INTEGER
  *
+ * IMPORTANT: These create the FINAL schema (matching SQLite after all
+ * migrations have run). Do not include legacy columns that were dropped.
+ *
  * Migration tracking: schema_migrations table in each schema records
  * which version has been applied. Same PRAGMA user_version concept
  * but in a table since PG has no per-schema PRAGMA.
@@ -52,10 +55,7 @@ export const PUBLIC_MIGRATIONS: readonly string[] = [
  * Per-tenant schema: full BetterFrame table set.
  * These run inside SET search_path = tenant_<id>.
  *
- * Mirrors the SQLite migrations but with PG-native types.
- * Each entry is a single SQL statement (no functions like SQLite's
- * addColumnIfNotExists — PG has IF NOT EXISTS on ALTER TABLE ADD COLUMN
- * natively via DO $$ blocks).
+ * Mirrors the FINAL SQLite schema (after all migrations) with PG-native types.
  */
 export const TENANT_MIGRATIONS: readonly string[] = [
   // ---- users ---------------------------------------------------------------
@@ -89,6 +89,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     revoked_at TIMESTAMPTZ
   )`,
   `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(expires_at) WHERE revoked_at IS NULL`,
 
   // ---- api_keys ------------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS api_keys (
@@ -116,11 +117,11 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   )`,
   `INSERT INTO setup_state (id) VALUES (1) ON CONFLICT DO NOTHING`,
 
-  // ---- displays ------------------------------------------------------------
+  // ---- displays (final schema — no UNIQUE on index, has kiosk_id) ----------
   `CREATE TABLE IF NOT EXISTS displays (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
-    "index" INTEGER NOT NULL UNIQUE,
+    "index" INTEGER NOT NULL,
     is_primary BOOLEAN NOT NULL DEFAULT false,
     kiosk_id INTEGER,
     width_px INTEGER NOT NULL DEFAULT 1920,
@@ -131,14 +132,18 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     cec_enabled BOOLEAN NOT NULL DEFAULT true,
     cec_device_path TEXT,
     cec_logical_address INTEGER,
-    desired_power_state TEXT NOT NULL DEFAULT 'follow_layout',
-    actual_power_state TEXT NOT NULL DEFAULT 'unknown',
+    desired_power_state TEXT NOT NULL DEFAULT 'follow_layout'
+      CHECK(desired_power_state IN ('follow_layout', 'on', 'standby')),
+    actual_power_state TEXT NOT NULL DEFAULT 'unknown'
+      CHECK(actual_power_state IN ('awake', 'standby', 'unknown')),
     actual_power_state_at TIMESTAMPTZ,
     state_check_enabled BOOLEAN NOT NULL DEFAULT false,
     state_check_interval_seconds INTEGER NOT NULL DEFAULT 60,
     is_enabled BOOLEAN NOT NULL DEFAULT true,
     active_layout_id INTEGER
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_displays_kiosk ON displays(kiosk_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_displays_kiosk_index ON displays(kiosk_id, "index")`,
 
   // ---- cameras -------------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS cameras (
@@ -151,7 +156,8 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     onvif_username TEXT,
     onvif_password TEXT,
     capabilities JSONB NOT NULL DEFAULT '[]',
-    stream_policy TEXT NOT NULL DEFAULT 'auto' CHECK(stream_policy IN ('auto', 'always_main', 'always_sub')),
+    stream_policy TEXT NOT NULL DEFAULT 'auto'
+      CHECK(stream_policy IN ('auto', 'always_main', 'always_sub')),
     enabled BOOLEAN NOT NULL DEFAULT true,
     last_seen_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -176,7 +182,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_camera_streams_camera ON camera_streams(camera_id)`,
 
-  // ---- kiosks --------------------------------------------------------------
+  // ---- kiosks (final schema — all telemetry + update columns) --------------
   `CREATE TABLE IF NOT EXISTS kiosks (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
@@ -192,6 +198,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     last_seen_at TIMESTAMPTZ,
     last_bundle_version TEXT,
     display_id INTEGER REFERENCES displays(id) ON DELETE SET NULL,
+    encrypt_key_encrypted TEXT,
     cpu_temp_c REAL,
     cpu_load_percent REAL,
     fan_rpm INTEGER,
@@ -226,41 +233,36 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_kiosks_prefix ON kiosks(key_prefix)`,
 
-  // ---- layouts + templates + cells -----------------------------------------
-  `CREATE TABLE IF NOT EXISTS layout_templates (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    description TEXT,
-    regions JSONB NOT NULL DEFAULT '[]',
-    grid_cols INTEGER NOT NULL DEFAULT 12,
-    grid_rows INTEGER NOT NULL DEFAULT 12,
-    is_builtin BOOLEAN NOT NULL DEFAULT false
-  )`,
-
+  // ---- layouts (final schema — no template_id, no display_id) --------------
   `CREATE TABLE IF NOT EXISTS layouts (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     description TEXT,
-    template_id INTEGER NOT NULL REFERENCES layout_templates(id),
-    display_id INTEGER NOT NULL REFERENCES displays(id),
-    priority TEXT NOT NULL DEFAULT 'normal',
+    priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('hot', 'normal', 'cold')),
     cooling_timeout_seconds INTEGER,
     preload_camera_ids JSONB NOT NULL DEFAULT '[]',
-    is_default BOOLEAN NOT NULL DEFAULT false,
     resets_idle_timer BOOLEAN NOT NULL DEFAULT true
   )`,
 
+  // ---- display_layouts (join table) ----------------------------------------
+  `CREATE TABLE IF NOT EXISTS display_layouts (
+    display_id INTEGER NOT NULL REFERENCES displays(id) ON DELETE CASCADE,
+    layout_id INTEGER NOT NULL REFERENCES layouts(id) ON DELETE CASCADE,
+    PRIMARY KEY (display_id, layout_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_display_layouts_layout ON display_layouts(layout_id)`,
+
+  // ---- layout_cells (final schema — no region_name) ------------------------
   `CREATE TABLE IF NOT EXISTS layout_cells (
     id SERIAL PRIMARY KEY,
     layout_id INTEGER NOT NULL REFERENCES layouts(id) ON DELETE CASCADE,
-    region_name TEXT NOT NULL,
     "row" INTEGER NOT NULL DEFAULT 0,
     col INTEGER NOT NULL DEFAULT 0,
     row_span INTEGER NOT NULL DEFAULT 1,
     col_span INTEGER NOT NULL DEFAULT 1,
     content_type TEXT NOT NULL CHECK(content_type IN ('none', 'camera', 'web', 'html')),
     camera_id INTEGER REFERENCES cameras(id) ON DELETE SET NULL,
-    stream_selector TEXT NOT NULL DEFAULT 'auto',
+    stream_selector TEXT,
     web_url TEXT,
     html_content TEXT,
     cooling_timeout_seconds INTEGER,
@@ -269,6 +271,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     fit TEXT NOT NULL DEFAULT 'cover'
   )`,
   `CREATE INDEX IF NOT EXISTS idx_layout_cells_layout ON layout_cells(layout_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_layout_cells_entity ON layout_cells(entity_id)`,
 
   // ---- labels --------------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS labels (
@@ -304,24 +307,38 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at TIMESTAMPTZ NOT NULL,
     consumed_at TIMESTAMPTZ,
-    consumed_by_kiosk_id INTEGER,
+    consumed_by_kiosk_id INTEGER REFERENCES kiosks(id) ON DELETE SET NULL,
     extras JSONB NOT NULL DEFAULT '{}'
   )`,
 
   // ---- event_log -----------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS event_log (
     id SERIAL PRIMARY KEY,
-    source_kiosk_id INTEGER,
-    source_camera_id INTEGER,
-    source_type TEXT NOT NULL DEFAULT 'system',
+    source_kiosk_id INTEGER REFERENCES kiosks(id) ON DELETE SET NULL,
+    source_camera_id INTEGER REFERENCES cameras(id) ON DELETE SET NULL,
+    source_type TEXT NOT NULL CHECK(source_type IN ('onvif', 'gpio', 'synthetic', 'system')),
     topic TEXT NOT NULL,
     property_op TEXT,
     payload JSONB NOT NULL DEFAULT '{}',
     received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     forwarded_to_nodered BOOLEAN NOT NULL DEFAULT false
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_event_log_received ON event_log(received_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_event_log_topic ON event_log(topic, received_at DESC)`,
-  `CREATE INDEX IF NOT EXISTS idx_event_log_camera ON event_log(source_camera_id, received_at DESC)`,
+
+  // ---- entities ------------------------------------------------------------
+  `CREATE TABLE IF NOT EXISTS entities (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL CHECK(type IN ('camera', 'html', 'web', 'dashboard')),
+    description TEXT,
+    camera_id INTEGER REFERENCES cameras(id) ON DELETE CASCADE,
+    html_content TEXT,
+    web_url TEXT,
+    dashboard_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_entities_camera ON entities(camera_id)`,
 
   // ---- firmware releases + rollouts ----------------------------------------
   `CREATE TABLE IF NOT EXISTS firmware_releases (
@@ -335,21 +352,24 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     signature TEXT NOT NULL,
     release_notes TEXT,
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    uploaded_by INTEGER,
-    yanked_at TIMESTAMPTZ
+    uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    yanked_at TIMESTAMPTZ,
+    UNIQUE(version, arch)
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_firmware_releases_channel ON firmware_releases(channel, arch, uploaded_at DESC)`,
 
   `CREATE TABLE IF NOT EXISTS firmware_rollouts (
     id TEXT PRIMARY KEY,
     release_id TEXT NOT NULL REFERENCES firmware_releases(id) ON DELETE CASCADE,
     target_kiosk_ids JSONB NOT NULL DEFAULT '[]',
-    state TEXT NOT NULL DEFAULT 'queued',
-    percentage INTEGER NOT NULL DEFAULT 100,
+    state TEXT NOT NULL DEFAULT 'queued' CHECK(state IN ('queued', 'active', 'paused', 'complete')),
+    percentage INTEGER NOT NULL DEFAULT 100 CHECK(percentage BETWEEN 1 AND 100),
     started_at TIMESTAMPTZ,
     finished_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_by INTEGER
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_firmware_rollouts_state ON firmware_rollouts(state)`,
 
   // ---- OS update releases + rollouts --------------------------------------
   `CREATE TABLE IF NOT EXISTS os_update_releases (
@@ -360,25 +380,27 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     artifact_path TEXT NOT NULL,
     size_bytes BIGINT NOT NULL,
     sha256 TEXT NOT NULL,
-    bundle_format TEXT NOT NULL DEFAULT 'raucb',
+    bundle_format TEXT NOT NULL DEFAULT 'raucb' CHECK(bundle_format = 'raucb'),
     release_notes TEXT,
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    uploaded_by INTEGER,
+    uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
     yanked_at TIMESTAMPTZ,
     UNIQUE(version, compatibility)
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_os_update_releases_channel ON os_update_releases(channel, compatibility, uploaded_at DESC)`,
 
   `CREATE TABLE IF NOT EXISTS os_update_rollouts (
     id TEXT PRIMARY KEY,
     release_id TEXT NOT NULL REFERENCES os_update_releases(id) ON DELETE CASCADE,
     target_kiosk_ids JSONB NOT NULL DEFAULT '[]',
-    state TEXT NOT NULL DEFAULT 'queued',
-    percentage INTEGER NOT NULL DEFAULT 100,
+    state TEXT NOT NULL DEFAULT 'queued' CHECK(state IN ('queued', 'active', 'paused', 'complete')),
+    percentage INTEGER NOT NULL DEFAULT 100 CHECK(percentage BETWEEN 1 AND 100),
     started_at TIMESTAMPTZ,
     finished_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_by INTEGER
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_os_update_rollouts_state ON os_update_rollouts(state)`,
 
   // ---- audit_log -----------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS audit_log (
@@ -396,32 +418,22 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action, ts DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_type, actor_id, ts DESC)`,
 
-  // ---- entities ------------------------------------------------------------
-  `CREATE TABLE IF NOT EXISTS entities (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    type TEXT NOT NULL CHECK(type IN ('camera', 'html', 'web', 'dashboard')),
-    description TEXT,
-    camera_id INTEGER REFERENCES cameras(id) ON DELETE SET NULL,
-    html_content TEXT,
-    web_url TEXT,
-    dashboard_id TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-  )`,
-
-  // ---- GPIO bindings -------------------------------------------------------
+  // ---- kiosk GPIO bindings -------------------------------------------------
   `CREATE TABLE IF NOT EXISTS kiosk_gpio_bindings (
     id SERIAL PRIMARY KEY,
     kiosk_id INTEGER NOT NULL REFERENCES kiosks(id) ON DELETE CASCADE,
     chip TEXT NOT NULL DEFAULT 'gpiochip4',
     pin INTEGER NOT NULL,
-    direction TEXT NOT NULL DEFAULT 'in',
-    pull TEXT,
-    edge TEXT,
+    direction TEXT NOT NULL DEFAULT 'in' CHECK(direction IN ('in', 'out')),
+    pull TEXT CHECK(pull IN ('up', 'down', 'none')),
+    edge TEXT CHECK(edge IN ('rising', 'falling', 'both')),
     topic TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE(kiosk_id, chip, pin)
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_kiosk_gpio_bindings_kiosk ON kiosk_gpio_bindings(kiosk_id)`,
 
   // ---- kiosk_logs ----------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS kiosk_logs (

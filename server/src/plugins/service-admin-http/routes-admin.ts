@@ -1165,6 +1165,20 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
 
+  // Visual editor: drag-to-move a cell to a new grid position.
+  app.post("/admin/layouts/:id/cells/:cellId/move", async (event) => {
+    const layoutId = Number(getRouterParam(event, "id"));
+    const cellId = Number(getRouterParam(event, "cellId"));
+    const body = await readBody<{ row: number; col: number }>(event);
+    const row = Number(body?.row ?? 0);
+    const col = Number(body?.col ?? 0);
+    if (Number.isInteger(row) && Number.isInteger(col) && row >= 0 && col >= 0) {
+      await deps.repo.updateLayoutCell(cellId, { row, col } as any);
+      notifyKiosks();
+    }
+    return { ok: true };
+  });
+
   app.post("/admin/layouts/:id/cells/:cellId/delete", async (event) => {
     const layoutId = Number(getRouterParam(event, "id"));
     const cellId = Number(getRouterParam(event, "cellId"));

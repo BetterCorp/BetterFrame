@@ -2364,6 +2364,7 @@ export function renderCell(
     <div
       class="layout-cell"
       id={`cell-${String(c.id)}`}
+      data-cell-id={String(c.id)}
       style={style}
       hx-get={cellEditUrl}
       hx-target="this"
@@ -2455,12 +2456,26 @@ export function renderGrid(
   }
 
   return (
-    <div
-      class="layout-builder"
-      style={`grid-template-columns:repeat(${String(gridCols)}, 1fr); grid-template-rows:repeat(${String(gridRows)}, 1fr)`}
-    >
-      {cells.map((c) => renderCell(layoutId, c, entities, cameras, "read"))}
-    </div>
+    <>
+      <style>{`
+        .bf-resize-handle { position:absolute; z-index:10; }
+        .bf-resize-right { right:0; top:0; width:6px; height:100%; cursor:col-resize; }
+        .bf-resize-bottom { left:0; bottom:0; width:100%; height:6px; cursor:row-resize; }
+        .bf-resize-corner { right:0; bottom:0; width:12px; height:12px; cursor:nwse-resize; }
+        .bf-resize-handle:hover { background:rgba(30,64,175,0.3); }
+        .layout-cell.bf-selected { outline:2px solid #1e40af; outline-offset:-2px; }
+        .layout-cell.bf-dragging { opacity:0.5; }
+        .layout-cell { position:relative; }
+      `}</style>
+      <div
+        class="layout-builder"
+        data-layout-editor={String(layoutId)}
+        style={`grid-template-columns:repeat(${String(gridCols)}, 1fr); grid-template-rows:repeat(${String(gridRows)}, 1fr)`}
+      >
+        {cells.map((c) => renderCell(layoutId, c, entities, cameras, "read"))}
+      </div>
+      <script src="/static/layout-editor.js" />
+    </>
   );
 }
 

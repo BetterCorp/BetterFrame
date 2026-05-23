@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { CLOUD_VENDORS, VENDOR_LABELS, getProvider, listProviders, type CloudVendor } from "../../shared/cloud-cameras/index.js";
+import { CloudAccountsPage } from "../../web-templates/admin-pages.js";
 
 export function registerCloudRoutes(app: H3, deps: AdminDeps): void {
 
@@ -20,87 +21,24 @@ export function registerCloudRoutes(app: H3, deps: AdminDeps): void {
     const accounts = await deps.repo.listCloudAccounts();
     const providers = listProviders();
 
-    return htmlPage(`<html><head><title>Cloud Accounts</title>
-      <link rel="stylesheet" href="/static/app.css">
-      </head><body style="font-family:system-ui;max-width:900px;margin:2rem auto;padding:0 1rem">
-      <h1>Cloud Camera Accounts</h1>
-      <p style="color:#666">Link your camera vendor cloud accounts. Server syncs cameras + delivers streaming URLs to kiosks. Credentials stored encrypted — never leave the server.</p>
+    const vendors = CLOUD_VENDORS.map((v) => ({ value: v, label: VENDOR_LABELS[v] }));
+    const credentialFields = providers.flatMap((p) =>
+      p.credentialFields().map((f) => ({ vendor: p.vendor, ...f })),
+    );
 
-      <div style="background:#f9fafb;border:1px solid #ddd;border-radius:6px;padding:1rem;margin-bottom:2rem">
-        <h2 style="margin:0 0 1rem;font-size:1.1rem">Add Account</h2>
-        <form method="post" action="/admin/cloud-accounts/add" style="display:grid;gap:0.75rem">
-          <div>
-            <label style="font-size:0.85rem;font-weight:600">Vendor</label>
-            <select name="vendor" class="form-input" required>
-              ${CLOUD_VENDORS.map((v) => `<option value="${v}">${VENDOR_LABELS[v]}</option>`).join("")}
-            </select>
-          </div>
-          <div>
-            <label style="font-size:0.85rem;font-weight:600">Account Name</label>
-            <input name="name" type="text" class="form-input" required placeholder="e.g. Main Office Hik-Connect" />
-          </div>
-          <div id="cred-fields">
-            ${providers.map((p) => p.credentialFields().map((f) =>
-              `<div data-vendor="${p.vendor}" style="display:none;margin-bottom:0.5rem">
-                <label style="font-size:0.85rem">${f.label}${f.required ? ' *' : ''}</label>
-                <input name="cred_${f.name}" type="${f.type}" class="form-input" ${f.required ? 'required' : ''} />
-              </div>`
-            ).join("")).join("")}
-          </div>
-          <button type="submit" class="btn btn-primary">Add + Test</button>
-        </form>
-        <script>
-          document.querySelector('[name="vendor"]').addEventListener('change', function() {
-            var v = this.value;
-            document.querySelectorAll('#cred-fields [data-vendor]').forEach(function(el) {
-              el.style.display = el.getAttribute('data-vendor') === v ? '' : 'none';
-              el.querySelectorAll('input').forEach(function(inp) {
-                inp.required = el.getAttribute('data-vendor') === v && inp.closest('[data-vendor]').querySelector('label').textContent.includes('*');
-              });
-            });
-          });
-          document.querySelector('[name="vendor"]').dispatchEvent(new Event('change'));
-        </script>
-      </div>
-
-      <h2 style="font-size:1.1rem">Linked Accounts</h2>
-      ${accounts.length === 0
-        ? '<p style="color:#999">No cloud accounts linked yet.</p>'
-        : `<table style="width:100%;border-collapse:collapse">
-            <thead><tr>
-              <th style="text-align:left;padding:0.5rem;border-bottom:2px solid #ddd">Name</th>
-              <th style="text-align:left;padding:0.5rem;border-bottom:2px solid #ddd">Vendor</th>
-              <th style="text-align:left;padding:0.5rem;border-bottom:2px solid #ddd">Cameras</th>
-              <th style="text-align:left;padding:0.5rem;border-bottom:2px solid #ddd">Last Sync</th>
-              <th style="padding:0.5rem;border-bottom:2px solid #ddd"></th>
-            </tr></thead>
-            <tbody>
-              ${accounts.map((a) => `<tr>
-                <td style="padding:0.5rem;border-bottom:1px solid #eee"><strong>${a.name}</strong></td>
-                <td style="padding:0.5rem;border-bottom:1px solid #eee">${VENDOR_LABELS[a.vendor as CloudVendor] ?? a.vendor}</td>
-                <td style="padding:0.5rem;border-bottom:1px solid #eee">${a.camera_count}</td>
-                <td style="padding:0.5rem;border-bottom:1px solid #eee;font-size:0.85rem">
-                  ${a.last_sync_at ?? '—'}
-                  ${a.last_sync_error ? `<br><span style="color:#c00;font-size:0.8rem">${a.last_sync_error}</span>` : ''}
-                </td>
-                <td style="padding:0.5rem;border-bottom:1px solid #eee">
-                  <form method="post" action="/admin/cloud-accounts/${a.id}/sync" style="display:inline">
-                    <button type="submit" class="btn btn-sm">Sync</button>
-                  </form>
-                  <form method="post" action="/admin/cloud-accounts/${a.id}/import" style="display:inline;margin-left:0.25rem">
-                    <button type="submit" class="btn btn-sm btn-primary">Import</button>
-                  </form>
-                  <form method="post" action="/admin/cloud-accounts/${a.id}/delete" style="display:inline;margin-left:0.25rem"
-                    onsubmit="return confirm('Delete this cloud account?')">
-                    <button type="submit" class="btn btn-sm btn-danger">Delete</button>
-                  </form>
-                </td>
-              </tr>`).join("")}
-            </tbody>
-          </table>`
-      }
-      <p style="margin-top:1rem"><a href="/admin/cameras">← Back to Cameras</a></p>
-    </body></html>`);
+    return htmlPage(CloudAccountsPage({
+      user: user.username,
+      accounts: accounts.map((a) => ({
+        id: a.id,
+        name: a.name,
+        vendor: a.vendor,
+        camera_count: a.camera_count,
+        last_sync_at: a.last_sync_at,
+        last_sync_error: a.last_sync_error,
+      })),
+      vendors,
+      credentialFields,
+    }));
   });
 
   app.post("/admin/cloud-accounts/add", async (event) => {

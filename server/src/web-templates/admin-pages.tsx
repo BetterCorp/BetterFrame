@@ -3848,6 +3848,136 @@ interface KioskOsUpdatePanelProps {
   releases: OsUpdateRelease[];
 }
 
+// ---- Cloud Accounts ---------------------------------------------------------
+
+interface CloudAccountRow {
+  id: string;
+  name: string;
+  vendor: string;
+  camera_count: number;
+  last_sync_at: string | null;
+  last_sync_error: string | null;
+}
+
+interface CloudCredField {
+  vendor: string;
+  name: string;
+  label: string;
+  type: string;
+  required: boolean;
+}
+
+interface CloudAccountsPageProps {
+  user: string;
+  accounts: CloudAccountRow[];
+  vendors: Array<{ value: string; label: string }>;
+  credentialFields: CloudCredField[];
+}
+
+export function CloudAccountsPage(props: CloudAccountsPageProps) {
+  return (
+    <Layout title="Cloud Cameras" user={props.user} activeNav="cloud">
+      <div style="max-width:900px">
+        <p style="color:#666; margin-bottom:1.25rem">
+          Link your camera vendor cloud accounts. Server syncs cameras + delivers
+          streaming URLs to kiosks. Credentials stored encrypted — never leave the server.
+        </p>
+
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Add Account</h2>
+          <form method="post" action="/admin/cloud-accounts/add" style="display:grid; gap:0.75rem">
+            <div class="form-group">
+              <label for="vendor">Vendor</label>
+              <select id="vendor" name="vendor" class="form-input" required>
+                {props.vendors.map((v) => (
+                  <option value={v.value}>{v.label}</option>
+                ))}
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cloud-name">Account Name</label>
+              <input id="cloud-name" name="name" type="text" class="form-input" required placeholder="e.g. Main Office Hik-Connect" />
+            </div>
+            <div id="cred-fields">
+              {props.credentialFields.map((f) => (
+                <div data-vendor={f.vendor} style="display:none; margin-bottom:0.5rem" class="form-group">
+                  <label>{f.label}{f.required ? " *" : ""}</label>
+                  <input name={`cred_${f.name}`} type={f.type} class="form-input" />
+                </div>
+              ))}
+            </div>
+            <button type="submit" class="btn btn-primary">Add + Test</button>
+          </form>
+          <script>{`
+            document.querySelector('[name="vendor"]').addEventListener('change', function() {
+              var v = this.value;
+              document.querySelectorAll('#cred-fields [data-vendor]').forEach(function(el) {
+                var match = el.getAttribute('data-vendor') === v;
+                el.style.display = match ? '' : 'none';
+                el.querySelectorAll('input').forEach(function(inp) {
+                  inp.required = match && el.querySelector('label').textContent.includes('*');
+                });
+              });
+            });
+            document.querySelector('[name="vendor"]').dispatchEvent(new Event('change'));
+          `}</script>
+        </div>
+
+        <div class="section-header">
+          <h2 class="section-title">Linked Accounts</h2>
+        </div>
+        {props.accounts.length === 0 ? (
+          <p style="color:#999">No cloud accounts linked yet.</p>
+        ) : (
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Vendor</th>
+                  <th>Cameras</th>
+                  <th>Last Sync</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {props.accounts.map((a) => {
+                  const vendorLabel = props.vendors.find((v) => v.value === a.vendor)?.label ?? a.vendor;
+                  return (
+                    <tr>
+                      <td><strong>{a.name}</strong></td>
+                      <td>{vendorLabel}</td>
+                      <td>{String(a.camera_count)}</td>
+                      <td style="font-size:0.85rem">
+                        {a.last_sync_at ? formatTime(a.last_sync_at) : "—"}
+                        {a.last_sync_error && (
+                          <div style="color:#c00; font-size:0.8rem">{a.last_sync_error}</div>
+                        )}
+                      </td>
+                      <td>
+                        <form method="post" action={`/admin/cloud-accounts/${a.id}/sync`} style="display:inline">
+                          <button type="submit" class="btn btn-sm btn-ghost">Sync</button>
+                        </form>
+                        <form method="post" action={`/admin/cloud-accounts/${a.id}/import`} style="display:inline; margin-left:0.25rem">
+                          <button type="submit" class="btn btn-sm btn-primary">Import</button>
+                        </form>
+                        <form method="post" action={`/admin/cloud-accounts/${a.id}/delete`} style="display:inline; margin-left:0.25rem"
+                          {...{"onsubmit": "return confirm('Delete this cloud account?')"}}>
+                          <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                        </form>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </Layout>
+  );
+}
+
 export function KioskOsUpdatePanel(props: KioskOsUpdatePanelProps) {
   const k = props.kiosk;
   const current = k.os_version ?? "unknown";

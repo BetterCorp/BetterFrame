@@ -20,6 +20,7 @@ import type {
   Camera,
   CameraStream,
   CameraType,
+  CloudAccount,
   Display,
   Entity,
   EntityType,
@@ -59,6 +60,7 @@ import {
   rowToApiKey,
   rowToAuditEntry,
   rowToCamera,
+  rowToCloudAccount,
   rowToCameraStream,
   rowToDisplay,
   rowToEntity,
@@ -2278,5 +2280,51 @@ export class Repository {
     vals.push(id);
     await this._run(`UPDATE labels SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("labels", "update", id);
+  }
+
+  // ===========================================================================
+  // cloud_accounts
+  // ===========================================================================
+
+  async listCloudAccounts(): Promise<CloudAccount[]> {
+    const rs = await this._all("SELECT * FROM cloud_accounts ORDER BY vendor, name");
+    return rs.map((r) => rowToCloudAccount(r as Record<string, unknown>));
+  }
+
+  async getCloudAccount(id: string): Promise<CloudAccount | null> {
+    const r = await this._get("SELECT * FROM cloud_accounts WHERE id = ?", [id]);
+    return r ? rowToCloudAccount(r as Record<string, unknown>) : null;
+  }
+
+  async createCloudAccount(input: {
+    id: string;
+    vendor: string;
+    name: string;
+    credentials_encrypted: string;
+  }): Promise<CloudAccount> {
+    await this._run(
+      `INSERT INTO cloud_accounts (id, vendor, name, credentials_encrypted) VALUES (?, ?, ?, ?)`,
+      [input.id, input.vendor, input.name, input.credentials_encrypted],
+    );
+    const a = await this.getCloudAccount(input.id);
+    if (!a) throw new Error("cloud account vanished after insert");
+    return a;
+  }
+
+  async updateCloudAccount(id: string, patch: Partial<CloudAccount>): Promise<void> {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (k === "id" || k === "created_at") continue;
+      sets.push(`${k} = ?`);
+      vals.push(v === undefined ? null : v);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    await this._run(`UPDATE cloud_accounts SET ${sets.join(", ")} WHERE id = ?`, vals);
+  }
+
+  async deleteCloudAccount(id: string): Promise<void> {
+    await this._run("DELETE FROM cloud_accounts WHERE id = ?", [id]);
   }
 }

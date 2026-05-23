@@ -333,6 +333,20 @@ export interface OsUpdateRollout {
   created_by: number | null;
 }
 
+export type CloudVendor = "hikconnect" | "dahua" | "tuya" | "uniview" | "tplink";
+
+export interface CloudAccount {
+  id: string;
+  vendor: CloudVendor;
+  name: string;
+  credentials_encrypted: string;
+  is_active: boolean;
+  last_sync_at: string | null;
+  last_sync_error: string | null;
+  camera_count: number;
+  created_at: string;
+}
+
 export interface Label {
   id: number;
   name: string;

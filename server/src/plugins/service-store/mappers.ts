@@ -12,6 +12,8 @@ import type {
   AuditEntry,
   AuditResult,
   Camera,
+  CloudAccount,
+  CloudVendor,
   CameraStream,
   CameraType,
   CellContentType,
@@ -450,5 +452,19 @@ export function rowToKioskLog(r: Row): KioskLog {
     context: j<Record<string, unknown>>(r["context"], {}),
     logged_at: s(r["logged_at"]),
     received_at: s(r["received_at"]),
+  };
+}
+
+export function rowToCloudAccount(r: Row): CloudAccount {
+  return {
+    id: s(r["id"]),
+    vendor: s(r["vendor"]) as CloudVendor,
+    name: s(r["name"]),
+    credentials_encrypted: s(r["credentials_encrypted"]),
+    is_active: b(r["is_active"]),
+    last_sync_at: sn(r["last_sync_at"]),
+    last_sync_error: sn(r["last_sync_error"]),
+    camera_count: n(r["camera_count"]),
+    created_at: s(r["created_at"]),
   };
 }

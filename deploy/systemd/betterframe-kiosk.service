@@ -36,6 +36,7 @@ Environment=GST_DEBUG=1
 # Invisible cursor: transparent theme + 1px size + software fallback.
 # Three layers because Pi 5 GPU ignores XCURSOR_SIZE for HW cursors.
 Environment=XCURSOR_THEME=betterframe-empty
+Environment=WLR_XCURSOR_THEME=betterframe-empty
 Environment=XCURSOR_SIZE=1
 Environment=WLR_NO_HARDWARE_CURSORS=1
 # Let the unprivileged kiosk process control the Pi fan PWM sysfs files.

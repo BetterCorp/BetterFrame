@@ -226,10 +226,19 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
 
   # piwiz = "Welcome to Raspberry Pi" first-run wizard. userconf-pi runs at
   # first boot if no user is configured. Purge both so they can't fire.
-  DEBIAN_FRONTEND=noninteractive apt-get purge -y piwiz userconf-pi 2>/dev/null || true
-  rm -f /etc/xdg/autostart/piwiz.desktop
+  DEBIAN_FRONTEND=noninteractive apt-get purge -y piwiz userconf-pi \
+    rpi-first-boot-wizard pi-greeter rpd-plym-splash 2>/dev/null || true
+  rm -f /etc/xdg/autostart/piwiz.desktop /etc/xdg/autostart/*wizard*.desktop \
+    /etc/xdg/autostart/*setup*.desktop /etc/xdg/autostart/*greeter*.desktop
   systemctl disable --now userconf.service userconf-pi.service 2>/dev/null || true
   systemctl mask userconf.service userconf-pi.service 2>/dev/null || true
+  systemctl disable --now rpi-first-boot-wizard.service 2>/dev/null || true
+  systemctl mask rpi-first-boot-wizard.service 2>/dev/null || true
+  rm -f /etc/profile.d/raspi-config.sh 2>/dev/null || true
+  systemctl disable --now raspi-config.service 2>/dev/null || true
+  systemctl mask raspi-config.service 2>/dev/null || true
+  mkdir -p /var/lib/userconf-pi && touch /var/lib/userconf-pi/userconf
+  rm -f /boot/firmware/firstrun.sh 2>/dev/null || true
 
   # Suppress the Debian/Pi console motd and /etc/issue text on tty.
   : > /etc/motd

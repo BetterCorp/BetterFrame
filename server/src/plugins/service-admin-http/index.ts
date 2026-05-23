@@ -105,6 +105,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
   private server?: Server;
   private cameraHealthChecker?: { stop: () => void };
+  private artifactCleanup?: { stop: () => void };
 
   constructor(cfg: BSBServiceConstructor<InstanceType<typeof Config>, typeof EventSchemas>) {
     super(cfg);
@@ -238,6 +239,13 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       warn: (m) => obs.log.warn(m as any, {}),
     });
 
+    // Artifact cleanup — prune yanked + old firmware/OS files every 6h.
+    const { startArtifactCleanup } = await import("../../shared/artifact-cleanup.js");
+    this.artifactCleanup = startArtifactCleanup(repo, {
+      info: (m) => obs.log.info(m as any, {}),
+      warn: (m) => obs.log.warn(m as any, {}),
+    });
+
     // Auto-provision the Node-RED bf-server-config so the user doesn't have
     // to set server URL + API key manually. Best-effort with retries because
     // Node-RED may still be starting.
@@ -307,6 +315,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
   async dispose(): Promise<void> {
     this.cameraHealthChecker?.stop();
+    this.artifactCleanup?.stop();
     if (this.server) {
       await this.server.close();
     }

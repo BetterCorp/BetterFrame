@@ -958,6 +958,28 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
 
     // --- display active layout ---
     addColumnIfNotExists(db, "displays", "active_layout_id", "INTEGER REFERENCES layouts(id) ON DELETE SET NULL");
+
+    // --- per-kiosk encryption key ---
+    addColumnIfNotExists(db, "kiosks", "encrypt_key_encrypted", "TEXT");
+
+    // --- ONVIF event routing ---
+    addColumnIfNotExists(db, "cameras", "event_source", "TEXT NOT NULL DEFAULT 'auto'");
+    addColumnIfNotExists(db, "cameras", "event_sink", "TEXT NOT NULL DEFAULT 'auto'");
+    addColumnIfNotExists(db, "cameras", "supported_event_topics", "TEXT NOT NULL DEFAULT '[]'");
+
+    // --- cloud accounts table ---
+    db.exec(`CREATE TABLE IF NOT EXISTS cloud_accounts (
+      id TEXT PRIMARY KEY,
+      vendor TEXT NOT NULL,
+      name TEXT NOT NULL,
+      credentials_encrypted TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      last_sync_at TEXT,
+      last_sync_error TEXT,
+      camera_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ) STRICT`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_cloud_accounts_vendor ON cloud_accounts(vendor)`);
   },
 
   // Per-kiosk encryption key. Replaces shared cluster_key for bundle

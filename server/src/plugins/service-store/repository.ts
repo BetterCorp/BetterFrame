@@ -1365,6 +1365,18 @@ export class Repository {
     void this.notify("firmware_releases", "update", id);
   }
 
+  async deleteFirmwareRelease(id: string): Promise<void> {
+    await this._run("DELETE FROM firmware_releases WHERE id = ?", [id]);
+    void this.notify("firmware_releases", "delete", id);
+  }
+
+  async listYankedFirmwareReleases(): Promise<FirmwareRelease[]> {
+    const rs = await this._all(
+      "SELECT * FROM firmware_releases WHERE yanked_at IS NOT NULL ORDER BY yanked_at ASC",
+    );
+    return rs.map((r) => rowToFirmwareRelease(r as Record<string, unknown>));
+  }
+
   /** Mark the per-kiosk firmware attempt state (called from /api/kiosk/firmware/applied). */
   async recordKioskFirmwareAttempt(
     kioskId: number,
@@ -1547,6 +1559,18 @@ export class Repository {
   async yankOsUpdateRelease(id: string): Promise<void> {
     await this._run("UPDATE os_update_releases SET yanked_at = ? WHERE id = ?", [isoNow(), id]);
     void this.notify("os_update_releases", "update", id);
+  }
+
+  async deleteOsUpdateRelease(id: string): Promise<void> {
+    await this._run("DELETE FROM os_update_releases WHERE id = ?", [id]);
+    void this.notify("os_update_releases", "delete", id);
+  }
+
+  async listYankedOsUpdateReleases(): Promise<OsUpdateRelease[]> {
+    const rs = await this._all(
+      "SELECT * FROM os_update_releases WHERE yanked_at IS NOT NULL ORDER BY yanked_at ASC",
+    );
+    return rs.map((r) => rowToOsUpdateRelease(r as Record<string, unknown>));
   }
 
   async recordKioskOsUpdateAttempt(

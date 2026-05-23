@@ -105,6 +105,9 @@ plymouth-set-default-theme betterframe || true
 # pixel so there's literally nothing to render.
 CURSOR_DIR=/usr/share/icons/betterframe-empty/cursors
 install -d -m 755 "$CURSOR_DIR"
+# XCursor/wlroots looks for index.theme (not cursor.theme) when resolving
+# XCURSOR_THEME. Install as both so update-alternatives and XCursor agree.
+install -m 644 /tmp/bf-files/cursor.theme /usr/share/icons/betterframe-empty/index.theme
 install -m 644 /tmp/bf-files/cursor.theme /usr/share/icons/betterframe-empty/cursor.theme
 # Generate valid 1x1 transparent Xcursor files. Previous generator had a
 # missing version field → malformed → wlroots fell back to default cursor.
@@ -172,19 +175,31 @@ systemctl mask bluetooth.service hciuart.service 2>/dev/null || true
 # packages AND nuke any leftover desktop/autostart files so nothing
 # survives to flash "configure your raspberry" on screen.
 apt-get -y purge piwiz userconf-pi pi-greeter rpd-plym-splash \
-  initial-setup initial-setup-gui 2>/dev/null || true
+  initial-setup initial-setup-gui rpi-first-boot-wizard 2>/dev/null || true
+# Nuke ALL autostart entries related to setup/wizard/greeter.
 rm -f /etc/xdg/autostart/piwiz.desktop
 rm -f /etc/xdg/autostart/setup-wizard.desktop
 rm -f /etc/xdg/autostart/initial-setup*.desktop
+rm -f /etc/xdg/autostart/*wizard*.desktop
+rm -f /etc/xdg/autostart/*setup*.desktop
+rm -f /etc/xdg/autostart/*greeter*.desktop
 rm -rf /usr/share/applications/piwiz.desktop
 rm -rf /usr/share/applications/initial-setup*.desktop
 # userconf-pi drops a first-boot service that prompts for user/pass.
 systemctl disable userconfig.service 2>/dev/null || true
 systemctl mask userconfig.service 2>/dev/null || true
-# Pi OS Bookworm+ uses rpi-first-boot-wizard.
-apt-get -y purge rpi-first-boot-wizard 2>/dev/null || true
 systemctl disable rpi-first-boot-wizard.service 2>/dev/null || true
 systemctl mask rpi-first-boot-wizard.service 2>/dev/null || true
+# raspi-config has first-boot triggers via /etc/profile.d and init scripts.
+rm -f /etc/profile.d/raspi-config.sh 2>/dev/null || true
+rm -f /etc/init.d/resize2fs_once 2>/dev/null || true
+systemctl disable raspi-config.service 2>/dev/null || true
+systemctl mask raspi-config.service 2>/dev/null || true
+# Mark first-boot as done so any surviving checks think setup completed.
+mkdir -p /var/lib/userconf-pi
+touch /var/lib/userconf-pi/userconf
+# Prevent pi-gen firstrun.sh from triggering on boot.
+if [ -f /boot/firmware/firstrun.sh ]; then rm -f /boot/firmware/firstrun.sh; fi
 # Remove any login program on console.
 rm -f /etc/systemd/system/getty.target.wants/* 2>/dev/null || true
 

@@ -59,19 +59,6 @@ export class PgAdapter implements DbAdapter {
     return out;
   }
 
-  private coerceParams(params: ReadonlyArray<SqlValue>): unknown[] {
-    return params.map((v) => {
-      if (v === 0 || v === 1) {
-        // Could be integer or boolean. PG is strict about boolean columns
-        // receiving integer values. We can't know the column type here, but
-        // the `pg` driver accepts JS booleans for both INTEGER and BOOLEAN
-        // columns, so converting 0/1 to false/true is always safe.
-        return v === 1;
-      }
-      return v;
-    });
-  }
-
   private async runner<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
     if (this.currentTxClient) return fn(this.currentTxClient);
     const client = await this.pool.connect();
@@ -81,9 +68,8 @@ export class PgAdapter implements DbAdapter {
 
   async run(sql: string, params: ReadonlyArray<SqlValue> = []): Promise<RunResult> {
     const pgSql = this.rewriteSql(sql);
-    const pgParams = this.coerceParams(params);
     return this.runner(async (c) => {
-      const res = await c.query(pgSql, pgParams);
+      const res = await c.query(pgSql, params as unknown[]);
       let lastInsertRowid = 0n;
       // If the caller added RETURNING id, pluck it.
       if (res.rows.length > 0 && res.rows[0] && "id" in res.rows[0]) {
@@ -98,18 +84,16 @@ export class PgAdapter implements DbAdapter {
 
   async get<T = Row>(sql: string, params: ReadonlyArray<SqlValue> = []): Promise<T | undefined> {
     const pgSql = this.rewriteSql(sql);
-    const pgParams = this.coerceParams(params);
     return this.runner(async (c) => {
-      const res = await c.query(pgSql, pgParams);
+      const res = await c.query(pgSql, params as unknown[]);
       return (res.rows[0] as T | undefined);
     });
   }
 
   async all<T = Row>(sql: string, params: ReadonlyArray<SqlValue> = []): Promise<T[]> {
     const pgSql = this.rewriteSql(sql);
-    const pgParams = this.coerceParams(params);
     return this.runner(async (c) => {
-      const res = await c.query(pgSql, pgParams);
+      const res = await c.query(pgSql, params as unknown[]);
       return res.rows as T[];
     });
   }

@@ -81,7 +81,7 @@ import {
   rowToSetupState,
   rowToUser,
 } from "./mappers.js";
-import { B, J, isoIn, isoNow, j } from "./util.js";
+import { J, isoIn, isoNow, j } from "./util.js";
 
 type NotifyFn = (
   table: string,
@@ -189,12 +189,13 @@ export class Repository {
     const role: UserRole = input.role ?? "operator";
     const result = await this._run(
       `INSERT INTO users (username, password_hash, role, is_active, must_change_password)
-       VALUES (?, ?, ?, 1, ?)`,
+       VALUES (?, ?, ?, ?, ?)`,
       [
         input.username,
         input.password_hash,
         role,
-        B(Boolean(input.must_change_password)),
+        true,
+        Boolean(input.must_change_password),
       ],
     );
     const id = Number(result.lastInsertRowid);
@@ -213,7 +214,7 @@ export class Repository {
     }
     if ("totp_enabled" in patch) {
       cols.push("totp_enabled = ?");
-      vals.push(B(Boolean(patch.totp_enabled)));
+      vals.push(Boolean(patch.totp_enabled));
     }
     if ("totp_secret_encrypted" in patch) {
       cols.push("totp_secret_encrypted = ?");
@@ -225,7 +226,7 @@ export class Repository {
     }
     if ("must_change_password" in patch) {
       cols.push("must_change_password = ?");
-      vals.push(B(Boolean(patch.must_change_password)));
+      vals.push(Boolean(patch.must_change_password));
     }
     if ("failed_login_count" in patch) {
       cols.push("failed_login_count = ?");
@@ -241,7 +242,7 @@ export class Repository {
     }
     if ("is_active" in patch) {
       cols.push("is_active = ?");
-      vals.push(B(Boolean(patch.is_active)));
+      vals.push(Boolean(patch.is_active));
     }
     if (cols.length === 0) return;
     vals.push(id);
@@ -270,7 +271,7 @@ export class Repository {
         input.id,
         input.user_id,
         input.csrf_token,
-        B(input.totp_pending),
+        Boolean(input.totp_pending),
         input.user_agent,
         input.ip_address,
         input.expires_at,
@@ -295,7 +296,7 @@ export class Repository {
 
   async setSessionTotpPending(id: string, pending: boolean): Promise<void> {
     await this._run("UPDATE sessions SET totp_pending = ? WHERE id = ?", [
-      B(pending),
+      pending,
       id,
     ]);
   }
@@ -573,7 +574,7 @@ export class Repository {
         input.priority ?? "normal",
         input.cooling_timeout_seconds ?? null,
         J(input.preload_camera_ids ?? []),
-        B(input.resets_idle_timer ?? true),
+        Boolean(input.resets_idle_timer ?? true),
       ],
     );
     const id = Number(result.lastInsertRowid);
@@ -590,7 +591,7 @@ export class Repository {
       if (k === "id" || k === "display_id") continue; // display_id deprecated
       sets.push(`${k} = ?`);
       if (k === "preload_camera_ids" || k === "regions") vals.push(J(v));
-      else if (typeof v === "boolean") vals.push(B(v));
+      else if (typeof v === "boolean") vals.push(v);
       else vals.push(v === undefined ? null : v);
     }
     if (sets.length === 0) return;
@@ -936,7 +937,7 @@ export class Repository {
       const cam = rowToCamera(existing as Record<string, unknown>);
       await this._run(
         `UPDATE cameras SET name = ?, cloud_stream_url = ?, cloud_stream_type = ?, enabled = ? WHERE id = ?`,
-        [input.name, input.cloud_stream_url, input.cloud_stream_type, B(input.enabled), cam.id],
+        [input.name, input.cloud_stream_url, input.cloud_stream_type, Boolean(input.enabled), cam.id],
       );
       void this.notify("cameras", "update", cam.id);
       return (await this.getCameraById(cam.id))!;
@@ -946,7 +947,7 @@ export class Repository {
          (name, type, cloud_account_id, cloud_vendor_camera_id, cloud_stream_url, cloud_stream_type, enabled)
        VALUES (?, 'cloud', ?, ?, ?, ?, ?)`,
       [input.name, input.cloud_account_id, input.cloud_vendor_camera_id,
-       input.cloud_stream_url, input.cloud_stream_type, B(input.enabled)],
+       input.cloud_stream_url, input.cloud_stream_type, Boolean(input.enabled)],
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("cameras", "create", id);
@@ -1017,7 +1018,7 @@ export class Repository {
         input.encoding ?? null,
         input.framerate ?? null,
         input.bitrate_kbps ?? null,
-        B(Boolean(input.is_discovered)),
+        Boolean(input.is_discovered),
       ],
     );
     const id = Number(result.lastInsertRowid);
@@ -1829,7 +1830,7 @@ export class Repository {
         input.topic,
         input.property_op,
         J(input.payload),
-        B(input.forwarded_to_nodered),
+        Boolean(input.forwarded_to_nodered),
       ],
     );
     return Number(result.lastInsertRowid);
@@ -2099,7 +2100,7 @@ export class Repository {
       if (k === "id" || k === "created_at") continue;
       sets.push(`${k} = ?`);
       if (k === "capabilities") vals.push(J(v));
-      else if (typeof v === "boolean") vals.push(B(v));
+      else if (typeof v === "boolean") vals.push(v);
       else vals.push(v === undefined ? null : v);
     }
     if (sets.length === 0) return;

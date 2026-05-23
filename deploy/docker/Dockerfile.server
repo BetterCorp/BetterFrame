@@ -64,12 +64,10 @@ ARG BF_MQTT_TOPIC_PREFIX=betterframe
 
 USER root
 
-# envsubst + ffmpeg
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gettext-base ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+# envsubst + ffmpeg (Alpine base)
+RUN apk add --no-cache gettext ffmpeg
 
-RUN mkdir -p /var/lib/betterframe && chown node:node /var/lib/betterframe
+RUN mkdir -p /var/lib/betterframe && chown 1000:1000 /var/lib/betterframe
 
 WORKDIR /home/bsb
 

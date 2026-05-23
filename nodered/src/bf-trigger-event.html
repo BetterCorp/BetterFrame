@@ -1,0 +1,56 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-trigger-event", {
+    category: "BetterFrame Triggers",
+    color: "#ccddaa",
+    defaults: {
+      name: { value: "" },
+      camera_id: { value: "" },
+      topic_filter: { value: "" },
+    },
+    inputs: 0,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      if (this.name) return this.name;
+      if (this.topic_filter) return "Event: " + this.topic_filter;
+      return "ONVIF Event";
+    },
+    paletteLabel: "ONVIF Event",
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-trigger-event">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" placeholder="(optional)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-camera_id"><i class="fa fa-video-camera"></i> Camera ID</label>
+    <input type="number" id="node-input-camera_id" placeholder="(blank = all cameras)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-topic_filter"><i class="fa fa-filter"></i> Topic Filter</label>
+    <input type="text" id="node-input-topic_filter" placeholder="e.g. LineCrossing, DigitalInput" />
+  </div>
+  <div class="form-tips">
+    Generic ONVIF event trigger. Fires on any event topic from any camera.
+    Use <b>Topic Filter</b> for substring matching (e.g. <code>LineCrossing</code>,
+    <code>DigitalInput</code>, <code>Tamper</code>). Leave blank for all events.
+    Outputs <code>msg.source</code> (source SimpleItems) and <code>msg.data</code>
+    (data SimpleItems) as key-value objects.
+  </div>
+</script>
+
+<script type="text/html" data-help-name="bf-trigger-event">
+  <p>Generic catch-all for ONVIF events not covered by the specialized
+  Motion or ANPR trigger nodes.</p>
+  <p>Common topic filters:</p>
+  <ul>
+    <li><code>LineDetector/Crossed</code> — line crossing</li>
+    <li><code>FieldDetector/ObjectsInside</code> — intrusion zone</li>
+    <li><code>Device/Trigger/DigitalInput</code> — physical I/O</li>
+    <li><code>Tamper</code> — camera tamper detection</li>
+    <li><code>AudioDetection</code> — audio analytics</li>
+  </ul>
+  <p>Leave filter blank to receive ALL events from ALL cameras.</p>
+</script>

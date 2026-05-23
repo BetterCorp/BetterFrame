@@ -1,0 +1,42 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-trigger-anpr", {
+    category: "BetterFrame Triggers",
+    color: "#99ccff",
+    defaults: {
+      name: { value: "" },
+      camera_id: { value: "" },
+    },
+    inputs: 0,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      return this.name || "ANPR Trigger";
+    },
+    paletteLabel: "ANPR Trigger",
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-trigger-anpr">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" placeholder="(optional)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-camera_id"><i class="fa fa-video-camera"></i> Camera ID</label>
+    <input type="number" id="node-input-camera_id" placeholder="(blank = all cameras)" />
+  </div>
+  <div class="form-tips">
+    Fires on ONVIF license plate recognition events. Outputs
+    <code>msg.plate</code> (string) and <code>msg.confidence</code> (number).
+    Works with Hikvision ANPR cameras (PlateNumber field), Dahua (plateNumber),
+    and other ONVIF-compliant vendors.
+  </div>
+</script>
+
+<script type="text/html" data-help-name="bf-trigger-anpr">
+  <p>Triggers on ONVIF ANPR (Automatic Number Plate Recognition) events.</p>
+  <p>Matches topics containing: LicensePlateRecognition, Plate, ANPR, LPR, NumberPlate.</p>
+  <p><b>msg.plate</b> contains the recognized plate string (or null if not parsed).
+  <b>msg.confidence</b> is the recognition confidence score (or null).</p>
+  <p>Use downstream nodes for plate allowlist/blocklist matching, logging, or gate control.</p>
+</script>

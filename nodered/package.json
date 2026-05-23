@@ -24,7 +24,10 @@
       "bf-config-get": "src/bf-config-get.js",
       "bf-config-set": "src/bf-config-set.js",
       "bf-status": "src/bf-status.js",
-      "bf-snapshot": "src/bf-snapshot.js"
+      "bf-snapshot": "src/bf-snapshot.js",
+      "bf-trigger-motion": "src/bf-trigger-motion.js",
+      "bf-trigger-anpr": "src/bf-trigger-anpr.js",
+      "bf-trigger-event": "src/bf-trigger-event.js"
     },
     "icons": [
       "icons"

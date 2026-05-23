@@ -1,0 +1,41 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-trigger-motion", {
+    category: "BetterFrame Triggers",
+    color: "#ff9999",
+    defaults: {
+      name: { value: "" },
+      camera_id: { value: "" },
+    },
+    inputs: 0,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      return this.name || "Motion Trigger";
+    },
+    paletteLabel: "Motion Trigger",
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-trigger-motion">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" placeholder="(optional)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-camera_id"><i class="fa fa-video-camera"></i> Camera ID</label>
+    <input type="number" id="node-input-camera_id" placeholder="(blank = all cameras)" />
+  </div>
+  <div class="form-tips">
+    Fires on ONVIF motion detection events (MotionAlarm, CellMotionDetector,
+    VideoAnalytics/Motion, FieldDetector). Outputs <code>msg.active</code>
+    (true/false) for motion start/stop. Leave Camera ID blank for all cameras.
+  </div>
+</script>
+
+<script type="text/html" data-help-name="bf-trigger-motion">
+  <p>Triggers on ONVIF motion events from cameras connected via BetterFrame kiosks.</p>
+  <p>Matches event topics containing: MotionAlarm, CellMotionDetector,
+  VideoAnalytics, FieldDetector.</p>
+  <p><b>msg.active</b> is <code>true</code> when motion starts, <code>false</code>
+  when it clears. Use a switch node downstream to filter on active only.</p>
+</script>

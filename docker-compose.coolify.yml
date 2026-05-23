@@ -24,10 +24,7 @@ services:
     environment:
       - TZ=UTC
     volumes:
-      - type: bind
-        source: ${SERVER_SEC_CONFIG:-./sec-config.yaml}
-        target: /home/bsb/sec-config.yaml
-        read_only: true
+      - ./sec-config.yaml:/home/bsb/sec-config.yaml:ro
     expose:
       - "18080"
       - "18081"
@@ -68,9 +65,7 @@ services:
     environment:
       - TZ=UTC
     volumes:
-      - type: bind
-        source: ${NODERED_DATA_DIR:./nrdata}
-        target: /data
+      - nrdata:/data
     expose:
       - "1880"
     healthcheck:
@@ -92,9 +87,7 @@ services:
       - POSTGRES_PASSWORD=${BF_PG_PASSWORD:-betterframe}
       - POSTGRES_DB=${BF_PG_DB:-betterframe}
     volumes:
-      - type: bind
-        source: ${POSTGRES_DATA_DIR:./pgdata}
-        target: /var/lib/postgresql
+      - pgdata:/var/lib/postgresql
     expose:
       - "5432"
     healthcheck:

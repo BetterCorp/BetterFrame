@@ -4,11 +4,8 @@
 #
 # Point Coolify resource at this file instead of docker-compose.yml.
 #
-# Volume name overrides:
-#   BF_DATA_VOLUME_NAME       default "betterframe-data"
-#   NODERED_DATA_VOLUME_NAME  default "nodered-data"
-#
-# Server config comes from sec-config.yaml, not env vars.
+# Server config is baked into the image at build time from
+# sec-config.template.yaml + Coolify build args (secrets).
 
 version: "3.8"
 
@@ -23,8 +20,6 @@ services:
     restart: unless-stopped
     environment:
       - TZ=UTC
-    volumes:
-      - ./sec-config.yaml:/home/bsb/sec-config.yaml:ro
     expose:
       - "18080"
       - "18081"

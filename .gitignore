@@ -47,3 +47,5 @@ rauc-signing/
 old-python/
 /Hik-Connect-Docs.pdf
 /Hik-Connect-Docs.md
+# sec-config.yaml is generated from template — never commit real config
+/sec-config.yaml

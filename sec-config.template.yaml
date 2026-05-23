@@ -1,10 +1,10 @@
-# BSB runtime configuration for BetterFrame server.
+# BSB runtime configuration — template for Docker builds.
 #
-# This file is bind-mounted into the container at /home/bsb/sec-config.yaml.
-# All server config lives here — no env vars in the application code.
+# Placeholders (${VAR}) are replaced by envsubst during docker build.
+# Set values via Coolify build args or docker build --build-arg.
 #
-# For native (non-Docker) installs, adjust hostnames to 127.0.0.1 and
-# set driver: sqlite if not using PostgreSQL.
+# For native (non-Docker) installs, copy to sec-config.yaml and
+# replace placeholders with actual values.
 
 default:
   observable:
@@ -17,23 +17,19 @@ default:
       plugin: events-default
       enabled: true
   services:
-    # ----- Data layer -----
     service-store:
       plugin: service-store
       enabled: true
       config:
-        driver: postgres
-        # SQLite (native installs)
+        driver: ${BF_DB_DRIVER:-postgres}
         sqlitePath: /var/lib/betterframe/betterframe.db
-        # PostgreSQL (Docker / production)
-        pgHost: postgres
-        pgPort: 5432
-        pgDatabase: betterframe
-        pgUser: betterframe
-        pgPassword: betterframe
-        pgPoolMax: 10
+        pgHost: ${BF_PG_HOST:-postgres}
+        pgPort: ${BF_PG_PORT:-5432}
+        pgDatabase: ${BF_PG_DATABASE:-betterframe}
+        pgUser: ${BF_PG_USER:-betterframe}
+        pgPassword: ${BF_PG_PASSWORD:-betterframe}
+        pgPoolMax: ${BF_PG_POOL_MAX:-10}
 
-    # ----- Admin UI + API -----
     service-admin-http:
       plugin: service-admin-http
       enabled: true
@@ -41,7 +37,6 @@ default:
         host: 0.0.0.0
         port: 18080
         dataDir: /var/lib/betterframe
-        # Auth
         sessionIdleSeconds: 43200
         sessionMaxSeconds: 2592000
         loginLockoutThreshold: 8
@@ -51,18 +46,13 @@ default:
         argon2Parallelism: 2
         cookieName: betterframe_session
         totpIssuer: BetterFrame
-        # Inter-service URLs (Docker container names)
-        noderedUrl: http://nodered:1880
-        selfUrl: http://server:18080
-        # Systemd credentials directory (native installs only)
+        noderedUrl: ${BF_NODERED_URL:-http://nodered:1880}
+        selfUrl: ${BF_SELF_URL:-http://server:18080}
         systemdCredsDir: ""
-        # Firmware signing key (PEM). Leave empty to auto-generate on disk.
-        firmwareSigningKey: ""
-        # Bearer tokens for CI import endpoints. Generate with: openssl rand -base64 32
-        firmwareImportApiKey: ""
-        otaImportApiKey: ""
+        firmwareSigningKey: "${BF_FIRMWARE_SIGNING_KEY:-}"
+        firmwareImportApiKey: "${BF_FIRMWARE_IMPORT_API_KEY:-}"
+        otaImportApiKey: "${BF_OTA_IMPORT_API_KEY:-}"
 
-    # ----- Kiosk-facing REST API -----
     service-api-http:
       plugin: service-api-http
       enabled: true
@@ -76,14 +66,12 @@ default:
         argon2Parallelism: 2
         cookieName: betterframe_session
         totpIssuer: BetterFrame
-        noderedUrl: http://nodered:1880
-        # MQTT telemetry bridge (optional)
-        mqttUrl: ""
-        mqttUsername: ""
-        mqttPassword: ""
-        mqttTopicPrefix: betterframe
+        noderedUrl: ${BF_NODERED_URL:-http://nodered:1880}
+        mqttUrl: "${BF_MQTT_URL:-}"
+        mqttUsername: "${BF_MQTT_USERNAME:-}"
+        mqttPassword: "${BF_MQTT_PASSWORD:-}"
+        mqttTopicPrefix: ${BF_MQTT_TOPIC_PREFIX:-betterframe}
 
-    # ----- Live kiosk WebSocket channel -----
     service-coordinator-ws:
       plugin: service-coordinator-ws
       enabled: true
@@ -96,4 +84,4 @@ default:
         argon2Parallelism: 2
         cookieName: betterframe_session
         totpIssuer: BetterFrame
-        noderedUrl: http://nodered:1880
+        noderedUrl: ${BF_NODERED_URL:-http://nodered:1880}

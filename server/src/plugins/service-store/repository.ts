@@ -189,7 +189,7 @@ export class Repository {
     const role: UserRole = input.role ?? "operator";
     const result = await this._run(
       `INSERT INTO users (username, password_hash, role, is_active, must_change_password)
-       VALUES (?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?) RETURNING id`,
       [
         input.username,
         input.password_hash,
@@ -326,7 +326,7 @@ export class Repository {
   }): Promise<ApiKey> {
     const result = await this._run(
       `INSERT INTO api_keys (name, key_hash, key_prefix, scopes, expires_at)
-       VALUES (?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?) RETURNING id`,
       [
         input.name,
         input.key_hash,
@@ -380,7 +380,7 @@ export class Repository {
   async createDefaultDisplay(): Promise<Display> {
     const result = await this._run(
       `INSERT INTO displays (name, "index", is_primary)
-       VALUES ('primary', 0, 0)`,
+       VALUES ('primary', 0, 0) RETURNING id`,
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("displays", "create", id);
@@ -398,7 +398,7 @@ export class Repository {
     const idx = input.index ?? await this.nextDisplayIndexForKiosk(kioskId);
     const result = await this._run(
       `INSERT INTO displays (name, "index", is_primary, kiosk_id, width_px, height_px)
-       VALUES (?, ?, 0, ?, ?, ?)`,
+       VALUES (?, ?, 0, ?, ?, ?) RETURNING id`,
       [
         input.name,
         idx,
@@ -567,7 +567,7 @@ export class Repository {
   }): Promise<Layout> {
     const result = await this._run(
       `INSERT INTO layouts (name, description, priority, cooling_timeout_seconds, preload_camera_ids, resets_idle_timer)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
       [
         input.name,
         input.description ?? null,
@@ -712,7 +712,7 @@ export class Repository {
 
     const result = await this._run(
       `INSERT INTO layout_cells (layout_id, "row", col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options, entity_id, fit)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       [
         input.layout_id,
         input.row,
@@ -899,7 +899,7 @@ export class Repository {
       `INSERT INTO cameras
          (name, type, rtsp_url, onvif_host, onvif_port, onvif_username,
           onvif_password, capabilities, stream_policy)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       [
         input.name,
         input.type,
@@ -945,7 +945,7 @@ export class Repository {
     const result = await this._run(
       `INSERT INTO cameras
          (name, type, cloud_account_id, cloud_vendor_camera_id, cloud_stream_url, cloud_stream_type, enabled)
-       VALUES (?, 'cloud', ?, ?, ?, ?, ?)`,
+       VALUES (?, 'cloud', ?, ?, ?, ?, ?) RETURNING id`,
       [input.name, input.cloud_account_id, input.cloud_vendor_camera_id,
        input.cloud_stream_url, input.cloud_stream_type, Boolean(input.enabled)],
     );
@@ -1006,7 +1006,7 @@ export class Repository {
       `INSERT INTO camera_streams
         (camera_id, role, name, profile_token, rtsp_uri, width, height,
          encoding, framerate, bitrate_kbps, is_discovered)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       [
         input.camera_id,
         input.role,
@@ -1063,7 +1063,7 @@ export class Repository {
   }): Promise<Label> {
     const result = await this._run(
       `INSERT INTO labels (name, description, color)
-       VALUES (?, ?, ?)`,
+       VALUES (?, ?, ?) RETURNING id`,
       [input.name, input.description ?? null, input.color ?? null],
     );
     const id = Number(result.lastInsertRowid);
@@ -1160,7 +1160,7 @@ export class Repository {
     const result = await this._run(
       `INSERT INTO kiosks
         (name, key_hash, key_prefix, capabilities, hardware_model, paired_at, managed_image)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       [
         input.name,
         input.key_hash,
@@ -1822,7 +1822,7 @@ export class Repository {
       `INSERT INTO event_log
          (source_kiosk_id, source_camera_id, source_type, topic,
           property_op, payload, forwarded_to_nodered)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       [
         input.source_kiosk_id,
         input.source_camera_id,
@@ -2158,7 +2158,7 @@ export class Repository {
   }): Promise<Entity> {
     const result = await this._run(
       `INSERT INTO entities (name, type, description, camera_id, html_content, web_url, dashboard_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       [
         input.name,
         input.type,
@@ -2331,7 +2331,7 @@ export class Repository {
   }): Promise<KioskGpioBinding> {
     const result = await this._run(
       `INSERT INTO kiosk_gpio_bindings (kiosk_id, chip, pin, direction, pull, edge, topic)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       [
         input.kiosk_id,
         input.chip ?? "gpiochip0",

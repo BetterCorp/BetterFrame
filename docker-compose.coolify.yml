@@ -28,6 +28,9 @@ services:
       - BF_NODERED_URL=http://nodered:1880
       - BF_SELF_URL=http://server:18080
       - BF_SERVER_VERSION=${BF_SERVER_VERSION:-${COOLIFY_GIT_COMMIT:-${SOURCE_COMMIT:-dev}}}
+      # PostgreSQL: set BF_DB=postgres to switch from SQLite.
+      - BF_DB=${BF_DB:-sqlite}
+      - BF_PG_URL=${BF_PG_URL:-postgres://${BF_PG_USER:-betterframe}:${BF_PG_PASSWORD:-betterframe}@postgres:5432/${BF_PG_DB:-betterframe}}
     volumes:
       - betterframe-data:/var/lib/betterframe
     expose:
@@ -80,11 +83,38 @@ services:
     networks:
       - betterframe
 
+  # PostgreSQL — optional. Set BF_DB=postgres to switch from SQLite.
+  # Omit or disable this service to keep using SQLite (default).
+  postgres:
+    image: postgres:17-alpine
+    container_name: betterframe-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${BF_PG_USER:-betterframe}
+      - POSTGRES_PASSWORD=${BF_PG_PASSWORD:-betterframe}
+      - POSTGRES_DB=${BF_PG_DB:-betterframe}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${BF_PG_USER:-betterframe}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - betterframe
+    profiles:
+      - postgres
+
 volumes:
   betterframe-data:
     name: ${BF_DATA_VOLUME_NAME:-betterframe-data}
   nodered-data:
     name: ${NODERED_DATA_VOLUME_NAME:-nodered-data}
+  postgres-data:
+    name: ${BF_PG_VOLUME_NAME:-betterframe-postgres}
 
 networks:
   betterframe:

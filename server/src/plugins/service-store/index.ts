@@ -105,79 +105,107 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
   async init(obs: Observable): Promise<void> {
     const driver = envStr("BF_DB", this.config.driver) as "sqlite" | "postgres";
+
     if (driver === "postgres") {
-      // Repository conversion to the async DbAdapter interface is in progress.
-      // Until that lands, refuse to start under postgres rather than corrupt
-      // data via half-converted code paths. See db-adapter.ts / pg-adapter.ts
-      // for the foundation already in place.
-      throw new Error(
-        "BF_DB=postgres: foundation present (pg-adapter.ts) but Repository " +
-          "is still on the sync sqlite path. Pending refactor — keep BF_DB " +
-          "unset (defaults to sqlite) or set BF_DB=sqlite explicitly.",
-      );
-    }
+      const pgUrl = envStr("BF_PG_URL", this.config.pgUrl ?? "");
+      if (!pgUrl) throw new Error("BF_DB=postgres requires BF_PG_URL");
+      obs.log.info("connecting to postgres at {url}", { url: pgUrl.replace(/:[^:@]+@/, ":***@") });
 
-    const path = envStr("BF_SQLITE_PATH", this.config.sqlitePath);
-    obs.log.info("opening sqlite at {path}", { path });
+      const { PgAdapter } = await import("./pg-adapter.js");
+      const adapter = new PgAdapter(pgUrl);
 
-    // Ensure parent dir exists (in dev BETTERFRAME_DATA_DIR may be in $HOME)
-    try {
-      mkdirSync(dirname(path), { recursive: true });
-    } catch (err) {
-      obs.log.warn("mkdir failed for {dir}: {err}", {
-        dir: dirname(path),
-        err: (err as Error).message,
-      });
-    }
-
-    this.db = new DatabaseSync(path);
-
-    // SQLite pragmas for an embedded one-writer setup
-    this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA synchronous = NORMAL");
-    this.db.exec("PRAGMA foreign_keys = ON");
-    this.db.exec("PRAGMA busy_timeout = 10000");
-
-    // Track schema version via SQLite's built-in user_version PRAGMA.
-    // Each migration entry runs exactly once across all server boots.
-    const row = this.db.prepare("PRAGMA user_version").get() as { user_version: number };
-    const currentVersion = row.user_version;
-    const targetVersion = MIGRATIONS.length;
-
-    if (currentVersion < targetVersion) {
-      obs.log.info("running migrations from {from} to {to}", {
-        from: currentVersion,
-        to: targetVersion,
-      });
-      for (let i = currentVersion; i < targetVersion; i++) {
-        const entry = MIGRATIONS[i];
-        if (typeof entry === "string") {
-          this.db.exec(entry);
-        } else if (typeof entry === "function") {
-          entry(this.db);
+      // Run PG migrations. Track version in schema_migrations table.
+      const { TENANT_MIGRATIONS } = await import("./migrations-pg.js");
+      const versionRow = await adapter.get<{ version: number }>(
+        `SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations WHERE schema_name = 'public'`,
+      ).catch(() => undefined);
+      const currentVersion = versionRow?.version ?? 0;
+      if (currentVersion < TENANT_MIGRATIONS.length) {
+        obs.log.info("running PG migrations from {from} to {to}", {
+          from: currentVersion,
+          to: TENANT_MIGRATIONS.length,
+        });
+        // Ensure schema_migrations exists (bootstrap).
+        await adapter.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+          schema_name TEXT NOT NULL, version INTEGER NOT NULL,
+          applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (schema_name, version)
+        )`);
+        for (let i = currentVersion; i < TENANT_MIGRATIONS.length; i++) {
+          await adapter.exec(TENANT_MIGRATIONS[i]!);
+          await adapter.run(
+            `INSERT INTO schema_migrations (schema_name, version) VALUES ('public', ?)`,
+            [i + 1],
+          );
         }
+      } else {
+        obs.log.info("PG schema up to date (version {v})", { v: currentVersion });
       }
-      this.db.exec(`PRAGMA user_version = ${targetVersion}`);
+
+      this._repo = new Repository(adapter, async (table, op, id) => {
+        try {
+          await this.events.emitBroadcast("store.changed", obs, { table, op, id });
+        } catch (err) {
+          obs.log.warn("broadcast store.changed failed: {err}", {
+            err: (err as Error).message,
+          });
+        }
+      });
     } else {
-      obs.log.info("schema up to date (version {v})", { v: currentVersion });
-    }
+      // SQLite path (default).
+      const path = envStr("BF_SQLITE_PATH", this.config.sqlitePath);
+      obs.log.info("opening sqlite at {path}", { path });
 
-    // Wrap the already-configured DatabaseSync in a SqliteAdapter for the
-    // Repository's async DbAdapter interface. Migrations already ran on
-    // this.db above — SqliteAdapter just wraps it for query access.
-    const { SqliteAdapter } = await import("./sqlite-adapter.js");
-    const adapter = SqliteAdapter.fromExisting(this.db);
-
-    this._repo = new Repository(adapter, async (table, op, id) => {
-      // Best-effort broadcast — never let a failed event-bus call fail a write.
       try {
-        await this.events.emitBroadcast("store.changed", obs, { table, op, id });
+        mkdirSync(dirname(path), { recursive: true });
       } catch (err) {
-        obs.log.warn("broadcast store.changed failed: {err}", {
+        obs.log.warn("mkdir failed for {dir}: {err}", {
+          dir: dirname(path),
           err: (err as Error).message,
         });
       }
-    });
+
+      this.db = new DatabaseSync(path);
+      this.db.exec("PRAGMA journal_mode = WAL");
+      this.db.exec("PRAGMA synchronous = NORMAL");
+      this.db.exec("PRAGMA foreign_keys = ON");
+      this.db.exec("PRAGMA busy_timeout = 10000");
+
+      const row = this.db.prepare("PRAGMA user_version").get() as { user_version: number };
+      const currentVersion = row.user_version;
+      const targetVersion = MIGRATIONS.length;
+
+      if (currentVersion < targetVersion) {
+        obs.log.info("running migrations from {from} to {to}", {
+          from: currentVersion,
+          to: targetVersion,
+        });
+        for (let i = currentVersion; i < targetVersion; i++) {
+          const entry = MIGRATIONS[i];
+          if (typeof entry === "string") {
+            this.db.exec(entry);
+          } else if (typeof entry === "function") {
+            entry(this.db);
+          }
+        }
+        this.db.exec(`PRAGMA user_version = ${targetVersion}`);
+      } else {
+        obs.log.info("schema up to date (version {v})", { v: currentVersion });
+      }
+
+      const { SqliteAdapter } = await import("./sqlite-adapter.js");
+      const adapter = SqliteAdapter.fromExisting(this.db);
+
+      this._repo = new Repository(adapter, async (table, op, id) => {
+        try {
+          await this.events.emitBroadcast("store.changed", obs, { table, op, id });
+        } catch (err) {
+          obs.log.warn("broadcast store.changed failed: {err}", {
+            err: (err as Error).message,
+          });
+        }
+      });
+    }
 
     registerRepo(this._repo);
 

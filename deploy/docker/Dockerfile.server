@@ -39,7 +39,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN mkdir -p /var/lib/betterframe && chown node:node /var/lib/betterframe
 
-WORKDIR /app
+WORKDIR /home/bsb
 
 # Copy built plugin + deps
 COPY --from=builder /app/node_modules ./node_modules
@@ -52,7 +52,7 @@ COPY --from=builder /app/tsconfig.base.json ./tsconfig.base.json
 COPY --from=builder /app/server/lib/web-static ./lib/web-static
 
 # Bake version
-RUN echo "$BF_SERVER_VERSION" > /app/.bf-version
+RUN echo "$BF_SERVER_VERSION" > /home/bsb/.bf-version
 
 VOLUME /var/lib/betterframe
 

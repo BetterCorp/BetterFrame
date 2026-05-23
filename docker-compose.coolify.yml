@@ -24,8 +24,10 @@ services:
     environment:
       - TZ=UTC
     volumes:
-      - betterframe-data:/var/lib/betterframe
-      - ./sec-config.yaml:/app/sec-config.yaml:ro
+      - type: bind
+        source: ${SERVER_SEC_CONFIG:-./sec-config.yaml}
+        target: /home/bsb/sec-config.yaml
+        read_only: true
     expose:
       - "18080"
       - "18081"
@@ -66,7 +68,9 @@ services:
     environment:
       - TZ=UTC
     volumes:
-      - nodered-data:/data
+      - type: bind
+        source: ${NODERED_DATA_DIR:./nrdata}
+        target: /data
     expose:
       - "1880"
     healthcheck:
@@ -88,7 +92,9 @@ services:
       - POSTGRES_PASSWORD=${BF_PG_PASSWORD:-betterframe}
       - POSTGRES_DB=${BF_PG_DB:-betterframe}
     volumes:
-      - postgres-data:/var/lib/postgresql
+      - type: bind
+        source: ${POSTGRES_DATA_DIR:./pgdata}
+        target: /var/lib/postgresql
     expose:
       - "5432"
     healthcheck:
@@ -99,14 +105,6 @@ services:
       start_period: 10s
     networks:
       - betterframe
-
-volumes:
-  betterframe-data:
-    name: ${BF_DATA_VOLUME_NAME:-betterframe-data}
-  nodered-data:
-    name: ${NODERED_DATA_VOLUME_NAME:-nodered-data}
-  postgres-data:
-    name: ${BF_PG_VOLUME_NAME:-betterframe-postgres}
 
 networks:
   betterframe:

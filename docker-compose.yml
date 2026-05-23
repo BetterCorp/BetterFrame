@@ -34,8 +34,10 @@ services:
     environment:
       - TZ=UTC
     volumes:
-      - betterframe-data:/var/lib/betterframe
-      - ./sec-config.yaml:/app/sec-config.yaml:ro
+      - type: bind
+        source: ${SERVER_SEC_CONFIG:-./sec-config.yaml}
+        target: /home/bsb/sec-config.yaml
+        read_only: true
     expose:
       - "18080"
       - "18081"

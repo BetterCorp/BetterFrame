@@ -162,7 +162,13 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       obs.log.info("schema up to date (version {v})", { v: currentVersion });
     }
 
-    this._repo = new Repository(this.db, async (table, op, id) => {
+    // Wrap the already-configured DatabaseSync in a SqliteAdapter for the
+    // Repository's async DbAdapter interface. Migrations already ran on
+    // this.db above — SqliteAdapter just wraps it for query access.
+    const { SqliteAdapter } = await import("./sqlite-adapter.js");
+    const adapter = SqliteAdapter.fromExisting(this.db);
+
+    this._repo = new Repository(adapter, async (table, op, id) => {
       // Best-effort broadcast — never let a failed event-bus call fail a write.
       try {
         await this.events.emitBroadcast("store.changed", obs, { table, op, id });
@@ -181,12 +187,12 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     obs.log.info("store ready");
   }
 
-  private runPurge(obs: Observable): void {
+  private async runPurge(obs: Observable): Promise<void> {
     if (!this._repo) return;
     const r = this._repo;
-    const kl = r.purgeKioskLogs(14);
-    const el = r.purgeEventLog(30, 100_000);
-    const al = r.purgeAuditLog(90);
+    const kl = await r.purgeKioskLogs(14);
+    const el = await r.purgeEventLog(30, 100_000);
+    const al = await r.purgeAuditLog(90);
     if (kl + el + al > 0) {
       obs.log.info("purge: {kl} kiosk_logs, {el} event_log, {al} audit_log", { kl, el, al });
     }

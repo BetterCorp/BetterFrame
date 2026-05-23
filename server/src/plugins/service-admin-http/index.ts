@@ -170,7 +170,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
     // Auth-check endpoint for Angie auth_request subrequest.
     // Returns 200 if session cookie is valid + admin role, 401 otherwise.
-    app.get("/api/admin/_check", (event) => {
+    app.get("/api/admin/_check", async (event) => {
       const authz = event.req.headers.get("authorization");
       if (authz?.startsWith("Bearer ")) {
         return deps.auth.verifyApiKey(authz.slice(7), event.req.headers.get("x-real-ip")).then((key) => {
@@ -185,7 +185,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       const cookie = event.req.headers.get("cookie") ?? "";
       const match = cookie.match(new RegExp(`${deps.cookieName}=([^;]+)`));
       if (!match) return new Response(null, { status: 401 });
-      const resolved = deps.auth.resolveSession(match[1]!);
+      const resolved = await deps.auth.resolveSession(match[1]!);
       if (!resolved || resolved.session.totp_pending) {
         return new Response(null, { status: 401 });
       }
@@ -199,9 +199,9 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     });
 
     app.get("/healthz", () => ({ status: "ok" }));
-    app.get("/readyz", () => {
+    app.get("/readyz", async () => {
       try {
-        deps.repo.isSetupComplete();
+        await deps.repo.isSetupComplete();
         return { status: "ready" };
       } catch {
         return { status: "not_ready" };
@@ -290,7 +290,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     auth: AuthApi,
   ): Promise<string> {
     const KEY = "nodered_api_key";
-    const stored = repo.getSetupExtra(KEY);
+    const stored = await repo.getSetupExtra(KEY);
     if (typeof stored === "string" && stored.length > 0) {
       return secrets.decryptString(stored, "nodered_api_key");
     }
@@ -299,7 +299,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       scopes: ["admin"],
       expiresAt: null,
     });
-    repo.setSetupExtra(KEY, secrets.encryptString(plaintext, "nodered_api_key"));
+    await repo.setSetupExtra(KEY, secrets.encryptString(plaintext, "nodered_api_key"));
     return plaintext;
   }
 

@@ -30,12 +30,12 @@ export interface AuditInput {
   actor_label?: string | null;
 }
 
-export function audit(
+export async function audit(
   repo: Repository,
   event: AuditCtx | null,
   action: string,
   input: AuditInput = {},
-): void {
+): Promise<void> {
   try {
     const ctx = event?.context;
     let actor_type: AuditActorType = input.actor_type ?? "system";
@@ -58,7 +58,7 @@ export function audit(
       ?? headers?.get("x-forwarded-for")?.split(",")[0]?.trim()
       ?? null;
 
-    repo.insertAudit({
+    await repo.insertAudit({
       actor_type,
       actor_id,
       actor_label,

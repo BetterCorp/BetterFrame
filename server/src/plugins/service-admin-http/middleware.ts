@@ -61,7 +61,7 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
       return;
     }
 
-    if (!deps.repo.isSetupComplete()) {
+    if (!(await deps.repo.isSetupComplete())) {
       if (!path.startsWith("/auth/")) {
         return new Response(null, { status: 302, headers: { location: "/setup" } });
       }
@@ -102,7 +102,7 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
       if (!cookie) {
         return new Response(null, { status: 302, headers: { location: "/auth/login" } });
       }
-      const resolved = deps.auth.resolveSession(cookie);
+      const resolved = await deps.auth.resolveSession(cookie);
       if (!resolved) {
         return new Response(null, { status: 302, headers: { location: "/auth/login" } });
       }

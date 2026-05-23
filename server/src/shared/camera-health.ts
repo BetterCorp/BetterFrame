@@ -31,7 +31,7 @@ export function startCameraHealthChecker(
   let timer: ReturnType<typeof setInterval> | null = null;
 
   async function checkAll(): Promise<void> {
-    const cameras = repo.listCameras().filter((c) => c.enabled);
+    const cameras = (await repo.listCameras()).filter((c) => c.enabled);
     for (const cam of cameras) {
       const host = cam.type === "onvif"
         ? cam.onvif_host
@@ -48,12 +48,12 @@ export function startCameraHealthChecker(
         : false;
 
       if (reachable) {
-        repo.updateCamera(cam.id, { last_seen_at: new Date().toISOString() } as any);
+        await repo.updateCamera(cam.id, { last_seen_at: new Date().toISOString() } as any);
       } else if (wasOnline) {
         // Camera just went offline — log event for Node-RED / admin visibility.
         log.warn(`camera ${cam.id} (${cam.name}) went offline`);
         try {
-          repo.insertEvent({
+          await repo.insertEvent({
             source_kiosk_id: null,
             source_camera_id: cam.id,
             source_type: "system",

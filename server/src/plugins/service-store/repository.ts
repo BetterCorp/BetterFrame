@@ -8,8 +8,8 @@
  * NOT THREAD SAFE — node:sqlite is single-threaded, and so is Node. Don't
  * cross workers with the same handle.
  */
-import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
+import type { DbAdapter, RunResult, Row } from "./db-adapter.js";
 
 import type {
   ApiKey,
@@ -88,127 +88,121 @@ type NotifyFn = (
 ) => Promise<void>;
 
 export class Repository {
-  private readonly db: DatabaseSync;
+  readonly adapter: DbAdapter;
   private readonly notify: NotifyFn;
-  private readonly stmts = new Map<string, StatementSync>();
 
-  constructor(db: DatabaseSync, notify: NotifyFn) {
-    this.db = db;
+  constructor(adapter: DbAdapter, notify: NotifyFn) {
+    this.adapter = adapter;
     this.notify = notify;
   }
 
-  /** Cached prepared statements. */
-  private prep(sql: string): StatementSync {
-    let s = this.stmts.get(sql);
-    if (!s) {
-      s = this.db.prepare(sql);
-      this.stmts.set(sql, s);
-    }
-    return s;
+  /** Run a write statement. Params are passed as an array. */
+  private _run(sql: string, params: unknown[] = []): Promise<RunResult> {
+    return this.adapter.run(sql, params as any);
+  }
+  /** Single-row query. */
+  private _get<T = Row>(sql: string, params: unknown[] = []): Promise<T | undefined> {
+    return this.adapter.get<T>(sql, params as any);
+  }
+  /** Multi-row query. */
+  private _all<T = Row>(sql: string, params: unknown[] = []): Promise<T[]> {
+    return this.adapter.all<T>(sql, params as any);
+  }
+  /** Execute DDL. */
+  private _exec(sql: string): Promise<void> {
+    return this.adapter.exec(sql);
   }
 
   /** Ad-hoc transaction. */
-  transact<T>(fn: () => T): T {
-    this.db.exec("BEGIN");
-    try {
-      const out = fn();
-      this.db.exec("COMMIT");
-      return out;
-    } catch (err) {
-      try {
-        this.db.exec("ROLLBACK");
-      } catch {
-        /* ignore */
-      }
-      throw err;
-    }
+  async transact<T>(fn: () => Promise<T>): Promise<T> {
+    return this.adapter.transaction(fn);
   }
 
   // ===========================================================================
   // setup_state
   // ===========================================================================
 
-  getSetupState(): SetupState {
-    const r = this.prep("SELECT * FROM setup_state WHERE id = 1").get();
+  async getSetupState(): Promise<SetupState> {
+    const r = await this._get("SELECT * FROM setup_state WHERE id = 1");
     if (!r) throw new Error("setup_state row missing");
     return rowToSetupState(r as Record<string, unknown>);
   }
 
-  isSetupComplete(): boolean {
-    return this.getSetupState().is_complete && this.countUsers() > 0;
+  async isSetupComplete(): Promise<boolean> {
+    return (await this.getSetupState()).is_complete && (await this.countUsers()) > 0;
   }
 
-  markSetupComplete(): void {
-    this.prep(
+  async markSetupComplete(): Promise<void> {
+    await this._run(
       `UPDATE setup_state
          SET is_complete = 1,
              completed_at = COALESCE(completed_at, ?)
        WHERE id = 1`,
-    ).run(isoNow());
+      [isoNow()],
+    );
     void this.notify("setup_state", "update", 1);
   }
 
-  setSetupExtra(key: string, value: unknown): void {
-    const cur = this.getSetupState().extras;
+  async setSetupExtra(key: string, value: unknown): Promise<void> {
+    const cur = (await this.getSetupState()).extras;
     cur[key] = value;
-    this.prep("UPDATE setup_state SET extras = ? WHERE id = 1").run(J(cur));
+    await this._run("UPDATE setup_state SET extras = ? WHERE id = 1", [J(cur)]);
   }
 
-  getSetupExtra(key: string): unknown {
-    return this.getSetupState().extras[key];
+  async getSetupExtra(key: string): Promise<unknown> {
+    return (await this.getSetupState()).extras[key];
   }
 
-  markClusterKeyProvisioned(): void {
-    this.prep(
+  async markClusterKeyProvisioned(): Promise<void> {
+    await this._run(
       "UPDATE setup_state SET cluster_key_provisioned = 1 WHERE id = 1",
-    ).run();
+    );
   }
 
   // ===========================================================================
   // users
   // ===========================================================================
 
-  countUsers(): number {
-    const r = this.prep("SELECT COUNT(*) AS c FROM users").get() as
-      | { c: number }
-      | undefined;
+  async countUsers(): Promise<number> {
+    const r = await this._get<{ c: number }>("SELECT COUNT(*) AS c FROM users");
     return r?.c ?? 0;
   }
 
-  getUserById(id: number): User | null {
-    const r = this.prep("SELECT * FROM users WHERE id = ?").get(id);
+  async getUserById(id: number): Promise<User | null> {
+    const r = await this._get("SELECT * FROM users WHERE id = ?", [id]);
     return r ? rowToUser(r as Record<string, unknown>) : null;
   }
 
-  getUserByUsername(username: string): User | null {
-    const r = this.prep("SELECT * FROM users WHERE username = ?").get(username);
+  async getUserByUsername(username: string): Promise<User | null> {
+    const r = await this._get("SELECT * FROM users WHERE username = ?", [username]);
     return r ? rowToUser(r as Record<string, unknown>) : null;
   }
 
-  createUser(input: {
+  async createUser(input: {
     username: string;
     password_hash: string;
     role?: UserRole;
     must_change_password?: boolean;
-  }): User {
+  }): Promise<User> {
     const role: UserRole = input.role ?? "operator";
-    const result = this.prep(
+    const result = await this._run(
       `INSERT INTO users (username, password_hash, role, is_active, must_change_password)
        VALUES (?, ?, ?, 1, ?)`,
-    ).run(
-      input.username,
-      input.password_hash,
-      role,
-      B(Boolean(input.must_change_password)),
+      [
+        input.username,
+        input.password_hash,
+        role,
+        B(Boolean(input.must_change_password)),
+      ],
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("users", "create", id);
-    const u = this.getUserById(id);
+    const u = await this.getUserById(id);
     if (!u) throw new Error("user vanished after insert");
     return u;
   }
 
-  updateUser(id: number, patch: Partial<User>): void {
+  async updateUser(id: number, patch: Partial<User>): Promise<void> {
     const cols: string[] = [];
     const vals: unknown[] = [];
     if ("password_hash" in patch) {
@@ -249,7 +243,7 @@ export class Repository {
     }
     if (cols.length === 0) return;
     vals.push(id);
-    this.db.prepare(`UPDATE users SET ${cols.join(", ")} WHERE id = ?`).run(...(vals as never[]));
+    await this._run(`UPDATE users SET ${cols.join(", ")} WHERE id = ?`, vals);
     void this.notify("users", "update", id);
   }
 
@@ -257,7 +251,7 @@ export class Repository {
   // sessions
   // ===========================================================================
 
-  createSession(input: {
+  async createSession(input: {
     id: string;
     user_id: number;
     csrf_token: string;
@@ -265,156 +259,163 @@ export class Repository {
     user_agent: string | null;
     ip_address: string | null;
     expires_at: string; // absolute
-  }): Session {
-    this.prep(
+  }): Promise<Session> {
+    await this._run(
       `INSERT INTO sessions
          (id, user_id, csrf_token, totp_pending, user_agent, ip_address, expires_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      input.id,
-      input.user_id,
-      input.csrf_token,
-      B(input.totp_pending),
-      input.user_agent,
-      input.ip_address,
-      input.expires_at,
+      [
+        input.id,
+        input.user_id,
+        input.csrf_token,
+        B(input.totp_pending),
+        input.user_agent,
+        input.ip_address,
+        input.expires_at,
+      ],
     );
-    const s = this.getSessionById(input.id);
+    const s = await this.getSessionById(input.id);
     if (!s) throw new Error("session vanished after insert");
     return s;
   }
 
-  getSessionById(id: string): Session | null {
-    const r = this.prep("SELECT * FROM sessions WHERE id = ?").get(id);
+  async getSessionById(id: string): Promise<Session | null> {
+    const r = await this._get("SELECT * FROM sessions WHERE id = ?", [id]);
     return r ? rowToSession(r as Record<string, unknown>) : null;
   }
 
-  touchSession(id: string, lastSeenAt: string): void {
-    this.prep("UPDATE sessions SET last_seen_at = ? WHERE id = ?").run(
+  async touchSession(id: string, lastSeenAt: string): Promise<void> {
+    await this._run("UPDATE sessions SET last_seen_at = ? WHERE id = ?", [
       lastSeenAt,
       id,
-    );
+    ]);
   }
 
-  setSessionTotpPending(id: string, pending: boolean): void {
-    this.prep("UPDATE sessions SET totp_pending = ? WHERE id = ?").run(
+  async setSessionTotpPending(id: string, pending: boolean): Promise<void> {
+    await this._run("UPDATE sessions SET totp_pending = ? WHERE id = ?", [
       B(pending),
       id,
-    );
+    ]);
   }
 
-  revokeSession(id: string): void {
-    this.prep("UPDATE sessions SET revoked_at = ? WHERE id = ?").run(isoNow(), id);
+  async revokeSession(id: string): Promise<void> {
+    await this._run("UPDATE sessions SET revoked_at = ? WHERE id = ?", [isoNow(), id]);
   }
 
-  revokeAllSessionsForUser(userId: number): void {
-    this.prep(
+  async revokeAllSessionsForUser(userId: number): Promise<void> {
+    await this._run(
       `UPDATE sessions SET revoked_at = ?
         WHERE user_id = ? AND revoked_at IS NULL`,
-    ).run(isoNow(), userId);
+      [isoNow(), userId],
+    );
   }
 
   // ===========================================================================
   // api_keys
   // ===========================================================================
 
-  createApiKey(input: {
+  async createApiKey(input: {
     name: string;
     key_hash: string;
     key_prefix: string;
     scopes: ApiKeyScope[];
     expires_at: string | null;
-  }): ApiKey {
-    const result = this.prep(
+  }): Promise<ApiKey> {
+    const result = await this._run(
       `INSERT INTO api_keys (name, key_hash, key_prefix, scopes, expires_at)
        VALUES (?, ?, ?, ?, ?)`,
-    ).run(
-      input.name,
-      input.key_hash,
-      input.key_prefix,
-      J(input.scopes),
-      input.expires_at,
+      [
+        input.name,
+        input.key_hash,
+        input.key_prefix,
+        J(input.scopes),
+        input.expires_at,
+      ],
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("api_keys", "create", id);
-    const k = this.getApiKeyById(id);
+    const k = await this.getApiKeyById(id);
     if (!k) throw new Error("api_key vanished after insert");
     return k;
   }
 
-  getApiKeyById(id: number): ApiKey | null {
-    const r = this.prep("SELECT * FROM api_keys WHERE id = ?").get(id);
+  async getApiKeyById(id: number): Promise<ApiKey | null> {
+    const r = await this._get("SELECT * FROM api_keys WHERE id = ?", [id]);
     return r ? rowToApiKey(r as Record<string, unknown>) : null;
   }
 
   /** Lookup all candidates for a given prefix (typically returns 0 or 1). */
-  listApiKeysByPrefix(prefix: string): ApiKey[] {
-    const rs = this.prep(
+  async listApiKeysByPrefix(prefix: string): Promise<ApiKey[]> {
+    const rs = await this._all(
       "SELECT * FROM api_keys WHERE key_prefix = ? AND revoked_at IS NULL",
-    ).all(prefix);
+      [prefix],
+    );
     return rs.map((r) => rowToApiKey(r as Record<string, unknown>));
   }
 
-  touchApiKey(id: number, ip: string | null): void {
-    this.prep(
+  async touchApiKey(id: number, ip: string | null): Promise<void> {
+    await this._run(
       "UPDATE api_keys SET last_used_at = ?, last_used_ip = ? WHERE id = ?",
-    ).run(isoNow(), ip, id);
+      [isoNow(), ip, id],
+    );
   }
 
   // ===========================================================================
   // displays
   // ===========================================================================
 
-  listDisplays(): Display[] {
-    const rs = this.prep('SELECT * FROM displays ORDER BY "index"').all();
+  async listDisplays(): Promise<Display[]> {
+    const rs = await this._all('SELECT * FROM displays ORDER BY "index"');
     return rs.map((r) => rowToDisplay(r as Record<string, unknown>));
   }
 
-  getDisplayById(id: number): Display | null {
-    const r = this.prep("SELECT * FROM displays WHERE id = ?").get(id);
+  async getDisplayById(id: number): Promise<Display | null> {
+    const r = await this._get("SELECT * FROM displays WHERE id = ?", [id]);
     return r ? rowToDisplay(r as Record<string, unknown>) : null;
   }
 
-  createDefaultDisplay(): Display {
-    const result = this.prep(
+  async createDefaultDisplay(): Promise<Display> {
+    const result = await this._run(
       `INSERT INTO displays (name, "index", is_primary)
        VALUES ('primary', 0, 0)`,
-    ).run();
+    );
     const id = Number(result.lastInsertRowid);
     void this.notify("displays", "create", id);
-    const d = this.getDisplayById(id);
+    const d = await this.getDisplayById(id);
     if (!d) throw new Error("display vanished after insert");
     return d;
   }
 
-  createDisplayForKiosk(kioskId: number, input: {
+  async createDisplayForKiosk(kioskId: number, input: {
     name: string;
     index?: number;
     width_px?: number;
     height_px?: number;
-  }): Display {
-    const idx = input.index ?? this.nextDisplayIndexForKiosk(kioskId);
-    const result = this.prep(
+  }): Promise<Display> {
+    const idx = input.index ?? await this.nextDisplayIndexForKiosk(kioskId);
+    const result = await this._run(
       `INSERT INTO displays (name, "index", is_primary, kiosk_id, width_px, height_px)
        VALUES (?, ?, 0, ?, ?, ?)`,
-    ).run(
-      input.name,
-      idx,
-      kioskId,
-      input.width_px ?? 1920,
-      input.height_px ?? 1080,
+      [
+        input.name,
+        idx,
+        kioskId,
+        input.width_px ?? 1920,
+        input.height_px ?? 1080,
+      ],
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("displays", "create", id);
-    const d = this.getDisplayById(id);
+    const d = await this.getDisplayById(id);
     if (!d) throw new Error("display vanished after insert");
     return d;
   }
 
-  listDisplaysForKiosk(kioskId: number): Display[] {
-    const rs = this.prep(
+  async listDisplaysForKiosk(kioskId: number): Promise<Display[]> {
+    const rs = await this._all(
       'SELECT * FROM displays WHERE kiosk_id = ? ORDER BY "index"',
-    ).all(kioskId);
+      [kioskId],
+    );
     return rs.map((r) => rowToDisplay(r as Record<string, unknown>));
   }
 
@@ -422,8 +423,8 @@ export class Repository {
    * Kiosks currently rendering this camera (active layout has a cell
    * pointing at it). Subset of listKiosksWithCameraInBundle.
    */
-  listKiosksRenderingCamera(cameraId: number): Kiosk[] {
-    const rs = this.prep(
+  async listKiosksRenderingCamera(cameraId: number): Promise<Kiosk[]> {
+    const rs = await this._all(
       `SELECT DISTINCT k.*
          FROM kiosks k
          JOIN displays d ON d.kiosk_id = k.id
@@ -431,7 +432,8 @@ export class Repository {
         WHERE lc.camera_id = ?
           AND d.active_layout_id IS NOT NULL
           AND k.enabled = 1`,
-    ).all(cameraId);
+      [cameraId],
+    );
     return rs.map((r) => rowToKiosk(r as Record<string, unknown>));
   }
 
@@ -443,8 +445,8 @@ export class Repository {
    * LAN position. Only when NO kiosk has the camera should the server
    * fall back to pulling the stream itself.
    */
-  listKiosksWithCameraInBundle(cameraId: number): Kiosk[] {
-    const rs = this.prep(
+  async listKiosksWithCameraInBundle(cameraId: number): Promise<Kiosk[]> {
+    const rs = await this._all(
       `SELECT DISTINCT k.*
          FROM kiosks k
          JOIN displays d ON d.kiosk_id = k.id
@@ -452,16 +454,17 @@ export class Repository {
          JOIN layout_cells lc ON lc.layout_id = dl.layout_id
         WHERE lc.camera_id = ?
           AND k.enabled = 1`,
-    ).all(cameraId);
+      [cameraId],
+    );
     return rs.map((r) => rowToKiosk(r as Record<string, unknown>));
   }
 
-  private nextDisplayIndexForKiosk(kioskId: number): number {
-    const r = this.prep('SELECT MAX("index") AS m FROM displays WHERE kiosk_id = ?').get(kioskId) as { m: number | null } | undefined;
+  private async nextDisplayIndexForKiosk(kioskId: number): Promise<number> {
+    const r = await this._get<{ m: number | null }>('SELECT MAX("index") AS m FROM displays WHERE kiosk_id = ?', [kioskId]);
     return (r?.m ?? -1) + 1;
   }
 
-  updateDisplay(id: number, patch: Partial<Display>): void {
+  async updateDisplay(id: number, patch: Partial<Display>): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -472,7 +475,7 @@ export class Repository {
     }
     if (sets.length === 0) return;
     vals.push(id);
-    this.db.prepare(`UPDATE displays SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    await this._run(`UPDATE displays SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("displays", "update", id);
   }
 
@@ -484,13 +487,13 @@ export class Repository {
   // layouts
   // ===========================================================================
 
-  listLayouts(): Layout[] {
-    const rs = this.prep("SELECT * FROM layouts ORDER BY name").all();
+  async listLayouts(): Promise<Layout[]> {
+    const rs = await this._all("SELECT * FROM layouts ORDER BY name");
     return rs.map((r) => rowToLayout(r as Record<string, unknown>));
   }
 
-  getLayoutById(id: number): Layout | null {
-    const r = this.prep("SELECT * FROM layouts WHERE id = ?").get(id);
+  async getLayoutById(id: number): Promise<Layout | null> {
+    const r = await this._get("SELECT * FROM layouts WHERE id = ?", [id]);
     return r ? rowToLayout(r as Record<string, unknown>) : null;
   }
 
@@ -499,82 +502,86 @@ export class Repository {
    *             `display_layouts` join table. Kept as a thin alias for any
    *             callers still on the old API.
    */
-  layoutsForDisplay(displayId: number): Layout[] {
+  async layoutsForDisplay(displayId: number): Promise<Layout[]> {
     return this.listLayoutsForDisplay(displayId);
   }
 
   /** All layouts attached to the given display, via display_layouts. */
-  listLayoutsForDisplay(displayId: number): Layout[] {
-    const rs = this.prep(
+  async listLayoutsForDisplay(displayId: number): Promise<Layout[]> {
+    const rs = await this._all(
       `SELECT l.* FROM layouts l
          JOIN display_layouts dl ON dl.layout_id = l.id
         WHERE dl.display_id = ?
         ORDER BY l.name`,
-    ).all(displayId);
+      [displayId],
+    );
     return rs.map((r) => rowToLayout(r as Record<string, unknown>));
   }
 
   /** Inverse: all displays that have this layout attached. */
-  listDisplaysForLayout(layoutId: number): Display[] {
-    const rs = this.prep(
+  async listDisplaysForLayout(layoutId: number): Promise<Display[]> {
+    const rs = await this._all(
       `SELECT d.* FROM displays d
          JOIN display_layouts dl ON dl.display_id = d.id
         WHERE dl.layout_id = ?
         ORDER BY d."index"`,
-    ).all(layoutId);
+      [layoutId],
+    );
     return rs.map((r) => rowToDisplay(r as Record<string, unknown>));
   }
 
   /** Idempotent attach. */
-  attachLayoutToDisplay(displayId: number, layoutId: number): void {
-    this.prep(
+  async attachLayoutToDisplay(displayId: number, layoutId: number): Promise<void> {
+    await this._run(
       `INSERT OR IGNORE INTO display_layouts (display_id, layout_id)
        VALUES (?, ?)`,
-    ).run(displayId, layoutId);
+      [displayId, layoutId],
+    );
     void this.notify("display_layouts", "create", layoutId);
   }
 
   /** Detach. If the display's default_layout_id pointed at this layout, clear it. */
-  detachLayoutFromDisplay(displayId: number, layoutId: number): void {
-    this.db
-      .prepare(`DELETE FROM display_layouts WHERE display_id = ? AND layout_id = ?`)
-      .run(displayId, layoutId);
-    this.db
-      .prepare(
-        `UPDATE displays SET default_layout_id = NULL
-          WHERE id = ? AND default_layout_id = ?`,
-      )
-      .run(displayId, layoutId);
+  async detachLayoutFromDisplay(displayId: number, layoutId: number): Promise<void> {
+    await this._run(
+      `DELETE FROM display_layouts WHERE display_id = ? AND layout_id = ?`,
+      [displayId, layoutId],
+    );
+    await this._run(
+      `UPDATE displays SET default_layout_id = NULL
+        WHERE id = ? AND default_layout_id = ?`,
+      [displayId, layoutId],
+    );
     void this.notify("display_layouts", "delete", layoutId);
   }
 
-  createLayout(input: {
+  async createLayout(input: {
     name: string;
     description?: string | null;
     priority?: string;
     cooling_timeout_seconds?: number | null;
     preload_camera_ids?: number[];
     resets_idle_timer?: boolean;
-  }): Layout {
-    const result = this.prep(
+  }): Promise<Layout> {
+    const result = await this._run(
       `INSERT INTO layouts (name, description, priority, cooling_timeout_seconds, preload_camera_ids, resets_idle_timer)
        VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(
-      input.name,
-      input.description ?? null,
-      input.priority ?? "normal",
-      input.cooling_timeout_seconds ?? null,
-      J(input.preload_camera_ids ?? []),
-      B(input.resets_idle_timer ?? true),
+      [
+        input.name,
+        input.description ?? null,
+        input.priority ?? "normal",
+        input.cooling_timeout_seconds ?? null,
+        J(input.preload_camera_ids ?? []),
+        B(input.resets_idle_timer ?? true),
+      ],
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("layouts", "create", id);
-    const r = this.getLayoutById(id);
+    const r = await this.getLayoutById(id);
     if (!r) throw new Error("layout vanished after insert");
     return r;
   }
 
-  updateLayout(id: number, patch: Partial<Layout>): void {
+  async updateLayout(id: number, patch: Partial<Layout>): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -586,22 +593,22 @@ export class Repository {
     }
     if (sets.length === 0) return;
     vals.push(id);
-    this.db.prepare(`UPDATE layouts SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    await this._run(`UPDATE layouts SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("layouts", "update", id);
   }
 
-  cloneLayout(id: number): Layout {
-    const src = this.getLayoutById(id);
+  async cloneLayout(id: number): Promise<Layout> {
+    const src = await this.getLayoutById(id);
     if (!src) throw new Error("layout not found");
 
     let cloneName = `${src.name} (copy)`;
     let suffix = 2;
-    while (this.db.prepare("SELECT 1 FROM layouts WHERE name = ?").get(cloneName)) {
+    while (await this._get("SELECT 1 FROM layouts WHERE name = ?", [cloneName])) {
       cloneName = `${src.name} (copy ${String(suffix)})`;
       suffix++;
     }
 
-    const clone = this.createLayout({
+    const clone = await this.createLayout({
       name: cloneName,
       description: src.description,
       priority: src.priority,
@@ -610,9 +617,9 @@ export class Repository {
       resets_idle_timer: src.resets_idle_timer,
     });
 
-    const cells = this.listLayoutCells(id);
+    const cells = await this.listLayoutCells(id);
     for (const c of cells) {
-      this.createLayoutCell({
+      await this.createLayoutCell({
         layout_id: clone.id,
         row: c.row,
         col: c.col,
@@ -630,30 +637,32 @@ export class Repository {
       });
     }
 
-    const labels = this.db.prepare(
+    const labels = await this._all<{ label_id: number }>(
       "SELECT label_id FROM layout_labels WHERE layout_id = ?",
-    ).all(id) as Array<{ label_id: number }>;
+      [id],
+    );
     for (const ll of labels) {
-      this.attachLayoutLabel(clone.id, ll.label_id);
+      await this.attachLayoutLabel(clone.id, ll.label_id);
     }
 
-    const displays = this.db.prepare(
+    const displays = await this._all<{ display_id: number }>(
       "SELECT display_id FROM display_layouts WHERE layout_id = ?",
-    ).all(id) as Array<{ display_id: number }>;
+      [id],
+    );
     for (const dl of displays) {
-      this.attachLayoutToDisplay(dl.display_id, clone.id);
+      await this.attachLayoutToDisplay(dl.display_id, clone.id);
     }
 
     return clone;
   }
 
-  deleteLayout(id: number): void {
-    this.db.prepare(`DELETE FROM layout_cells WHERE layout_id = ?`).run(id);
-    this.db.prepare(`DELETE FROM layout_labels WHERE layout_id = ?`).run(id);
-    this.db.prepare(`DELETE FROM display_layouts WHERE layout_id = ?`).run(id);
+  async deleteLayout(id: number): Promise<void> {
+    await this._run(`DELETE FROM layout_cells WHERE layout_id = ?`, [id]);
+    await this._run(`DELETE FROM layout_labels WHERE layout_id = ?`, [id]);
+    await this._run(`DELETE FROM display_layouts WHERE layout_id = ?`, [id]);
     // Any display whose default pointed here gets cleared.
-    this.db.prepare(`UPDATE displays SET default_layout_id = NULL WHERE default_layout_id = ?`).run(id);
-    this.db.prepare(`DELETE FROM layouts WHERE id = ?`).run(id);
+    await this._run(`UPDATE displays SET default_layout_id = NULL WHERE default_layout_id = ?`, [id]);
+    await this._run(`DELETE FROM layouts WHERE id = ?`, [id]);
     void this.notify("layouts", "delete", id);
   }
 
@@ -661,7 +670,7 @@ export class Repository {
   // layout cells
   // ===========================================================================
 
-  createLayoutCell(input: {
+  async createLayoutCell(input: {
     layout_id: number;
     row: number;
     col: number;
@@ -676,7 +685,7 @@ export class Repository {
     options?: Record<string, unknown>;
     entity_id?: number | null;
     fit?: "cover" | "contain" | "fill";
-  }): LayoutCell {
+  }): Promise<LayoutCell> {
     // Resolve content fields from the entity (if given). The legacy columns
     // remain populated for backward-compatible bundle generation. Dashboard
     // entities materialise as web cells pointing at /dash/<id> so the existing
@@ -686,7 +695,7 @@ export class Repository {
     let webUrl: string | null = input.web_url ?? null;
     let htmlContent: string | null = input.html_content ?? null;
     if (input.entity_id != null) {
-      const ent = this.getEntityById(input.entity_id);
+      const ent = await this.getEntityById(input.entity_id);
       if (ent) {
         contentType = ent.type === "dashboard" ? "web" : ent.type;
         cameraId = ent.type === "camera" ? ent.camera_id : null;
@@ -698,28 +707,29 @@ export class Repository {
       }
     }
 
-    const result = this.prep(
+    const result = await this._run(
       `INSERT INTO layout_cells (layout_id, "row", col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options, entity_id, fit)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      input.layout_id,
-      input.row,
-      input.col,
-      input.row_span ?? 1,
-      input.col_span ?? 1,
-      contentType,
-      cameraId,
-      input.stream_selector ?? "auto",
-      webUrl,
-      htmlContent,
-      input.cooling_timeout_seconds ?? null,
-      J(input.options ?? {}),
-      input.entity_id ?? null,
-      input.fit ?? "cover",
+      [
+        input.layout_id,
+        input.row,
+        input.col,
+        input.row_span ?? 1,
+        input.col_span ?? 1,
+        contentType,
+        cameraId,
+        input.stream_selector ?? "auto",
+        webUrl,
+        htmlContent,
+        input.cooling_timeout_seconds ?? null,
+        J(input.options ?? {}),
+        input.entity_id ?? null,
+        input.fit ?? "cover",
+      ],
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("layout_cells", "create", id);
-    const r = this.prep("SELECT * FROM layout_cells WHERE id = ?").get(id);
+    const r = await this._get("SELECT * FROM layout_cells WHERE id = ?", [id]);
     if (!r) throw new Error("layout_cell vanished after insert");
     return rowToLayoutCell(r as Record<string, unknown>);
   }
@@ -729,51 +739,49 @@ export class Repository {
    * type/camera/url/html into the legacy cell columns so bundle generation stays
    * compatible with the existing kiosk.
    */
-  assignCellEntity(cellId: number, entityId: number | null): void {
+  async assignCellEntity(cellId: number, entityId: number | null): Promise<void> {
     if (entityId == null) {
-      this.db
-        .prepare(
-          `UPDATE layout_cells
-              SET entity_id = NULL,
-                  content_type = 'none',
-                  camera_id = NULL,
-                  web_url = NULL,
-                  html_content = NULL
-            WHERE id = ?`,
-        )
-        .run(cellId);
+      await this._run(
+        `UPDATE layout_cells
+            SET entity_id = NULL,
+                content_type = 'none',
+                camera_id = NULL,
+                web_url = NULL,
+                html_content = NULL
+          WHERE id = ?`,
+        [cellId],
+      );
       void this.notify("layout_cells", "update", cellId);
       return;
     }
-    const ent = this.getEntityById(entityId);
+    const ent = await this.getEntityById(entityId);
     if (!ent) return;
     const cellContentType = ent.type === "dashboard" ? "web" : ent.type;
     const cellWebUrl =
       ent.type === "web" ? ent.web_url :
       ent.type === "dashboard" && ent.dashboard_id ? `/dash/${ent.dashboard_id}` :
       null;
-    this.db
-      .prepare(
-        `UPDATE layout_cells
-            SET entity_id = ?,
-                content_type = ?,
-                camera_id = ?,
-                web_url = ?,
-                html_content = ?
-          WHERE id = ?`,
-      )
-      .run(
+    await this._run(
+      `UPDATE layout_cells
+          SET entity_id = ?,
+              content_type = ?,
+              camera_id = ?,
+              web_url = ?,
+              html_content = ?
+        WHERE id = ?`,
+      [
         ent.id,
         cellContentType,
         ent.type === "camera" ? ent.camera_id : null,
         cellWebUrl,
         ent.type === "html" ? ent.html_content : null,
         cellId,
-      );
+      ],
+    );
     void this.notify("layout_cells", "update", cellId);
   }
 
-  updateLayoutCell(id: number, patch: Partial<LayoutCell>): void {
+  async updateLayoutCell(id: number, patch: Partial<LayoutCell>): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -785,12 +793,12 @@ export class Repository {
     }
     if (sets.length === 0) return;
     vals.push(id);
-    this.db.prepare(`UPDATE layout_cells SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    await this._run(`UPDATE layout_cells SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("layout_cells", "update", id);
   }
 
-  deleteLayoutCell(id: number): void {
-    this.db.prepare(`DELETE FROM layout_cells WHERE id = ?`).run(id);
+  async deleteLayoutCell(id: number): Promise<void> {
+    await this._run(`DELETE FROM layout_cells WHERE id = ?`, [id]);
     void this.notify("layout_cells", "delete", id);
   }
 
@@ -800,34 +808,34 @@ export class Repository {
    * its row bumped by `delta`. Same for axis="col". Used by the visual
    * builder when adding a cell to the top/left of an existing one.
    */
-  shiftCellsForLayout(
+  async shiftCellsForLayout(
     layoutId: number,
     axis: "row" | "col",
     fromIndex: number,
     delta: number,
-  ): void {
+  ): Promise<void> {
     if (delta === 0) return;
     const colName = axis === "row" ? `"row"` : "col";
-    this.db
-      .prepare(
-        `UPDATE layout_cells
-            SET ${colName} = ${colName} + ?
-          WHERE layout_id = ?
-            AND ${colName} >= ?`,
-      )
-      .run(delta, layoutId, fromIndex);
+    await this._run(
+      `UPDATE layout_cells
+          SET ${colName} = ${colName} + ?
+        WHERE layout_id = ?
+          AND ${colName} >= ?`,
+      [delta, layoutId, fromIndex],
+    );
     void this.notify("layout_cells", "update", layoutId);
   }
 
-  listLayoutCells(layoutId: number): LayoutCell[] {
-    const rs = this.prep(
+  async listLayoutCells(layoutId: number): Promise<LayoutCell[]> {
+    const rs = await this._all(
       `SELECT * FROM layout_cells WHERE layout_id = ? ORDER BY "row", col`,
-    ).all(layoutId);
+      [layoutId],
+    );
     return rs.map((r) => rowToLayoutCell(r as Record<string, unknown>));
   }
 
-  getLayoutCellById(id: number): LayoutCell | null {
-    const r = this.prep("SELECT * FROM layout_cells WHERE id = ?").get(id);
+  async getLayoutCellById(id: number): Promise<LayoutCell | null> {
+    const r = await this._get("SELECT * FROM layout_cells WHERE id = ?", [id]);
     return r ? rowToLayoutCell(r as Record<string, unknown>) : null;
   }
 
@@ -836,22 +844,21 @@ export class Repository {
   // ===========================================================================
 
   /** Bundle generation: layouts attached to a display via display_layouts. */
-  layoutsForDisplayId(displayId: number): Layout[] {
+  async layoutsForDisplayId(displayId: number): Promise<Layout[]> {
     return this.listLayoutsForDisplay(displayId);
   }
 
-  camerasForLayoutIds(layoutIds: number[]): Camera[] {
+  async camerasForLayoutIds(layoutIds: number[]): Promise<Camera[]> {
     if (layoutIds.length === 0) return [];
     const placeholders = layoutIds.map(() => "?").join(",");
-    const rs = this.db
-      .prepare(
-        `SELECT DISTINCT c.* FROM cameras c
-           JOIN layout_cells lc ON lc.camera_id = c.id
-          WHERE lc.layout_id IN (${placeholders})
-            AND c.enabled = 1
-          ORDER BY c.name`,
-      )
-      .all(...(layoutIds as never[]));
+    const rs = await this._all(
+      `SELECT DISTINCT c.* FROM cameras c
+         JOIN layout_cells lc ON lc.camera_id = c.id
+        WHERE lc.layout_id IN (${placeholders})
+          AND c.enabled = 1
+        ORDER BY c.name`,
+      layoutIds,
+    );
     return rs.map((r) => rowToCamera(r as Record<string, unknown>));
   }
 
@@ -859,22 +866,22 @@ export class Repository {
   // cameras
   // ===========================================================================
 
-  listCameras(): Camera[] {
-    const rs = this.prep("SELECT * FROM cameras ORDER BY name").all();
+  async listCameras(): Promise<Camera[]> {
+    const rs = await this._all("SELECT * FROM cameras ORDER BY name");
     return rs.map((r) => rowToCamera(r as Record<string, unknown>));
   }
 
-  getCameraById(id: number): Camera | null {
-    const r = this.prep("SELECT * FROM cameras WHERE id = ?").get(id);
+  async getCameraById(id: number): Promise<Camera | null> {
+    const r = await this._get("SELECT * FROM cameras WHERE id = ?", [id]);
     return r ? rowToCamera(r as Record<string, unknown>) : null;
   }
 
-  getCameraByName(name: string): Camera | null {
-    const r = this.prep("SELECT * FROM cameras WHERE name = ?").get(name);
+  async getCameraByName(name: string): Promise<Camera | null> {
+    const r = await this._get("SELECT * FROM cameras WHERE name = ?", [name]);
     return r ? rowToCamera(r as Record<string, unknown>) : null;
   }
 
-  createCamera(input: {
+  async createCamera(input: {
     name: string;
     type: CameraType;
     rtsp_url?: string | null;
@@ -884,40 +891,42 @@ export class Repository {
     onvif_password?: string | null; // already-encrypted ciphertext
     capabilities?: string[];
     stream_policy?: StreamPolicy;
-  }): Camera {
-    const result = this.prep(
+  }): Promise<Camera> {
+    const result = await this._run(
       `INSERT INTO cameras
          (name, type, rtsp_url, onvif_host, onvif_port, onvif_username,
           onvif_password, capabilities, stream_policy)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      input.name,
-      input.type,
-      input.rtsp_url ?? null,
-      input.onvif_host ?? null,
-      input.onvif_port ?? null,
-      input.onvif_username ?? null,
-      input.onvif_password ?? null,
-      J(input.capabilities ?? []),
-      input.stream_policy ?? "auto",
+      [
+        input.name,
+        input.type,
+        input.rtsp_url ?? null,
+        input.onvif_host ?? null,
+        input.onvif_port ?? null,
+        input.onvif_username ?? null,
+        input.onvif_password ?? null,
+        J(input.capabilities ?? []),
+        input.stream_policy ?? "auto",
+      ],
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("cameras", "create", id);
-    const c = this.getCameraById(id);
+    const c = await this.getCameraById(id);
     if (!c) throw new Error("camera vanished after insert");
     // Mirror this camera as a reusable entity so it's pickable in cell editors.
-    this.ensureCameraEntity(c);
+    await this.ensureCameraEntity(c);
     return c;
   }
 
-  listCameraStreams(cameraId: number): CameraStream[] {
-    const rs = this.prep(
+  async listCameraStreams(cameraId: number): Promise<CameraStream[]> {
+    const rs = await this._all(
       "SELECT * FROM camera_streams WHERE camera_id = ?",
-    ).all(cameraId);
+      [cameraId],
+    );
     return rs.map((r) => rowToCameraStream(r as Record<string, unknown>));
   }
 
-  createCameraStream(input: {
+  async createCameraStream(input: {
     camera_id: number;
     role: StreamRole;
     name: string;
@@ -929,33 +938,34 @@ export class Repository {
     framerate?: number | null;
     bitrate_kbps?: number | null;
     is_discovered?: boolean;
-  }): CameraStream {
-    const result = this.prep(
+  }): Promise<CameraStream> {
+    const result = await this._run(
       `INSERT INTO camera_streams
         (camera_id, role, name, profile_token, rtsp_uri, width, height,
          encoding, framerate, bitrate_kbps, is_discovered)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      input.camera_id,
-      input.role,
-      input.name,
-      input.profile_token ?? null,
-      input.rtsp_uri,
-      input.width ?? null,
-      input.height ?? null,
-      input.encoding ?? null,
-      input.framerate ?? null,
-      input.bitrate_kbps ?? null,
-      B(Boolean(input.is_discovered)),
+      [
+        input.camera_id,
+        input.role,
+        input.name,
+        input.profile_token ?? null,
+        input.rtsp_uri,
+        input.width ?? null,
+        input.height ?? null,
+        input.encoding ?? null,
+        input.framerate ?? null,
+        input.bitrate_kbps ?? null,
+        B(Boolean(input.is_discovered)),
+      ],
     );
     const id = Number(result.lastInsertRowid);
-    const r = this.prep("SELECT * FROM camera_streams WHERE id = ?").get(id);
+    const r = await this._get("SELECT * FROM camera_streams WHERE id = ?", [id]);
     if (!r) throw new Error("camera_stream vanished after insert");
     void this.notify("camera_streams", "create", id);
     return rowToCameraStream(r as Record<string, unknown>);
   }
 
-  updateCameraStream(id: number, patch: Partial<CameraStream>): void {
+  async updateCameraStream(id: number, patch: Partial<CameraStream>): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -965,7 +975,7 @@ export class Repository {
     }
     if (sets.length === 0) return;
     vals.push(id);
-    this.db.prepare(`UPDATE camera_streams SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    await this._run(`UPDATE camera_streams SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("camera_streams", "update", id);
   }
 
@@ -973,51 +983,54 @@ export class Repository {
   // labels (incl. join tables)
   // ===========================================================================
 
-  listLabels(): Label[] {
-    const rs = this.prep("SELECT * FROM labels ORDER BY name").all();
+  async listLabels(): Promise<Label[]> {
+    const rs = await this._all("SELECT * FROM labels ORDER BY name");
     return rs.map((r) => rowToLabel(r as Record<string, unknown>));
   }
 
-  getLabelByName(name: string): Label | null {
-    const r = this.prep("SELECT * FROM labels WHERE name = ?").get(name);
+  async getLabelByName(name: string): Promise<Label | null> {
+    const r = await this._get("SELECT * FROM labels WHERE name = ?", [name]);
     return r ? rowToLabel(r as Record<string, unknown>) : null;
   }
 
-  createLabel(input: {
+  async createLabel(input: {
     name: string;
     description?: string | null;
     color?: string | null;
-  }): Label {
-    const result = this.prep(
+  }): Promise<Label> {
+    const result = await this._run(
       `INSERT INTO labels (name, description, color)
        VALUES (?, ?, ?)`,
-    ).run(input.name, input.description ?? null, input.color ?? null);
+      [input.name, input.description ?? null, input.color ?? null],
+    );
     const id = Number(result.lastInsertRowid);
     void this.notify("labels", "create", id);
-    const r = this.prep("SELECT * FROM labels WHERE id = ?").get(id);
+    const r = await this._get("SELECT * FROM labels WHERE id = ?", [id]);
     if (!r) throw new Error("label vanished after insert");
     return rowToLabel(r as Record<string, unknown>);
   }
 
   /** Get-or-create label by name (used during pairing's free-text label input). */
-  ensureLabel(name: string): Label {
-    return this.getLabelByName(name) ?? this.createLabel({ name });
+  async ensureLabel(name: string): Promise<Label> {
+    return (await this.getLabelByName(name)) ?? (await this.createLabel({ name }));
   }
 
-  attachKioskLabel(kioskId: number, labelId: number, role: LabelRole): void {
-    this.prep(
+  async attachKioskLabel(kioskId: number, labelId: number, role: LabelRole): Promise<void> {
+    await this._run(
       `INSERT OR IGNORE INTO kiosk_labels (kiosk_id, label_id, role)
        VALUES (?, ?, ?)`,
-    ).run(kioskId, labelId, role);
+      [kioskId, labelId, role],
+    );
   }
 
-  listKioskLabels(kioskId: number): Array<KioskLabel & { name: string }> {
-    const rs = this.prep(
+  async listKioskLabels(kioskId: number): Promise<Array<KioskLabel & { name: string }>> {
+    const rs = await this._all(
       `SELECT kl.kiosk_id, kl.label_id, kl.role, l.name
          FROM kiosk_labels kl
          JOIN labels l ON l.id = kl.label_id
         WHERE kl.kiosk_id = ?`,
-    ).all(kioskId);
+      [kioskId],
+    );
     return rs.map((r) => {
       const row = r as Record<string, unknown>;
       return {
@@ -1029,71 +1042,75 @@ export class Repository {
     });
   }
 
-  attachCameraLabel(cameraId: number, labelId: number): void {
-    this.prep(
+  async attachCameraLabel(cameraId: number, labelId: number): Promise<void> {
+    await this._run(
       `INSERT OR IGNORE INTO camera_labels (camera_id, label_id)
        VALUES (?, ?)`,
-    ).run(cameraId, labelId);
+      [cameraId, labelId],
+    );
   }
 
-  attachLayoutLabel(layoutId: number, labelId: number): void {
-    this.prep(
+  async attachLayoutLabel(layoutId: number, labelId: number): Promise<void> {
+    await this._run(
       `INSERT OR IGNORE INTO layout_labels (layout_id, label_id)
        VALUES (?, ?)`,
-    ).run(layoutId, labelId);
+      [layoutId, labelId],
+    );
   }
 
   // ===========================================================================
   // kiosks
   // ===========================================================================
 
-  listKiosks(): Kiosk[] {
-    const rs = this.prep("SELECT * FROM kiosks ORDER BY name").all();
+  async listKiosks(): Promise<Kiosk[]> {
+    const rs = await this._all("SELECT * FROM kiosks ORDER BY name");
     return rs.map((r) => rowToKiosk(r as Record<string, unknown>));
   }
 
-  getKioskById(id: number): Kiosk | null {
-    const r = this.prep("SELECT * FROM kiosks WHERE id = ?").get(id);
+  async getKioskById(id: number): Promise<Kiosk | null> {
+    const r = await this._get("SELECT * FROM kiosks WHERE id = ?", [id]);
     return r ? rowToKiosk(r as Record<string, unknown>) : null;
   }
 
-  getKioskByName(name: string): Kiosk | null {
-    const r = this.prep("SELECT * FROM kiosks WHERE name = ?").get(name);
+  async getKioskByName(name: string): Promise<Kiosk | null> {
+    const r = await this._get("SELECT * FROM kiosks WHERE name = ?", [name]);
     return r ? rowToKiosk(r as Record<string, unknown>) : null;
   }
 
   /** Lookup candidates by Bearer-key prefix; verify hash at the call site. */
-  listKiosksByKeyPrefix(prefix: string): Kiosk[] {
-    const rs = this.prep(
+  async listKiosksByKeyPrefix(prefix: string): Promise<Kiosk[]> {
+    const rs = await this._all(
       "SELECT * FROM kiosks WHERE key_prefix = ? AND enabled = 1",
-    ).all(prefix);
+      [prefix],
+    );
     return rs.map((r) => rowToKiosk(r as Record<string, unknown>));
   }
 
-  createKiosk(input: {
+  async createKiosk(input: {
     name: string;
     key_hash: string;
     key_prefix: string;
     capabilities?: string[];
     hardware_model?: string | null;
     managed_image?: boolean;
-  }): Kiosk {
-    const result = this.prep(
+  }): Promise<Kiosk> {
+    const result = await this._run(
       `INSERT INTO kiosks
         (name, key_hash, key_prefix, capabilities, hardware_model, paired_at, managed_image)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      input.name,
-      input.key_hash,
-      input.key_prefix,
-      J(input.capabilities ?? []),
-      input.hardware_model ?? null,
-      isoNow(),
-      input.managed_image ? 1 : 0,
+      [
+        input.name,
+        input.key_hash,
+        input.key_prefix,
+        J(input.capabilities ?? []),
+        input.hardware_model ?? null,
+        isoNow(),
+        input.managed_image ? 1 : 0,
+      ],
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("kiosks", "create", id);
-    const k = this.getKioskById(id);
+    const k = await this.getKioskById(id);
     if (!k) throw new Error("kiosk vanished after insert");
     return k;
   }
@@ -1104,7 +1121,7 @@ export class Repository {
    * layouts that mention it), but issues fresh credentials + capabilities and
    * resets transient runtime state so the old hardware can't reconnect.
    */
-  replaceKioskKey(
+  async replaceKioskKey(
     id: number,
     input: {
       key_hash: string;
@@ -1112,8 +1129,8 @@ export class Repository {
       capabilities?: string[];
       hardware_model?: string | null;
     },
-  ): void {
-    this.prep(
+  ): Promise<void> {
+    await this._run(
       `UPDATE kiosks SET
          key_hash = ?,
          key_prefix = ?,
@@ -1134,18 +1151,19 @@ export class Repository {
          disk_free_mb = NULL,
          disk_used_percent = NULL
        WHERE id = ?`,
-    ).run(
-      input.key_hash,
-      input.key_prefix,
-      J(input.capabilities ?? []),
-      input.hardware_model ?? null,
-      isoNow(),
-      id,
+      [
+        input.key_hash,
+        input.key_prefix,
+        J(input.capabilities ?? []),
+        input.hardware_model ?? null,
+        isoNow(),
+        id,
+      ],
     );
     void this.notify("kiosks", "update", id);
   }
 
-  touchKiosk(
+  async touchKiosk(
     id: number,
     patch: {
       bundle_version?: string | null;
@@ -1166,8 +1184,8 @@ export class Repository {
       reported_hostname?: string | null;
       network_interfaces_json?: string | null;
     },
-  ): void {
-    this.prep(
+  ): Promise<void> {
+    await this._run(
       `UPDATE kiosks SET
          last_seen_at = ?,
          last_bundle_version = COALESCE(?, last_bundle_version),
@@ -1188,26 +1206,27 @@ export class Repository {
          reported_hostname = COALESCE(?, reported_hostname),
          network_interfaces_json = COALESCE(?, network_interfaces_json)
        WHERE id = ?`,
-    ).run(
-      isoNow(),
-      patch.bundle_version ?? null,
-      patch.kiosk_app_version ?? null,
-      patch.os_version ?? null,
-      patch.cpu_temp_c ?? null,
-      patch.cpu_load_percent ?? null,
-      patch.fan_rpm ?? null,
-      patch.fan_pwm ?? null,
-      patch.memory_total_mb ?? null,
-      patch.memory_used_mb ?? null,
-      patch.disk_total_mb ?? null,
-      patch.disk_free_mb ?? null,
-      patch.disk_used_percent ?? null,
-      patch.local_key ?? null,
-      patch.local_port ?? null,
-      patch.local_last_ip ?? null,
-      patch.reported_hostname ?? null,
-      patch.network_interfaces_json ?? null,
-      id,
+      [
+        isoNow(),
+        patch.bundle_version ?? null,
+        patch.kiosk_app_version ?? null,
+        patch.os_version ?? null,
+        patch.cpu_temp_c ?? null,
+        patch.cpu_load_percent ?? null,
+        patch.fan_rpm ?? null,
+        patch.fan_pwm ?? null,
+        patch.memory_total_mb ?? null,
+        patch.memory_used_mb ?? null,
+        patch.disk_total_mb ?? null,
+        patch.disk_free_mb ?? null,
+        patch.disk_used_percent ?? null,
+        patch.local_key ?? null,
+        patch.local_port ?? null,
+        patch.local_last_ip ?? null,
+        patch.reported_hostname ?? null,
+        patch.network_interfaces_json ?? null,
+        id,
+      ],
     );
   }
 
@@ -1215,7 +1234,7 @@ export class Repository {
   // audit_log
   // ===========================================================================
 
-  insertAudit(input: {
+  async insertAudit(input: {
     actor_type: AuditActorType;
     actor_id: number | null;
     actor_label: string | null;
@@ -1225,30 +1244,31 @@ export class Repository {
     ip: string | null;
     metadata: Record<string, unknown>;
     result: AuditResult;
-  }): void {
-    this.prep(
+  }): Promise<void> {
+    await this._run(
       `INSERT INTO audit_log
          (actor_type, actor_id, actor_label, action, resource_type,
           resource_id, ip, metadata, result)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      input.actor_type,
-      input.actor_id,
-      input.actor_label,
-      input.action,
-      input.resource_type,
-      input.resource_id,
-      input.ip,
-      J(input.metadata),
-      input.result,
+      [
+        input.actor_type,
+        input.actor_id,
+        input.actor_label,
+        input.action,
+        input.resource_type,
+        input.resource_id,
+        input.ip,
+        J(input.metadata),
+        input.result,
+      ],
     );
   }
 
-  listAudit(opts: {
+  async listAudit(opts: {
     limit?: number;
     actor_type?: AuditActorType;
     action_prefix?: string;
-  } = {}): AuditEntry[] {
+  } = {}): Promise<AuditEntry[]> {
     const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000);
     const where: string[] = [];
     const args: unknown[] = [];
@@ -1262,7 +1282,7 @@ export class Repository {
     }
     const sql = `SELECT * FROM audit_log ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY ts DESC LIMIT ?`;
     args.push(limit);
-    const rs = this.db.prepare(sql).all(...(args as any[]));
+    const rs = await this._all(sql, args);
     return rs.map((r) => rowToAuditEntry(r as Record<string, unknown>));
   }
 
@@ -1270,7 +1290,7 @@ export class Repository {
   // firmware_releases + firmware_rollouts
   // ===========================================================================
 
-  createFirmwareRelease(input: {
+  async createFirmwareRelease(input: {
     id: string;
     version: string;
     channel: FirmwareChannel;
@@ -1281,86 +1301,90 @@ export class Repository {
     signature: string;
     release_notes: string | null;
     uploaded_by: number | null;
-  }): FirmwareRelease {
-    this.prep(
+  }): Promise<FirmwareRelease> {
+    await this._run(
       `INSERT INTO firmware_releases
          (id, version, channel, arch, artifact_path, size_bytes, sha256,
           signature, release_notes, uploaded_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      input.id,
-      input.version,
-      input.channel,
-      input.arch,
-      input.artifact_path,
-      input.size_bytes,
-      input.sha256,
-      input.signature,
-      input.release_notes,
-      input.uploaded_by,
+      [
+        input.id,
+        input.version,
+        input.channel,
+        input.arch,
+        input.artifact_path,
+        input.size_bytes,
+        input.sha256,
+        input.signature,
+        input.release_notes,
+        input.uploaded_by,
+      ],
     );
     void this.notify("firmware_releases", "create", input.id);
-    const r = this.getFirmwareRelease(input.id);
+    const r = await this.getFirmwareRelease(input.id);
     if (!r) throw new Error("firmware release vanished after insert");
     return r;
   }
 
-  getFirmwareRelease(id: string): FirmwareRelease | null {
-    const r = this.prep("SELECT * FROM firmware_releases WHERE id = ?").get(id);
+  async getFirmwareRelease(id: string): Promise<FirmwareRelease | null> {
+    const r = await this._get("SELECT * FROM firmware_releases WHERE id = ?", [id]);
     return r ? rowToFirmwareRelease(r as Record<string, unknown>) : null;
   }
 
-  getFirmwareReleaseByVersionArch(version: string, arch: string): FirmwareRelease | null {
-    const r = this.prep(
+  async getFirmwareReleaseByVersionArch(version: string, arch: string): Promise<FirmwareRelease | null> {
+    const r = await this._get(
       "SELECT * FROM firmware_releases WHERE version = ? AND arch = ?",
-    ).get(version, arch);
+      [version, arch],
+    );
     return r ? rowToFirmwareRelease(r as Record<string, unknown>) : null;
   }
 
   /** Latest non-yanked release for a (channel, arch) pair. */
-  getLatestFirmwareRelease(channel: FirmwareChannel, arch: string): FirmwareRelease | null {
-    const r = this.prep(
+  async getLatestFirmwareRelease(channel: FirmwareChannel, arch: string): Promise<FirmwareRelease | null> {
+    const r = await this._get(
       `SELECT * FROM firmware_releases
          WHERE channel = ? AND arch = ? AND yanked_at IS NULL
          ORDER BY uploaded_at DESC
          LIMIT 1`,
-    ).get(channel, arch);
+      [channel, arch],
+    );
     return r ? rowToFirmwareRelease(r as Record<string, unknown>) : null;
   }
 
-  listFirmwareReleases(): FirmwareRelease[] {
-    const rs = this.prep(
+  async listFirmwareReleases(): Promise<FirmwareRelease[]> {
+    const rs = await this._all(
       "SELECT * FROM firmware_releases ORDER BY uploaded_at DESC",
-    ).all();
+    );
     return rs.map((r) => rowToFirmwareRelease(r as Record<string, unknown>));
   }
 
-  yankFirmwareRelease(id: string): void {
-    this.prep("UPDATE firmware_releases SET yanked_at = ? WHERE id = ?").run(isoNow(), id);
+  async yankFirmwareRelease(id: string): Promise<void> {
+    await this._run("UPDATE firmware_releases SET yanked_at = ? WHERE id = ?", [isoNow(), id]);
     void this.notify("firmware_releases", "update", id);
   }
 
   /** Mark the per-kiosk firmware attempt state (called from /api/kiosk/firmware/applied). */
-  recordKioskFirmwareAttempt(
+  async recordKioskFirmwareAttempt(
     kioskId: number,
     version: string,
     error: string | null,
-  ): void {
-    this.prep(
+  ): Promise<void> {
+    await this._run(
       `UPDATE kiosks SET
          firmware_last_attempt_at = ?,
          firmware_last_attempt_version = ?,
          firmware_last_error = ?
        WHERE id = ?`,
-    ).run(isoNow(), version, error, kioskId);
+      [isoNow(), version, error, kioskId],
+    );
     void this.notify("kiosks", "update", kioskId);
   }
 
   /** Set the per-kiosk update channel + optional explicit version pin. */
-  setKioskFirmwarePref(
+  async setKioskFirmwarePref(
     kioskId: number,
     patch: { channel?: FirmwareChannel; target_version?: string | null },
-  ): void {
+  ): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     if (patch.channel !== undefined) {
@@ -1373,36 +1397,37 @@ export class Repository {
     }
     if (sets.length === 0) return;
     vals.push(kioskId);
-    this.db.prepare(`UPDATE kiosks SET ${sets.join(", ")} WHERE id = ?`).run(...(vals as any[]));
+    await this._run(`UPDATE kiosks SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("kiosks", "update", kioskId);
   }
 
-  createFirmwareRollout(input: {
+  async createFirmwareRollout(input: {
     id: string;
     release_id: string;
     target_kiosk_ids: number[];
     percentage: number;
     created_by: number | null;
-  }): FirmwareRollout {
-    this.prep(
+  }): Promise<FirmwareRollout> {
+    await this._run(
       `INSERT INTO firmware_rollouts
          (id, release_id, target_kiosk_ids, percentage, created_by, state)
        VALUES (?, ?, ?, ?, ?, 'queued')`,
-    ).run(
-      input.id,
-      input.release_id,
-      J(input.target_kiosk_ids),
-      input.percentage,
-      input.created_by,
+      [
+        input.id,
+        input.release_id,
+        J(input.target_kiosk_ids),
+        input.percentage,
+        input.created_by,
+      ],
     );
     void this.notify("firmware_rollouts", "create", input.id);
-    const r = this.getFirmwareRollout(input.id);
+    const r = await this.getFirmwareRollout(input.id);
     if (!r) throw new Error("rollout vanished after insert");
     return r;
   }
 
-  getFirmwareRollout(id: string): FirmwareRollout | null {
-    const r = this.prep("SELECT * FROM firmware_rollouts WHERE id = ?").get(id);
+  async getFirmwareRollout(id: string): Promise<FirmwareRollout | null> {
+    const r = await this._get("SELECT * FROM firmware_rollouts WHERE id = ?", [id]);
     return r ? rowToFirmwareRollout(r as Record<string, unknown>) : null;
   }
 
@@ -1411,37 +1436,39 @@ export class Repository {
    * empty (= "all kiosks on the release channel"). Ordered most-recent first
    * so a newer rollout supersedes older ones.
    */
-  listActiveRolloutsForKiosk(kioskId: number): FirmwareRollout[] {
-    const rs = this.prep(
+  async listActiveRolloutsForKiosk(kioskId: number): Promise<FirmwareRollout[]> {
+    const rs = await this._all(
       `SELECT * FROM firmware_rollouts WHERE state = 'active' ORDER BY created_at DESC`,
-    ).all();
+    );
     return rs
       .map((r) => rowToFirmwareRollout(r as Record<string, unknown>))
       .filter((r) => r.target_kiosk_ids.length === 0 || r.target_kiosk_ids.includes(kioskId));
   }
 
-  listFirmwareRollouts(): FirmwareRollout[] {
-    const rs = this.prep(
+  async listFirmwareRollouts(): Promise<FirmwareRollout[]> {
+    const rs = await this._all(
       "SELECT * FROM firmware_rollouts ORDER BY created_at DESC",
-    ).all();
+    );
     return rs.map((r) => rowToFirmwareRollout(r as Record<string, unknown>));
   }
 
-  updateFirmwareRolloutState(
+  async updateFirmwareRolloutState(
     id: string,
     state: FirmwareRolloutState,
-  ): void {
+  ): Promise<void> {
     const now = isoNow();
     if (state === "active") {
-      this.prep(
+      await this._run(
         `UPDATE firmware_rollouts SET state = ?, started_at = COALESCE(started_at, ?) WHERE id = ?`,
-      ).run(state, now, id);
+        [state, now, id],
+      );
     } else if (state === "complete") {
-      this.prep(
+      await this._run(
         `UPDATE firmware_rollouts SET state = ?, finished_at = ? WHERE id = ?`,
-      ).run(state, now, id);
+        [state, now, id],
+      );
     } else {
-      this.prep(`UPDATE firmware_rollouts SET state = ? WHERE id = ?`).run(state, id);
+      await this._run(`UPDATE firmware_rollouts SET state = ? WHERE id = ?`, [state, id]);
     }
     void this.notify("firmware_rollouts", "update", id);
   }
@@ -1450,7 +1477,7 @@ export class Repository {
   // os_update_releases + os_update_rollouts
   // ===========================================================================
 
-  createOsUpdateRelease(input: {
+  async createOsUpdateRelease(input: {
     id: string;
     version: string;
     channel: FirmwareChannel;
@@ -1460,82 +1487,86 @@ export class Repository {
     sha256: string;
     release_notes: string | null;
     uploaded_by: number | null;
-  }): OsUpdateRelease {
-    this.prep(
+  }): Promise<OsUpdateRelease> {
+    await this._run(
       `INSERT INTO os_update_releases
          (id, version, channel, compatibility, artifact_path, size_bytes, sha256,
           bundle_format, release_notes, uploaded_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'raucb', ?, ?)`,
-    ).run(
-      input.id,
-      input.version,
-      input.channel,
-      input.compatibility,
-      input.artifact_path,
-      input.size_bytes,
-      input.sha256,
-      input.release_notes,
-      input.uploaded_by,
+      [
+        input.id,
+        input.version,
+        input.channel,
+        input.compatibility,
+        input.artifact_path,
+        input.size_bytes,
+        input.sha256,
+        input.release_notes,
+        input.uploaded_by,
+      ],
     );
     void this.notify("os_update_releases", "create", input.id);
-    const r = this.getOsUpdateRelease(input.id);
+    const r = await this.getOsUpdateRelease(input.id);
     if (!r) throw new Error("OS update release vanished after insert");
     return r;
   }
 
-  getOsUpdateRelease(id: string): OsUpdateRelease | null {
-    const r = this.prep("SELECT * FROM os_update_releases WHERE id = ?").get(id);
+  async getOsUpdateRelease(id: string): Promise<OsUpdateRelease | null> {
+    const r = await this._get("SELECT * FROM os_update_releases WHERE id = ?", [id]);
     return r ? rowToOsUpdateRelease(r as Record<string, unknown>) : null;
   }
 
-  getOsUpdateReleaseByVersionCompatibility(version: string, compatibility: string): OsUpdateRelease | null {
-    const r = this.prep(
+  async getOsUpdateReleaseByVersionCompatibility(version: string, compatibility: string): Promise<OsUpdateRelease | null> {
+    const r = await this._get(
       "SELECT * FROM os_update_releases WHERE version = ? AND compatibility = ?",
-    ).get(version, compatibility);
+      [version, compatibility],
+    );
     return r ? rowToOsUpdateRelease(r as Record<string, unknown>) : null;
   }
 
-  getLatestOsUpdateRelease(channel: FirmwareChannel, compatibility: string): OsUpdateRelease | null {
-    const r = this.prep(
+  async getLatestOsUpdateRelease(channel: FirmwareChannel, compatibility: string): Promise<OsUpdateRelease | null> {
+    const r = await this._get(
       `SELECT * FROM os_update_releases
          WHERE channel = ? AND compatibility = ? AND yanked_at IS NULL
          ORDER BY uploaded_at DESC
          LIMIT 1`,
-    ).get(channel, compatibility);
+      [channel, compatibility],
+    );
     return r ? rowToOsUpdateRelease(r as Record<string, unknown>) : null;
   }
 
-  listOsUpdateReleases(): OsUpdateRelease[] {
-    const rs = this.prep(
+  async listOsUpdateReleases(): Promise<OsUpdateRelease[]> {
+    const rs = await this._all(
       "SELECT * FROM os_update_releases ORDER BY uploaded_at DESC",
-    ).all();
+    );
     return rs.map((r) => rowToOsUpdateRelease(r as Record<string, unknown>));
   }
 
-  yankOsUpdateRelease(id: string): void {
-    this.prep("UPDATE os_update_releases SET yanked_at = ? WHERE id = ?").run(isoNow(), id);
+  async yankOsUpdateRelease(id: string): Promise<void> {
+    await this._run("UPDATE os_update_releases SET yanked_at = ? WHERE id = ?", [isoNow(), id]);
     void this.notify("os_update_releases", "update", id);
   }
 
-  recordKioskOsUpdateAttempt(
+  async recordKioskOsUpdateAttempt(
     kioskId: number,
     version: string,
     error: string | null,
-  ): void {
-    this.prep(
+  ): Promise<void> {
+    await this._run(
       `UPDATE kiosks SET
          os_update_last_attempt_at = ?,
          os_update_last_attempt_version = ?,
          os_update_last_error = ?
        WHERE id = ?`,
-    ).run(isoNow(), version, error, kioskId);
+      [isoNow(), version, error, kioskId],
+    );
     void this.notify("kiosks", "update", kioskId);
   }
 
-  setKioskOsUpdatePref(
+  async setKioskOsUpdatePref(
     kioskId: number,
     patch: { channel?: FirmwareChannel; target_version?: string | null },
-  ): void {
+  ): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     if (patch.channel !== undefined) {
@@ -1548,70 +1579,73 @@ export class Repository {
     }
     if (sets.length === 0) return;
     vals.push(kioskId);
-    this.db.prepare(`UPDATE kiosks SET ${sets.join(", ")} WHERE id = ?`).run(...(vals as any[]));
+    await this._run(`UPDATE kiosks SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("kiosks", "update", kioskId);
   }
 
-  createOsUpdateRollout(input: {
+  async createOsUpdateRollout(input: {
     id: string;
     release_id: string;
     target_kiosk_ids: number[];
     percentage: number;
     created_by: number | null;
-  }): OsUpdateRollout {
-    this.prep(
+  }): Promise<OsUpdateRollout> {
+    await this._run(
       `INSERT INTO os_update_rollouts
          (id, release_id, target_kiosk_ids, percentage, created_by, state)
        VALUES (?, ?, ?, ?, ?, 'queued')`,
-    ).run(
-      input.id,
-      input.release_id,
-      J(input.target_kiosk_ids),
-      input.percentage,
-      input.created_by,
+      [
+        input.id,
+        input.release_id,
+        J(input.target_kiosk_ids),
+        input.percentage,
+        input.created_by,
+      ],
     );
     void this.notify("os_update_rollouts", "create", input.id);
-    const r = this.getOsUpdateRollout(input.id);
+    const r = await this.getOsUpdateRollout(input.id);
     if (!r) throw new Error("OS update rollout vanished after insert");
     return r;
   }
 
-  getOsUpdateRollout(id: string): OsUpdateRollout | null {
-    const r = this.prep("SELECT * FROM os_update_rollouts WHERE id = ?").get(id);
+  async getOsUpdateRollout(id: string): Promise<OsUpdateRollout | null> {
+    const r = await this._get("SELECT * FROM os_update_rollouts WHERE id = ?", [id]);
     return r ? rowToOsUpdateRollout(r as Record<string, unknown>) : null;
   }
 
-  listActiveOsUpdateRolloutsForKiosk(kioskId: number): OsUpdateRollout[] {
-    const rs = this.prep(
+  async listActiveOsUpdateRolloutsForKiosk(kioskId: number): Promise<OsUpdateRollout[]> {
+    const rs = await this._all(
       `SELECT * FROM os_update_rollouts WHERE state = 'active' ORDER BY created_at DESC`,
-    ).all();
+    );
     return rs
       .map((r) => rowToOsUpdateRollout(r as Record<string, unknown>))
       .filter((r) => r.target_kiosk_ids.length === 0 || r.target_kiosk_ids.includes(kioskId));
   }
 
-  listOsUpdateRollouts(): OsUpdateRollout[] {
-    const rs = this.prep(
+  async listOsUpdateRollouts(): Promise<OsUpdateRollout[]> {
+    const rs = await this._all(
       "SELECT * FROM os_update_rollouts ORDER BY created_at DESC",
-    ).all();
+    );
     return rs.map((r) => rowToOsUpdateRollout(r as Record<string, unknown>));
   }
 
-  updateOsUpdateRolloutState(
+  async updateOsUpdateRolloutState(
     id: string,
     state: OsUpdateRolloutState,
-  ): void {
+  ): Promise<void> {
     const now = isoNow();
     if (state === "active") {
-      this.prep(
+      await this._run(
         `UPDATE os_update_rollouts SET state = ?, started_at = COALESCE(started_at, ?) WHERE id = ?`,
-      ).run(state, now, id);
+        [state, now, id],
+      );
     } else if (state === "complete") {
-      this.prep(
+      await this._run(
         `UPDATE os_update_rollouts SET state = ?, finished_at = ? WHERE id = ?`,
-      ).run(state, now, id);
+        [state, now, id],
+      );
     } else {
-      this.prep(`UPDATE os_update_rollouts SET state = ? WHERE id = ?`).run(state, id);
+      await this._run(`UPDATE os_update_rollouts SET state = ? WHERE id = ?`, [state, id]);
     }
     void this.notify("os_update_rollouts", "update", id);
   }
@@ -1620,72 +1654,75 @@ export class Repository {
   // pairing_codes
   // ===========================================================================
 
-  createPairingCode(input: {
+  async createPairingCode(input: {
     code: string;
     kiosk_proposed_name: string | null;
     kiosk_hardware_model: string | null;
     kiosk_capabilities: string[];
     expires_at: string;
     extras: Record<string, unknown>;
-  }): PairingCode {
-    this.prep(
+  }): Promise<PairingCode> {
+    await this._run(
       `INSERT INTO pairing_codes
          (code, kiosk_proposed_name, kiosk_hardware_model, kiosk_capabilities,
           expires_at, extras)
        VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(
-      input.code,
-      input.kiosk_proposed_name,
-      input.kiosk_hardware_model,
-      J(input.kiosk_capabilities),
-      input.expires_at,
-      J(input.extras),
+      [
+        input.code,
+        input.kiosk_proposed_name,
+        input.kiosk_hardware_model,
+        J(input.kiosk_capabilities),
+        input.expires_at,
+        J(input.extras),
+      ],
     );
-    const r = this.prep("SELECT * FROM pairing_codes WHERE code = ?").get(input.code);
+    const r = await this._get("SELECT * FROM pairing_codes WHERE code = ?", [input.code]);
     if (!r) throw new Error("pairing_code vanished after insert");
     return rowToPairingCode(r as Record<string, unknown>);
   }
 
-  getPairingCode(code: string): PairingCode | null {
-    const r = this.prep("SELECT * FROM pairing_codes WHERE code = ?").get(code);
+  async getPairingCode(code: string): Promise<PairingCode | null> {
+    const r = await this._get("SELECT * FROM pairing_codes WHERE code = ?", [code]);
     return r ? rowToPairingCode(r as Record<string, unknown>) : null;
   }
 
-  listPendingPairingCodes(): PairingCode[] {
-    const rs = this.prep(
+  async listPendingPairingCodes(): Promise<PairingCode[]> {
+    const rs = await this._all(
       `SELECT * FROM pairing_codes
         WHERE consumed_at IS NULL AND expires_at > ?
         ORDER BY issued_at DESC`,
-    ).all(isoNow());
+      [isoNow()],
+    );
     return rs.map((r) => rowToPairingCode(r as Record<string, unknown>));
   }
 
-  markPairingCodeClaimed(
+  async markPairingCodeClaimed(
     code: string,
     kioskId: number,
     extras: Record<string, unknown>,
-  ): void {
-    this.prep(
+  ): Promise<void> {
+    await this._run(
       `UPDATE pairing_codes
           SET consumed_at = ?,
               consumed_by_kiosk_id = ?,
               extras = ?
         WHERE code = ?`,
-    ).run(isoNow(), kioskId, J(extras), code);
+      [isoNow(), kioskId, J(extras), code],
+    );
   }
 
-  updatePairingCodeExtras(code: string, extras: Record<string, unknown>): void {
-    this.prep("UPDATE pairing_codes SET extras = ? WHERE code = ?").run(
+  async updatePairingCodeExtras(code: string, extras: Record<string, unknown>): Promise<void> {
+    await this._run("UPDATE pairing_codes SET extras = ? WHERE code = ?", [
       J(extras),
       code,
-    );
+    ]);
   }
 
   // ===========================================================================
   // event_log
   // ===========================================================================
 
-  insertEvent(input: {
+  async insertEvent(input: {
     source_kiosk_id: number | null;
     source_camera_id: number | null;
     source_type: EventSourceType;
@@ -1693,64 +1730,67 @@ export class Repository {
     property_op: string | null;
     payload: Record<string, unknown>;
     forwarded_to_nodered: boolean;
-  }): number {
-    const result = this.prep(
+  }): Promise<number> {
+    const result = await this._run(
       `INSERT INTO event_log
          (source_kiosk_id, source_camera_id, source_type, topic,
           property_op, payload, forwarded_to_nodered)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      input.source_kiosk_id,
-      input.source_camera_id,
-      input.source_type,
-      input.topic,
-      input.property_op,
-      J(input.payload),
-      B(input.forwarded_to_nodered),
+      [
+        input.source_kiosk_id,
+        input.source_camera_id,
+        input.source_type,
+        input.topic,
+        input.property_op,
+        J(input.payload),
+        B(input.forwarded_to_nodered),
+      ],
     );
     return Number(result.lastInsertRowid);
   }
 
-  recentEvents(limit = 10): EventLog[] {
-    const rs = this.prep(
+  async recentEvents(limit = 10): Promise<EventLog[]> {
+    const rs = await this._all(
       "SELECT * FROM event_log ORDER BY received_at DESC LIMIT ?",
-    ).all(limit);
+      [limit],
+    );
     return rs.map((r) => rowToEventLog(r as Record<string, unknown>));
   }
 
-  markEventForwarded(eventId: number): void {
-    this.prep("UPDATE event_log SET forwarded_to_nodered = 1 WHERE id = ?").run(eventId);
+  async markEventForwarded(eventId: number): Promise<void> {
+    await this._run("UPDATE event_log SET forwarded_to_nodered = 1 WHERE id = ?", [eventId]);
   }
 
   /**
    * Delete event_log rows older than `days` AND trim to `maxRows` total.
    * Returns the number of rows deleted.
    */
-  purgeEventLog(days: number = 30, maxRows: number = 100_000): number {
+  async purgeEventLog(days: number = 30, maxRows: number = 100_000): Promise<number> {
     const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
-    const r1 = this.db.prepare("DELETE FROM event_log WHERE received_at < ?").run(cutoff);
+    const r1 = await this._run("DELETE FROM event_log WHERE received_at < ?", [cutoff]);
     // Trim to maxRows by deleting oldest beyond the cap.
-    const r2 = this.db.prepare(
+    const r2 = await this._run(
       `DELETE FROM event_log WHERE id NOT IN (
         SELECT id FROM event_log ORDER BY received_at DESC LIMIT ?
       )`,
-    ).run(maxRows);
+      [maxRows],
+    );
     return Number(r1.changes) + Number(r2.changes);
   }
 
-  purgeAuditLog(days: number = 90): number {
+  async purgeAuditLog(days: number = 90): Promise<number> {
     const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
-    const r = this.db.prepare("DELETE FROM audit_log WHERE ts < ?").run(cutoff);
+    const r = await this._run("DELETE FROM audit_log WHERE ts < ?", [cutoff]);
     return Number(r.changes);
   }
 
-  purgeKioskLogs(days: number = 14): number {
+  async purgeKioskLogs(days: number = 14): Promise<number> {
     const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
-    const r = this.db.prepare("DELETE FROM kiosk_logs WHERE received_at < ?").run(cutoff);
+    const r = await this._run("DELETE FROM kiosk_logs WHERE received_at < ?", [cutoff]);
     return Number(r.changes);
   }
 
-  queryEvents(filters: EventQueryFilters): { events: EventLog[]; total: number } {
+  async queryEvents(filters: EventQueryFilters): Promise<{ events: EventLog[]; total: number }> {
     const where: string[] = [];
     const params: (string | number)[] = [];
 
@@ -1783,12 +1823,13 @@ export class Repository {
     const limit = filters.limit ?? 50;
     const offset = filters.offset ?? 0;
 
-    const countRow = this.db.prepare(`SELECT COUNT(*) as cnt FROM event_log ${clause}`).get(...params) as Record<string, unknown> | undefined;
+    const countRow = await this._get<Record<string, unknown>>(`SELECT COUNT(*) as cnt FROM event_log ${clause}`, params);
     const total = Number(countRow?.["cnt"] ?? 0);
 
-    const rs = this.db.prepare(
+    const rs = await this._all(
       `SELECT * FROM event_log ${clause} ORDER BY received_at DESC LIMIT ? OFFSET ?`,
-    ).all(...params, limit, offset);
+      [...params, limit, offset],
+    );
 
     return {
       events: rs.map((r) => rowToEventLog(r as Record<string, unknown>)),
@@ -1800,41 +1841,43 @@ export class Repository {
   // kiosk_logs
   // ===========================================================================
 
-  insertKioskLogs(
+  async insertKioskLogs(
     kioskId: number,
     entries: Array<{ level: KioskLogLevel; message: string; context?: Record<string, unknown>; logged_at?: string }>,
-  ): number {
-    const stmt = this.prep(
-      `INSERT INTO kiosk_logs (kiosk_id, level, message, context, logged_at)
-       VALUES (?, ?, ?, ?, ?)`,
-    );
+  ): Promise<number> {
     const now = isoNow();
     let count = 0;
     for (const e of entries) {
-      stmt.run(kioskId, e.level, e.message, J(e.context ?? {}), e.logged_at ?? now);
+      await this._run(
+        `INSERT INTO kiosk_logs (kiosk_id, level, message, context, logged_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [kioskId, e.level, e.message, J(e.context ?? {}), e.logged_at ?? now],
+      );
       count++;
     }
-    this.trimKioskLogs(kioskId, 500);
+    await this.trimKioskLogs(kioskId, 500);
     return count;
   }
 
-  private trimKioskLogs(kioskId: number, maxRows: number): void {
-    this.db.prepare(
+  private async trimKioskLogs(kioskId: number, maxRows: number): Promise<void> {
+    await this._run(
       `DELETE FROM kiosk_logs WHERE kiosk_id = ? AND id NOT IN (
          SELECT id FROM kiosk_logs WHERE kiosk_id = ? ORDER BY received_at DESC LIMIT ?
        )`,
-    ).run(kioskId, kioskId, maxRows);
+      [kioskId, kioskId, maxRows],
+    );
   }
 
-  purgeOldKioskLogs(maxAgeHours: number): number {
+  async purgeOldKioskLogs(maxAgeHours: number): Promise<number> {
     const cutoff = new Date(Date.now() - maxAgeHours * 3600_000).toISOString();
-    const result = this.db.prepare(
+    const result = await this._run(
       "DELETE FROM kiosk_logs WHERE received_at < ?",
-    ).run(cutoff);
+      [cutoff],
+    );
     return Number(result.changes);
   }
 
-  queryKioskLogs(filters: KioskLogQueryFilters): { logs: KioskLog[]; total: number } {
+  async queryKioskLogs(filters: KioskLogQueryFilters): Promise<{ logs: KioskLog[]; total: number }> {
     const where: string[] = ["kiosk_id = ?"];
     const params: (string | number)[] = [filters.kiosk_id];
 
@@ -1855,12 +1898,13 @@ export class Repository {
     const limit = filters.limit ?? 50;
     const offset = filters.offset ?? 0;
 
-    const countRow = this.db.prepare(`SELECT COUNT(*) as cnt FROM kiosk_logs ${clause}`).get(...params) as Record<string, unknown> | undefined;
+    const countRow = await this._get<Record<string, unknown>>(`SELECT COUNT(*) as cnt FROM kiosk_logs ${clause}`, params);
     const total = Number(countRow?.["cnt"] ?? 0);
 
-    const rs = this.db.prepare(
+    const rs = await this._all(
       `SELECT * FROM kiosk_logs ${clause} ORDER BY received_at DESC LIMIT ? OFFSET ?`,
-    ).all(...params, limit, offset);
+      [...params, limit, offset],
+    );
 
     return {
       logs: rs.map((r) => rowToKioskLog(r as Record<string, unknown>)),
@@ -1876,13 +1920,13 @@ export class Repository {
    * Returns label IDs + names attached to a kiosk by role.
    * Used by `service-bundle` to scope a kiosk's view of the world.
    */
-  bundleScope(kioskId: number): {
+  async bundleScope(kioskId: number): Promise<{
     labelIds: number[];
     labelNames: string[];
     operateLabelIds: number[];
     operateLabelNames: string[];
-  } {
-    const all = this.listKioskLabels(kioskId);
+  }> {
+    const all = await this.listKioskLabels(kioskId);
     const labelIds: number[] = [];
     const labelNames: string[] = [];
     const operateLabelIds: number[] = [];
@@ -1903,36 +1947,34 @@ export class Repository {
   }
 
   /** Cameras whose label set intersects the given label IDs. */
-  camerasForLabelIds(labelIds: number[]): Camera[] {
+  async camerasForLabelIds(labelIds: number[]): Promise<Camera[]> {
     if (labelIds.length === 0) return [];
     const placeholders = labelIds.map(() => "?").join(",");
-    const rs = this.db
-      .prepare(
-        `SELECT DISTINCT c.* FROM cameras c
-           JOIN camera_labels cl ON cl.camera_id = c.id
-          WHERE cl.label_id IN (${placeholders})
-            AND c.enabled = 1
-          ORDER BY c.name`,
-      )
-      .all(...(labelIds as never[]));
+    const rs = await this._all(
+      `SELECT DISTINCT c.* FROM cameras c
+         JOIN camera_labels cl ON cl.camera_id = c.id
+        WHERE cl.label_id IN (${placeholders})
+          AND c.enabled = 1
+        ORDER BY c.name`,
+      labelIds,
+    );
     return rs.map((r) => rowToCamera(r as Record<string, unknown>));
   }
 
-  layoutsForLabelIds(labelIds: number[]): Layout[] {
+  async layoutsForLabelIds(labelIds: number[]): Promise<Layout[]> {
     if (labelIds.length === 0) return [];
     const placeholders = labelIds.map(() => "?").join(",");
-    const rs = this.db
-      .prepare(
-        `SELECT DISTINCT l.* FROM layouts l
-           JOIN layout_labels ll ON ll.layout_id = l.id
-          WHERE ll.label_id IN (${placeholders})
-          ORDER BY l.name`,
-      )
-      .all(...(labelIds as never[]));
+    const rs = await this._all(
+      `SELECT DISTINCT l.* FROM layouts l
+         JOIN layout_labels ll ON ll.layout_id = l.id
+        WHERE ll.label_id IN (${placeholders})
+        ORDER BY l.name`,
+      labelIds,
+    );
     return rs.map((r) => rowToLayout(r as Record<string, unknown>));
   }
 
-  layoutCells(layoutId: number): LayoutCell[] {
+  async layoutCells(layoutId: number): Promise<LayoutCell[]> {
     return this.listLayoutCells(layoutId);
   }
 
@@ -1941,28 +1983,30 @@ export class Repository {
     return [];
   }
 
-  cameraLabelNames(cameraId: number): string[] {
-    const rs = this.prep(
+  async cameraLabelNames(cameraId: number): Promise<string[]> {
+    const rs = await this._all(
       `SELECT l.name FROM camera_labels cl
          JOIN labels l ON l.id = cl.label_id
         WHERE cl.camera_id = ?`,
-    ).all(cameraId);
+      [cameraId],
+    );
     return rs.map((r) => String((r as Record<string, unknown>)["name"]));
   }
 
-  cameraLabelIds(cameraId: number): Array<{ label_id: number; name: string }> {
-    const rs = this.prep(
+  async cameraLabelIds(cameraId: number): Promise<Array<{ label_id: number; name: string }>> {
+    const rs = await this._all(
       `SELECT cl.label_id, l.name FROM camera_labels cl
          JOIN labels l ON l.id = cl.label_id
         WHERE cl.camera_id = ?`,
-    ).all(cameraId);
+      [cameraId],
+    );
     return rs.map((r) => {
       const row = r as Record<string, unknown>;
       return { label_id: Number(row["label_id"]), name: String(row["name"]) };
     });
   }
 
-  updateCamera(id: number, patch: Partial<Camera>): void {
+  async updateCamera(id: number, patch: Partial<Camera>): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -1974,18 +2018,18 @@ export class Repository {
     }
     if (sets.length === 0) return;
     vals.push(id);
-    this.db.prepare(`UPDATE cameras SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    await this._run(`UPDATE cameras SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("cameras", "update", id);
   }
 
-  deleteCamera(id: number): void {
-    this.db.prepare(`DELETE FROM camera_labels WHERE camera_id = ?`).run(id);
-    this.db.prepare(`DELETE FROM camera_streams WHERE camera_id = ?`).run(id);
+  async deleteCamera(id: number): Promise<void> {
+    await this._run(`DELETE FROM camera_labels WHERE camera_id = ?`, [id]);
+    await this._run(`DELETE FROM camera_streams WHERE camera_id = ?`, [id]);
     // Clear cells that referenced this camera (legacy column).
-    this.db.prepare(`DELETE FROM layout_cells WHERE camera_id = ?`).run(id);
+    await this._run(`DELETE FROM layout_cells WHERE camera_id = ?`, [id]);
     // entities row has ON DELETE CASCADE → camera-mirror entity goes away with
     // the camera, which in turn sets layout_cells.entity_id NULL via the FK.
-    this.db.prepare(`DELETE FROM cameras WHERE id = ?`).run(id);
+    await this._run(`DELETE FROM cameras WHERE id = ?`, [id]);
     void this.notify("cameras", "delete", id);
   }
 
@@ -1993,29 +2037,30 @@ export class Repository {
   // entities — reusable content pool (camera/html/web) bound to layout cells
   // ===========================================================================
 
-  listEntities(): Entity[] {
-    const rs = this.prep("SELECT * FROM entities ORDER BY name").all();
+  async listEntities(): Promise<Entity[]> {
+    const rs = await this._all("SELECT * FROM entities ORDER BY name");
     return rs.map((r) => rowToEntity(r as Record<string, unknown>));
   }
 
-  getEntityById(id: number): Entity | null {
-    const r = this.prep("SELECT * FROM entities WHERE id = ?").get(id);
+  async getEntityById(id: number): Promise<Entity | null> {
+    const r = await this._get("SELECT * FROM entities WHERE id = ?", [id]);
     return r ? rowToEntity(r as Record<string, unknown>) : null;
   }
 
-  getEntityByName(name: string): Entity | null {
-    const r = this.prep("SELECT * FROM entities WHERE name = ?").get(name);
+  async getEntityByName(name: string): Promise<Entity | null> {
+    const r = await this._get("SELECT * FROM entities WHERE name = ?", [name]);
     return r ? rowToEntity(r as Record<string, unknown>) : null;
   }
 
-  getEntityForCamera(cameraId: number): Entity | null {
-    const r = this.prep(
+  async getEntityForCamera(cameraId: number): Promise<Entity | null> {
+    const r = await this._get(
       `SELECT * FROM entities WHERE type = 'camera' AND camera_id = ? LIMIT 1`,
-    ).get(cameraId);
+      [cameraId],
+    );
     return r ? rowToEntity(r as Record<string, unknown>) : null;
   }
 
-  createEntity(input: {
+  async createEntity(input: {
     name: string;
     type: EntityType;
     description?: string | null;
@@ -2023,35 +2068,37 @@ export class Repository {
     html_content?: string | null;
     web_url?: string | null;
     dashboard_id?: string | null;
-  }): Entity {
-    const result = this.prep(
+  }): Promise<Entity> {
+    const result = await this._run(
       `INSERT INTO entities (name, type, description, camera_id, html_content, web_url, dashboard_id)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      input.name,
-      input.type,
-      input.description ?? null,
-      input.type === "camera" ? (input.camera_id ?? null) : null,
-      input.type === "html" ? (input.html_content ?? null) : null,
-      input.type === "web" ? (input.web_url ?? null) : null,
-      input.type === "dashboard" ? (input.dashboard_id ?? null) : null,
+      [
+        input.name,
+        input.type,
+        input.description ?? null,
+        input.type === "camera" ? (input.camera_id ?? null) : null,
+        input.type === "html" ? (input.html_content ?? null) : null,
+        input.type === "web" ? (input.web_url ?? null) : null,
+        input.type === "dashboard" ? (input.dashboard_id ?? null) : null,
+      ],
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("entities", "create", id);
-    const e = this.getEntityById(id);
+    const e = await this.getEntityById(id);
     if (!e) throw new Error("entity vanished after insert");
     return e;
   }
 
   /** Find a dashboard entity by Node-RED tab id (used by the sync flow). */
-  getEntityForDashboard(dashboardId: string): Entity | null {
-    const r = this.prep(
+  async getEntityForDashboard(dashboardId: string): Promise<Entity | null> {
+    const r = await this._get(
       `SELECT * FROM entities WHERE type = 'dashboard' AND dashboard_id = ? LIMIT 1`,
-    ).get(dashboardId);
+      [dashboardId],
+    );
     return r ? rowToEntity(r as Record<string, unknown>) : null;
   }
 
-  updateEntity(
+  async updateEntity(
     id: number,
     patch: {
       name?: string;
@@ -2061,7 +2108,7 @@ export class Repository {
       web_url?: string | null;
       dashboard_id?: string | null;
     },
-  ): void {
+  ): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -2070,42 +2117,39 @@ export class Repository {
     }
     if (sets.length === 0) return;
     vals.push(id);
-    this.db
-      .prepare(`UPDATE entities SET ${sets.join(", ")} WHERE id = ?`)
-      .run(...(vals as any[]));
+    await this._run(`UPDATE entities SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("entities", "update", id);
 
     // Propagate content fields into any cell that uses this entity, so the
     // legacy cell columns stay aligned for bundle generation. Dashboard
     // entities materialise as `web` cells pointing at /dash/<dashboard_id>.
-    const ent = this.getEntityById(id);
+    const ent = await this.getEntityById(id);
     if (!ent) return;
     const cellContentType = ent.type === "dashboard" ? "web" : ent.type;
     const cellWebUrl =
       ent.type === "web" ? ent.web_url :
       ent.type === "dashboard" && ent.dashboard_id ? `/dash/${ent.dashboard_id}` :
       null;
-    this.db
-      .prepare(
-        `UPDATE layout_cells
-            SET content_type = ?,
-                camera_id = ?,
-                web_url = ?,
-                html_content = ?
-          WHERE entity_id = ?`,
-      )
-      .run(
+    await this._run(
+      `UPDATE layout_cells
+          SET content_type = ?,
+              camera_id = ?,
+              web_url = ?,
+              html_content = ?
+        WHERE entity_id = ?`,
+      [
         cellContentType,
         ent.type === "camera" ? ent.camera_id : null,
         cellWebUrl,
         ent.type === "html" ? ent.html_content : null,
         id,
-      );
+      ],
+    );
   }
 
-  deleteEntity(id: number): void {
+  async deleteEntity(id: number): Promise<void> {
     // FK ON DELETE SET NULL clears layout_cells.entity_id.
-    this.db.prepare(`DELETE FROM entities WHERE id = ?`).run(id);
+    await this._run(`DELETE FROM entities WHERE id = ?`, [id]);
     void this.notify("entities", "delete", id);
   }
 
@@ -2114,17 +2158,17 @@ export class Repository {
    * the camera's name is already taken by another entity, append the camera
    * id to keep the name unique.
    */
-  ensureCameraEntity(camera: Camera): Entity {
-    const existing = this.getEntityForCamera(camera.id);
+  async ensureCameraEntity(camera: Camera): Promise<Entity> {
+    const existing = await this.getEntityForCamera(camera.id);
     if (existing) return existing;
     let name = camera.name;
-    if (this.getEntityByName(name)) {
+    if (await this.getEntityByName(name)) {
       name = `${camera.name} (cam #${String(camera.id)})`;
     }
     return this.createEntity({ name, type: "camera", camera_id: camera.id });
   }
 
-  updateKiosk(id: number, patch: Partial<Kiosk>): void {
+  async updateKiosk(id: number, patch: Partial<Kiosk>): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -2134,20 +2178,20 @@ export class Repository {
     }
     if (sets.length === 0) return;
     vals.push(id);
-    this.db.prepare(`UPDATE kiosks SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    await this._run(`UPDATE kiosks SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("kiosks", "update", id);
   }
 
-  deleteKiosk(id: number): void {
-    const displays = this.listDisplaysForKiosk(id);
-    this.transact(() => {
+  async deleteKiosk(id: number): Promise<void> {
+    const displays = await this.listDisplaysForKiosk(id);
+    await this.transact(async () => {
       for (const display of displays) {
-        this.db.prepare(`DELETE FROM display_layouts WHERE display_id = ?`).run(display.id);
+        await this._run(`DELETE FROM display_layouts WHERE display_id = ?`, [display.id]);
       }
-      this.db.prepare(`DELETE FROM displays WHERE kiosk_id = ?`).run(id);
-      this.db.prepare(`DELETE FROM kiosk_labels WHERE kiosk_id = ?`).run(id);
-      this.db.prepare(`DELETE FROM kiosk_gpio_bindings WHERE kiosk_id = ?`).run(id);
-      this.db.prepare(`DELETE FROM kiosks WHERE id = ?`).run(id);
+      await this._run(`DELETE FROM displays WHERE kiosk_id = ?`, [id]);
+      await this._run(`DELETE FROM kiosk_labels WHERE kiosk_id = ?`, [id]);
+      await this._run(`DELETE FROM kiosk_gpio_bindings WHERE kiosk_id = ?`, [id]);
+      await this._run(`DELETE FROM kiosks WHERE id = ?`, [id]);
     });
     for (const display of displays) {
       void this.notify("display_layouts", "delete", display.id);
@@ -2156,19 +2200,19 @@ export class Repository {
     void this.notify("kiosks", "delete", id);
   }
 
-  detachCameraLabel(cameraId: number, labelId: number): void {
-    this.db.prepare(`DELETE FROM camera_labels WHERE camera_id = ? AND label_id = ?`).run(cameraId, labelId);
+  async detachCameraLabel(cameraId: number, labelId: number): Promise<void> {
+    await this._run(`DELETE FROM camera_labels WHERE camera_id = ? AND label_id = ?`, [cameraId, labelId]);
   }
 
-  detachKioskLabel(kioskId: number, labelId: number): void {
-    this.db.prepare(`DELETE FROM kiosk_labels WHERE kiosk_id = ? AND label_id = ?`).run(kioskId, labelId);
+  async detachKioskLabel(kioskId: number, labelId: number): Promise<void> {
+    await this._run(`DELETE FROM kiosk_labels WHERE kiosk_id = ? AND label_id = ?`, [kioskId, labelId]);
   }
 
-  deleteLabel(id: number): void {
-    this.db.prepare(`DELETE FROM camera_labels WHERE label_id = ?`).run(id);
-    this.db.prepare(`DELETE FROM kiosk_labels WHERE label_id = ?`).run(id);
-    this.db.prepare(`DELETE FROM layout_labels WHERE label_id = ?`).run(id);
-    this.db.prepare(`DELETE FROM labels WHERE id = ?`).run(id);
+  async deleteLabel(id: number): Promise<void> {
+    await this._run(`DELETE FROM camera_labels WHERE label_id = ?`, [id]);
+    await this._run(`DELETE FROM kiosk_labels WHERE label_id = ?`, [id]);
+    await this._run(`DELETE FROM layout_labels WHERE label_id = ?`, [id]);
+    await this._run(`DELETE FROM labels WHERE id = ?`, [id]);
     void this.notify("labels", "delete", id);
   }
 
@@ -2176,19 +2220,20 @@ export class Repository {
   // kiosk GPIO bindings
   // ===========================================================================
 
-  listGpioBindings(kioskId: number): KioskGpioBinding[] {
-    const rs = this.prep(
+  async listGpioBindings(kioskId: number): Promise<KioskGpioBinding[]> {
+    const rs = await this._all(
       "SELECT * FROM kiosk_gpio_bindings WHERE kiosk_id = ? ORDER BY chip, pin",
-    ).all(kioskId);
+      [kioskId],
+    );
     return rs.map((r) => rowToKioskGpioBinding(r as Record<string, unknown>));
   }
 
-  getGpioBindingById(id: number): KioskGpioBinding | null {
-    const r = this.prep("SELECT * FROM kiosk_gpio_bindings WHERE id = ?").get(id);
+  async getGpioBindingById(id: number): Promise<KioskGpioBinding | null> {
+    const r = await this._get("SELECT * FROM kiosk_gpio_bindings WHERE id = ?", [id]);
     return r ? rowToKioskGpioBinding(r as Record<string, unknown>) : null;
   }
 
-  createGpioBinding(input: {
+  async createGpioBinding(input: {
     kiosk_id: number;
     chip?: string;
     pin: number;
@@ -2196,32 +2241,33 @@ export class Repository {
     pull?: GpioPull | null;
     edge?: GpioEdge | null;
     topic: string;
-  }): KioskGpioBinding {
-    const result = this.prep(
+  }): Promise<KioskGpioBinding> {
+    const result = await this._run(
       `INSERT INTO kiosk_gpio_bindings (kiosk_id, chip, pin, direction, pull, edge, topic)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      input.kiosk_id,
-      input.chip ?? "gpiochip0",
-      input.pin,
-      input.direction,
-      input.pull ?? null,
-      input.edge ?? null,
-      input.topic,
+      [
+        input.kiosk_id,
+        input.chip ?? "gpiochip0",
+        input.pin,
+        input.direction,
+        input.pull ?? null,
+        input.edge ?? null,
+        input.topic,
+      ],
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("kiosk_gpio_bindings", "create", id);
-    const b = this.getGpioBindingById(id);
+    const b = await this.getGpioBindingById(id);
     if (!b) throw new Error("gpio binding vanished after insert");
     return b;
   }
 
-  deleteGpioBinding(id: number): void {
-    this.db.prepare(`DELETE FROM kiosk_gpio_bindings WHERE id = ?`).run(id);
+  async deleteGpioBinding(id: number): Promise<void> {
+    await this._run(`DELETE FROM kiosk_gpio_bindings WHERE id = ?`, [id]);
     void this.notify("kiosk_gpio_bindings", "delete", id);
   }
 
-  updateLabel(id: number, patch: { name?: string; description?: string | null; color?: string | null }): void {
+  async updateLabel(id: number, patch: { name?: string; description?: string | null; color?: string | null }): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -2230,7 +2276,7 @@ export class Repository {
     }
     if (sets.length === 0) return;
     vals.push(id);
-    this.db.prepare(`UPDATE labels SET ${sets.join(", ")} WHERE id = ?`).run(...vals as any[]);
+    await this._run(`UPDATE labels SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("labels", "update", id);
   }
 }

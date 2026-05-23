@@ -38,21 +38,21 @@ export interface PairingInitiateResult {
   expiresAt: string;
 }
 
-export function initiatePairing(
+export async function initiatePairing(
   repo: Repository,
   input: PairingInitiateInput,
-): PairingInitiateResult {
+): Promise<PairingInitiateResult> {
   let code: string;
   let attempts = 0;
   do {
     code = generateCode();
     attempts++;
     if (attempts > 20) throw new Error("failed to generate unique pairing code");
-  } while (repo.getPairingCode(code) !== null);
+  } while (await repo.getPairingCode(code) !== null);
 
   const expiresAt = new Date(Date.now() + input.codeTtlSeconds * 1000).toISOString();
 
-  repo.createPairingCode({
+  await repo.createPairingCode({
     code,
     kiosk_proposed_name: input.proposedName,
     kiosk_hardware_model: input.hardwareModel,
@@ -73,11 +73,11 @@ export interface PairingClaimResult {
   bundleUrl?: string;
 }
 
-export function claimPairing(
+export async function claimPairing(
   repo: Repository,
   code: string,
-): PairingClaimResult {
-  const pc = repo.getPairingCode(code);
+): Promise<PairingClaimResult> {
+  const pc = await repo.getPairingCode(code);
   if (!pc) return { status: "pending" };
   if (new Date(pc.expires_at) < new Date()) return { status: "pending" };
   if (!pc.consumed_at) return { status: "pending" };
@@ -87,11 +87,11 @@ export function claimPairing(
 
   if (!kioskKey || !pc.consumed_by_kiosk_id) return { status: "pending" };
 
-  const kiosk = repo.getKioskById(pc.consumed_by_kiosk_id);
+  const kiosk = await repo.getKioskById(pc.consumed_by_kiosk_id);
   const clusterKey = extras["cluster_key"] as string | undefined;
 
   // Wipe plaintext key from extras after first claim
-  repo.updatePairingCodeExtras(code, { ...extras, kiosk_key_plaintext: undefined, cluster_key: undefined });
+  await repo.updatePairingCodeExtras(code, { ...extras, kiosk_key_plaintext: undefined, cluster_key: undefined });
 
   return {
     status: "claimed",
@@ -124,7 +124,7 @@ export async function confirmPairing(
   secrets: SecretsApi,
   input: PairingConfirmInput,
 ): Promise<{ kioskId: number; kioskName: string }> {
-  const pc = repo.getPairingCode(input.code);
+  const pc = await repo.getPairingCode(input.code);
   if (!pc) throw new Error("pairing code not found");
   if (pc.consumed_at) throw new Error("pairing code already used");
   if (new Date(pc.expires_at) < new Date()) throw new Error("pairing code expired");
@@ -137,7 +137,7 @@ export async function confirmPairing(
   let kioskName: string;
 
   if (input.replaceKioskId != null) {
-    const existing = repo.getKioskById(input.replaceKioskId);
+    const existing = await repo.getKioskById(input.replaceKioskId);
     if (!existing) throw new Error("replacement target kiosk not found");
 
     // Sanity-check the incoming device matches the slot it's replacing.
@@ -166,7 +166,7 @@ export async function confirmPairing(
       }
     }
 
-    repo.replaceKioskKey(existing.id, {
+    await repo.replaceKioskKey(existing.id, {
       key_hash: kioskKeyHash,
       key_prefix: kioskKeyPrefix,
       capabilities: pc.kiosk_capabilities,
@@ -176,7 +176,7 @@ export async function confirmPairing(
     // capabilities/hw, but the explicit column is updated separately because
     // replaceKioskKey doesn't touch it).
     if (existing.managed_image !== (pc.extras?.["managed_image"] === true)) {
-      repo.updateKiosk(existing.id, { managed_image: pc.extras?.["managed_image"] === true } as any);
+      await repo.updateKiosk(existing.id, { managed_image: pc.extras?.["managed_image"] === true } as any);
     }
     kioskId = existing.id;
     kioskName = existing.name;
@@ -184,13 +184,13 @@ export async function confirmPairing(
     const baseName = input.nameOverride || pc.kiosk_proposed_name || `kiosk-${input.code.toLowerCase()}`;
     let candidate = baseName;
     let suffix = 2;
-    while (repo.getKioskByName(candidate)) {
+    while (await repo.getKioskByName(candidate)) {
       candidate = `${baseName}-${suffix}`;
       suffix++;
       if (suffix > 100) throw new Error("could not generate unique kiosk name");
     }
 
-    const kiosk = repo.createKiosk({
+    const kiosk = await repo.createKiosk({
       name: candidate,
       key_hash: kioskKeyHash,
       key_prefix: kioskKeyPrefix,
@@ -199,7 +199,7 @@ export async function confirmPairing(
       managed_image: pc.extras?.["managed_image"] === true,
     });
 
-    repo.createDisplayForKiosk(kiosk.id, {
+    await repo.createDisplayForKiosk(kiosk.id, {
       name: `${candidate} HDMI-0`,
     });
 
@@ -207,8 +207,8 @@ export async function confirmPairing(
       for (const labelName of input.initialLabels) {
         const trimmed = labelName.trim().toLowerCase();
         if (!trimmed) continue;
-        const label = repo.ensureLabel(trimmed);
-        repo.attachKioskLabel(kiosk.id, label.id, "consume");
+        const label = await repo.ensureLabel(trimmed);
+        await repo.attachKioskLabel(kiosk.id, label.id, "consume");
       }
     }
 
@@ -221,15 +221,15 @@ export async function confirmPairing(
   // kiosk (one-time). Replaces shared cluster_key for bundle encryption.
   const kioskEncryptKey = randomBytes(32).toString("base64url");
   const kioskEncryptKeyEncrypted = secrets.encryptString(kioskEncryptKey, "kiosk-encrypt");
-  repo.updateKiosk(kioskId, { encrypt_key_encrypted: kioskEncryptKeyEncrypted } as any);
+  await repo.updateKiosk(kioskId, { encrypt_key_encrypted: kioskEncryptKeyEncrypted } as any);
 
   // Still deliver cluster_key for backward compat (old kiosk binaries
   // that don't understand encrypt_key yet). Remove once all kiosks are
   // on the new binary.
-  const clusterKeyEncrypted = repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
+  const clusterKeyEncrypted = await repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
   const clusterKey = clusterKeyEncrypted ? secrets.decryptString(clusterKeyEncrypted, "cluster") : undefined;
 
-  repo.markPairingCodeClaimed(input.code, kioskId, {
+  await repo.markPairingCodeClaimed(input.code, kioskId, {
     kiosk_key_plaintext: kioskKeyPlaintext,
     cluster_key: clusterKey,
     encrypt_key: kioskEncryptKey,

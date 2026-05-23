@@ -101,11 +101,11 @@ function sanitizeRtspUrl(raw: string): string {
   return `${scheme}${user}:${pass}@${rest}`;
 }
 
-function uniqueCameraName(deps: AdminDeps, rawName: string): string {
+async function uniqueCameraName(deps: AdminDeps, rawName: string): Promise<string> {
   let name = rawName;
-  if (deps.repo.getCameraByName(name)) {
+  if (await deps.repo.getCameraByName(name)) {
     let i = 2;
-    while (deps.repo.getCameraByName(`${rawName} (${String(i)})`)) i += 1;
+    while (await deps.repo.getCameraByName(`${rawName} (${String(i)})`)) i += 1;
     name = `${rawName} (${String(i)})`;
   }
   return name;
@@ -171,7 +171,7 @@ function parseDiscoveredStreams(raw: string): DiscoverAddStream[] {
   }
 }
 
-function importDiscoveredCamera(
+async function importDiscoveredCamera(
   deps: AdminDeps,
   rawName: string,
   onvifHost: string,
@@ -179,13 +179,13 @@ function importDiscoveredCamera(
   username: string,
   password: string,
   streams: DiscoverAddStream[],
-): number | null {
+): Promise<number | null> {
   if (streams.length === 0) return null;
   const main = streams.find((s) => s.role === "main") ?? streams[0]!;
   const mainRtspUrl = rtspWithCredentials(main.stream_uri, username, password);
-  const name = uniqueCameraName(deps, rawName || "ONVIF camera");
+  const name = await uniqueCameraName(deps, rawName || "ONVIF camera");
 
-  const cam = deps.repo.createCamera({
+  const cam = await deps.repo.createCamera({
     name,
     type: "onvif",
     rtsp_url: mainRtspUrl,
@@ -198,7 +198,7 @@ function importDiscoveredCamera(
     const width = stream.width == null ? null : Number(stream.width);
     const height = stream.height == null ? null : Number(stream.height);
     const framerate = stream.framerate == null ? null : Number(stream.framerate);
-    deps.repo.createCameraStream({
+    await deps.repo.createCameraStream({
       camera_id: cam.id,
       role: stream.role === "main" || stream.role === "sub" ? stream.role : "other",
       name: stream.profile_name || stream.role,
@@ -238,13 +238,13 @@ interface CellPos {
   col_span: number;
 }
 
-function resolveOverlaps(
+async function resolveOverlaps(
   deps: AdminDeps,
   layoutId: number,
   anchorId: number,
   pushAxis: "row" | "col",
-): void {
-  const all = deps.repo.layoutCells(layoutId);
+): Promise<void> {
+  const all = await deps.repo.layoutCells(layoutId);
   const positions = new Map<number, CellPos>();
   for (const c of all) {
     positions.set(c.id, { id: c.id, row: c.row, col: c.col, row_span: c.row_span, col_span: c.col_span });
@@ -294,52 +294,52 @@ function resolveOverlaps(
   for (const pos of positions.values()) {
     const orig = all.find((c) => c.id === pos.id)!;
     if (orig.row !== pos.row || orig.col !== pos.col) {
-      deps.repo.updateLayoutCell(pos.id, { row: pos.row, col: pos.col });
+      await deps.repo.updateLayoutCell(pos.id, { row: pos.row, col: pos.col });
     }
   }
 }
 
-function shiftCellsForExpansion(
+async function shiftCellsForExpansion(
   deps: AdminDeps,
   layoutId: number,
   cellId: number,
   direction: "left" | "right" | "above" | "bottom",
-): void {
-  const cell = deps.repo.getLayoutCellById(cellId);
+): Promise<void> {
+  const cell = await deps.repo.getLayoutCellById(cellId);
   if (!cell || cell.layout_id !== layoutId) return;
 
   if (direction === "right") {
-    deps.repo.updateLayoutCell(cell.id, { col_span: cell.col_span + 1 });
-    resolveOverlaps(deps, layoutId, cell.id, "col");
+    await deps.repo.updateLayoutCell(cell.id, { col_span: cell.col_span + 1 });
+    await resolveOverlaps(deps, layoutId, cell.id, "col");
   } else if (direction === "bottom") {
-    deps.repo.updateLayoutCell(cell.id, { row_span: cell.row_span + 1 });
-    resolveOverlaps(deps, layoutId, cell.id, "row");
+    await deps.repo.updateLayoutCell(cell.id, { row_span: cell.row_span + 1 });
+    await resolveOverlaps(deps, layoutId, cell.id, "row");
   } else if (direction === "left") {
     const newCol = Math.max(0, cell.col - 1);
-    deps.repo.updateLayoutCell(cell.id, { col: newCol, col_span: cell.col_span + 1 });
-    resolveOverlaps(deps, layoutId, cell.id, "col");
+    await deps.repo.updateLayoutCell(cell.id, { col: newCol, col_span: cell.col_span + 1 });
+    await resolveOverlaps(deps, layoutId, cell.id, "col");
   } else if (direction === "above") {
     const newRow = Math.max(0, cell.row - 1);
-    deps.repo.updateLayoutCell(cell.id, { row: newRow, row_span: cell.row_span + 1 });
-    resolveOverlaps(deps, layoutId, cell.id, "row");
+    await deps.repo.updateLayoutCell(cell.id, { row: newRow, row_span: cell.row_span + 1 });
+    await resolveOverlaps(deps, layoutId, cell.id, "row");
   }
 }
 
-function shiftCellsForInsertion(
+async function shiftCellsForInsertion(
   deps: AdminDeps,
   layoutId: number,
   axis: "row" | "col",
   fromIndex: number,
   crossStart: number,
   crossEnd: number,
-): void {
-  for (const c of deps.repo.layoutCells(layoutId)) {
+): Promise<void> {
+  for (const c of await deps.repo.layoutCells(layoutId)) {
     if (axis === "col") {
       if (c.col >= fromIndex && rangesOverlap(c.row, c.row + c.row_span, crossStart, crossEnd)) {
-        deps.repo.updateLayoutCell(c.id, { col: c.col + 1 });
+        await deps.repo.updateLayoutCell(c.id, { col: c.col + 1 });
       }
     } else if (c.row >= fromIndex && rangesOverlap(c.col, c.col + c.col_span, crossStart, crossEnd)) {
-      deps.repo.updateLayoutCell(c.id, { row: c.row + 1 });
+      await deps.repo.updateLayoutCell(c.id, { row: c.row + 1 });
     }
   }
 }
@@ -347,12 +347,12 @@ function shiftCellsForInsertion(
 export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // ---- Overview -------------------------------------------------------------
 
-  app.get("/admin/", (event) => {
+  app.get("/admin/", async (event) => {
     const user = event.context.user!;
-    const cameras = deps.repo.listCameras();
-    const kiosks = deps.repo.listKiosks();
-    const layouts = deps.repo.listDisplays(); // for count
-    const events = deps.repo.recentEvents(10);
+    const cameras = await deps.repo.listCameras();
+    const kiosks = await deps.repo.listKiosks();
+    const layouts = await deps.repo.listDisplays(); // for count
+    const events = await deps.repo.recentEvents(10);
     const onlineKiosks = kiosks.filter((k) => {
       if (!k.last_seen_at) return false;
       return Date.now() - new Date(k.last_seen_at).getTime() < 5 * 60 * 1000;
@@ -369,13 +369,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // Redirect /admin to /admin/
-  app.get("/admin", () => {
+  app.get("/admin", async () => {
     return new Response(null, { status: 301, headers: { location: "/admin/" } });
   });
 
   // ---- Backup / restore -----------------------------------------------------
 
-  app.get("/admin/backup", (event) => {
+  app.get("/admin/backup", async (event) => {
     const user = event.context.user!;
     return htmlPage(BackupPage({ user: user.username }));
   });
@@ -387,12 +387,12 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     try {
       res = createBackup(deps.dataDir, pass);
     } catch (err) {
-      audit(deps.repo, event as any, "backup.create", {
+      await audit(deps.repo, event as any, "backup.create", {
         result: "failed", metadata: { error: (err as Error).message },
       });
       return htmlPage(BackupPage({ user: event.context.user!.username, error: (err as Error).message }));
     }
-    audit(deps.repo, event as any, "backup.create", {
+    await audit(deps.repo, event as any, "backup.create", {
       metadata: { file_count: res.fileCount, size: res.blob.length },
     });
     return new Response(new Uint8Array(res.blob), {
@@ -415,7 +415,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     try {
       const buf = Buffer.from(await file.arrayBuffer());
       const res = restoreBackup(deps.dataDir, pass, buf);
-      audit(deps.repo, event as any, "backup.restore", {
+      await audit(deps.repo, event as any, "backup.restore", {
         metadata: { file_count: res.fileCount, files: res.files },
       });
       return htmlPage(BackupPage({
@@ -423,7 +423,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         success: `Restored ${String(res.fileCount)} files: ${res.files.join(", ")}. RESTART THE SERVER NOW for changes to take effect.`,
       }));
     } catch (err) {
-      audit(deps.repo, event as any, "backup.restore", {
+      await audit(deps.repo, event as any, "backup.restore", {
         result: "failed", metadata: { error: (err as Error).message },
       });
       return htmlPage(BackupPage({ user: event.context.user!.username, error: (err as Error).message }));
@@ -432,12 +432,12 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Audit log ------------------------------------------------------------
 
-  app.get("/admin/audit", (event) => {
+  app.get("/admin/audit", async (event) => {
     const user = event.context.user!;
     const url = new URL(event.req.url);
     const filterAction = url.searchParams.get("action")?.trim() || undefined;
     const filterActorType = url.searchParams.get("actor_type")?.trim() || undefined;
-    const entries = deps.repo.listAudit({
+    const entries = await deps.repo.listAudit({
       limit: 300,
       action_prefix: filterAction,
       actor_type: filterActorType as any || undefined,
@@ -447,57 +447,58 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- System Health --------------------------------------------------------
 
-  app.get("/admin/health", (event) => {
+  app.get("/admin/health", async (event) => {
     const user = event.context.user!;
-    const kiosks = deps.repo.listKiosks();
+    const kiosks = await deps.repo.listKiosks();
     const now = Date.now();
     let clusterKey: string | undefined;
     try {
-      const enc = deps.repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
+      const enc = await deps.repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
       if (enc) clusterKey = deps.secrets.decryptString(enc, "cluster");
     } catch { /* ignore */ }
 
-    const rows = kiosks.map((k) => {
+    const rows = [];
+    for (const k of kiosks) {
       const online = k.last_seen_at
         ? now - new Date(k.last_seen_at).getTime() < 5 * 60 * 1000
         : false;
-      const displays = deps.repo.listDisplaysForKiosk(k.id);
+      const displays = await deps.repo.listDisplaysForKiosk(k.id);
       let expectedBundleVersion: string | null = null;
       try {
-        const b = generateBundle(deps.repo, deps.secrets, k.id, clusterKey);
+        const b = await generateBundle(deps.repo, deps.secrets, k.id, clusterKey);
         expectedBundleVersion = b?.version ?? null;
       } catch { /* ignore */ }
       const bundleMismatch =
         expectedBundleVersion != null
         && k.last_bundle_version != null
         && k.last_bundle_version !== expectedBundleVersion;
-      return {
+      rows.push({
         kiosk: k,
         online,
         bundleMismatch,
         expectedBundleVersion,
         displays,
-      };
-    });
+      });
+    }
 
     return htmlPage(SystemHealthPage({ user: user.username, rows }));
   });
 
   // ---- Cameras --------------------------------------------------------------
 
-  app.get("/admin/cameras", (event) => {
+  app.get("/admin/cameras", async (event) => {
     const user = event.context.user!;
-    const cameras = deps.repo.listCameras();
+    const cameras = await deps.repo.listCameras();
     const streamCounts = new Map<number, number>();
     const activeKiosks = new Map<number, number>(); // camera_id → count of kiosks rendering
     for (const cam of cameras) {
-      streamCounts.set(cam.id, deps.repo.listCameraStreams(cam.id).length);
-      activeKiosks.set(cam.id, deps.repo.listKiosksRenderingCamera(cam.id).length);
+      streamCounts.set(cam.id, (await deps.repo.listCameraStreams(cam.id)).length);
+      activeKiosks.set(cam.id, (await deps.repo.listKiosksRenderingCamera(cam.id)).length);
     }
     return htmlPage(CamerasPage({ user: user.username, cameras, streamCounts, activeKiosks }));
   });
 
-  app.get("/admin/cameras/new", (event) => {
+  app.get("/admin/cameras/new", async (event) => {
     const user = event.context.user!;
     return htmlPage(CameraNewPage({ user: user.username }));
   });
@@ -510,7 +511,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
     if (!name || name.length > 128) {
       errors.push("Name required (max 128 chars).");
-    } else if (deps.repo.getCameraByName(name)) {
+    } else if (await deps.repo.getCameraByName(name)) {
       errors.push("Camera name already in use.");
     }
 
@@ -536,14 +537,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       }));
     }
 
-    const cam = deps.repo.createCamera({
+    const cam = await deps.repo.createCamera({
       name,
       type: "rtsp",
       rtsp_url: rtspUrl ?? null,
     });
 
     if (rtspUrl) {
-      deps.repo.createCameraStream({
+      await deps.repo.createCameraStream({
         camera_id: cam.id,
         role: "main",
         name: "Main",
@@ -561,11 +562,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Camera ONVIF discovery ------------------------------------------------
 
-  app.get("/admin/cameras/discover", (event) => {
+  app.get("/admin/cameras/discover", async (event) => {
     const user = event.context.user!;
     return htmlPage(CameraDiscoverPage({
       user: user.username,
-      kiosks: deps.repo.listKiosks(),
+      kiosks: await deps.repo.listKiosks(),
     }));
   });
 
@@ -581,7 +582,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (!host) {
       return htmlPage(CameraDiscoverPage({
         user: user.username,
-        kiosks: deps.repo.listKiosks(),
+        kiosks: await deps.repo.listKiosks(),
         error: "Host required.",
         values: body,
       }));
@@ -603,7 +604,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     } catch (err) {
       return htmlPage(CameraDiscoverPage({
         user: user.username,
-        kiosks: deps.repo.listKiosks(),
+        kiosks: await deps.repo.listKiosks(),
         error: `Discovery failed: ${(err as Error).message}`,
         values: body,
       }));
@@ -624,7 +625,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         const rawName = formValue(body?.[`camera_${idx}_name`]).trim() || "ONVIF camera";
         const streams = parseDiscoveredStreams(formValue(body?.[`camera_${idx}_streams_json`]));
         if (streams.length === 0) continue;
-        const camId = importDiscoveredCamera(deps, rawName, onvifHost, onvifPort, username, password, streams);
+        const camId = await importDiscoveredCamera(deps, rawName, onvifHost, onvifPort, username, password, streams);
         if (camId != null) {
           deps.nodered.forward("camera.changed", { camera_id: camId, event: "created", source: "server" });
         }
@@ -634,7 +635,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       const rawName = formValue(body?.["name"]).trim() || "ONVIF camera";
       const streams = parseDiscoveredStreams(formValue(body?.["streams_json"]));
       if (streams.length > 0) {
-        const camId = importDiscoveredCamera(deps, rawName, onvifHost, onvifPort, username, password, streams);
+        const camId = await importDiscoveredCamera(deps, rawName, onvifHost, onvifPort, username, password, streams);
         if (camId != null) {
           deps.nodered.forward("camera.changed", { camera_id: camId, event: "created", source: "server" });
         }
@@ -652,20 +653,20 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Entities --------------------------------------------------------------
 
-  app.get("/admin/entities", (event) => {
+  app.get("/admin/entities", async (event) => {
     const user = event.context.user!;
     syncDashboardsFromNodered(deps).catch(() => {});
     return htmlPage(EntitiesPage({
       user: user.username,
-      entities: deps.repo.listEntities(),
+      entities: await deps.repo.listEntities(),
     }));
   });
 
-  app.get("/admin/entities/new", (event) => {
+  app.get("/admin/entities/new", async (event) => {
     const user = event.context.user!;
     return htmlPage(EntityNewPage({
       user: user.username,
-      cameras: deps.repo.listCameras(),
+      cameras: await deps.repo.listCameras(),
     }));
   });
 
@@ -679,7 +680,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
     if (!name || name.length > 128) {
       errors.push("Name required (max 128 chars).");
-    } else if (deps.repo.getEntityByName(name)) {
+    } else if (await deps.repo.getEntityByName(name)) {
       errors.push("Entity name already in use.");
     }
     if (type !== "camera" && type !== "html" && type !== "web") {
@@ -702,13 +703,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (errors.length > 0) {
       return htmlPage(EntityNewPage({
         user: user.username,
-        cameras: deps.repo.listCameras(),
+        cameras: await deps.repo.listCameras(),
         error: errors.join(" "),
         values: body,
       }));
     }
 
-    deps.repo.createEntity({
+    await deps.repo.createEntity({
       name,
       type: type!,
       description,
@@ -720,21 +721,21 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
   });
 
-  app.get("/admin/entities/:id", (event) => {
+  app.get("/admin/entities/:id", async (event) => {
     const user = event.context.user!;
     const id = Number(getRouterParam(event, "id"));
-    const ent = deps.repo.getEntityById(id);
+    const ent = await deps.repo.getEntityById(id);
     if (!ent) return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
     return htmlPage(EntityEditPage({
       user: user.username,
       entity: ent,
-      cameras: deps.repo.listCameras(),
+      cameras: await deps.repo.listCameras(),
     }));
   });
 
   app.post("/admin/entities/:id", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const ent = deps.repo.getEntityById(id);
+    const ent = await deps.repo.getEntityById(id);
     if (!ent) return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
     const body = await readBody<Record<string, string>>(event);
     const patch: {
@@ -754,14 +755,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     } else if (ent.type === "web") {
       patch.web_url = (body?.["web_url"] ?? "").trim() || null;
     }
-    deps.repo.updateEntity(id, patch);
+    await deps.repo.updateEntity(id, patch);
     notifyKiosks();
     return new Response(null, { status: 302, headers: { location: `/admin/entities/${String(id)}` } });
   });
 
-  app.post("/admin/entities/:id/delete", (event) => {
+  app.post("/admin/entities/:id/delete", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    deps.repo.deleteEntity(id);
+    await deps.repo.deleteEntity(id);
     notifyKiosks();
     return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
   });
@@ -772,7 +773,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // attempt times out). Used by the EntityEditPage "Test" preview.
   app.get("/admin/entities/:id/snapshot", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const ent = deps.repo.getEntityById(id);
+    const ent = await deps.repo.getEntityById(id);
     if (!ent || ent.type !== "camera" || ent.camera_id == null) {
       return new Response("Not a camera entity", { status: 404 });
     }
@@ -782,7 +783,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     // Even if the camera isn't on screen right now, the kiosk is on the
     // same LAN and can open a one-shot RTSP connection for the snapshot.
     // Only fall through to server-direct when NO kiosk has it at all.
-    const candidates = deps.repo.listKiosksWithCameraInBundle(cameraId);
+    const candidates = await deps.repo.listKiosksWithCameraInBundle(cameraId);
     const STALE_MS = 2 * 60 * 1000; // kiosk silent > 2 min → don't bother
     const now = Date.now();
     for (const k of candidates) {
@@ -811,9 +812,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
 
     // 2. Fall back to server-direct RTSP pull (ffmpeg/gst).
-    const streams = deps.repo.listCameraStreams(cameraId);
+    const streams = await deps.repo.listCameraStreams(cameraId);
     const main = streams.find((s) => s.role === "main") ?? streams[0];
-    const cam = deps.repo.getCameraById(cameraId);
+    const cam = await deps.repo.getCameraById(cameraId);
     const rtsp = main?.rtsp_uri ?? cam?.rtsp_url ?? null;
     if (!rtsp) return new Response("No RTSP URL", { status: 404 });
 
@@ -833,10 +834,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Kiosks ---------------------------------------------------------------
 
-  app.get("/admin/kiosks", (event) => {
+  app.get("/admin/kiosks", async (event) => {
     const user = event.context.user!;
-    const kiosks = deps.repo.listKiosks();
-    const pending = deps.repo.listPendingPairingCodes();
+    const kiosks = await deps.repo.listKiosks();
+    const pending = await deps.repo.listPendingPairingCodes();
     return htmlPage(KiosksPage({ user: user.username, kiosks, pendingCodes: pending }));
   });
 
@@ -858,15 +859,15 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         replaceKioskId,
         force,
       });
-      audit(deps.repo, event as any, replaceKioskId ? "kiosk.replace" : "kiosk.pair", {
+      await audit(deps.repo, event as any, replaceKioskId ? "kiosk.replace" : "kiosk.pair", {
         resource_type: "kiosk",
         resource_id: result.kioskId,
         metadata: { name: result.kioskName, code, replaced: !!replaceKioskId },
       });
     } catch (err) {
       const user = event.context.user!;
-      const kiosks = deps.repo.listKiosks();
-      const pending = deps.repo.listPendingPairingCodes();
+      const kiosks = await deps.repo.listKiosks();
+      const pending = await deps.repo.listPendingPairingCodes();
       return htmlPage(KiosksPage({
         user: user.username,
         kiosks,
@@ -880,18 +881,18 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Layouts ---------------------------------------------------------------
 
-  app.get("/admin/layouts", (event) => {
+  app.get("/admin/layouts", async (event) => {
     const user = event.context.user!;
-    const layouts = deps.repo.listLayouts();
+    const layouts = await deps.repo.listLayouts();
     // For each layout, how many displays use it (for the list view).
     const displayCounts = new Map<number, number>();
     for (const l of layouts) {
-      displayCounts.set(l.id, deps.repo.listDisplaysForLayout(l.id).length);
+      displayCounts.set(l.id, (await deps.repo.listDisplaysForLayout(l.id)).length);
     }
     return htmlPage(LayoutsPage({ user: user.username, layouts, displayCounts }));
   });
 
-  app.get("/admin/layouts/new", (event) => {
+  app.get("/admin/layouts/new", async (event) => {
     const user = event.context.user!;
     return htmlPage(LayoutNewPage({ user: user.username }));
   });
@@ -918,7 +919,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       }));
     }
 
-    const layout = deps.repo.createLayout({
+    const layout = await deps.repo.createLayout({
       name,
       description,
       priority,
@@ -928,15 +929,15 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layout.id}` } });
   });
 
-  app.get("/admin/layouts/:id", (event) => {
+  app.get("/admin/layouts/:id", async (event) => {
     const user = event.context.user!;
     const id = Number(getRouterParam(event, "id"));
-    const layout = deps.repo.getLayoutById(id);
+    const layout = await deps.repo.getLayoutById(id);
     if (!layout) return new Response(null, { status: 302, headers: { location: "/admin/layouts" } });
-    const cells = deps.repo.layoutCells(id);
-    const cameras = deps.repo.listCameras();
-    const entities = deps.repo.listEntities();
-    const displays = deps.repo.listDisplaysForLayout(id);
+    const cells = await deps.repo.layoutCells(id);
+    const cameras = await deps.repo.listCameras();
+    const entities = await deps.repo.listEntities();
+    const displays = await deps.repo.listDisplaysForLayout(id);
     return htmlPage(LayoutEditPage({
       user: user.username,
       layout,
@@ -952,7 +953,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const body = await readBody<Record<string, string>>(event);
     const coolingStr = body?.["cooling_timeout_seconds"] ?? "";
     const coolingTimeout = coolingStr.trim() === "" ? null : parseInt(coolingStr, 10);
-    deps.repo.updateLayout(id, {
+    await deps.repo.updateLayout(id, {
       name: body?.["name"],
       description: body?.["description"] || null,
       priority: (body?.["priority"] ?? "normal") as any,
@@ -980,12 +981,12 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
     if (afterCellIdRaw && direction) {
       const afterId = Number(afterCellIdRaw);
-      const cells = deps.repo.layoutCells(layoutId);
+      const cells = await deps.repo.layoutCells(layoutId);
       const ref = cells.find((c) => c.id === afterId);
       if (!ref) {
         if (isHtmxRequest(event)) {
-          const cameras = deps.repo.listCameras();
-          const entities = deps.repo.listEntities();
+          const cameras = await deps.repo.listCameras();
+          const entities = await deps.repo.listEntities();
           return htmlFragment(renderGrid(layoutId, cells, entities, cameras));
         }
         return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
@@ -993,19 +994,19 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       if (direction === "right") {
         row = ref.row;
         col = ref.col + ref.col_span;
-        shiftCellsForInsertion(deps, layoutId, "col", col, row, row + 1);
+        await shiftCellsForInsertion(deps, layoutId, "col", col, row, row + 1);
       } else if (direction === "bottom") {
         row = ref.row + ref.row_span;
         col = ref.col;
-        shiftCellsForInsertion(deps, layoutId, "row", row, col, col + 1);
+        await shiftCellsForInsertion(deps, layoutId, "row", row, col, col + 1);
       } else if (direction === "left") {
         row = ref.row;
         col = Math.max(0, ref.col - 1);
-        shiftCellsForInsertion(deps, layoutId, "col", col, row, row + 1);
+        await shiftCellsForInsertion(deps, layoutId, "col", col, row, row + 1);
       } else if (direction === "above") {
         col = ref.col;
         row = Math.max(0, ref.row - 1);
-        shiftCellsForInsertion(deps, layoutId, "row", row, col, col + 1);
+        await shiftCellsForInsertion(deps, layoutId, "row", row, col, col + 1);
       }
     } else {
       // Explicit position — accept top-level row/col or nested position.
@@ -1019,7 +1020,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       }
     }
 
-    deps.repo.createLayoutCell({
+    await deps.repo.createLayoutCell({
       layout_id: layoutId,
       row,
       col,
@@ -1030,37 +1031,37 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     notifyKiosks();
 
     if (isHtmxRequest(event)) {
-      const cells = deps.repo.layoutCells(layoutId);
-      const cameras = deps.repo.listCameras();
-      const entities = deps.repo.listEntities();
+      const cells = await deps.repo.layoutCells(layoutId);
+      const cameras = await deps.repo.listCameras();
+      const entities = await deps.repo.listEntities();
       return htmlFragment(renderGrid(layoutId, cells, entities, cameras));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
 
   // GET a single cell in read mode (used by htmx Cancel button in inline edit).
-  app.get("/admin/layouts/:id/cells/:cellId", (event) => {
+  app.get("/admin/layouts/:id/cells/:cellId", async (event) => {
     const layoutId = Number(getRouterParam(event, "id"));
     const cellId = Number(getRouterParam(event, "cellId"));
-    const cell = deps.repo.getLayoutCellById(cellId);
+    const cell = await deps.repo.getLayoutCellById(cellId);
     if (!cell || cell.layout_id !== layoutId) {
       return new Response("Not Found", { status: 404 });
     }
-    const cameras = deps.repo.listCameras();
-    const entities = deps.repo.listEntities();
+    const cameras = await deps.repo.listCameras();
+    const entities = await deps.repo.listEntities();
     return htmlFragment(renderCell(layoutId, cell, entities, cameras, "read"));
   });
 
   // GET a single cell in edit mode (htmx swap target for cell click).
-  app.get("/admin/layouts/:id/cells/:cellId/edit", (event) => {
+  app.get("/admin/layouts/:id/cells/:cellId/edit", async (event) => {
     const layoutId = Number(getRouterParam(event, "id"));
     const cellId = Number(getRouterParam(event, "cellId"));
-    const cell = deps.repo.getLayoutCellById(cellId);
+    const cell = await deps.repo.getLayoutCellById(cellId);
     if (!cell || cell.layout_id !== layoutId) {
       return new Response("Not Found", { status: 404 });
     }
-    const cameras = deps.repo.listCameras();
-    const entities = deps.repo.listEntities();
+    const cameras = await deps.repo.listCameras();
+    const entities = await deps.repo.listEntities();
     return htmlFragment(renderCell(layoutId, cell, entities, cameras, "edit"));
   });
 
@@ -1074,7 +1075,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const entityIdRaw = body?.["entity_id"];
     const entityId =
       entityIdRaw && String(entityIdRaw).trim() !== "" ? Number(entityIdRaw) : null;
-    deps.repo.assignCellEntity(cellId, Number.isFinite(entityId) ? entityId : null);
+    await deps.repo.assignCellEntity(cellId, Number.isFinite(entityId) ? entityId : null);
 
     // stream_selector + spans + fit are still settable on the cell.
     const dimsPatch: Record<string, unknown> = {};
@@ -1096,20 +1097,20 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
     let spansChanged = false;
     if (Object.keys(dimsPatch).length > 0) {
-      deps.repo.updateLayoutCell(cellId, dimsPatch as any);
+      await deps.repo.updateLayoutCell(cellId, dimsPatch as any);
       if ("col_span" in dimsPatch || "row_span" in dimsPatch) {
         spansChanged = true;
         const axis = "col_span" in dimsPatch ? "col" as const : "row" as const;
-        resolveOverlaps(deps, layoutId, cellId, axis);
+        await resolveOverlaps(deps, layoutId, cellId, axis);
       }
     }
     notifyKiosks();
 
     if (isHtmxRequest(event)) {
       if (spansChanged) {
-        const cells = deps.repo.layoutCells(layoutId);
-        const cameras = deps.repo.listCameras();
-        const entities = deps.repo.listEntities();
+        const cells = await deps.repo.layoutCells(layoutId);
+        const cameras = await deps.repo.listCameras();
+        const entities = await deps.repo.listEntities();
         const body = String(renderGrid(layoutId, cells, entities, cameras));
         return new Response(body, {
           headers: {
@@ -1119,10 +1120,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
           },
         });
       }
-      const cell = deps.repo.getLayoutCellById(cellId);
+      const cell = await deps.repo.getLayoutCellById(cellId);
       if (!cell) return new Response("", { headers: { "content-type": "text/html; charset=utf-8" } });
-      const cameras = deps.repo.listCameras();
-      const entities = deps.repo.listEntities();
+      const cameras = await deps.repo.listCameras();
+      const entities = await deps.repo.listEntities();
       return htmlFragment(renderCell(layoutId, cell, entities, cameras, "read"));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
@@ -1137,78 +1138,78 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const delta = Number(body?.["delta"] ?? 0) || 0;
     const direction = String(body?.["direction"] ?? "");
 
-    const cell = deps.repo.getLayoutCellById(cellId);
+    const cell = await deps.repo.getLayoutCellById(cellId);
     if (
       cell
       && cell.layout_id === layoutId
       && (direction === "left" || direction === "right" || direction === "above" || direction === "bottom")
     ) {
-      shiftCellsForExpansion(deps, layoutId, cellId, direction);
+      await shiftCellsForExpansion(deps, layoutId, cellId, direction);
       notifyKiosks();
     } else if (cell && cell.layout_id === layoutId && (dim === "row_span" || dim === "col_span") && delta !== 0) {
       const current = dim === "row_span" ? cell.row_span : cell.col_span;
       const next = Math.max(1, current + delta);
       if (next !== current) {
-        deps.repo.updateLayoutCell(cellId, { [dim]: next } as any);
-        resolveOverlaps(deps, layoutId, cellId, dim === "col_span" ? "col" : "row");
+        await deps.repo.updateLayoutCell(cellId, { [dim]: next } as any);
+        await resolveOverlaps(deps, layoutId, cellId, dim === "col_span" ? "col" : "row");
         notifyKiosks();
       }
     }
 
-    const cells = deps.repo.layoutCells(layoutId);
-    const cameras = deps.repo.listCameras();
-    const entities = deps.repo.listEntities();
+    const cells = await deps.repo.layoutCells(layoutId);
+    const cameras = await deps.repo.listCameras();
+    const entities = await deps.repo.listEntities();
     if (isHtmxRequest(event)) {
       return htmlFragment(renderGrid(layoutId, cells, entities, cameras));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
 
-  app.post("/admin/layouts/:id/cells/:cellId/delete", (event) => {
+  app.post("/admin/layouts/:id/cells/:cellId/delete", async (event) => {
     const layoutId = Number(getRouterParam(event, "id"));
     const cellId = Number(getRouterParam(event, "cellId"));
-    deps.repo.deleteLayoutCell(cellId);
+    await deps.repo.deleteLayoutCell(cellId);
     notifyKiosks();
     if (isHtmxRequest(event)) {
-      const cells = deps.repo.layoutCells(layoutId);
-      const cameras = deps.repo.listCameras();
-      const entities = deps.repo.listEntities();
+      const cells = await deps.repo.layoutCells(layoutId);
+      const cameras = await deps.repo.listCameras();
+      const entities = await deps.repo.listEntities();
       return htmlFragment(renderGrid(layoutId, cells, entities, cameras));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
 
-  app.post("/admin/layouts/:id/clone", (event) => {
+  app.post("/admin/layouts/:id/clone", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const clone = deps.repo.cloneLayout(id);
+    const clone = await deps.repo.cloneLayout(id);
     notifyKiosks();
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${clone.id}` } });
   });
 
-  app.post("/admin/layouts/:id/delete", (event) => {
+  app.post("/admin/layouts/:id/delete", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    deps.repo.deleteLayout(id);
+    await deps.repo.deleteLayout(id);
     notifyKiosks();
     return new Response(null, { status: 302, headers: { location: "/admin/layouts" } });
   });
 
   // ---- Displays --------------------------------------------------------------
 
-  app.get("/admin/displays", (event) => {
+  app.get("/admin/displays", async (event) => {
     const user = event.context.user!;
-    const displays = deps.repo.listDisplays();
+    const displays = await deps.repo.listDisplays();
     return htmlPage(DisplaysPage({ user: user.username, displays }));
   });
 
-  app.get("/admin/displays/:id", (event) => {
+  app.get("/admin/displays/:id", async (event) => {
     const user = event.context.user!;
     const id = Number(getRouterParam(event, "id"));
-    const display = deps.repo.getDisplayById(id);
+    const display = await deps.repo.getDisplayById(id);
     if (!display) return new Response(null, { status: 302, headers: { location: "/admin/displays" } });
-    const attachedLayouts = deps.repo.listLayoutsForDisplay(id);
+    const attachedLayouts = await deps.repo.listLayoutsForDisplay(id);
     const attachedIds = new Set(attachedLayouts.map((l) => l.id));
-    const availableLayouts = deps.repo.listLayouts().filter((l) => !attachedIds.has(l.id));
-    const kiosk = display.kiosk_id ? deps.repo.getKioskById(display.kiosk_id) : null;
+    const availableLayouts = (await deps.repo.listLayouts()).filter((l) => !attachedIds.has(l.id));
+    const kiosk = display.kiosk_id ? await deps.repo.getKioskById(display.kiosk_id) : null;
     return htmlPage(DisplayEditPage({
       user: user.username,
       display,
@@ -1227,7 +1228,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     // Validate default_layout_id is actually attached to this display.
     let validatedDefault: number | null = defaultLayoutId;
     if (defaultLayoutId != null) {
-      const attached = deps.repo.listLayoutsForDisplay(id);
+      const attached = await deps.repo.listLayoutsForDisplay(id);
       if (!attached.some((l) => l.id === defaultLayoutId)) {
         validatedDefault = null;
       }
@@ -1235,7 +1236,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
     // width/height are no longer admin-editable — they come from the kiosk's
     // hardware report. Just update the editable fields.
-    deps.repo.updateDisplay(id, {
+    await deps.repo.updateDisplay(id, {
       name: body?.["name"],
       default_layout_id: validatedDefault,
       idle_timeout_seconds: parseInt(body?.["idle_timeout_seconds"] ?? "0", 10),
@@ -1247,11 +1248,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // Render the attached + available layouts region for a display.
-  const renderDisplayLayoutsFragment = (displayId: number): Response => {
-    const display = deps.repo.getDisplayById(displayId);
-    const attached = deps.repo.listLayoutsForDisplay(displayId);
+  const renderDisplayLayoutsFragment = async (displayId: number): Promise<Response> => {
+    const display = await deps.repo.getDisplayById(displayId);
+    const attached = await deps.repo.listLayoutsForDisplay(displayId);
     const attachedIds = new Set(attached.map((l) => l.id));
-    const available = deps.repo.listLayouts().filter((l) => !attachedIds.has(l.id));
+    const available = (await deps.repo.listLayouts()).filter((l) => !attachedIds.has(l.id));
     return htmlFragment(
       renderDisplayLayouts(displayId, display?.default_layout_id ?? null, attached, available)
       + renderDefaultLayoutSelect(display?.default_layout_id ?? null, attached, true),
@@ -1264,30 +1265,30 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const body = await readBody<Record<string, string>>(event);
     const layoutId = body?.["layout_id"] ? Number(body["layout_id"]) : null;
     if (layoutId && Number.isFinite(layoutId)) {
-      deps.repo.attachLayoutToDisplay(displayId, layoutId);
+      await deps.repo.attachLayoutToDisplay(displayId, layoutId);
       notifyKiosks();
     }
     if (isHtmxRequest(event)) {
-      return renderDisplayLayoutsFragment(displayId);
+      return await renderDisplayLayoutsFragment(displayId);
     }
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${displayId}` } });
   });
 
   // Detach a layout from a display.
-  app.post("/admin/displays/:id/layouts/:layoutId/remove", (event) => {
+  app.post("/admin/displays/:id/layouts/:layoutId/remove", async (event) => {
     const displayId = Number(getRouterParam(event, "id"));
     const layoutId = Number(getRouterParam(event, "layoutId"));
-    deps.repo.detachLayoutFromDisplay(displayId, layoutId);
+    await deps.repo.detachLayoutFromDisplay(displayId, layoutId);
     notifyKiosks();
     if (isHtmxRequest(event)) {
-      return renderDisplayLayoutsFragment(displayId);
+      return await renderDisplayLayoutsFragment(displayId);
     }
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${displayId}` } });
   });
 
-  app.get("/admin/labels", (event) => {
+  app.get("/admin/labels", async (event) => {
     const user = event.context.user!;
-    return htmlPage(LabelsPage({ user: user.username, labels: deps.repo.listLabels() }));
+    return htmlPage(LabelsPage({ user: user.username, labels: await deps.repo.listLabels() }));
   });
 
   app.post("/admin/labels/new", async (event) => {
@@ -1297,57 +1298,58 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (!name || !/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
       return htmlPage(LabelsPage({
         user: event.context.user!.username,
-        labels: deps.repo.listLabels(),
+        labels: await deps.repo.listLabels(),
         error: "Label name must start with letter/digit and contain only lowercase, digits, hyphens, underscores.",
       }));
     }
-    deps.repo.createLabel({ name, color });
+    await deps.repo.createLabel({ name, color });
     return new Response(null, { status: 302, headers: { location: "/admin/labels" } });
   });
 
-  app.post("/admin/labels/:id/delete", (event) => {
+  app.post("/admin/labels/:id/delete", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    deps.repo.deleteLabel(id);
+    await deps.repo.deleteLabel(id);
     return new Response(null, { status: 302, headers: { location: "/admin/labels" } });
   });
 
   // ---- Camera edit/delete/labels --------------------------------------------
 
-  app.get("/admin/cameras/:id", (event) => {
+  app.get("/admin/cameras/:id", async (event) => {
     const user = event.context.user!;
     const id = Number(getRouterParam(event, "id"));
-    const camera = deps.repo.getCameraById(id);
+    const camera = await deps.repo.getCameraById(id);
     if (!camera) return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
 
     // Build subscription list: which kiosks have this camera in any layout?
-    const bundleKiosks = deps.repo.listKiosksWithCameraInBundle(id);
-    const activeKiosks = new Set(deps.repo.listKiosksRenderingCamera(id).map((k) => k.id));
-    const subscriptions = bundleKiosks.map((k) => {
+    const bundleKiosks = await deps.repo.listKiosksWithCameraInBundle(id);
+    const activeKiosks = new Set((await deps.repo.listKiosksRenderingCamera(id)).map((k) => k.id));
+    const subscriptions = [];
+    for (const k of bundleKiosks) {
       // Find layout names that reference this camera on this kiosk's displays
-      const displays = deps.repo.listDisplaysForKiosk(k.id);
+      const displays = await deps.repo.listDisplaysForKiosk(k.id);
       const layoutNames: string[] = [];
       for (const d of displays) {
-        const layouts = deps.repo.listLayoutsForDisplay(d.id);
+        const layouts = await deps.repo.listLayoutsForDisplay(d.id);
         for (const l of layouts) {
-          const cells = deps.repo.listLayoutCells(l.id);
+          const cells = await deps.repo.listLayoutCells(l.id);
           if (cells.some((c) => c.camera_id === id)) {
             layoutNames.push(l.name);
           }
         }
       }
-      return {
+      subscriptions.push({
         kiosk: k,
         layouts: layoutNames,
         active: activeKiosks.has(k.id),
-      };
-    });
+      });
+    }
 
     return htmlPage(CameraEditPage({
       user: user.username,
       camera,
-      labels: deps.repo.cameraLabelIds(id),
-      allLabels: deps.repo.listLabels(),
-      streams: deps.repo.listCameraStreams(id),
+      labels: await deps.repo.cameraLabelIds(id),
+      allLabels: await deps.repo.listLabels(),
+      streams: await deps.repo.listCameraStreams(id),
       subscriptions,
     }));
   });
@@ -1355,7 +1357,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/cameras/:id", async (event) => {
     const id = Number(getRouterParam(event, "id"));
     const body = await readBody<Record<string, string>>(event);
-    const cam = deps.repo.getCameraById(id);
+    const cam = await deps.repo.getCameraById(id);
 
     let rtspUrl: string | null = null;
     if (cam?.type === "rtsp") {
@@ -1395,16 +1397,16 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     // Event routing config
     if (body?.["event_source"] != null) patch["event_source"] = body["event_source"] || "auto";
     if (body?.["event_sink"] != null) patch["event_sink"] = body["event_sink"] || "auto";
-    deps.repo.updateCamera(id, patch as any);
+    await deps.repo.updateCamera(id, patch as any);
 
     // Also update main stream URI for RTSP cameras
     if (cam?.type === "rtsp" && rtspUrl) {
-      const streams = deps.repo.listCameraStreams(id);
+      const streams = await deps.repo.listCameraStreams(id);
       const mainStream = streams.find((s) => s.role === "main");
       if (mainStream) {
-        deps.repo.updateCameraStream(mainStream.id, { rtsp_uri: rtspUrl });
+        await deps.repo.updateCameraStream(mainStream.id, { rtsp_uri: rtspUrl });
       } else {
-        deps.repo.createCameraStream({
+        await deps.repo.createCameraStream({
           camera_id: id,
           role: "main",
           name: "Main",
@@ -1414,9 +1416,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
     // Sync entity name when camera name changes.
     if (patch["name"]) {
-      const ent = deps.repo.getEntityForCamera(id);
+      const ent = await deps.repo.getEntityForCamera(id);
       if (ent && ent.name !== patch["name"]) {
-        deps.repo.updateEntity(ent.id, { name: patch["name"] } as any);
+        await deps.repo.updateEntity(ent.id, { name: patch["name"] } as any);
       }
     }
 
@@ -1433,14 +1435,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     let labelId = body?.["label_id"] ? Number(body["label_id"]) : null;
 
     if (newLabel) {
-      const label = deps.repo.ensureLabel(newLabel);
+      const label = await deps.repo.ensureLabel(newLabel);
       labelId = label.id;
     }
     if (labelId) {
-      deps.repo.attachCameraLabel(camId, labelId);
+      await deps.repo.attachCameraLabel(camId, labelId);
     }
     if (isHtmxRequest(event)) {
-      return htmlFragment(renderCameraLabels(camId, deps.repo.cameraLabelIds(camId), deps.repo.listLabels()));
+      return htmlFragment(renderCameraLabels(camId, await deps.repo.cameraLabelIds(camId), await deps.repo.listLabels()));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/cameras/${camId}` } });
   });
@@ -1449,9 +1451,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const camId = Number(getRouterParam(event, "id"));
     const body = await readBody<Record<string, string>>(event);
     const labelId = Number(body?.["label_id"]);
-    deps.repo.detachCameraLabel(camId, labelId);
+    await deps.repo.detachCameraLabel(camId, labelId);
     if (isHtmxRequest(event)) {
-      return htmlFragment(renderCameraLabels(camId, deps.repo.cameraLabelIds(camId), deps.repo.listLabels()));
+      return htmlFragment(renderCameraLabels(camId, await deps.repo.cameraLabelIds(camId), await deps.repo.listLabels()));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/cameras/${camId}` } });
   });
@@ -1459,19 +1461,22 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // Refresh supported ONVIF event topics from the camera.
   app.post("/admin/cameras/:id/refresh-events", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const cam = deps.repo.getCameraById(id);
+    const cam = await deps.repo.getCameraById(id);
     if (!cam || cam.type !== "onvif" || !cam.onvif_host) {
       return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
     }
     // Determine which kiosk (or server) to run the SOAP call through.
-    const runner = cam.event_source === "server" ? "server"
-      : cam.event_source.startsWith("kiosk:") ? cam.event_source
-      : (() => {
-          // Auto: pick a kiosk that has this camera in its bundle.
-          const kiosks = deps.repo.listKiosksWithCameraInBundle(id);
-          const online = kiosks.find((k) => k.last_seen_at && Date.now() - new Date(k.last_seen_at).getTime() < 120_000);
-          return online ? `kiosk:${online.id}` : "server";
-        })();
+    let runner: string;
+    if (cam.event_source === "server") {
+      runner = "server";
+    } else if (cam.event_source.startsWith("kiosk:")) {
+      runner = cam.event_source;
+    } else {
+      // Auto: pick a kiosk that has this camera in its bundle.
+      const kiosks = await deps.repo.listKiosksWithCameraInBundle(id);
+      const online = kiosks.find((k) => k.last_seen_at && Date.now() - new Date(k.last_seen_at).getTime() < 120_000);
+      runner = online ? `kiosk:${online.id}` : "server";
+    }
     const soapTransport = runner.startsWith("kiosk:")
       ? kioskOnvifSoapTransport(Number(runner.slice("kiosk:".length)))
       : undefined;
@@ -1483,16 +1488,16 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         password: cam.onvif_password ?? "",
         soapTransport,
       });
-      deps.repo.updateCamera(id, { supported_event_topics: JSON.stringify(topics) } as any);
+      await deps.repo.updateCamera(id, { supported_event_topics: JSON.stringify(topics) } as any);
     } catch {
       // Camera offline or events not supported — leave existing topics.
     }
     return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
   });
 
-  app.post("/admin/cameras/:id/delete", (event) => {
+  app.post("/admin/cameras/:id/delete", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    deps.repo.deleteCamera(id);
+    await deps.repo.deleteCamera(id);
     notifyKiosks();
     deps.nodered.forward("camera.changed", { camera_id: id, event: "deleted", source: "server" });
     return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
@@ -1504,9 +1509,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     catch { return iso; }
   };
   const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  app.get("/admin/cameras/:id/events", (event) => {
+  app.get("/admin/cameras/:id/events", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const { events } = deps.repo.queryEvents({
+    const { events } = await deps.repo.queryEvents({
       camera_id: id,
       limit: 20,
     });
@@ -1532,30 +1537,33 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Kiosk edit/delete/labels ---------------------------------------------
 
-  app.get("/admin/kiosks/:id", (event) => {
+  app.get("/admin/kiosks/:id", async (event) => {
     const user = event.context.user!;
     const id = Number(getRouterParam(event, "id"));
-    const kiosk = deps.repo.getKioskById(id);
+    const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
-    const kioskLabels = deps.repo.listKioskLabels(id).map((kl) => ({
+    const kioskLabels = (await deps.repo.listKioskLabels(id)).map((kl) => ({
       label_id: kl.label_id,
       name: kl.name,
       role: kl.role,
     }));
-    const displays = deps.repo.listDisplaysForKiosk(id);
-    const displayLayouts = displays.map((display) => ({
-      display,
-      layouts: deps.repo.listLayoutsForDisplay(display.id),
-    }));
-    const gpioBindings = deps.repo.listGpioBindings(id);
-    const firmwareReleases = deps.repo.listFirmwareReleases();
-    const osReleases = deps.repo.listOsUpdateReleases();
-    const logResult = deps.repo.queryKioskLogs({ kiosk_id: id, limit: 50 });
+    const displays = await deps.repo.listDisplaysForKiosk(id);
+    const displayLayouts = [];
+    for (const display of displays) {
+      displayLayouts.push({
+        display,
+        layouts: await deps.repo.listLayoutsForDisplay(display.id),
+      });
+    }
+    const gpioBindings = await deps.repo.listGpioBindings(id);
+    const firmwareReleases = await deps.repo.listFirmwareReleases();
+    const osReleases = await deps.repo.listOsUpdateReleases();
+    const logResult = await deps.repo.queryKioskLogs({ kiosk_id: id, limit: 50 });
     return htmlPage(KioskEditPage({
       user: user.username,
       kiosk,
       labels: kioskLabels,
-      allLabels: deps.repo.listLabels(),
+      allLabels: await deps.repo.listLabels(),
       displays,
       displayLayouts,
       gpioBindings,
@@ -1579,7 +1587,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const chip = (body?.["chip"] ?? "gpiochip0").trim() || "gpiochip0";
     const topic = (body?.["topic"] ?? "").trim();
     if (Number.isFinite(pin) && topic) {
-      deps.repo.createGpioBinding({
+      await deps.repo.createGpioBinding({
         kiosk_id: kioskId,
         chip,
         pin,
@@ -1593,10 +1601,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${kioskId}` } });
   });
 
-  app.post("/admin/kiosks/:id/gpio/:bindingId/delete", (event) => {
+  app.post("/admin/kiosks/:id/gpio/:bindingId/delete", async (event) => {
     const kioskId = Number(getRouterParam(event, "id"));
     const bindingId = Number(getRouterParam(event, "bindingId"));
-    deps.repo.deleteGpioBinding(bindingId);
+    await deps.repo.deleteGpioBinding(bindingId);
     notifyKiosks();
     if (isHtmxRequest(event)) {
       // Row is swapped via hx-target="closest tr" hx-swap="outerHTML" — empty
@@ -1609,8 +1617,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/kiosks/:id", async (event) => {
     const id = Number(getRouterParam(event, "id"));
     const body = await readBody<Record<string, string>>(event);
-    const kiosk = deps.repo.getKioskById(id);
-    deps.repo.updateKiosk(id, {
+    const kiosk = await deps.repo.getKioskById(id);
+    await deps.repo.updateKiosk(id, {
       name: body?.["name"],
       enabled: body?.["enabled"] === "1",
     } as any);
@@ -1618,7 +1626,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       const cfg = kiosk.managed_config_json ? JSON.parse(kiosk.managed_config_json) : {};
       const hostname = hostnameFromName(body["name"]);
       if (cfg?.hostname !== hostname) {
-        deps.repo.updateKiosk(id, {
+        await deps.repo.updateKiosk(id, {
           managed_config_json: JSON.stringify({ ...cfg, hostname }),
           managed_config_version: kiosk.managed_config_version + 1,
           managed_config_error: null,
@@ -1636,7 +1644,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // so the next heartbeat ships it to the kiosk.
   app.post("/admin/kiosks/:id/managed-config", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const kiosk = deps.repo.getKioskById(id);
+    const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) throw new Error("kiosk not found");
     if (!kiosk.managed_image) throw new Error("kiosk is not running a managed image");
     const body = await readBody<Record<string, string>>(event);
@@ -1688,13 +1696,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       }
     }
 
-    deps.repo.updateKiosk(id, {
+    await deps.repo.updateKiosk(id, {
       managed_config_json: JSON.stringify(cfg),
       managed_config_version: kiosk.managed_config_version + 1,
       managed_config_error: null,
     } as any);
 
-    audit(deps.repo, event as any, "kiosk.managed_config.update", {
+    await audit(deps.repo, event as any, "kiosk.managed_config.update", {
       resource_type: "kiosk",
       resource_id: String(id),
       metadata: { version: kiosk.managed_config_version + 1 },
@@ -1711,19 +1719,19 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     let labelId = body?.["label_id"] ? Number(body["label_id"]) : null;
 
     if (newLabel) {
-      const label = deps.repo.ensureLabel(newLabel);
+      const label = await deps.repo.ensureLabel(newLabel);
       labelId = label.id;
     }
     if (labelId) {
-      deps.repo.attachKioskLabel(kioskId, labelId, role);
+      await deps.repo.attachKioskLabel(kioskId, labelId, role);
     }
     if (isHtmxRequest(event)) {
-      const kioskLabels = deps.repo.listKioskLabels(kioskId).map((kl) => ({
+      const kioskLabels = (await deps.repo.listKioskLabels(kioskId)).map((kl) => ({
         label_id: kl.label_id,
         name: kl.name,
         role: kl.role,
       }));
-      return htmlFragment(renderKioskLabels(kioskId, kioskLabels, deps.repo.listLabels()));
+      return htmlFragment(renderKioskLabels(kioskId, kioskLabels, await deps.repo.listLabels()));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${kioskId}` } });
   });
@@ -1732,21 +1740,21 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const kioskId = Number(getRouterParam(event, "id"));
     const body = await readBody<Record<string, string>>(event);
     const labelId = Number(body?.["label_id"]);
-    deps.repo.detachKioskLabel(kioskId, labelId);
+    await deps.repo.detachKioskLabel(kioskId, labelId);
     if (isHtmxRequest(event)) {
-      const kioskLabels = deps.repo.listKioskLabels(kioskId).map((kl) => ({
+      const kioskLabels = (await deps.repo.listKioskLabels(kioskId)).map((kl) => ({
         label_id: kl.label_id,
         name: kl.name,
         role: kl.role,
       }));
-      return htmlFragment(renderKioskLabels(kioskId, kioskLabels, deps.repo.listLabels()));
+      return htmlFragment(renderKioskLabels(kioskId, kioskLabels, await deps.repo.listLabels()));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${kioskId}` } });
   });
 
-  app.post("/admin/kiosks/:id/delete", (event) => {
+  app.post("/admin/kiosks/:id/delete", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    deps.repo.deleteKiosk(id);
+    await deps.repo.deleteKiosk(id);
     return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
   });
 
@@ -1754,9 +1762,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // These are simple HTML pages that connect to the admin debug WS at
   // /ws/admin/debug/:kioskId and render output. The WS connection is
   // authenticated via the admin's API key.
-  app.get("/admin/kiosks/:id/logs", (event) => {
+  app.get("/admin/kiosks/:id/logs", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const kiosk = deps.repo.getKioskById(id);
+    const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
     const user = event.context.user!;
     // Get or create an API key for the WS connection.
@@ -1802,9 +1810,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       </script></body></html>`);
   });
 
-  app.get("/admin/kiosks/:id/terminal", (event) => {
+  app.get("/admin/kiosks/:id/terminal", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const kiosk = deps.repo.getKioskById(id);
+    const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
     // WS auth: browser sends session cookie automatically on WS upgrade.
     // Coordinator WS endpoint validates via resolveSession.
@@ -1934,8 +1942,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // ---- Layout switch ----------------------------------------------------
-  const emitLayoutChanged = (displayId: number | null, kioskId: number | null, layoutId: number) => {
-    const layout = deps.repo.getLayoutById(layoutId);
+  const emitLayoutChanged = async (displayId: number | null, kioskId: number | null, layoutId: number) => {
+    const layout = await deps.repo.getLayoutById(layoutId);
     deps.nodered.forward("layout.changed", {
       display_id: displayId,
       kiosk_id: kioskId,
@@ -1953,8 +1961,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       layoutId = Number(body?.["layout_id"]);
     }
     if (Number.isFinite(displayId) && Number.isFinite(layoutId)) {
-      const display = deps.repo.getDisplayById(displayId);
-      const attached = deps.repo.listLayoutsForDisplay(displayId);
+      const display = await deps.repo.getDisplayById(displayId);
+      const attached = await deps.repo.listLayoutsForDisplay(displayId);
       const isAttached = attached.some((l) => l.id === layoutId);
       if (display?.kiosk_id && isAttached) {
         getCoordinator().sendToKiosk(display.kiosk_id, {
@@ -1962,7 +1970,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
           display_id: displayId,
           layout_id: layoutId,
         });
-        emitLayoutChanged(displayId, display.kiosk_id, layoutId);
+        await emitLayoutChanged(displayId, display.kiosk_id, layoutId);
       }
     }
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${displayId}` } });
@@ -1971,15 +1979,15 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/displays/:displayId/layout/:layoutId", displayLayoutSwitch);
   app.get("/admin/displays/:displayId/layout/:layoutId", displayLayoutSwitch);
 
-  const displayPower = (event: any, state: "on" | "standby") => {
+  const displayPower = async (event: any, state: "on" | "standby") => {
     const id = Number(getRouterParam(event, "id"));
-    const display = deps.repo.getDisplayById(id);
+    const display = await deps.repo.getDisplayById(id);
     if (display?.kiosk_id) {
       getCoordinator().sendToKiosk(display.kiosk_id, {
         type: state === "on" ? "wake" : "standby",
         display_id: id,
       });
-      deps.repo.updateDisplay(id, {
+      await deps.repo.updateDisplay(id, {
         actual_power_state: state === "on" ? "awake" : "standby",
         actual_power_state_at: new Date().toISOString(),
       } as any);
@@ -1996,19 +2004,19 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/displays/:id/power/wake", (event) => displayPower(event, "on"));
 
   // Node-RED embedded page
-  app.get("/admin/nodered", (event) => {
+  app.get("/admin/nodered", async (event) => {
     const user = event.context.user!;
     return htmlPage(NoderedEmbedPage({ user: user.username }));
   });
 
   // ---- CEC power commands -----------------------------------------------
-  const emitDisplayPower = (kioskId: number, state: "on" | "standby") => {
-    const displays = deps.repo.listDisplaysForKiosk(kioskId);
+  const emitDisplayPower = async (kioskId: number, state: "on" | "standby") => {
+    const displays = await deps.repo.listDisplaysForKiosk(kioskId);
     const displayId = displays[0]?.id ?? null;
     const actual = state === "on" ? "awake" : "standby";
     const at = new Date().toISOString();
     for (const display of displays) {
-      deps.repo.updateDisplay(display.id, {
+      await deps.repo.updateDisplay(display.id, {
         actual_power_state: actual,
         actual_power_state_at: at,
       } as any);
@@ -2021,19 +2029,19 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     });
   };
 
-  app.post("/admin/kiosks/:id/power/standby", (event) => {
+  app.post("/admin/kiosks/:id/power/standby", async (event) => {
     const id = Number(getRouterParam(event, "id"));
     getCoordinator().sendToKiosk(id, { type: "standby" });
-    emitDisplayPower(id, "standby");
-    audit(deps.repo, event as any, "display.standby", { resource_type: "kiosk", resource_id: id });
+    await emitDisplayPower(id, "standby");
+    await audit(deps.repo, event as any, "display.standby", { resource_type: "kiosk", resource_id: id });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
-  app.post("/admin/kiosks/:id/power/wake", (event) => {
+  app.post("/admin/kiosks/:id/power/wake", async (event) => {
     const id = Number(getRouterParam(event, "id"));
     getCoordinator().sendToKiosk(id, { type: "wake" });
-    emitDisplayPower(id, "on");
-    audit(deps.repo, event as any, "display.wake", { resource_type: "kiosk", resource_id: id });
+    await emitDisplayPower(id, "on");
+    await audit(deps.repo, event as any, "display.wake", { resource_type: "kiosk", resource_id: id });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
@@ -2058,43 +2066,46 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // automation clients. List shapes are kept thin (id/name/type/enabled +
   // labels where useful); detail shapes return the full row minus secrets.
 
-  app.get("/api/admin/cameras", (_event) => {
-    const cameras = deps.repo.listCameras();
-    const payload = cameras.map((c) => ({
-      id: c.id,
-      name: c.name,
-      type: c.type,
-      enabled: c.enabled,
-      labels: deps.repo.cameraLabelNames(c.id),
-    }));
+  app.get("/api/admin/cameras", async (_event) => {
+    const cameras = await deps.repo.listCameras();
+    const payload = [];
+    for (const c of cameras) {
+      payload.push({
+        id: c.id,
+        name: c.name,
+        type: c.type,
+        enabled: c.enabled,
+        labels: await deps.repo.cameraLabelNames(c.id),
+      });
+    }
     return jsonResponse({ cameras: payload });
   });
 
-  app.get("/api/admin/cameras/:id", (event) => {
+  app.get("/api/admin/cameras/:id", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const cam = deps.repo.getCameraById(id);
+    const cam = await deps.repo.getCameraById(id);
     if (!cam) return jsonResponse({ error: "not_found" }, 404);
-    const streams = deps.repo.listCameraStreams(id);
+    const streams = await deps.repo.listCameraStreams(id);
     return jsonResponse({
-      camera: { ...cam, labels: deps.repo.cameraLabelNames(id), streams },
+      camera: { ...cam, labels: await deps.repo.cameraLabelNames(id), streams },
     });
   });
 
-  app.get("/api/admin/displays", (_event) => {
-    const displays = deps.repo.listDisplays();
+  app.get("/api/admin/displays", async (_event) => {
+    const displays = await deps.repo.listDisplays();
     return jsonResponse({ displays });
   });
 
-  app.get("/api/admin/displays/:id", (event) => {
+  app.get("/api/admin/displays/:id", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const display = deps.repo.getDisplayById(id);
+    const display = await deps.repo.getDisplayById(id);
     if (!display) return jsonResponse({ error: "not_found" }, 404);
-    const attachedLayouts = deps.repo.listLayoutsForDisplay(id);
+    const attachedLayouts = await deps.repo.listLayoutsForDisplay(id);
     return jsonResponse({ display: { ...display, attached_layouts: attachedLayouts } });
   });
 
-  app.get("/api/admin/kiosks", (_event) => {
-    const kiosks = deps.repo.listKiosks();
+  app.get("/api/admin/kiosks", async (_event) => {
+    const kiosks = await deps.repo.listKiosks();
     const now = Date.now();
     const payload = kiosks.map((k) => ({
       id: k.id,
@@ -2112,12 +2123,12 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return jsonResponse({ kiosks: payload });
   });
 
-  app.get("/api/admin/kiosks/:id", (event) => {
+  app.get("/api/admin/kiosks/:id", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const kiosk = deps.repo.getKioskById(id);
+    const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return jsonResponse({ error: "not_found" }, 404);
-    const displays = deps.repo.listDisplaysForKiosk(id);
-    const labels = deps.repo.listKioskLabels(id).map((kl) => ({
+    const displays = await deps.repo.listDisplaysForKiosk(id);
+    const labels = (await deps.repo.listKioskLabels(id)).map((kl) => ({
       label_id: kl.label_id,
       name: kl.name,
       role: kl.role,
@@ -2125,28 +2136,28 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return jsonResponse({ kiosk: { ...kiosk, displays, labels } });
   });
 
-  app.get("/api/admin/layouts", (_event) => {
-    const layouts = deps.repo.listLayouts();
+  app.get("/api/admin/layouts", async (_event) => {
+    const layouts = await deps.repo.listLayouts();
     return jsonResponse({ layouts });
   });
 
-  app.get("/api/admin/layouts/:id", (event) => {
+  app.get("/api/admin/layouts/:id", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const layout = deps.repo.getLayoutById(id);
+    const layout = await deps.repo.getLayoutById(id);
     if (!layout) return jsonResponse({ error: "not_found" }, 404);
-    const cells = deps.repo.layoutCells(id);
-    const displays = deps.repo.listDisplaysForLayout(id);
+    const cells = await deps.repo.layoutCells(id);
+    const displays = await deps.repo.listDisplaysForLayout(id);
     return jsonResponse({ layout: { ...layout, cells, displays } });
   });
 
-  app.get("/api/admin/entities", (_event) => {
-    const entities = deps.repo.listEntities();
+  app.get("/api/admin/entities", async (_event) => {
+    const entities = await deps.repo.listEntities();
     return jsonResponse({ entities });
   });
 
-  app.get("/api/admin/entities/:id", (event) => {
+  app.get("/api/admin/entities/:id", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const entity = deps.repo.getEntityById(id);
+    const entity = await deps.repo.getEntityById(id);
     if (!entity) return jsonResponse({ error: "not_found" }, 404);
     return jsonResponse({ entity });
   });
@@ -2165,14 +2176,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       return jsonResponse({ error: "invalid_value" }, 400);
     }
     if (layoutId != null) {
-      const attached = deps.repo.listLayoutsForDisplay(id);
+      const attached = await deps.repo.listLayoutsForDisplay(id);
       if (!attached.some((l) => l.id === layoutId)) {
         return jsonResponse({ error: "layout_not_attached" }, 400);
       }
     }
-    deps.repo.updateDisplay(id, { default_layout_id: layoutId } as any);
+    await deps.repo.updateDisplay(id, { default_layout_id: layoutId } as any);
     notifyKiosks();
-    const display = deps.repo.getDisplayById(id);
+    const display = await deps.repo.getDisplayById(id);
     return jsonResponse({ display });
   });
 
@@ -2180,8 +2191,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = Number(getRouterParam(event, "id"));
     const body = (await readBody<Record<string, unknown>>(event)) ?? {};
     const enabled = Boolean(body["value"] ?? body["enabled"]);
-    deps.repo.updateKiosk(id, { enabled } as any);
-    const kiosk = deps.repo.getKioskById(id);
+    await deps.repo.updateKiosk(id, { enabled } as any);
+    const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return jsonResponse({ error: "not_found" }, 404);
     return jsonResponse({ kiosk });
   });
@@ -2190,10 +2201,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = Number(getRouterParam(event, "id"));
     const body = (await readBody<Record<string, unknown>>(event)) ?? {};
     const enabled = Boolean(body["value"] ?? body["enabled"]);
-    deps.repo.updateCamera(id, { enabled } as any);
+    await deps.repo.updateCamera(id, { enabled } as any);
     notifyKiosks();
     deps.nodered.forward("camera.changed", { camera_id: id, event: "updated", source: "server" });
-    const camera = deps.repo.getCameraById(id);
+    const camera = await deps.repo.getCameraById(id);
     if (!camera) return jsonResponse({ error: "not_found" }, 404);
     return jsonResponse({ camera });
   });
@@ -2205,9 +2216,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (value !== "hot" && value !== "normal" && value !== "cold") {
       return jsonResponse({ error: "invalid_priority" }, 400);
     }
-    deps.repo.updateLayout(id, { priority: value } as any);
+    await deps.repo.updateLayout(id, { priority: value } as any);
     notifyKiosks();
-    const layout = deps.repo.getLayoutById(id);
+    const layout = await deps.repo.getLayoutById(id);
     if (!layout) return jsonResponse({ error: "not_found" }, 404);
     return jsonResponse({ layout });
   });
@@ -2219,13 +2230,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (!name || name.length > 128) {
       return jsonResponse({ error: "invalid_name" }, 400);
     }
-    const existing = deps.repo.getEntityByName(name);
+    const existing = await deps.repo.getEntityByName(name);
     if (existing && existing.id !== id) {
       return jsonResponse({ error: "name_in_use" }, 400);
     }
-    deps.repo.updateEntity(id, { name });
+    await deps.repo.updateEntity(id, { name });
     notifyKiosks();
-    const entity = deps.repo.getEntityById(id);
+    const entity = await deps.repo.getEntityById(id);
     if (!entity) return jsonResponse({ error: "not_found" }, 404);
     return jsonResponse({ entity });
   });
@@ -2256,25 +2267,25 @@ async function syncDashboardsFromNodered(
   let added = 0;
   let updated = 0;
   for (const tab of tabs) {
-    const existing = deps.repo.getEntityForDashboard(tab.id);
+    const existing = await deps.repo.getEntityForDashboard(tab.id);
     if (existing) {
       if (existing.name !== tab.name) {
         // Avoid name collisions with non-dashboard entities of the same name.
-        const collision = deps.repo.getEntityByName(tab.name);
+        const collision = await deps.repo.getEntityByName(tab.name);
         const safeName = collision && collision.id !== existing.id
           ? `${tab.name} (dash ${tab.id.slice(0, 6)})`
           : tab.name;
-        deps.repo.updateEntity(existing.id, { name: safeName });
+        await deps.repo.updateEntity(existing.id, { name: safeName });
         updated += 1;
       }
       continue;
     }
     // New dashboard tab — insert.
     let name = tab.name || `Dashboard ${tab.id.slice(0, 6)}`;
-    if (deps.repo.getEntityByName(name)) {
+    if (await deps.repo.getEntityByName(name)) {
       name = `${name} (dash ${tab.id.slice(0, 6)})`;
     }
-    deps.repo.createEntity({
+    await deps.repo.createEntity({
       name,
       type: "dashboard",
       dashboard_id: tab.id,

@@ -265,7 +265,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           if (!authed && cookieHeader) {
             const cookieVal = parseCookieValue(cookieHeader, cookieName);
             if (cookieVal) {
-              const result = auth.resolveSession(cookieVal);
+              const result = await auth.resolveSession(cookieVal);
               if (result) authed = true;
             }
           }
@@ -317,7 +317,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           socket.destroy();
           return;
         }
-        const kioskData = repo.getKioskById(kiosk.id);
+        const kioskData = await repo.getKioskById(kiosk.id);
         if (!kioskData) {
           socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
           socket.destroy();

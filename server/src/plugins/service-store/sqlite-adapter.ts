@@ -22,6 +22,15 @@ export class SqliteAdapter implements DbAdapter {
     this.db.exec("PRAGMA synchronous = NORMAL");
   }
 
+  /** Wrap an already-opened DatabaseSync (e.g. after migrations ran). */
+  static fromExisting(db: DatabaseSync): SqliteAdapter {
+    const adapter = Object.create(SqliteAdapter.prototype) as SqliteAdapter;
+    (adapter as any).db = db;
+    (adapter as any).stmts = new Map();
+    (adapter as any).txDepth = 0;
+    return adapter;
+  }
+
   private prep(sql: string): StatementSync {
     let s = this.stmts.get(sql);
     if (!s) {

@@ -25,17 +25,17 @@ function clamp(n: number, lo: number, hi: number): number {
 
 export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
   // ---- List page -----------------------------------------------------------
-  app.get("/admin/os-updates", (event) => {
+  app.get("/admin/os-updates", async (event) => {
     const user = event.context.user!;
-    const releases = deps.repo.listOsUpdateReleases();
+    const releases = await deps.repo.listOsUpdateReleases();
     return htmlPage(OsUpdatePage({ user: user.username, releases }));
   });
 
   // ---- Yank ---------------------------------------------------------------
-  app.post("/admin/os-updates/:id/yank", (event) => {
+  app.post("/admin/os-updates/:id/yank", async (event) => {
     const id = String(getRouterParam(event, "id"));
-    deps.repo.yankOsUpdateRelease(id);
-    audit(deps.repo, event as any, "os_update.yank", {
+    await deps.repo.yankOsUpdateRelease(id);
+    await audit(deps.repo, event as any, "os_update.yank", {
       resource_type: "os_update_release",
       resource_id: id,
     });
@@ -51,15 +51,15 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
     if (!ALLOWED_CHANNELS.has(channelRaw)) {
       throw createError({ statusCode: 400, statusMessage: "invalid channel" });
     }
-    deps.repo.setKioskOsUpdatePref(id, {
+    await deps.repo.setKioskOsUpdatePref(id, {
       channel: channelRaw,
       target_version: targetRaw ? targetRaw : null,
     });
-    const k = deps.repo.getKioskById(id);
+    const k = await deps.repo.getKioskById(id);
     if (!k) {
       return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
     }
-    const releases = deps.repo.listOsUpdateReleases();
+    const releases = await deps.repo.listOsUpdateReleases();
     return htmlFragment(KioskOsUpdatePanel({ kiosk: k, releases }));
   });
 
@@ -72,11 +72,11 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // ---- Rollouts -----------------------------------------------------------
-  app.get("/admin/os-updates/rollouts", (event) => {
+  app.get("/admin/os-updates/rollouts", async (event) => {
     const user = event.context.user!;
-    const rollouts = deps.repo.listOsUpdateRollouts();
-    const releases = deps.repo.listOsUpdateReleases();
-    const kiosks = deps.repo.listKiosks();
+    const rollouts = await deps.repo.listOsUpdateRollouts();
+    const releases = await deps.repo.listOsUpdateReleases();
+    const kiosks = await deps.repo.listKiosks();
     return htmlPage(OsUpdateRolloutsPage({
       user: user.username,
       rollouts,
@@ -89,7 +89,7 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
     const body = await readBody<Record<string, string | string[]>>(event);
     const releaseId = String(body?.["release_id"] ?? "");
     if (!releaseId) throw createError({ statusCode: 400, statusMessage: "release_id required" });
-    const release = deps.repo.getOsUpdateRelease(releaseId);
+    const release = await deps.repo.getOsUpdateRelease(releaseId);
     if (!release) throw createError({ statusCode: 404, statusMessage: "release not found" });
     const percentage = clamp(Number(body?.["percentage"] ?? 100), 1, 100);
     const targetsRaw = body?.["target_kiosk_ids"];
@@ -99,15 +99,15 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
         ? targetsRaw.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n))
         : [];
     const user = event.context.user!;
-    const rollout = deps.repo.createOsUpdateRollout({
+    const rollout = await deps.repo.createOsUpdateRollout({
       id: randomUUID(),
       release_id: releaseId,
       target_kiosk_ids: targets,
       percentage,
       created_by: user.id ?? null,
     });
-    deps.repo.updateOsUpdateRolloutState(rollout.id, "active");
-    audit(deps.repo, event as any, "os_update.rollout.create", {
+    await deps.repo.updateOsUpdateRolloutState(rollout.id, "active");
+    await audit(deps.repo, event as any, "os_update.rollout.create", {
       resource_type: "os_update_rollout",
       resource_id: rollout.id,
       metadata: { release_id: releaseId, percentage, target_count: targets.length },
@@ -122,7 +122,7 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
     if (state !== "paused" && state !== "active" && state !== "complete") {
       throw createError({ statusCode: 400, statusMessage: "invalid state" });
     }
-    deps.repo.updateOsUpdateRolloutState(id, state);
+    await deps.repo.updateOsUpdateRolloutState(id, state);
     return new Response(null, { status: 302, headers: { location: "/admin/os-updates/rollouts" } });
   });
 
@@ -165,7 +165,7 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
 
     let release;
     try {
-      release = deps.repo.createOsUpdateRelease({
+      release = await deps.repo.createOsUpdateRelease({
         id: randomUUID(),
         version,
         channel,
@@ -181,7 +181,7 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
       throw createError({ statusCode: 409, statusMessage: (err as Error).message });
     }
 
-    audit(deps.repo, event as any, "os_update.import", {
+    await audit(deps.repo, event as any, "os_update.import", {
       resource_type: "os_update_release",
       resource_id: release.id,
       metadata: {

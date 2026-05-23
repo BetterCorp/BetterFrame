@@ -106,13 +106,13 @@ export interface KioskBundle {
   version: string;
 }
 
-export function generateBundle(
+export async function generateBundle(
   repo: Repository,
   secrets: SecretsApi,
   kioskId: number,
   clusterKey: string | undefined,
-): KioskBundle | null {
-  const kiosk = repo.getKioskById(kioskId);
+): Promise<KioskBundle | null> {
+  const kiosk = await repo.getKioskById(kioskId);
   if (!kiosk) return null;
 
   // Per-kiosk encryption key (preferred) — decrypt from server storage.
@@ -126,11 +126,11 @@ export function generateBundle(
   }
 
   // Find all displays for this kiosk (displays now point to kiosks via kiosk_id)
-  const kioskDisplays = repo.listDisplaysForKiosk(kioskId);
+  const kioskDisplays = await repo.listDisplaysForKiosk(kioskId);
   // Fall back to legacy kiosk.display_id if no displays point to this kiosk yet
   const allDisplays = kioskDisplays.length > 0
     ? kioskDisplays
-    : (kiosk.display_id ? [repo.getDisplayById(kiosk.display_id)].filter((d): d is NonNullable<typeof d> => d != null) : []);
+    : (kiosk.display_id ? [await repo.getDisplayById(kiosk.display_id)].filter((d): d is NonNullable<typeof d> => d != null) : []);
 
   // Admin can disable a display — kiosk must never open a window on it.
   const displays = allDisplays.filter((d) => d.is_enabled);
@@ -139,14 +139,15 @@ export function generateBundle(
   // Collect camera IDs across ALL displays' layouts (de-duped).
   const allLayoutIds = new Set<number>();
   for (const d of displays) {
-    for (const l of repo.layoutsForDisplayId(d.id)) allLayoutIds.add(l.id);
+    for (const l of await repo.layoutsForDisplayId(d.id)) allLayoutIds.add(l.id);
   }
-  const cameras = repo.camerasForLayoutIds([...allLayoutIds]);
+  const cameras = await repo.camerasForLayoutIds([...allLayoutIds]);
 
-  function buildLayouts(displayId: number, defaultLayoutId: number | null): BundleLayout[] {
-    const layouts = repo.layoutsForDisplayId(displayId);
-    return layouts.map((l) => {
-      const cells = repo.layoutCells(l.id);
+  async function buildLayouts(displayId: number, defaultLayoutId: number | null): Promise<BundleLayout[]> {
+    const layouts = await repo.layoutsForDisplayId(displayId);
+    const result: BundleLayout[] = [];
+    for (const l of layouts) {
+      const cells = await repo.layoutCells(l.id);
       let gridCols = 1;
       let gridRows = 1;
       for (const c of cells) {
@@ -155,7 +156,46 @@ export function generateBundle(
         if (right > gridCols) gridCols = right;
         if (bottom > gridRows) gridRows = bottom;
       }
-      return {
+      const bundleCells: BundleCell[] = [];
+      for (const c of cells) {
+        // If the cell has an entity, prefer its current content so admin
+        // edits to the entity propagate without forcing a cell-touch. The
+        // bundle still ships the legacy camera_id/web_url/html_content shape
+        // so the existing Rust kiosk consumes it unchanged.
+        let contentType = c.content_type;
+        let cameraId = c.camera_id;
+        let webUrl = c.web_url;
+        let htmlContent = c.html_content;
+        if (c.entity_id != null) {
+          const ent = await repo.getEntityById(c.entity_id);
+          if (ent) {
+            // Dashboard entities are surfaced to the kiosk as `web` cells
+            // pointing at /dash/<dashboard_id> — kiosk WebKit handles them
+            // identically to user-supplied web cells.
+            contentType = ent.type === "dashboard" ? "web" : ent.type;
+            cameraId = ent.type === "camera" ? ent.camera_id : null;
+            webUrl =
+              ent.type === "web" ? ent.web_url :
+              ent.type === "dashboard" && ent.dashboard_id ? `/dash/${ent.dashboard_id}` :
+              null;
+            htmlContent = ent.type === "html" ? ent.html_content : null;
+          }
+        }
+        bundleCells.push({
+          row: c.row,
+          col: c.col,
+          row_span: c.row_span,
+          col_span: c.col_span,
+          content_type: contentType,
+          camera_id: cameraId,
+          stream_selector: c.stream_selector,
+          web_url: webUrl,
+          html_content: htmlContent,
+          cooling_timeout_seconds: c.cooling_timeout_seconds,
+          fit: c.fit,
+        });
+      }
+      result.push({
         id: l.id,
         name: l.name,
         grid_cols: gridCols,
@@ -165,61 +205,29 @@ export function generateBundle(
         preload_camera_ids: l.preload_camera_ids,
         resets_idle_timer: l.resets_idle_timer,
         is_default: defaultLayoutId === l.id,
-        cells: cells.map((c) => {
-          // If the cell has an entity, prefer its current content so admin
-          // edits to the entity propagate without forcing a cell-touch. The
-          // bundle still ships the legacy camera_id/web_url/html_content shape
-          // so the existing Rust kiosk consumes it unchanged.
-          let contentType = c.content_type;
-          let cameraId = c.camera_id;
-          let webUrl = c.web_url;
-          let htmlContent = c.html_content;
-          if (c.entity_id != null) {
-            const ent = repo.getEntityById(c.entity_id);
-            if (ent) {
-              // Dashboard entities are surfaced to the kiosk as `web` cells
-              // pointing at /dash/<dashboard_id> — kiosk WebKit handles them
-              // identically to user-supplied web cells.
-              contentType = ent.type === "dashboard" ? "web" : ent.type;
-              cameraId = ent.type === "camera" ? ent.camera_id : null;
-              webUrl =
-                ent.type === "web" ? ent.web_url :
-                ent.type === "dashboard" && ent.dashboard_id ? `/dash/${ent.dashboard_id}` :
-                null;
-              htmlContent = ent.type === "html" ? ent.html_content : null;
-            }
-          }
-          return {
-            row: c.row,
-            col: c.col,
-            row_span: c.row_span,
-            col_span: c.col_span,
-            content_type: contentType,
-            camera_id: cameraId,
-            stream_selector: c.stream_selector,
-            web_url: webUrl,
-            html_content: htmlContent,
-            cooling_timeout_seconds: c.cooling_timeout_seconds,
-            fit: c.fit,
-          };
-        }),
-      };
+        cells: bundleCells,
+      });
+    }
+    return result;
+  }
+
+  const bundleDisplays: BundleDisplayWithLayouts[] = [];
+  for (const display of displays) {
+    bundleDisplays.push({
+      id: display.id,
+      name: display.name,
+      width_px: display.width_px,
+      height_px: display.height_px,
+      idle_timeout_seconds: display.idle_timeout_seconds,
+      sleep_timeout_seconds: display.sleep_timeout_seconds,
+      default_layout_id: display.default_layout_id,
+      layouts: await buildLayouts(display.id, display.default_layout_id),
     });
   }
 
-  const bundleDisplays: BundleDisplayWithLayouts[] = displays.map((display) => ({
-    id: display.id,
-    name: display.name,
-    width_px: display.width_px,
-    height_px: display.height_px,
-    idle_timeout_seconds: display.idle_timeout_seconds,
-    sleep_timeout_seconds: display.sleep_timeout_seconds,
-    default_layout_id: display.default_layout_id,
-    layouts: buildLayouts(display.id, display.default_layout_id),
-  }));
-
-  const bundleCameras: BundleCamera[] = cameras.map((cam) => {
-    const streams = repo.listCameraStreams(cam.id);
+  const bundleCameras: BundleCamera[] = [];
+  for (const cam of cameras) {
+    const streams = await repo.listCameraStreams(cam.id);
     const effectiveStreams = streams.length > 0 ? streams : (
       cam.type === "rtsp" && cam.rtsp_url
         ? [{
@@ -243,7 +251,7 @@ export function generateBundle(
     if (cam.onvif_password && encryptKey) {
       onvifPwEncrypted = secrets.encryptForCluster(cam.onvif_password, encryptKey);
     }
-    return {
+    bundleCameras.push({
       id: cam.id,
       name: cam.name,
       type: cam.type,
@@ -265,10 +273,10 @@ export function generateBundle(
         encoding: s.encoding,
         framerate: s.framerate,
       })),
-    };
-  });
+    });
+  }
 
-  const gpioBindings: BundleGpioBinding[] = repo.listGpioBindings(kioskId).map((g) => ({
+  const gpioBindings: BundleGpioBinding[] = (await repo.listGpioBindings(kioskId)).map((g) => ({
     id: g.id,
     chip: g.chip,
     pin: g.pin,

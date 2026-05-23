@@ -32,9 +32,9 @@ const ALLOWED_ARCHES = new Set([
 
 export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
   // ---- List page -----------------------------------------------------------
-  app.get("/admin/firmware", (event) => {
+  app.get("/admin/firmware", async (event) => {
     const user = event.context.user!;
-    const releases = deps.repo.listFirmwareReleases();
+    const releases = await deps.repo.listFirmwareReleases();
     return htmlPage(FirmwarePage({
       user: user.username,
       releases,
@@ -70,7 +70,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     const { sha256, signature } = deps.firmware.signBlob(buf);
     const artifactPath = await deps.firmware.storeBlob(buf, sha256);
 
-    const release = deps.repo.createFirmwareRelease({
+    const release = await deps.repo.createFirmwareRelease({
       id: randomUUID(),
       version,
       channel: channelRaw as FirmwareChannel,
@@ -82,7 +82,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
       release_notes: releaseNotes,
       uploaded_by: user.id,
     });
-    audit(deps.repo, event as any, "firmware.upload", {
+    await audit(deps.repo, event as any, "firmware.upload", {
       resource_type: "firmware_release",
       resource_id: release.id,
       metadata: { version, channel: channelRaw, arch, sha256, size: buf.length },
@@ -123,7 +123,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     const { sha256, signature } = deps.firmware.signBlob(buf);
     const artifactPath = await deps.firmware.storeBlob(buf, sha256);
     const id = randomUUID();
-    const release = deps.repo.createFirmwareRelease({
+    const release = await deps.repo.createFirmwareRelease({
       id,
       version: body.version,
       channel: body.channel,
@@ -140,10 +140,10 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // ---- Yank ---------------------------------------------------------------
-  app.post("/admin/firmware/:id/yank", (event) => {
+  app.post("/admin/firmware/:id/yank", async (event) => {
     const id = String(getRouterParam(event, "id"));
-    deps.repo.yankFirmwareRelease(id);
-    audit(deps.repo, event as any, "firmware.yank", {
+    await deps.repo.yankFirmwareRelease(id);
+    await audit(deps.repo, event as any, "firmware.yank", {
       resource_type: "firmware_release",
       resource_id: id,
     });
@@ -160,15 +160,15 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     if (!ALLOWED_CHANNELS.has(channelRaw)) {
       throw createError({ statusCode: 400, statusMessage: "invalid channel" });
     }
-    deps.repo.setKioskFirmwarePref(id, {
+    await deps.repo.setKioskFirmwarePref(id, {
       channel: channelRaw,
       target_version: targetRaw ? targetRaw : null,
     });
-    const k = deps.repo.getKioskById(id);
+    const k = await deps.repo.getKioskById(id);
     if (!k) {
       return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
     }
-    const releases = deps.repo.listFirmwareReleases();
+    const releases = await deps.repo.listFirmwareReleases();
     return htmlFragment(KioskFirmwarePanel({ kiosk: k, releases }));
   });
 
@@ -183,11 +183,11 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Rollouts -----------------------------------------------------------
 
-  app.get("/admin/firmware/rollouts", (event) => {
+  app.get("/admin/firmware/rollouts", async (event) => {
     const user = event.context.user!;
-    const rollouts = deps.repo.listFirmwareRollouts();
-    const releases = deps.repo.listFirmwareReleases();
-    const kiosks = deps.repo.listKiosks();
+    const rollouts = await deps.repo.listFirmwareRollouts();
+    const releases = await deps.repo.listFirmwareReleases();
+    const kiosks = await deps.repo.listKiosks();
     return htmlPage(FirmwareRolloutsPage({
       user: user.username,
       rollouts,
@@ -200,7 +200,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     const body = await readBody<Record<string, string | string[]>>(event);
     const releaseId = String(body?.["release_id"] ?? "");
     if (!releaseId) throw createError({ statusCode: 400, statusMessage: "release_id required" });
-    const release = deps.repo.getFirmwareRelease(releaseId);
+    const release = await deps.repo.getFirmwareRelease(releaseId);
     if (!release) throw createError({ statusCode: 404, statusMessage: "release not found" });
     const percentage = clamp(Number(body?.["percentage"] ?? 100), 1, 100);
     const targetsRaw = body?.["target_kiosk_ids"];
@@ -210,15 +210,15 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
         ? targetsRaw.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n))
         : [];
     const user = event.context.user!;
-    const rollout = deps.repo.createFirmwareRollout({
+    const rollout = await deps.repo.createFirmwareRollout({
       id: randomUUID(),
       release_id: releaseId,
       target_kiosk_ids: targets,
       percentage,
       created_by: user.id ?? null,
     });
-    deps.repo.updateFirmwareRolloutState(rollout.id, "active");
-    audit(deps.repo, event as any, "firmware.rollout.create", {
+    await deps.repo.updateFirmwareRolloutState(rollout.id, "active");
+    await audit(deps.repo, event as any, "firmware.rollout.create", {
       resource_type: "firmware_rollout",
       resource_id: rollout.id,
       metadata: { release_id: releaseId, percentage, target_count: targets.length },
@@ -226,7 +226,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     // Bump every targeted kiosk to check now (best-effort over WS).
     const coord = getCoordinator();
     if (targets.length === 0) {
-      const allKiosks = deps.repo.listKiosks();
+      const allKiosks = await deps.repo.listKiosks();
       for (const k of allKiosks) coord.sendToKiosk(k.id, { type: "firmware_check" });
     } else {
       for (const id of targets) coord.sendToKiosk(id, { type: "firmware_check" });
@@ -241,7 +241,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     if (state !== "paused" && state !== "active" && state !== "complete") {
       throw createError({ statusCode: 400, statusMessage: "invalid state" });
     }
-    deps.repo.updateFirmwareRolloutState(id, state);
+    await deps.repo.updateFirmwareRolloutState(id, state);
     return new Response(null, { status: 302, headers: { location: "/admin/firmware/rollouts" } });
   });
 }

@@ -7,15 +7,15 @@ import type { AdminDeps } from "./index.js";
 import { SetupPage } from "../../web-templates/auth-pages.js";
 
 export function registerSetupRoutes(app: H3, deps: AdminDeps): void {
-  app.get("/setup", () => {
-    if (deps.repo.isSetupComplete()) {
+  app.get("/setup", async () => {
+    if (await deps.repo.isSetupComplete()) {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
     return htmlPage(SetupPage({}));
   });
 
   app.post("/setup", async (event) => {
-    if (deps.repo.isSetupComplete()) {
+    if (await deps.repo.isSetupComplete()) {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
 
@@ -38,17 +38,17 @@ export function registerSetupRoutes(app: H3, deps: AdminDeps): void {
     }
 
     const hash = await deps.auth.hashPassword(password);
-    deps.repo.createUser({ username, password_hash: hash, role: "admin" });
+    await deps.repo.createUser({ username, password_hash: hash, role: "admin" });
 
     const clusterKey = deps.secrets.generateClusterKey();
     const encryptedCluster = deps.secrets.encryptString(clusterKey, "cluster");
-    deps.repo.setSetupExtra("cluster_key_encrypted", encryptedCluster);
-    deps.repo.markClusterKeyProvisioned();
+    await deps.repo.setSetupExtra("cluster_key_encrypted", encryptedCluster);
+    await deps.repo.markClusterKeyProvisioned();
 
     // Setup only creates admin user + cluster key.
     // Displays are created when kiosks are paired (kiosk reports HDMI ports).
     // Layouts are created by admin after pairing.
-    deps.repo.markSetupComplete();
+    await deps.repo.markSetupComplete();
 
     return new Response(null, {
       status: 302,

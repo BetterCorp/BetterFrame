@@ -27,7 +27,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       ?? getRequestHeader(event, "x-forwarded-for")?.split(",")[0]?.trim()
       ?? "anon";
     if (!loginGuard.take(`login:${ip}`)) {
-      audit(deps.repo, event as any, "user.login", {
+      await audit(deps.repo, event as any, "user.login", {
         result: "failed",
         metadata: { reason: "rate_limited", ip },
       });
@@ -45,7 +45,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       return htmlPage(LoginPage({ error: "Username and password required.", username }));
     }
 
-    const user = deps.repo.getUserByUsername(username);
+    const user = await deps.repo.getUserByUsername(username);
     if (!user || !user.is_active) {
       return htmlPage(LoginPage({ error: "Invalid credentials.", username }));
     }
@@ -64,8 +64,8 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       if (count >= deps.auth.config.loginLockoutThreshold) {
         patch["locked_until"] = new Date(Date.now() + deps.auth.config.loginLockoutSeconds * 1000).toISOString();
       }
-      deps.repo.updateUser(user.id, patch);
-      audit(deps.repo, event as any, "user.login", {
+      await deps.repo.updateUser(user.id, patch);
+      await audit(deps.repo, event as any, "user.login", {
         result: "failed",
         actor_type: "system",
         actor_label: username,
@@ -74,13 +74,13 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       return htmlPage(LoginPage({ error: "Invalid credentials.", username }));
     }
 
-    deps.repo.updateUser(user.id, {
+    await deps.repo.updateUser(user.id, {
       failed_login_count: 0,
       locked_until: null,
       last_login_at: new Date().toISOString(),
     });
 
-    audit(deps.repo, event as any, "user.login", {
+    await audit(deps.repo, event as any, "user.login", {
       actor_type: "user",
       actor_id: user.id,
       actor_label: user.username,
@@ -106,12 +106,12 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- TOTP -----------------------------------------------------------------
 
-  app.get("/auth/totp", (event) => {
+  app.get("/auth/totp", async (event) => {
     const cookie = getCookie(event, deps.cookieName);
     if (!cookie) {
       return new Response(null, { status: 302, headers: { location: "/auth/login" } });
     }
-    const resolved = deps.auth.resolveSession(cookie);
+    const resolved = await deps.auth.resolveSession(cookie);
     if (!resolved || !resolved.session.totp_pending) {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
@@ -123,7 +123,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
     if (!cookie) {
       return new Response(null, { status: 302, headers: { location: "/auth/login" } });
     }
-    const resolved = deps.auth.resolveSession(cookie);
+    const resolved = await deps.auth.resolveSession(cookie);
     if (!resolved || !resolved.session.totp_pending) {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
@@ -146,18 +146,18 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       return htmlPage(TotpPage({ error: "Invalid code. Try again." }));
     }
 
-    deps.repo.setSessionTotpPending(session.id, false);
+    await deps.repo.setSessionTotpPending(session.id, false);
     return new Response(null, { status: 302, headers: { location: "/admin/" } });
   });
 
   // ---- Recovery code --------------------------------------------------------
 
-  app.get("/auth/recovery", (event) => {
+  app.get("/auth/recovery", async (event) => {
     const cookie = getCookie(event, deps.cookieName);
     if (!cookie) {
       return new Response(null, { status: 302, headers: { location: "/auth/login" } });
     }
-    const resolved = deps.auth.resolveSession(cookie);
+    const resolved = await deps.auth.resolveSession(cookie);
     if (!resolved || !resolved.session.totp_pending) {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
@@ -169,7 +169,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
     if (!cookie) {
       return new Response(null, { status: 302, headers: { location: "/auth/login" } });
     }
-    const resolved = deps.auth.resolveSession(cookie);
+    const resolved = await deps.auth.resolveSession(cookie);
     if (!resolved || !resolved.session.totp_pending) {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
@@ -189,22 +189,22 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       return htmlPage(RecoveryPage({ error: "Invalid recovery code." }));
     }
 
-    deps.repo.updateUser(user.id, {
+    await deps.repo.updateUser(user.id, {
       recovery_codes_hashed: result.remaining,
     });
 
-    deps.repo.setSessionTotpPending(session.id, false);
+    await deps.repo.setSessionTotpPending(session.id, false);
     return new Response(null, { status: 302, headers: { location: "/admin/" } });
   });
 
   // ---- Logout ---------------------------------------------------------------
 
-  app.post("/auth/logout", (event) => {
+  app.post("/auth/logout", async (event) => {
     const cookie = getCookie(event, deps.cookieName);
     if (cookie) {
-      const resolved = deps.auth.resolveSession(cookie);
+      const resolved = await deps.auth.resolveSession(cookie);
       if (resolved) {
-        deps.auth.revokeSession(resolved.session.id);
+        await deps.auth.revokeSession(resolved.session.id);
       }
     }
     return redirectClearCookie("/auth/login", deps.cookieName);

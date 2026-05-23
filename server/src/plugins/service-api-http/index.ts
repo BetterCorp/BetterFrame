@@ -195,8 +195,8 @@ function extractBearerToken(event: any): string | null {
   return null;
 }
 
-function getClusterKey(repo: Repository, secrets: SecretsApi): string | undefined {
-  const enc = repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
+async function getClusterKey(repo: Repository, secrets: SecretsApi): Promise<string | undefined> {
+  const enc = await repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
   if (!enc) return undefined;
   return secrets.decryptString(enc, "cluster");
 }
@@ -230,7 +230,7 @@ function registerPairingRoutes(
       managed_image?: boolean;
     }>(event);
 
-    const result = initiatePairing(repo, {
+    const result = await initiatePairing(repo, {
       proposedName: body?.proposed_name ?? null,
       hardwareModel: body?.hardware_model ?? null,
       capabilities: body?.capabilities ?? [],
@@ -254,7 +254,7 @@ function registerPairingRoutes(
     const code = (body?.code ?? "").trim().toUpperCase();
     if (!code) throw createError({ statusCode: 400, statusMessage: "code required" });
 
-    const result = claimPairing(repo, code);
+    const result = await claimPairing(repo, code);
     if (result.status === "pending") {
       return new Response(JSON.stringify({ status: "pending" }), {
         status: 202,
@@ -296,8 +296,8 @@ function registerKioskRoutes(
     const kiosk = await auth.verifyKioskKey(token);
     if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
 
-    const clusterKey = getClusterKey(repo, secrets);
-    const bundle = generateBundle(repo, secrets, kiosk.id, clusterKey);
+    const clusterKey = await getClusterKey(repo, secrets);
+    const bundle = await generateBundle(repo, secrets, kiosk.id, clusterKey);
     if (!bundle) throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
 
     // Content-hash ETag: kiosk sends If-None-Match on subsequent fetches.
@@ -365,7 +365,7 @@ function registerKioskRoutes(
       ?? getRequestHeader(event, "x-forwarded-for")?.split(",")[0]?.trim()
       ?? null;
 
-    repo.touchKiosk(kiosk.id, {
+    await repo.touchKiosk(kiosk.id, {
       bundle_version: body?.bundle_version ?? null,
       kiosk_app_version: body?.kiosk_app_version ?? null,
       os_version: body?.os_version ?? null,
@@ -391,7 +391,7 @@ function registerKioskRoutes(
     // applied. Persist for the admin UI to render. Error string clears on a
     // successful apply (kiosk omits it). verifyKioskKey returns just {id};
     // re-read the full row to check the managed_image flag.
-    const kioskFull = repo.getKioskById(kiosk.id);
+    const kioskFull = await repo.getKioskById(kiosk.id);
     if (kioskFull?.managed_image && typeof body?.managed_config_applied_version === "number") {
       const patch: Record<string, unknown> = {
         managed_config_applied_version: body.managed_config_applied_version,
@@ -400,7 +400,7 @@ function registerKioskRoutes(
       if (body.managed_config_error !== undefined) {
         patch["managed_config_error"] = body.managed_config_error ?? null;
       }
-      repo.updateKiosk(kiosk.id, patch as any);
+      await repo.updateKiosk(kiosk.id, patch as any);
     }
 
     // Mirror to MQTT bridge (no-op when BF_MQTT_URL unset).
@@ -423,7 +423,7 @@ function registerKioskRoutes(
 
     // Sync displays reported by the kiosk
     if (Array.isArray(body?.displays)) {
-      const existing = repo.listDisplaysForKiosk(kiosk.id);
+      const existing = await repo.listDisplaysForKiosk(kiosk.id);
       const seenDisplayIds = new Set<number>();
       for (const [position, reported] of body.displays.entries()) {
         const reportedIndex = Number.isInteger(reported.index) && reported.index! >= 0
@@ -445,7 +445,7 @@ function registerKioskRoutes(
             || match.height_px !== reported.height_px
             || (powerState != null && match.actual_power_state !== powerState)
           ) {
-            repo.updateDisplay(match.id, {
+            await repo.updateDisplay(match.id, {
               name: reported.name,
               index: reportedIndex,
               width_px: reported.width_px,
@@ -458,7 +458,7 @@ function registerKioskRoutes(
           }
         } else {
           // New display — create it
-          const created = repo.createDisplayForKiosk(kiosk.id, {
+          const created = await repo.createDisplayForKiosk(kiosk.id, {
             name: reported.name,
             index: reportedIndex,
             width_px: reported.width_px,
@@ -470,7 +470,7 @@ function registerKioskRoutes(
               ? "unknown"
               : null;
           if (powerState != null) {
-            repo.updateDisplay(created.id, {
+            await repo.updateDisplay(created.id, {
               actual_power_state: powerState,
               actual_power_state_at: new Date().toISOString(),
             } as any);
@@ -481,14 +481,14 @@ function registerKioskRoutes(
       for (const display of existing) {
         if (seenDisplayIds.has(display.id) || !display.is_enabled) continue;
         if (!display.name.endsWith(" HDMI-0")) continue;
-        if (repo.listLayoutsForDisplay(display.id).length > 0) continue;
-        repo.updateDisplay(display.id, { is_enabled: false } as any);
+        if ((await repo.listLayoutsForDisplay(display.id)).length > 0) continue;
+        await repo.updateDisplay(display.id, { is_enabled: false } as any);
       }
     }
 
     // Re-read kiosk so we see the freshly-persisted applied_version above when
     // computing whether the server still has a newer config to deliver.
-    const fresh = repo.getKioskById(kiosk.id);
+    const fresh = await repo.getKioskById(kiosk.id);
     let pendingConfig: { version: number; config: unknown } | undefined;
     if (
       fresh?.managed_image
@@ -552,7 +552,7 @@ function registerKioskRoutes(
       }
     }
 
-    const eventId = repo.insertEvent({
+    const eventId = await repo.insertEvent({
       source_kiosk_id: kiosk.id,
       source_camera_id: body.camera_id ?? null,
       source_type: (body.source_type as any) ?? "system",
@@ -569,7 +569,7 @@ function registerKioskRoutes(
       const layoutId = Number(body.payload?.["layout_id"]);
       if (Number.isInteger(displayId) && Number.isInteger(layoutId)) {
         try {
-          repo.updateDisplay(displayId, { active_layout_id: layoutId } as any);
+          await repo.updateDisplay(displayId, { active_layout_id: layoutId } as any);
         } catch {
           // Display might not exist; layout.changed is best-effort telemetry.
         }
@@ -588,7 +588,7 @@ function registerKioskRoutes(
       "display.power.changed",
       "camera.changed",
     ]);
-    const markForwarded = () => repo.markEventForwarded(eventId);
+    const markForwarded = () => { repo.markEventForwarded(eventId); };
     if (flatTopics.has(body.topic)) {
       const out = { kiosk_id: kiosk.id, ...(body.payload ?? {}), source: "kiosk" };
       nodered.forward(body.topic, out, markForwarded);
@@ -641,7 +641,7 @@ function registerKioskRoutes(
         logged_at: e.logged_at,
       }));
 
-    const count = repo.insertKioskLogs(kiosk.id, entries);
+    const count = await repo.insertKioskLogs(kiosk.id, entries);
     return { ok: true, count };
   });
 
@@ -664,7 +664,7 @@ function registerKioskRoutes(
     if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
     const verified = await auth.verifyKioskKey(token);
     if (!verified) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
-    const kiosk = repo.getKioskById(verified.id);
+    const kiosk = await repo.getKioskById(verified.id);
     if (!kiosk) throw createError({ statusCode: 404, statusMessage: "kiosk not found" });
 
     const url = new URL(event.req.url);
@@ -677,15 +677,15 @@ function registerKioskRoutes(
     let release = null;
     // Explicit per-kiosk pin wins over all rollout / channel selection.
     if (kiosk.firmware_target_version) {
-      release = repo.getFirmwareReleaseByVersionArch(kiosk.firmware_target_version, arch);
+      release = await repo.getFirmwareReleaseByVersionArch(kiosk.firmware_target_version, arch);
       if (release?.yanked_at) release = null;
     }
     // Active rollouts: most-recent matching, with bucket eligibility.
     if (!release) {
-      const rollouts = repo.listActiveRolloutsForKiosk(kiosk.id);
+      const rollouts = await repo.listActiveRolloutsForKiosk(kiosk.id);
       for (const rollout of rollouts) {
         if (!isKioskInRolloutBucket(kiosk.id, rollout.id, rollout.percentage)) continue;
-        const r = repo.getFirmwareRelease(rollout.release_id);
+        const r = await repo.getFirmwareRelease(rollout.release_id);
         if (!r || r.yanked_at) continue;
         if (r.arch !== arch) continue;
         release = r;
@@ -695,7 +695,7 @@ function registerKioskRoutes(
     // Channel-latest fallback.
     if (!release) {
       const channel = (kiosk.firmware_channel ?? "stable") as FirmwareChannel;
-      release = repo.getLatestFirmwareRelease(channel, arch);
+      release = await repo.getLatestFirmwareRelease(channel, arch);
     }
 
     if (!release || release.version === currentVersion) {
@@ -732,7 +732,7 @@ function registerKioskRoutes(
       ?? new URL(event.req.url).pathname.split("/").pop();
     if (!id) throw createError({ statusCode: 400, statusMessage: "release id required" });
 
-    const release = repo.getFirmwareRelease(id);
+    const release = await repo.getFirmwareRelease(id);
     if (!release || release.yanked_at) {
       throw createError({ statusCode: 404, statusMessage: "release not found" });
     }
@@ -765,8 +765,8 @@ function registerKioskRoutes(
     if (!body?.version) {
       throw createError({ statusCode: 400, statusMessage: "version required" });
     }
-    repo.recordKioskFirmwareAttempt(kiosk.id, body.version, body.error ?? null);
-    repo.insertEvent({
+    await repo.recordKioskFirmwareAttempt(kiosk.id, body.version, body.error ?? null);
+    await repo.insertEvent({
       source_kiosk_id: kiosk.id,
       source_camera_id: null,
       source_type: "system",
@@ -792,7 +792,7 @@ function registerKioskRoutes(
     if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
     const verified = await auth.verifyKioskKey(token);
     if (!verified) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
-    const kiosk = repo.getKioskById(verified.id);
+    const kiosk = await repo.getKioskById(verified.id);
     if (!kiosk) throw createError({ statusCode: 404, statusMessage: "kiosk not found" });
 
     const url = new URL(event.req.url);
@@ -804,14 +804,14 @@ function registerKioskRoutes(
 
     let release = null;
     if (kiosk.os_update_target_version) {
-      release = repo.getOsUpdateReleaseByVersionCompatibility(kiosk.os_update_target_version, compatibility);
+      release = await repo.getOsUpdateReleaseByVersionCompatibility(kiosk.os_update_target_version, compatibility);
       if (release?.yanked_at) release = null;
     }
     if (!release) {
-      const rollouts = repo.listActiveOsUpdateRolloutsForKiosk(kiosk.id);
+      const rollouts = await repo.listActiveOsUpdateRolloutsForKiosk(kiosk.id);
       for (const rollout of rollouts) {
         if (!isKioskInRolloutBucket(kiosk.id, rollout.id, rollout.percentage)) continue;
-        const r = repo.getOsUpdateRelease(rollout.release_id);
+        const r = await repo.getOsUpdateRelease(rollout.release_id);
         if (!r || r.yanked_at) continue;
         if (r.compatibility !== compatibility) continue;
         release = r;
@@ -820,7 +820,7 @@ function registerKioskRoutes(
     }
     if (!release) {
       const channel = (kiosk.os_update_channel ?? "stable") as FirmwareChannel;
-      release = repo.getLatestOsUpdateRelease(channel, compatibility);
+      release = await repo.getLatestOsUpdateRelease(channel, compatibility);
     }
 
     if (!release || release.version === currentVersion) {
@@ -852,7 +852,7 @@ function registerKioskRoutes(
       ?? new URL(event.req.url).pathname.split("/").pop();
     if (!id) throw createError({ statusCode: 400, statusMessage: "release id required" });
 
-    const release = repo.getOsUpdateRelease(id);
+    const release = await repo.getOsUpdateRelease(id);
     if (!release || release.yanked_at) {
       throw createError({ statusCode: 404, statusMessage: "release not found" });
     }
@@ -908,8 +908,8 @@ function registerKioskRoutes(
     if (!body?.version) {
       throw createError({ statusCode: 400, statusMessage: "version required" });
     }
-    repo.recordKioskOsUpdateAttempt(kiosk.id, body.version, body.error ?? null);
-    repo.insertEvent({
+    await repo.recordKioskOsUpdateAttempt(kiosk.id, body.version, body.error ?? null);
+    await repo.insertEvent({
       source_kiosk_id: kiosk.id,
       source_camera_id: null,
       source_type: "system",

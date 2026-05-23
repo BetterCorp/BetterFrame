@@ -44,8 +44,8 @@ export interface AuthApi {
     ipAddress: string | null;
     totpPending: boolean;
   }): Promise<{ session: Session; cookieValue: string }>;
-  resolveSession(cookieValue: string): { session: Session; user: User } | null;
-  revokeSession(sid: string): void;
+  resolveSession(cookieValue: string): Promise<{ session: Session; user: User } | null>;
+  revokeSession(sid: string): Promise<void>;
   createApiKey(input: {
     name: string;
     scopes: ApiKeyScope[];
@@ -203,7 +203,7 @@ export function createAuth(
     const expiresAt = new Date(
       Date.now() + config.sessionMaxSeconds * 1000,
     ).toISOString();
-    const session = repo.createSession({
+    const session = await repo.createSession({
       id,
       user_id: input.user.id,
       csrf_token: csrfToken,
@@ -215,29 +215,29 @@ export function createAuth(
     return { session, cookieValue: signCookie(id) };
   }
 
-  function resolveSession(
+  async function resolveSession(
     cookieValue: string,
-  ): { session: Session; user: User } | null {
+  ): Promise<{ session: Session; user: User } | null> {
     const sid = unsignCookie(cookieValue);
     if (!sid) return null;
-    const session = repo.getSessionById(sid);
+    const session = await repo.getSessionById(sid);
     if (!session) return null;
     if (session.revoked_at) return null;
     const now = new Date();
     if (new Date(session.expires_at) <= now) return null;
     const idleMs = config.sessionIdleSeconds * 1000;
     if (now.getTime() - new Date(session.last_seen_at).getTime() > idleMs) {
-      repo.revokeSession(sid);
+      await repo.revokeSession(sid);
       return null;
     }
-    const user = repo.getUserById(session.user_id);
+    const user = await repo.getUserById(session.user_id);
     if (!user || !user.is_active) return null;
-    repo.touchSession(sid, now.toISOString());
+    await repo.touchSession(sid, now.toISOString());
     return { session, user };
   }
 
-  function revokeSession(sid: string): void {
-    repo.revokeSession(sid);
+  async function revokeSession(sid: string): Promise<void> {
+    await repo.revokeSession(sid);
   }
 
   // ---- API keys -------------------------------------------------------------
@@ -250,7 +250,7 @@ export function createAuth(
     const plaintext = `bf-${randomBytes(24).toString("base64url")}`;
     const keyHash = await hashPassword(plaintext);
     const keyPrefix = plaintext.slice(0, 8);
-    const apiKey = repo.createApiKey({
+    const apiKey = await repo.createApiKey({
       name: input.name,
       key_hash: keyHash,
       key_prefix: keyPrefix,
@@ -262,12 +262,12 @@ export function createAuth(
 
   async function verifyApiKey(plaintext: string, ip: string | null): Promise<ApiKey | null> {
     const prefix = plaintext.slice(0, 8);
-    const candidates = repo.listApiKeysByPrefix(prefix);
+    const candidates = await repo.listApiKeysByPrefix(prefix);
     for (const cand of candidates) {
       if (cand.revoked_at) continue;
       if (cand.expires_at && new Date(cand.expires_at) <= new Date()) continue;
       if (await verifyPassword(plaintext, cand.key_hash)) {
-        repo.touchApiKey(cand.id, ip);
+        await repo.touchApiKey(cand.id, ip);
         return cand;
       }
     }
@@ -277,7 +277,7 @@ export function createAuth(
   async function verifyKioskKey(plaintext: string): Promise<{ id: number } | null> {
     if (plaintext.length < 8) return null;
     const prefix = plaintext.slice(0, 8);
-    const candidates = repo.listKiosksByKeyPrefix(prefix);
+    const candidates = await repo.listKiosksByKeyPrefix(prefix);
     for (const cand of candidates) {
       if (await verifyPassword(plaintext, cand.key_hash)) {
         return { id: cand.id };

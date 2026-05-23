@@ -3,8 +3,10 @@
  *
  * Strategy:
  * 1. Delete artifact files for yanked releases (DB row kept for audit).
+ *    Skip if an active/queued/paused rollout references the release.
  * 2. For each channel, keep only the N most recent non-yanked releases.
- *    Older ones are yanked + artifact deleted.
+ *    Older ones get artifact deleted + DB row removed. Skip if referenced
+ *    by an active rollout.
  *
  * Runs every 6 hours. Safe to call concurrently — worst case is two passes
  * trying to delete the same file (ENOENT is swallowed).
@@ -33,8 +35,16 @@ async function removeFile(path: string): Promise<boolean> {
 async function cleanupFirmware(repo: Repository, log: CleanupLog): Promise<number> {
   let cleaned = 0;
 
+  const rollouts = await repo.listFirmwareRollouts();
+  const activeReleaseIds = new Set(
+    rollouts
+      .filter((r) => r.state === "queued" || r.state === "active" || r.state === "paused")
+      .map((r) => r.release_id),
+  );
+
   const yanked = await repo.listYankedFirmwareReleases();
   for (const r of yanked) {
+    if (activeReleaseIds.has(r.id)) continue;
     if (await removeFile(r.artifact_path)) {
       log.info(`firmware cleanup: deleted artifact for yanked ${r.version} (${r.arch})`);
       cleaned++;
@@ -56,6 +66,7 @@ async function cleanupFirmware(repo: Repository, log: CleanupLog): Promise<numbe
     releases.sort((a, b) => b.uploaded_at.localeCompare(a.uploaded_at));
     const excess = releases.slice(KEEP_PER_CHANNEL);
     for (const r of excess) {
+      if (activeReleaseIds.has(r.id)) continue;
       if (await removeFile(r.artifact_path)) {
         log.info(`firmware cleanup: pruned old ${r.version} (${r.arch})`);
         cleaned++;
@@ -70,8 +81,16 @@ async function cleanupFirmware(repo: Repository, log: CleanupLog): Promise<numbe
 async function cleanupOsUpdates(repo: Repository, log: CleanupLog): Promise<number> {
   let cleaned = 0;
 
+  const rollouts = await repo.listOsUpdateRollouts();
+  const activeReleaseIds = new Set(
+    rollouts
+      .filter((r) => r.state === "queued" || r.state === "active" || r.state === "paused")
+      .map((r) => r.release_id),
+  );
+
   const yanked = await repo.listYankedOsUpdateReleases();
   for (const r of yanked) {
+    if (activeReleaseIds.has(r.id)) continue;
     if (await removeFile(r.artifact_path)) {
       log.info(`os-update cleanup: deleted artifact for yanked ${r.version}`);
       cleaned++;
@@ -93,6 +112,7 @@ async function cleanupOsUpdates(repo: Repository, log: CleanupLog): Promise<numb
     releases.sort((a, b) => b.uploaded_at.localeCompare(a.uploaded_at));
     const excess = releases.slice(KEEP_PER_CHANNEL);
     for (const r of excess) {
+      if (activeReleaseIds.has(r.id)) continue;
       if (await removeFile(r.artifact_path)) {
         log.info(`os-update cleanup: pruned old ${r.version}`);
         cleaned++;

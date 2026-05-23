@@ -434,4 +434,18 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     received_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS idx_kiosk_logs_kiosk ON kiosk_logs(kiosk_id, received_at DESC)`,
+
+  // ---- cloud_accounts -------------------------------------------------------
+  `CREATE TABLE IF NOT EXISTS cloud_accounts (
+    id TEXT PRIMARY KEY,
+    vendor TEXT NOT NULL,
+    name TEXT NOT NULL,
+    credentials_encrypted TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    last_sync_at TIMESTAMPTZ,
+    last_sync_error TEXT,
+    camera_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_cloud_accounts_vendor ON cloud_accounts(vendor)`,
 ];

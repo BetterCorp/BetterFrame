@@ -245,6 +245,32 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
   printf 'BetterFrame Kiosk\n\n' > /etc/issue
   rm -f /etc/update-motd.d/10-uname /etc/update-motd.d/* 2>/dev/null || true
 
+  echo "==> Installing invisible cursor theme"
+  CURSOR_DIR=/usr/share/icons/betterframe-empty/cursors
+  install -d -m 755 "$CURSOR_DIR"
+  install -m 644 "${REPO_ROOT}/deploy/cursor-theme/betterframe-empty/cursor.theme" \
+    /usr/share/icons/betterframe-empty/index.theme
+  install -m 644 "${REPO_ROOT}/deploy/cursor-theme/betterframe-empty/cursor.theme" \
+    /usr/share/icons/betterframe-empty/cursor.theme
+  python3 -c "
+import struct, os
+hdr = b'Xcur' + struct.pack('<III', 16, 0x00010000, 1)
+toc = struct.pack('<III', 0xfffd0002, 1, 28)
+img = struct.pack('<IIIIIIIII', 36, 0xfffd0002, 1, 1, 1, 1, 0, 0, 0)
+px = struct.pack('<I', 0)
+data = hdr + toc + img + px
+for name in ['default','left_ptr','arrow','watch','hand2','text','xterm',
+    'top_left_corner','top_right_corner','bottom_left_corner',
+    'bottom_right_corner','sb_h_double_arrow','sb_v_double_arrow',
+    'fleur','crosshair','question_arrow','x_cursor','pirate',
+    'sb_left_arrow','sb_right_arrow','sb_up_arrow','sb_down_arrow',
+    'top_side','bottom_side','left_side','right_side']:
+  with open(os.path.join('$CURSOR_DIR', name), 'wb') as f:
+    f.write(data)
+"
+  update-alternatives --install /usr/share/icons/default/index.theme x-cursor-theme \
+    /usr/share/icons/betterframe-empty/cursor.theme 100 2>/dev/null || true
+
   echo "==> Installing PAM + systemd unit + firmware rollback hook"
   install -m 644 "${REPO_ROOT}/deploy/pam.d/cage" /etc/pam.d/cage
   install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-kiosk.service" \

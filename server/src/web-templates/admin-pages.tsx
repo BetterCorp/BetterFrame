@@ -2202,7 +2202,8 @@ export const LAYOUT_BUILDER_CSS = `
 .layout-cell { background: #fff; border: 2px solid #2563eb; border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; position: relative; min-height: 60px; padding: 4px; text-align: center; font-size: 0.85rem; font-weight: 600; color: #1e40af; overflow: visible; }
 .layout-cell:hover { background: #f0f7ff; }
 .layout-cell.editing { background: #f9fafb; border-color: #1e40af; box-shadow: 0 0 0 2px #1e40af33; cursor: default; align-items: stretch; justify-content: stretch; text-align: left; font-weight: 400; color: inherit; padding: 8px; overflow: auto; }
-.layout-cell-empty-text { color: #999; font-size: 0.75rem; font-weight: 400; }
+.layout-cell-empty-text { color: #aaa; font-size: 0.75rem; font-weight: 400; }
+.layout-cell:has(.layout-cell-empty-text) { border-style: dashed; border-color: #ccc; background: #fafafa; }
 .layout-cell-side { position: absolute; opacity: 0; transition: opacity 0.2s; z-index: 3; }
 .layout-cell:hover .layout-cell-side, .layout-cell-side:hover { opacity: 1; }
 .layout-cell-side-top { top: -12px; left: 50%; transform: translateX(-50%); }
@@ -2404,8 +2405,13 @@ export function renderCell(
       hx-trigger="click"
     >
       {isEmpty
-        ? <span class="layout-cell-empty-text">{label}</span>
-        : <span>{label}</span>}
+        ? <span class="layout-cell-empty-text" style="color:#aaa;font-size:0.75rem">+ empty</span>
+        : <span style={`font-size:0.75rem;display:flex;align-items:center;gap:4px`}>
+            <span style={`display:inline-block;width:8px;height:8px;border-radius:2px;background:${
+              c.content_type === "camera" ? "#2a7" : c.content_type === "web" ? "#27c" : c.content_type === "html" ? "#c72" : "#888"
+            }`} />
+            {label}
+          </span>}
 
       {/* + buttons (4 sides) — htmx posts to add endpoint, swaps grid */}
       {(["top", "right", "bottom", "left"] as const).map((dir) => {

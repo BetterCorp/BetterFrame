@@ -45,3 +45,4 @@ npm-debug.log*
 # RAUC signing keys (generated locally, secrets set in GitHub Actions)
 rauc-signing/
 old-python/
+/Hik-Connect-Docs.pdf

@@ -23,6 +23,8 @@ import {
 export interface SecretsConfig {
   dataDir: string;
   systemdCredsName?: string;
+  /** Systemd credentials directory (e.g. /run/credentials/betterframe.service). */
+  systemdCredsDir?: string;
 }
 
 export interface SecretsLog {
@@ -105,7 +107,7 @@ function loadServerKey(config: SecretsConfig, log: SecretsLog): Buffer {
   const credsName = config.systemdCredsName ?? "betterframe-secret";
 
   // 1. systemd-creds
-  const credsDir = process.env["CREDENTIALS_DIRECTORY"];
+  const credsDir = config.systemdCredsDir;
   if (credsDir) {
     const p = join(credsDir, credsName);
     if (existsSync(p)) {

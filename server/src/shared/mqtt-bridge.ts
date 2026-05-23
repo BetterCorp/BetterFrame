@@ -1,8 +1,8 @@
 /**
  * Generic MQTT telemetry bridge. Off by default — enable by setting
- * `BF_MQTT_URL=mqtt://broker:1883` (or mqtts:// for TLS). Optional
- * `BF_MQTT_USERNAME`, `BF_MQTT_PASSWORD`, `BF_MQTT_TOPIC_PREFIX` (default
- * "betterframe").
+ * `mqttUrl` in the service-api-http config (e.g. `mqtt://broker:1883`
+ * or `mqtts://` for TLS). Optional `mqttUsername`, `mqttPassword`,
+ * `mqttTopicPrefix` (default "betterframe").
  *
  * Outbound topics:
  *   <prefix>/<kiosk_id>/event/<topic>   server-side events (camera.changed,
@@ -39,13 +39,22 @@ const NOOP_BRIDGE: MqttBridge = {
   end: () => {},
 };
 
-export function initMqttBridge(log: MqttBridgeLog): MqttBridge {
-  const url = (process.env["BF_MQTT_URL"] ?? "").trim();
+export interface MqttConfig {
+  /** MQTT broker URL (e.g. mqtt://broker:1883). Empty = disabled. */
+  url: string;
+  username?: string;
+  password?: string;
+  /** Topic prefix for all MQTT messages. Default "betterframe". */
+  topicPrefix: string;
+}
+
+export function initMqttBridge(config: MqttConfig, log: MqttBridgeLog): MqttBridge {
+  const url = (config.url ?? "").trim();
   if (!url) return NOOP_BRIDGE;
 
-  const prefix = (process.env["BF_MQTT_TOPIC_PREFIX"] ?? "betterframe").replace(/\/+$/, "");
-  const username = process.env["BF_MQTT_USERNAME"];
-  const password = process.env["BF_MQTT_PASSWORD"];
+  const prefix = (config.topicPrefix ?? "betterframe").replace(/\/+$/, "");
+  const username = config.username;
+  const password = config.password;
 
   let client: MqttClient | undefined;
   let rpcHandlers: Array<(k: number, m: string, b: Record<string, unknown>) => void> = [];

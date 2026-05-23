@@ -6,7 +6,7 @@
  * id captures lastInsertRowid (caller must add `RETURNING id` to INSERTs
  * that need it — same for SQLite path so the SQL strings are portable).
  *
- * Pool size: PG default of 10 — bumpable via BF_PG_POOL_MAX env if needed.
+ * Pool size: default 10 — configurable via pgPoolMax in sec-config.yaml.
  */
 import { Pool, type PoolClient } from "pg";
 
@@ -18,10 +18,10 @@ export class PgAdapter implements DbAdapter {
   private currentTxClient: PoolClient | null = null;
   private txDepth = 0;
 
-  constructor(connectionString: string) {
+  constructor(connectionString: string, poolMax: number = 10) {
     this.pool = new Pool({
       connectionString,
-      max: Number(process.env["BF_PG_POOL_MAX"] ?? 10),
+      max: poolMax,
       idleTimeoutMillis: 30_000,
     });
   }

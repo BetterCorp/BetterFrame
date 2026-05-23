@@ -23,7 +23,14 @@ default:
       plugin: service-store
       enabled: true
       config:
+        driver: postgres
         sqlitePath: /var/lib/betterframe/betterframe.db
+        pgHost: postgres
+        pgPort: 5432
+        pgDatabase: betterframe
+        pgUser: betterframe
+        pgPassword: betterframe
+        pgPoolMax: 10
 
     # ----- Admin UI + API (includes secrets + auth config) -----
     service-admin-http:
@@ -45,6 +52,11 @@ default:
         cookieName: betterframe_session
         totpIssuer: BetterFrame
         noderedUrl: http://127.0.0.1:1880
+        selfUrl: http://127.0.0.1:18080
+        systemdCredsDir: ""
+        firmwareSigningKey: ""
+        firmwareImportApiKey: ""
+        otaImportApiKey: ""
 
     # ----- Kiosk-facing REST API -----
     service-api-http:
@@ -59,6 +71,10 @@ default:
         argon2TimeCost: 3
         argon2Parallelism: 2
         noderedUrl: http://127.0.0.1:1880
+        mqttUrl: ""
+        mqttUsername: ""
+        mqttPassword: ""
+        mqttTopicPrefix: betterframe
 
     # ----- Live kiosk WebSocket channel -----
     service-coordinator-ws:

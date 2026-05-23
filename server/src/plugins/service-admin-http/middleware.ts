@@ -37,8 +37,7 @@ function syntheticApiKeyUser(keyPrefix: string): User {
   };
 }
 
-function tokenMatchesEnv(token: string, envName: string): boolean {
-  const expected = process.env[envName]?.trim();
+function tokenMatchesExpected(token: string, expected: string | undefined): boolean {
   if (!expected || expected.length < 32 || token.length < 32) return false;
   const a = createHash("sha256").update(token).digest();
   const b = createHash("sha256").update(expected).digest();
@@ -81,7 +80,7 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
         const token = authz.slice(7);
         if (
           (path === "/api/admin/firmware/import" || path === "/api/admin/os/import") &&
-          (tokenMatchesEnv(token, "BF_FIRMWARE_IMPORT_API_KEY") || tokenMatchesEnv(token, "BF_OTA_IMPORT_API_KEY"))
+          (tokenMatchesExpected(token, deps.firmwareImportApiKey) || tokenMatchesExpected(token, deps.otaImportApiKey))
         ) {
           const label = path === "/api/admin/os/import" ? "ota-import" : "fw-import";
           event.context.user = syntheticApiKeyUser(label);

@@ -21,7 +21,6 @@ import { createAuth, type AuthApi } from "../../shared/auth.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
 import { initOsUpdates, type OsUpdateApi } from "../../shared/os-updates.js";
-import { envStr } from "../../shared/env-overrides.js";
 import { serverVersion } from "../../shared/version.js";
 import type { Repository } from "../service-store/repository.js";
 
@@ -57,6 +56,14 @@ const ConfigSchema = av.object(
     noderedUrl: av.string().minLength(1).default("http://127.0.0.1:1880"),
     // URL Node-RED uses to reach this server. Native: localhost. Docker: container name.
     selfUrl: av.string().minLength(1).default("http://127.0.0.1:18080"),
+    /** Systemd credentials directory. */
+    systemdCredsDir: av.string().default(""),
+    /** PEM-encoded Ed25519 private key for firmware signing (cloud deploys). */
+    firmwareSigningKey: av.string().default(""),
+    /** Bearer token for CI firmware import endpoint. */
+    firmwareImportApiKey: av.string().default(""),
+    /** Bearer token for CI OTA import endpoint. */
+    otaImportApiKey: av.string().default(""),
   },
   { unknownKeys: "strip" },
 );
@@ -90,6 +97,8 @@ export interface AdminDeps {
   firmware: FirmwareApi;
   osUpdates: OsUpdateApi;
   dataDir: string;
+  firmwareImportApiKey?: string;
+  otaImportApiKey?: string;
 }
 
 // ---- Plugin -----------------------------------------------------------------
@@ -113,16 +122,15 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
   async init(obs: Observable): Promise<void> {
     // Init shared modules — no inter-plugin wiring needed.
-    // Env-var overrides for Coolify / 12-factor deploys (BF_* prefix).
-    const dataDir = envStr("BF_DATA_DIR", this.config.dataDir);
-    const noderedUrl = envStr("BF_NODERED_URL", this.config.noderedUrl);
-    const selfUrl = envStr("BF_SELF_URL", this.config.selfUrl);
-    const cookieName = envStr("BF_COOKIE_NAME", this.config.cookieName);
-    const totpIssuer = envStr("BF_TOTP_ISSUER", this.config.totpIssuer);
+    const dataDir = this.config.dataDir;
+    const noderedUrl = this.config.noderedUrl;
+    const selfUrl = this.config.selfUrl;
+    const cookieName = this.config.cookieName;
+    const totpIssuer = this.config.totpIssuer;
 
     const repo = getRepo();
     const secrets = initSecrets(
-      { dataDir, systemdCredsName: this.config.systemdCredsName },
+      { dataDir, systemdCredsName: this.config.systemdCredsName, systemdCredsDir: this.config.systemdCredsDir || undefined },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
     const auth = createAuth(repo, secrets, {
@@ -143,7 +151,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     );
 
     const firmware = initFirmware(
-      { dataDir },
+      { dataDir, signingKeyPem: this.config.firmwareSigningKey || undefined },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
     const osUpdates = initOsUpdates({ dataDir });
@@ -157,6 +165,8 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       firmware,
       osUpdates,
       dataDir,
+      firmwareImportApiKey: this.config.firmwareImportApiKey || undefined,
+      otaImportApiKey: this.config.otaImportApiKey || undefined,
     };
 
     const app = new H3();

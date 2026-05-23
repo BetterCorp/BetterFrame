@@ -4,11 +4,11 @@
 #
 # Point Coolify resource at this file instead of docker-compose.yml.
 #
-# Same env / volume overrides as the standard compose:
+# Volume name overrides:
 #   BF_DATA_VOLUME_NAME       default "betterframe-data"
 #   NODERED_DATA_VOLUME_NAME  default "nodered-data"
-#   BF_DATA_DIR, BF_SQLITE_PATH, BF_NODERED_URL, BF_SELF_URL,
-#   BF_FIRMWARE_SIGNING_KEY, BF_MQTT_*
+#
+# Server config comes from sec-config.yaml, not env vars.
 
 version: "3.8"
 
@@ -23,14 +23,6 @@ services:
     restart: unless-stopped
     environment:
       - TZ=UTC
-      - BF_DATA_DIR=/var/lib/betterframe
-      - BF_SQLITE_PATH=/var/lib/betterframe/betterframe.db
-      - BF_NODERED_URL=http://nodered:1880
-      - BF_SELF_URL=http://server:18080
-      - BF_SERVER_VERSION=${BF_SERVER_VERSION:-${COOLIFY_GIT_COMMIT:-${SOURCE_COMMIT:-dev}}}
-      # PostgreSQL: set BF_DB=postgres to switch from SQLite.
-      - BF_DB=postgres
-      - BF_PG_URL=${BF_PG_URL:-postgres://${BF_PG_USER:-betterframe}:${BF_PG_PASSWORD:-betterframe}@postgres:5432/${BF_PG_DB:-betterframe}}
     volumes:
       - betterframe-data:/var/lib/betterframe
     expose:

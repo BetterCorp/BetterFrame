@@ -35,18 +35,29 @@ import {
 import { MIGRATIONS } from "./migrations.js";
 import { Repository } from "./repository.js";
 import { registerRepo } from "../../shared/plugin-registry.js";
-import { envStr } from "../../shared/env-overrides.js";
 
 // ---- Config -----------------------------------------------------------------
 
 const ConfigSchema = av.object(
   {
-    /** Backend selector. Override at runtime via BF_DB env. */
+    /** Backend selector: "sqlite" or "postgres". */
     driver: av.enum_(["sqlite", "postgres"] as const).default("sqlite"),
     /** sqlite-only: filesystem path to the .db file. */
     sqlitePath: av.string().minLength(1).default("/var/lib/betterframe/betterframe.db"),
-    /** postgres-only: full libpq URL. Override via BF_PG_URL env. */
+    /** postgres: full libpq URL. Overrides individual pg* fields if non-empty. */
     pgUrl: av.string().default(""),
+    /** postgres: host. */
+    pgHost: av.string().default("postgres"),
+    /** postgres: port. */
+    pgPort: av.int().min(1).max(65535).default(5432),
+    /** postgres: database name. */
+    pgDatabase: av.string().default("betterframe"),
+    /** postgres: username. */
+    pgUser: av.string().default("betterframe"),
+    /** postgres: password. */
+    pgPassword: av.string().default("betterframe"),
+    /** postgres: connection pool max size. */
+    pgPoolMax: av.int().min(1).max(1000).default(10),
   },
   { unknownKeys: "strip" },
 );
@@ -104,15 +115,19 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   }
 
   async init(obs: Observable): Promise<void> {
-    const driver = envStr("BF_DB", this.config.driver) as "sqlite" | "postgres";
+    const driver = this.config.driver;
 
     if (driver === "postgres") {
-      const pgUrl = envStr("BF_PG_URL", this.config.pgUrl ?? "");
-      if (!pgUrl) throw new Error("BF_DB=postgres requires BF_PG_URL");
+      let pgUrl = this.config.pgUrl ?? "";
+      if (!pgUrl) {
+        const u = encodeURIComponent(this.config.pgUser);
+        const p = encodeURIComponent(this.config.pgPassword);
+        pgUrl = `postgres://${u}:${p}@${this.config.pgHost}:${this.config.pgPort}/${this.config.pgDatabase}`;
+      }
       obs.log.info("connecting to postgres at {url}", { url: pgUrl.replace(/:[^:@]+@/, ":***@") });
 
       const { PgAdapter } = await import("./pg-adapter.js");
-      const adapter = new PgAdapter(pgUrl);
+      const adapter = new PgAdapter(pgUrl, this.config.pgPoolMax);
 
       // Run PG migrations. Track version in schema_migrations table.
       const { TENANT_MIGRATIONS } = await import("./migrations-pg.js");
@@ -153,7 +168,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       });
     } else {
       // SQLite path (default).
-      const path = envStr("BF_SQLITE_PATH", this.config.sqlitePath);
+      const path = this.config.sqlitePath;
       obs.log.info("opening sqlite at {path}", { path });
 
       try {

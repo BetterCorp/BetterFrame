@@ -1,21 +1,14 @@
 import { readFileSync } from "node:fs";
 
-const BAKED_VERSION = (() => {
-  try {
-    const v = readFileSync("/app/server/.bf-version", "utf8").trim();
-    return v && v !== "dev" ? v : null;
-  } catch {
-    return null;
-  }
-})();
+let cached: string | null = null;
 
 export function serverVersion(): string {
-  return (
-    process.env.BF_SERVER_VERSION
-    || process.env.BF_BUILD_VERSION
-    || BAKED_VERSION
-    || process.env.COOLIFY_GIT_COMMIT
-    || process.env.SOURCE_COMMIT
-    || "dev"
-  );
+  if (cached) return cached;
+  try {
+    const v = readFileSync("/app/server/.bf-version", "utf8").trim();
+    cached = v && v !== "dev" ? v : "dev";
+  } catch {
+    cached = "dev";
+  }
+  return cached;
 }

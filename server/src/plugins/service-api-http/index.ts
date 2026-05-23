@@ -23,7 +23,6 @@ import { generateBundle } from "../../shared/bundle.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
 import { initOsUpdates, type OsUpdateApi } from "../../shared/os-updates.js";
-import { envStr } from "../../shared/env-overrides.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
 import { initMqttBridge, type MqttBridge } from "../../shared/mqtt-bridge.js";
 import { createHash } from "node:crypto";
@@ -51,6 +50,11 @@ const ConfigSchema = av.object(
     loginLockoutSeconds: av.int().min(1).default(900),
     totpIssuer: av.string().minLength(1).default("BetterFrame"),
     noderedUrl: av.string().minLength(1).default("http://127.0.0.1:1880"),
+    /** MQTT broker URL (e.g. mqtt://broker:1883). Empty = disabled. */
+    mqttUrl: av.string().default(""),
+    mqttUsername: av.string().default(""),
+    mqttPassword: av.string().default(""),
+    mqttTopicPrefix: av.string().default("betterframe"),
   },
   { unknownKeys: "strip" },
 );
@@ -91,10 +95,10 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   }
 
   async init(obs: Observable): Promise<void> {
-    const dataDir = envStr("BF_DATA_DIR", this.config.dataDir);
-    const noderedUrl = envStr("BF_NODERED_URL", this.config.noderedUrl);
-    const cookieName = envStr("BF_COOKIE_NAME", this.config.cookieName);
-    const totpIssuer = envStr("BF_TOTP_ISSUER", this.config.totpIssuer);
+    const dataDir = this.config.dataDir;
+    const noderedUrl = this.config.noderedUrl;
+    const cookieName = this.config.cookieName;
+    const totpIssuer = this.config.totpIssuer;
 
     const repo = getRepo();
     const secrets = initSecrets(
@@ -122,10 +126,18 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
     const osUpdates = initOsUpdates({ dataDir });
-    const mqtt = initMqttBridge({
-      info: (m) => obs.log.info(m as any, {}),
-      warn: (m) => obs.log.warn(m as any, {}),
-    });
+    const mqtt = initMqttBridge(
+      {
+        url: this.config.mqttUrl,
+        username: this.config.mqttUsername || undefined,
+        password: this.config.mqttPassword || undefined,
+        topicPrefix: this.config.mqttTopicPrefix,
+      },
+      {
+        info: (m) => obs.log.info(m as any, {}),
+        warn: (m) => obs.log.warn(m as any, {}),
+      },
+    );
 
     const app = new H3();
 

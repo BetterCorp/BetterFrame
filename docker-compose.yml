@@ -113,7 +113,7 @@ services:
       - POSTGRES_USER=${BF_PG_USER:-betterframe}
       - POSTGRES_PASSWORD=${BF_PG_PASSWORD:-betterframe}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
     expose:
       - "5432"
     healthcheck:

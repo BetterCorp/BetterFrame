@@ -1,11 +1,10 @@
 # BSB runtime configuration for BetterFrame server.
 #
-# Profile: 'default' — single-host install where the server, node-red, and
-# (optionally) one kiosk all run on the same Pi. For multi-kiosk deployments
-# the server is the same; kiosks have their own runtime config.
+# This file is bind-mounted into the container at /home/bsb/sec-config.yaml.
+# All server config lives here — no env vars in the application code.
 #
-# Override individual values via env: BSB_<plugin>_<key>=value (consult BSB
-# docs for the exact env-override semantics for v9).
+# For native (non-Docker) installs, adjust hostnames to 127.0.0.1 and
+# set driver: sqlite if not using PostgreSQL.
 
 default:
   observable:
@@ -24,7 +23,9 @@ default:
       enabled: true
       config:
         driver: postgres
+        # SQLite (native installs)
         sqlitePath: /var/lib/betterframe/betterframe.db
+        # PostgreSQL (Docker / production)
         pgHost: postgres
         pgPort: 5432
         pgDatabase: betterframe
@@ -32,29 +33,32 @@ default:
         pgPassword: betterframe
         pgPoolMax: 10
 
-    # ----- Admin UI + API (includes secrets + auth config) -----
+    # ----- Admin UI + API -----
     service-admin-http:
       plugin: service-admin-http
       enabled: true
       config:
-        host: 127.0.0.1
+        host: 0.0.0.0
         port: 18080
-        # Secrets (was service-secrets)
         dataDir: /var/lib/betterframe
-        # Auth (was service-auth)
-        sessionIdleSeconds: 43200    # 12h
-        sessionMaxSeconds: 2592000   # 30d
+        # Auth
+        sessionIdleSeconds: 43200
+        sessionMaxSeconds: 2592000
         loginLockoutThreshold: 8
-        loginLockoutSeconds: 900     # 15m
-        argon2Memory: 65536          # KiB; tuned for Pi5 ~100ms
+        loginLockoutSeconds: 900
+        argon2Memory: 65536
         argon2TimeCost: 3
         argon2Parallelism: 2
         cookieName: betterframe_session
         totpIssuer: BetterFrame
-        noderedUrl: http://127.0.0.1:1880
-        selfUrl: http://127.0.0.1:18080
+        # Inter-service URLs (Docker container names)
+        noderedUrl: http://nodered:1880
+        selfUrl: http://server:18080
+        # Systemd credentials directory (native installs only)
         systemdCredsDir: ""
+        # Firmware signing key (PEM). Leave empty to auto-generate on disk.
         firmwareSigningKey: ""
+        # Bearer tokens for CI import endpoints. Generate with: openssl rand -base64 32
         firmwareImportApiKey: ""
         otaImportApiKey: ""
 
@@ -63,14 +67,17 @@ default:
       plugin: service-api-http
       enabled: true
       config:
-        host: 127.0.0.1
+        host: 0.0.0.0
         port: 18081
-        codeTtlSeconds: 600          # 10m pairing code TTL
+        codeTtlSeconds: 600
         dataDir: /var/lib/betterframe
         argon2Memory: 65536
         argon2TimeCost: 3
         argon2Parallelism: 2
-        noderedUrl: http://127.0.0.1:1880
+        cookieName: betterframe_session
+        totpIssuer: BetterFrame
+        noderedUrl: http://nodered:1880
+        # MQTT telemetry bridge (optional)
         mqttUrl: ""
         mqttUsername: ""
         mqttPassword: ""
@@ -81,10 +88,12 @@ default:
       plugin: service-coordinator-ws
       enabled: true
       config:
-        host: 127.0.0.1
+        host: 0.0.0.0
         port: 18082
-        noderedUrl: http://127.0.0.1:1880
         dataDir: /var/lib/betterframe
         argon2Memory: 65536
         argon2TimeCost: 3
         argon2Parallelism: 2
+        cookieName: betterframe_session
+        totpIssuer: BetterFrame
+        noderedUrl: http://nodered:1880

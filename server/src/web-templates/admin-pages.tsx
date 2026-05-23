@@ -2316,6 +2316,38 @@ export function renderCell(
             </select>
           </div>
 
+          {/* Smart URL step builder — shown for web/dashboard cells */}
+          <div class="form-group" id={`smart-url-${String(c.id)}`}>
+            <label style="font-weight:600">Smart URL Steps</label>
+            <div style="font-size:0.7rem;color:#666;margin-bottom:0.5rem">
+              Auto-login / navigate sequences. Leave empty for direct URL load.
+            </div>
+            <div id={`steps-${String(c.id)}`}>
+              {((c.options?.["smart_url"] as any)?.steps ?? []).map((step: any, idx: number) => (
+                <div style="display:grid;grid-template-columns:100px 1fr auto;gap:4px;margin-bottom:4px;align-items:center">
+                  <select name={`step_${idx}_type`} class="form-input" style="font-size:0.75rem">
+                    {["navigate","fill","click","wait","wait_for","javascript"].map((t) => (
+                      <option value={t} selected={step.type === t}>{t}</option>
+                    ))}
+                  </select>
+                  <input name={`step_${idx}_value`} type="text" class="form-input" style="font-size:0.75rem"
+                    placeholder={step.type === "navigate" ? "URL" : step.type === "fill" ? "selector=value" : step.type === "click" ? "CSS selector" : step.type === "wait" ? "ms" : step.type === "javascript" ? "JS code" : "selector"}
+                    value={step.type === "fill" ? `${step.selector ?? ""}=${step.value ?? ""}` : step.url ?? step.selector ?? step.script ?? (step.delay_ms != null ? String(step.delay_ms) : "")} />
+                  <button type="button" class="btn btn-sm btn-danger" style="padding:2px 6px"
+                    onclick={`this.closest('div').remove()`}>×</button>
+                </div>
+              ))}
+            </div>
+            <button type="button" class="btn btn-sm btn-ghost" style="font-size:0.75rem"
+              onclick={`var d=document.createElement('div');d.style='display:grid;grid-template-columns:100px 1fr auto;gap:4px;margin-bottom:4px;align-items:center';var n=document.querySelectorAll('#steps-${String(c.id)} > div').length;d.innerHTML='<select name=\"step_'+n+'_type\" class=\"form-input\" style=\"font-size:0.75rem\"><option value=\"navigate\">navigate</option><option value=\"fill\">fill</option><option value=\"click\">click</option><option value=\"wait\">wait</option><option value=\"wait_for\">wait_for</option><option value=\"javascript\">javascript</option></select><input name=\"step_'+n+'_value\" type=\"text\" class=\"form-input\" style=\"font-size:0.75rem\" placeholder=\"value\"><button type=\"button\" class=\"btn btn-sm btn-danger\" style=\"padding:2px 6px\" onclick=\"this.closest(\\'div\\').remove()\">×</button>';document.getElementById('steps-${String(c.id)}').appendChild(d)`}
+            >+ Add Step</button>
+            <div style="margin-top:0.5rem">
+              <label style="font-size:0.7rem">Login detect URL (re-run steps when redirected here)</label>
+              <input name="smart_url_login_detect" type="text" class="form-input" style="font-size:0.75rem"
+                value={(c.options?.["smart_url"] as any)?.login_detect_url ?? ""} placeholder="e.g. /login" />
+            </div>
+          </div>
+
           <div class="form-group span-grid">
             <div>
               <label>Width</label>

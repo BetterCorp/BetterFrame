@@ -1104,6 +1104,40 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         await resolveOverlaps(deps, layoutId, cellId, axis);
       }
     }
+
+    // Parse smart URL steps from the step builder form fields.
+    const steps: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < 50; i++) {
+      const stepType = body?.[`step_${i}_type`];
+      const stepValue = body?.[`step_${i}_value`];
+      if (!stepType) break;
+      const step: Record<string, unknown> = { type: stepType };
+      if (stepType === "navigate") step["url"] = stepValue;
+      else if (stepType === "fill" && stepValue?.includes("=")) {
+        const eqIdx = stepValue.indexOf("=");
+        step["selector"] = stepValue.slice(0, eqIdx);
+        step["value"] = stepValue.slice(eqIdx + 1);
+      }
+      else if (stepType === "click" || stepType === "wait_for") step["selector"] = stepValue;
+      else if (stepType === "wait") step["delay_ms"] = Number(stepValue) || 1000;
+      else if (stepType === "javascript") step["script"] = stepValue;
+      steps.push(step);
+    }
+    const loginDetect = (body?.["smart_url_login_detect"] ?? "").trim();
+    const updatedCell = await deps.repo.getLayoutCellById(cellId);
+    if (updatedCell) {
+      const opts = { ...(updatedCell.options ?? {}) };
+      if (steps.length > 0) {
+        opts["smart_url"] = {
+          steps,
+          ...(loginDetect ? { login_detect_url: loginDetect } : {}),
+        };
+      } else {
+        delete opts["smart_url"];
+      }
+      await deps.repo.updateLayoutCell(cellId, { options: JSON.stringify(opts) } as any);
+    }
+
     notifyKiosks();
 
     if (isHtmxRequest(event)) {

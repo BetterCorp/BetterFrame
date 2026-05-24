@@ -52,7 +52,13 @@ export async function initDb(
         PRIMARY KEY (schema_name, version)
       )`);
       for (let i = currentVersion; i < TENANT_MIGRATIONS.length; i++) {
-        await adapter.exec(TENANT_MIGRATIONS[i]!);
+        try {
+          await adapter.exec(TENANT_MIGRATIONS[i]!);
+        } catch (err) {
+          log.warn(`PG migration ${i} failed: ${(err as Error).message}`);
+          log.warn(`SQL: ${TENANT_MIGRATIONS[i]!.slice(0, 200)}`);
+          throw err;
+        }
         await adapter.run(
           `INSERT INTO schema_migrations (schema_name, version) VALUES ('public', ?)`,
           [i + 1],

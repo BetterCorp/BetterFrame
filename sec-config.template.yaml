@@ -26,12 +26,12 @@ default:
         db:
           driver: ${BF_DB_DRIVER}
           sqlitePath: /var/lib/betterframe/betterframe.db
-          pgHost: ${BF_PG_HOST}
-          pgPort: ${BF_PG_PORT}
-          pgDatabase: ${BF_PG_DB}
-          pgUser: ${BF_PG_USER}
-          pgPassword: ${BF_PG_PASSWORD}
-          pgPoolMax: ${BF_PG_POOL_MAX}
+          host: ${BF_PG_HOST}
+          port: ${BF_PG_PORT}
+          database: ${BF_PG_DB}
+          user: ${BF_PG_USER}
+          password: ${BF_PG_PASSWORD}
+          poolMax: ${BF_PG_POOL_MAX}
         host: 0.0.0.0
         port: 18080
         dataDir: /var/lib/betterframe
@@ -59,12 +59,12 @@ default:
         db:
           driver: ${BF_DB_DRIVER}
           sqlitePath: /var/lib/betterframe/betterframe.db
-          pgHost: ${BF_PG_HOST}
-          pgPort: ${BF_PG_PORT}
-          pgDatabase: ${BF_PG_DB}
-          pgUser: ${BF_PG_USER}
-          pgPassword: ${BF_PG_PASSWORD}
-          pgPoolMax: ${BF_PG_POOL_MAX}
+          host: ${BF_PG_HOST}
+          port: ${BF_PG_PORT}
+          database: ${BF_PG_DB}
+          user: ${BF_PG_USER}
+          password: ${BF_PG_PASSWORD}
+          poolMax: ${BF_PG_POOL_MAX}
         host: 0.0.0.0
         port: 18081
         codeTtlSeconds: 600
@@ -88,12 +88,12 @@ default:
         db:
           driver: ${BF_DB_DRIVER}
           sqlitePath: /var/lib/betterframe/betterframe.db
-          pgHost: ${BF_PG_HOST}
-          pgPort: ${BF_PG_PORT}
-          pgDatabase: ${BF_PG_DB}
-          pgUser: ${BF_PG_USER}
-          pgPassword: ${BF_PG_PASSWORD}
-          pgPoolMax: ${BF_PG_POOL_MAX}
+          host: ${BF_PG_HOST}
+          port: ${BF_PG_PORT}
+          database: ${BF_PG_DB}
+          user: ${BF_PG_USER}
+          password: ${BF_PG_PASSWORD}
+          poolMax: ${BF_PG_POOL_MAX}
         host: 0.0.0.0
         port: 18082
         dataDir: /var/lib/betterframe

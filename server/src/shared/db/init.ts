@@ -26,16 +26,16 @@ export async function initDb(
   const notify = notifyFn ?? (() => {});
 
   if (driver === "postgres") {
-    let pgUrl = config.pgUrl ?? "";
+    let pgUrl = config.url ?? "";
     if (!pgUrl) {
-      const u = encodeURIComponent(config.pgUser);
-      const p = encodeURIComponent(config.pgPassword);
-      pgUrl = `postgres://${u}:${p}@${config.pgHost}:${config.pgPort}/${config.pgDatabase}`;
+      const u = encodeURIComponent(config.user);
+      const p = encodeURIComponent(config.password);
+      pgUrl = `postgres://${u}:${p}@${config.host}:${config.port}/${config.database}`;
     }
     log.info(`connecting to postgres at ${pgUrl.replace(/:[^:@]+@/, ":***@")}`);
 
     const { PgAdapter } = await import("./pg-adapter.js");
-    const adapter = new PgAdapter(pgUrl, config.pgPoolMax);
+    const adapter = new PgAdapter(pgUrl, config.poolMax);
 
     // Run PG migrations. Track version in schema_migrations table.
     const { TENANT_MIGRATIONS } = await import("./migrations-pg.js");

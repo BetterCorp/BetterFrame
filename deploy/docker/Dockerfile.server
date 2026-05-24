@@ -62,21 +62,17 @@ ARG BF_MQTT_USERNAME=
 ARG BF_MQTT_PASSWORD=
 ARG BF_MQTT_TOPIC_PREFIX=betterframe
 
-USER root
-
-# envsubst + ffmpeg (Alpine base)
+# Install extras (Alpine base) — run as root before BSB drops privileges
 RUN apk add --no-cache gettext ffmpeg
 
 RUN mkdir -p /var/lib/betterframe && chown 1000:1000 /var/lib/betterframe
 
-WORKDIR /home/bsb
-
-# Copy built plugin + deps
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/server/lib ./lib
-COPY --from=builder /app/server/bsb-plugin.json ./bsb-plugin.json
-COPY --from=builder /app/server/package.json ./package.json
-COPY --from=builder /app/tsconfig.base.json ./tsconfig.base.json
+# Copy built plugin + deps into BSB workdir
+COPY --from=builder /app/node_modules /home/bsb/node_modules
+COPY --from=builder /app/server/lib /home/bsb/lib
+COPY --from=builder /app/server/bsb-plugin.json /home/bsb/bsb-plugin.json
+COPY --from=builder /app/server/package.json /home/bsb/package.json
+COPY --from=builder /app/tsconfig.base.json /home/bsb/tsconfig.base.json
 
 # Generate sec-config.yaml from template + build args
 COPY sec-config.template.yaml /tmp/sec-config.template.yaml
@@ -90,5 +86,3 @@ RUN echo "$BF_SERVER_VERSION" > /home/bsb/.bf-version
 VOLUME /var/lib/betterframe
 
 EXPOSE 18080 18081 18082
-
-USER node

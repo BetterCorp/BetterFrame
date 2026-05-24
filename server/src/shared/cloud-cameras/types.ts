@@ -18,18 +18,21 @@ export interface CloudAccount {
   created_at: string;
 }
 
-export type CloudVendor = "hikconnect" | "dahua" | "tuya" | "uniview" | "tplink";
+export type CloudVendor = "hikconnect" | "ezviz" | "dahua" | "tuya" | "uniview" | "tplink" | "reolink" | "eagle_eye";
 
 export const CLOUD_VENDORS: readonly CloudVendor[] = [
-  "hikconnect", "dahua", "tuya", "uniview", "tplink",
+  "hikconnect", "ezviz", "dahua", "tuya", "uniview", "tplink", "reolink", "eagle_eye",
 ] as const;
 
 export const VENDOR_LABELS: Record<CloudVendor, string> = {
-  hikconnect: "Hik-Connect (Hikvision)",
+  hikconnect: "Hik-Connect for Teams",
+  ezviz: "EZVIZ (Hikvision Consumer)",
   dahua: "Dahua DMSS",
   tuya: "Tuya IoT",
   uniview: "Uniview Cloud",
   tplink: "TP-Link (Tapo/VIGI)",
+  reolink: "Reolink",
+  eagle_eye: "Eagle Eye Networks",
 };
 
 export type CloudStreamType = "rtsp" | "hls" | "rtmp" | null;

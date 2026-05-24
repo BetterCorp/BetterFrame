@@ -83,6 +83,9 @@ RUN envsubst < /tmp/sec-config.template.yaml > /home/bsb/sec-config.yaml \
 # Bake version
 RUN echo "$BF_SERVER_VERSION" > /home/bsb/.bf-version
 
+ENV NODE_ENV=production
+ENV BSB_LIVE=true
+
 VOLUME /var/lib/betterframe
 
 EXPOSE 18080 18081 18082

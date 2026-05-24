@@ -28,7 +28,7 @@ default:
           sqlitePath: /var/lib/betterframe/betterframe.db
           pgHost: ${BF_PG_HOST}
           pgPort: ${BF_PG_PORT}
-          pgDatabase: ${BF_PG_DATABASE}
+          pgDatabase: ${BF_PG_DB}
           pgUser: ${BF_PG_USER}
           pgPassword: ${BF_PG_PASSWORD}
           pgPoolMax: ${BF_PG_POOL_MAX}
@@ -61,7 +61,7 @@ default:
           sqlitePath: /var/lib/betterframe/betterframe.db
           pgHost: ${BF_PG_HOST}
           pgPort: ${BF_PG_PORT}
-          pgDatabase: ${BF_PG_DATABASE}
+          pgDatabase: ${BF_PG_DB}
           pgUser: ${BF_PG_USER}
           pgPassword: ${BF_PG_PASSWORD}
           pgPoolMax: ${BF_PG_POOL_MAX}
@@ -90,7 +90,7 @@ default:
           sqlitePath: /var/lib/betterframe/betterframe.db
           pgHost: ${BF_PG_HOST}
           pgPort: ${BF_PG_PORT}
-          pgDatabase: ${BF_PG_DATABASE}
+          pgDatabase: ${BF_PG_DB}
           pgUser: ${BF_PG_USER}
           pgPassword: ${BF_PG_PASSWORD}
           pgPoolMax: ${BF_PG_POOL_MAX}

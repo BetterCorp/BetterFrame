@@ -208,13 +208,21 @@ rm -f /etc/systemd/system/getty.target.wants/* 2>/dev/null || true
 printf 'BetterFrame Kiosk\n\n' > /etc/issue
 rm -f /etc/update-motd.d/* 2>/dev/null || true
 
+# Nuke entire desktop environment if installed (stage3 leftovers).
+# This is the nuclear option — piwiz can't run if there's no desktop.
+apt-get -y purge 'lx*' 'labwc*' 'wayfire*' 'wf-*' lightdm gdm3 sddm \
+  xserver-xorg-core xwayland rpd-plym-splash pi-greeter \
+  desktop-base raspberrypi-ui-mods 2>/dev/null || true
+apt-get -y autoremove 2>/dev/null || true
+
+# Force multi-user via kernel cmdline (overrides any default target)
 # Boot config: quiet splash + no rainbow.
 if [ -f /boot/firmware/cmdline.txt ]; then BOOT_DIR=/boot/firmware
 else BOOT_DIR=/boot; fi
 CMDLINE="${BOOT_DIR}/cmdline.txt"
 CONFIG="${BOOT_DIR}/config.txt"
 if [ -f "$CMDLINE" ]; then
-  for flag in quiet splash plymouth.ignore-serial-consoles loglevel=0 vt.global_cursor_default=0 logo.nologo; do
+  for flag in quiet splash plymouth.ignore-serial-consoles loglevel=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target; do
     if ! grep -qw -- "$flag" "$CMDLINE"; then
       sed -i "s|\$| $flag|" "$CMDLINE"
     fi

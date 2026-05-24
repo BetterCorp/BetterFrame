@@ -137,10 +137,10 @@ export class Repository {
   async markSetupComplete(): Promise<void> {
     await this._run(
       `UPDATE setup_state
-         SET is_complete = 1,
+         SET is_complete = ?,
              completed_at = COALESCE(completed_at, ?)
        WHERE id = 1`,
-      [isoNow()],
+      [true, isoNow()],
     );
     void this.notify("setup_state", "update", 1);
   }
@@ -157,7 +157,8 @@ export class Repository {
 
   async markClusterKeyProvisioned(): Promise<void> {
     await this._run(
-      "UPDATE setup_state SET cluster_key_provisioned = 1 WHERE id = 1",
+      "UPDATE setup_state SET cluster_key_provisioned = ? WHERE id = 1",
+      [true],
     );
   }
 
@@ -380,7 +381,8 @@ export class Repository {
   async createDefaultDisplay(): Promise<Display> {
     const result = await this._run(
       `INSERT INTO displays (name, "index", is_primary)
-       VALUES ('primary', 0, 0) RETURNING id`,
+       VALUES ('primary', 0, ?) RETURNING id`,
+      [false],
     );
     const id = Number(result.lastInsertRowid);
     void this.notify("displays", "create", id);
@@ -398,10 +400,11 @@ export class Repository {
     const idx = input.index ?? await this.nextDisplayIndexForKiosk(kioskId);
     const result = await this._run(
       `INSERT INTO displays (name, "index", is_primary, kiosk_id, width_px, height_px)
-       VALUES (?, ?, 0, ?, ?, ?) RETURNING id`,
+       VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
       [
         input.name,
         idx,
+        false,
         kioskId,
         input.width_px ?? 1920,
         input.height_px ?? 1080,
@@ -1845,7 +1848,7 @@ export class Repository {
   }
 
   async markEventForwarded(eventId: number): Promise<void> {
-    await this._run("UPDATE event_log SET forwarded_to_nodered = 1 WHERE id = ?", [eventId]);
+    await this._run("UPDATE event_log SET forwarded_to_nodered = ? WHERE id = ?", [true, eventId]);
   }
 
   /**

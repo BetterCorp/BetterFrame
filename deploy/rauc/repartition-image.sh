@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Convert a stock pi-gen .img.xz (2-partition: boot + root) into a RAUC
-# A/B image (6 partitions: BF_BOOTSEL + BF_BOOT_A + BF_BOOT_B + BF_ROOT_A
-# + BF_ROOT_B + BF_DATA). Also emits the raw rootfs.ext4 and bootfs.vfat
-# slot images that the .raucb bundle builder consumes.
+# A/B image (5 partitions: BF_BOOT_A + BF_BOOT_B + BF_ROOT_A + BF_ROOT_B
+# + BF_DATA). Also emits the raw rootfs.ext4 and bootfs.vfat slot images
+# that the .raucb bundle builder consumes.
+#
+# Pi 5 tryboot: autoboot.txt goes ON the boot partition (not a separate
+# selector). Bootloader reads config.txt + autoboot.txt from partition 1.
+# On tryboot, switches to partition 2 (BF_BOOT_B).
 #
 # Avoids losetup -fP (kernel partition scanning fails on some CI runners).
 # Instead, parses partition offsets from sfdisk -J and uses dd skip/count.
@@ -85,32 +89,51 @@ losetup -d "$ROOTFS_LOOP"
 echo "==> Labeling rootfs.ext4 as BF_ROOT_A"
 e2label "$WORK/rootfs.ext4" BF_ROOT_A
 
-# Build two bootfs copies with slot-specific cmdline.txt root=LABEL=...
-echo "==> Building BF_BOOT_A + BF_BOOT_B bootfs copies"
+# Build two bootfs copies with slot-specific cmdline.txt + autoboot.txt.
+# Pi 5 bootloader reads autoboot.txt from the SAME partition as config.txt.
+echo "==> Building BF_BOOT_A (partition 1 — primary boot)"
 cp "$WORK/bootfs.vfat" "$WORK/bootfs_A.vfat"
 BOOT_A_LOOP="$(losetup -f --show "$WORK/bootfs_A.vfat")"
 mkdir -p "$WORK/mnt-ba"
 mount "$BOOT_A_LOOP" "$WORK/mnt-ba"
 sed -i 's|root=PARTUUID=[^ ]*|root=LABEL=BF_ROOT_A|' "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
+# autoboot.txt: normal boot → partition 1 (this one), tryboot → partition 2
+cat > "$WORK/mnt-ba/autoboot.txt" <<'AUTOBOOT'
+[all]
+tryboot_a_b=1
+boot_partition=1
+
+[tryboot]
+boot_partition=2
+AUTOBOOT
 umount "$WORK/mnt-ba"
 losetup -d "$BOOT_A_LOOP"
 fatlabel "$WORK/bootfs_A.vfat" BF_BOOT_A
 
+echo "==> Building BF_BOOT_B (partition 2 — tryboot target)"
 cp "$WORK/bootfs.vfat" "$WORK/bootfs_B.vfat"
 BOOT_B_LOOP="$(losetup -f --show "$WORK/bootfs_B.vfat")"
 mkdir -p "$WORK/mnt-bb"
 mount "$BOOT_B_LOOP" "$WORK/mnt-bb"
 sed -i 's|root=PARTUUID=[^ ]*|root=LABEL=BF_ROOT_B|' "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
+cat > "$WORK/mnt-bb/autoboot.txt" <<'AUTOBOOT'
+[all]
+tryboot_a_b=1
+boot_partition=2
+
+[tryboot]
+boot_partition=1
+AUTOBOOT
 umount "$WORK/mnt-bb"
 losetup -d "$BOOT_B_LOOP"
 fatlabel "$WORK/bootfs_B.vfat" BF_BOOT_B
 
-# Layout the new A/B image. GPT, 6 partitions.
-SELECTOR_MB=8
+# Layout the new A/B image. GPT, 5 partitions (no separate selector).
+# Partition 1 = BF_BOOT_A (Pi bootloader looks here for config.txt).
 BOOT_MB=$((BOOTFS_BYTES_SLOT / 1024 / 1024))
 ROOT_MB=$((ROOTFS_BYTES_SLOT / 1024 / 1024))
 DATA_MB=512
-TOTAL_MB=$((SELECTOR_MB + BOOT_MB*2 + ROOT_MB*2 + DATA_MB + 32))
+TOTAL_MB=$((BOOT_MB*2 + ROOT_MB*2 + DATA_MB + 32))
 
 echo "==> Allocating ${TOTAL_MB} MiB output image"
 truncate -s "${TOTAL_MB}M" "$WORK/out.img"
@@ -118,8 +141,7 @@ truncate -s "${TOTAL_MB}M" "$WORK/out.img"
 echo "==> Writing GPT partition table"
 sfdisk "$WORK/out.img" <<SFDISK
 label: gpt
-start=2048, size=$((SELECTOR_MB * 2048)), type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="BF_BOOTSEL"
-size=$((BOOT_MB * 2048)), type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="BF_BOOT_A"
+start=2048, size=$((BOOT_MB * 2048)), type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="BF_BOOT_A"
 size=$((BOOT_MB * 2048)), type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="BF_BOOT_B"
 size=$((ROOT_MB * 2048)), type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="BF_ROOT_A"
 size=$((ROOT_MB * 2048)), type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="BF_ROOT_B"
@@ -135,48 +157,26 @@ get_part() {
 }
 
 # Write each partition content at its exact offset via dd.
-echo "==> Writing BF_BOOTSEL"
+echo "==> Writing BF_BOOT_A (partition 1)"
 P_START=$(get_part 0 start)
-mkfs.vfat -n "BF_BOOTSEL" -C "$WORK/selector.vfat" $((SELECTOR_MB * 1024))
-# Mount the standalone FAT image to write autoboot.txt
-SEL_LOOP="$(losetup -f --show "$WORK/selector.vfat")"
-mkdir -p "$WORK/mnt-sel"
-mount "$SEL_LOOP" "$WORK/mnt-sel"
-cat > "$WORK/mnt-sel/autoboot.txt" <<'AUTOBOOT'
-[all]
-tryboot_a_b=1
-PARTITION_WALK=1
-boot_partition=2
-
-[tryboot]
-boot_partition=3
-AUTOBOOT
-umount "$WORK/mnt-sel"
-losetup -d "$SEL_LOOP"
-dd if="$WORK/selector.vfat" of="$WORK/out.img" bs=$SECTOR seek="$P_START" conv=notrunc status=none
-
-echo "==> Writing BF_BOOT_A"
-P_START=$(get_part 1 start)
 dd if="$WORK/bootfs_A.vfat" of="$WORK/out.img" bs=$SECTOR seek="$P_START" conv=notrunc status=none
 
-echo "==> Writing BF_BOOT_B"
-P_START=$(get_part 2 start)
+echo "==> Writing BF_BOOT_B (partition 2)"
+P_START=$(get_part 1 start)
 dd if="$WORK/bootfs_B.vfat" of="$WORK/out.img" bs=$SECTOR seek="$P_START" conv=notrunc status=none
 
-echo "==> Writing BF_ROOT_A"
-P_START=$(get_part 3 start)
+echo "==> Writing BF_ROOT_A (partition 3)"
+P_START=$(get_part 2 start)
 dd if="$WORK/rootfs.ext4" of="$WORK/out.img" bs=$SECTOR seek="$P_START" conv=notrunc status=none
 
-echo "==> Formatting BF_ROOT_B (empty placeholder)"
+echo "==> Zeroing BF_ROOT_B (partition 4 — empty placeholder)"
+P_START=$(get_part 3 start)
+P_SIZE=$(get_part 3 size)
+dd if=/dev/zero of="$WORK/out.img" bs=$SECTOR seek="$P_START" count="$P_SIZE" conv=notrunc status=none
+
+echo "==> Zeroing BF_DATA (partition 5)"
 P_START=$(get_part 4 start)
 P_SIZE=$(get_part 4 size)
-dd if=/dev/zero of="$WORK/out.img" bs=$SECTOR seek="$P_START" count="$P_SIZE" conv=notrunc status=none
-# Can't mkfs.ext4 directly into a region of a file without losetup. Skip
-# formatting B — rauc install will format it when writing the first update.
-
-echo "==> Formatting BF_DATA"
-P_START=$(get_part 5 start)
-P_SIZE=$(get_part 5 size)
 dd if=/dev/zero of="$WORK/out.img" bs=$SECTOR seek="$P_START" count="$P_SIZE" conv=notrunc status=none
 
 echo "==> Final partition table"

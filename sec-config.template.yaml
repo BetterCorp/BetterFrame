@@ -1,10 +1,11 @@
 # BSB runtime configuration — template for Docker builds.
 #
 # Placeholders (${VAR}) are replaced by envsubst during docker build.
-# Set values via Coolify build args or docker build --build-arg.
+# Defaults come from Dockerfile ARG declarations, not from this file.
+# Set overrides via Coolify build args or docker build --build-arg.
 #
 # For native (non-Docker) installs, copy to sec-config.yaml and
-# replace placeholders with actual values.
+# replace ${VAR} placeholders with actual values.
 
 default:
   observable:
@@ -22,14 +23,14 @@ default:
       plugin: service-store
       enabled: true
       config:
-        driver: ${BF_DB_DRIVER:-postgres}
+        driver: ${BF_DB_DRIVER}
         sqlitePath: /var/lib/betterframe/betterframe.db
-        pgHost: ${BF_PG_HOST:-postgres}
-        pgPort: ${BF_PG_PORT:-5432}
-        pgDatabase: ${BF_PG_DATABASE:-betterframe}
-        pgUser: ${BF_PG_USER:-betterframe}
-        pgPassword: ${BF_PG_PASSWORD:-betterframe}
-        pgPoolMax: ${BF_PG_POOL_MAX:-10}
+        pgHost: ${BF_PG_HOST}
+        pgPort: ${BF_PG_PORT}
+        pgDatabase: ${BF_PG_DATABASE}
+        pgUser: ${BF_PG_USER}
+        pgPassword: ${BF_PG_PASSWORD}
+        pgPoolMax: ${BF_PG_POOL_MAX}
 
     service-admin-http:
       package: betterframe
@@ -48,12 +49,12 @@ default:
         argon2Parallelism: 2
         cookieName: betterframe_session
         totpIssuer: BetterFrame
-        noderedUrl: ${BF_NODERED_URL:-http://nodered:1880}
-        selfUrl: ${BF_SELF_URL:-http://server:18080}
+        noderedUrl: ${BF_NODERED_URL}
+        selfUrl: ${BF_SELF_URL}
         systemdCredsDir: ""
-        firmwareSigningKey: "${BF_FIRMWARE_SIGNING_KEY:-}"
-        firmwareImportApiKey: "${BF_FIRMWARE_IMPORT_API_KEY:-}"
-        otaImportApiKey: "${BF_OTA_IMPORT_API_KEY:-}"
+        firmwareSigningKey: "${BF_FIRMWARE_SIGNING_KEY}"
+        firmwareImportApiKey: "${BF_FIRMWARE_IMPORT_API_KEY}"
+        otaImportApiKey: "${BF_OTA_IMPORT_API_KEY}"
 
     service-api-http:
       package: betterframe
@@ -69,11 +70,11 @@ default:
         argon2Parallelism: 2
         cookieName: betterframe_session
         totpIssuer: BetterFrame
-        noderedUrl: ${BF_NODERED_URL:-http://nodered:1880}
-        mqttUrl: "${BF_MQTT_URL:-}"
-        mqttUsername: "${BF_MQTT_USERNAME:-}"
-        mqttPassword: "${BF_MQTT_PASSWORD:-}"
-        mqttTopicPrefix: ${BF_MQTT_TOPIC_PREFIX:-betterframe}
+        noderedUrl: ${BF_NODERED_URL}
+        mqttUrl: "${BF_MQTT_URL}"
+        mqttUsername: "${BF_MQTT_USERNAME}"
+        mqttPassword: "${BF_MQTT_PASSWORD}"
+        mqttTopicPrefix: ${BF_MQTT_TOPIC_PREFIX}
 
     service-coordinator-ws:
       package: betterframe
@@ -88,4 +89,4 @@ default:
         argon2Parallelism: 2
         cookieName: betterframe_session
         totpIssuer: BetterFrame
-        noderedUrl: ${BF_NODERED_URL:-http://nodered:1880}
+        noderedUrl: ${BF_NODERED_URL}

@@ -1,5 +1,5 @@
 {
-  "name": "@betterframe/server",
+  "name": "betterframe",
   "version": "0.1.0",
   "private": true,
   "description": "BetterFrame backend — BSB v9 service plugins.",

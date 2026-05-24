@@ -47,12 +47,13 @@ RUN apk add --no-cache gettext ffmpeg
 
 RUN mkdir -p /var/lib/betterframe && chown 1000:1000 /var/lib/betterframe
 
-# Install plugin at BSB external plugin path
-COPY --from=builder /app/server/package.json /mnt/bsb-plugins/node_modules/@betterframe/server/package.json
-COPY --from=builder /app/server/bsb-plugin.json /mnt/bsb-plugins/node_modules/@betterframe/server/bsb-plugin.json
-COPY --from=builder /app/server/lib /mnt/bsb-plugins/node_modules/@betterframe/server/lib
-COPY --from=builder /app/node_modules /mnt/bsb-plugins/node_modules/@betterframe/server/node_modules
-COPY --from=builder /app/tsconfig.base.json /mnt/bsb-plugins/node_modules/@betterframe/server/tsconfig.base.json
+# Install plugin into BSB's node_modules (searched at /home/bsb/node_modules)
+# /mnt/bsb-plugins is a VOLUME in base image — writes lost at runtime
+COPY --from=builder /app/server/package.json /home/bsb/node_modules/@betterframe/server/package.json
+COPY --from=builder /app/server/bsb-plugin.json /home/bsb/node_modules/@betterframe/server/bsb-plugin.json
+COPY --from=builder /app/server/lib /home/bsb/node_modules/@betterframe/server/lib
+COPY --from=builder /app/node_modules /home/bsb/node_modules/@betterframe/server/node_modules
+COPY --from=builder /app/tsconfig.base.json /home/bsb/node_modules/@betterframe/server/tsconfig.base.json
 
 # Generate sec-config.yaml from template + build args
 COPY sec-config.template.yaml /tmp/sec-config.template.yaml

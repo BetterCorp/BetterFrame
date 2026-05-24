@@ -40,9 +40,13 @@ export class SqliteAdapter implements DbAdapter {
     return s;
   }
 
+  private coerce(params: ReadonlyArray<SqlValue>): any[] {
+    return params.map((v) => (v === true ? 1 : v === false ? 0 : v));
+  }
+
   async run(sql: string, params: ReadonlyArray<SqlValue> = []): Promise<RunResult> {
     const stmt = this.prep(sql);
-    const r = stmt.run(...(params as any[]));
+    const r = stmt.run(...this.coerce(params));
     return {
       lastInsertRowid:
         typeof r.lastInsertRowid === "bigint" ? r.lastInsertRowid : BigInt(r.lastInsertRowid),
@@ -52,13 +56,13 @@ export class SqliteAdapter implements DbAdapter {
 
   async get<T = Row>(sql: string, params: ReadonlyArray<SqlValue> = []): Promise<T | undefined> {
     const stmt = this.prep(sql);
-    const r = stmt.get(...(params as any[]));
+    const r = (stmt.get as any)(...this.coerce(params));
     return r as T | undefined;
   }
 
   async all<T = Row>(sql: string, params: ReadonlyArray<SqlValue> = []): Promise<T[]> {
     const stmt = this.prep(sql);
-    return stmt.all(...(params as any[])) as T[];
+    return (stmt.all as any)(...this.coerce(params)) as T[];
   }
 
   async exec(sql: string): Promise<void> {

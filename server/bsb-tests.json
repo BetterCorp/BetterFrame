@@ -89,16 +89,6 @@
         "dispose": null
       },
       "tests": []
-    },
-    {
-      "id": "service-store",
-      "skip": true,
-      "default": {
-        "config": {},
-        "setup": null,
-        "dispose": null
-      },
-      "tests": []
     }
   ]
 }

@@ -12,7 +12,7 @@
  * trying to delete the same file (ENOENT is swallowed).
  */
 import { unlink } from "node:fs/promises";
-import type { Repository } from "../plugins/service-store/repository.js";
+import type { Repository } from "./db/repository.js";
 
 interface CleanupLog {
   info(msg: string): void;

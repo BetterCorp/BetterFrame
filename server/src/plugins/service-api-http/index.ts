@@ -15,7 +15,9 @@ import {
 import { H3, serve, readBody, getRequestHeader, getRouterParam, createError } from "h3";
 import type { Server } from "srvx";
 
-import { getRepo } from "../../shared/plugin-registry.js";
+import { dbConfigSchema, type DbConfig } from "../../shared/db/config.js";
+import { initDb } from "../../shared/db/init.js";
+import type { Repository } from "../../shared/db/repository.js";
 import { initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
 import { initiatePairing, claimPairing } from "../../shared/pairing.js";
@@ -26,7 +28,6 @@ import { initOsUpdates, type OsUpdateApi } from "../../shared/os-updates.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
 import { initMqttBridge, type MqttBridge } from "../../shared/mqtt-bridge.js";
 import { createHash } from "node:crypto";
-import type { Repository } from "../service-store/repository.js";
 import type { AuthApi } from "../../shared/auth.js";
 import type { SecretsApi } from "../../shared/secrets.js";
 import type { FirmwareChannel } from "../../shared/types.js";
@@ -35,6 +36,7 @@ import type { FirmwareChannel } from "../../shared/types.js";
 
 const ConfigSchema = av.object(
   {
+    db: dbConfigSchema,
     host: av.string().default("127.0.0.1"),
     port: av.int().min(1).max(65535).default(18081),
     codeTtlSeconds: av.int().min(60).max(3600).default(600),
@@ -84,11 +86,12 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   static override EventSchemas = EventSchemas;
 
   initBeforePlugins?: string[];
-  initAfterPlugins?: string[] = ["service-store"];
+  initAfterPlugins?: string[];
   runBeforePlugins?: string[];
   runAfterPlugins?: string[];
 
   private server?: Server;
+  private dbClose?: () => Promise<void>;
 
   constructor(cfg: BSBServiceConstructor<InstanceType<typeof Config>, typeof EventSchemas>) {
     super(cfg);
@@ -100,7 +103,16 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     const cookieName = this.config.cookieName;
     const totpIssuer = this.config.totpIssuer;
 
-    const repo = getRepo();
+    const dbResult = await initDb(
+      this.config.db as DbConfig,
+      {
+        info: (m) => obs.log.info(m as any, {}),
+        warn: (m) => obs.log.warn(m as any, {}),
+      },
+    );
+    const repo = dbResult.repo;
+    this.dbClose = dbResult.close;
+
     const secrets = initSecrets(
       { dataDir },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
@@ -186,6 +198,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     if (this.server) {
       await this.server.close();
     }
+    await this.dbClose?.();
   }
 }
 

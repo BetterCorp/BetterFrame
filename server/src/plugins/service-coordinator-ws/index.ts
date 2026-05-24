@@ -23,7 +23,8 @@ import { createServer, type IncomingMessage, type Server as HttpServer } from "n
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 
-import { getRepo } from "../../shared/plugin-registry.js";
+import { dbConfigSchema, type DbConfig } from "../../shared/db/config.js";
+import { initDb } from "../../shared/db/init.js";
 import { initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
 import { setCoordinator } from "../../shared/coordinator-registry.js";
@@ -33,6 +34,7 @@ import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-brid
 
 const ConfigSchema = av.object(
   {
+    db: dbConfigSchema,
     host: av.string().default("127.0.0.1"),
     port: av.int().min(1).max(65535).default(18082),
     noderedUrl: av.string().minLength(1).default("http://127.0.0.1:1880"),
@@ -185,7 +187,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   static override EventSchemas = EventSchemas;
 
   initBeforePlugins?: string[];
-  initAfterPlugins?: string[] = ["service-store"];
+  initAfterPlugins?: string[];
   runBeforePlugins?: string[];
   runAfterPlugins?: string[];
 
@@ -193,6 +195,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   private wss?: WebSocketServer;
   private pingInterval?: ReturnType<typeof setInterval>;
   private nodered?: NoderedBridge;
+  private dbClose?: () => Promise<void>;
 
   constructor(cfg: BSBServiceConstructor<InstanceType<typeof Config>, typeof EventSchemas>) {
     super(cfg);
@@ -204,7 +207,16 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     const cookieName = this.config.cookieName;
     const totpIssuer = this.config.totpIssuer;
 
-    const repo = getRepo();
+    const dbResult = await initDb(
+      this.config.db as DbConfig,
+      {
+        info: (m) => obs.log.info(m as any, {}),
+        warn: (m) => obs.log.warn(m as any, {}),
+      },
+    );
+    const repo = dbResult.repo;
+    this.dbClose = dbResult.close;
+
     const secrets = initSecrets(
       { dataDir },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
@@ -457,7 +469,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       try { k.ws.close(); } catch { /* ignore */ }
     }
     connectedKiosks.clear();
-    return new Promise((resolve) => {
+    await new Promise<void>((resolve) => {
       if (this.wss) this.wss.close();
       if (this.httpServer) {
         this.httpServer.close(() => resolve());
@@ -465,5 +477,6 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
         resolve();
       }
     });
+    await this.dbClose?.();
   }
 }

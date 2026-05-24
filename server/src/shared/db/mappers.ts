@@ -54,7 +54,7 @@ import type {
   StreamSelector,
   User,
   UserRole,
-} from "../../shared/types.js";
+} from "../types.js";
 import { b, j } from "./util.js";
 
 type Row = Record<string, unknown>;

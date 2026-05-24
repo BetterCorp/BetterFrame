@@ -55,7 +55,7 @@ import type {
   StreamRole,
   User,
   UserRole,
-} from "../../shared/types.js";
+} from "../types.js";
 import {
   rowToApiKey,
   rowToAuditEntry,

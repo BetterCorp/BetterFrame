@@ -10,7 +10,7 @@
  * OPTIONS, check for 200. No actual stream decode — just reachability.
  */
 import { createConnection, type Socket } from "node:net";
-import type { Repository } from "../plugins/service-store/repository.js";
+import type { Repository } from "./db/repository.js";
 
 export interface CameraHealthConfig {
   intervalMs: number;

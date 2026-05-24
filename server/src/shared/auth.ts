@@ -7,7 +7,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import argon2 from "argon2";
 import { TOTP, Secret } from "otpauth";
 
-import type { Repository } from "../plugins/service-store/repository.js";
+import type { Repository } from "./db/repository.js";
 import type { SecretsApi } from "./secrets.js";
 import type { ApiKey, ApiKeyScope, Session, User } from "./types.js";
 

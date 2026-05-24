@@ -7,7 +7,7 @@
  *   3. Admin enters code in UI → confirmPairing creates kiosk + kiosk_key
  */
 import { randomBytes } from "node:crypto";
-import type { Repository } from "../plugins/service-store/repository.js";
+import type { Repository } from "./db/repository.js";
 import type { AuthApi } from "./auth.js";
 import type { SecretsApi } from "./secrets.js";
 import type { PairingCode } from "./types.js";

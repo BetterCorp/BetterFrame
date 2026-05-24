@@ -5,7 +5,7 @@
  * No label filtering for v0.1.
  */
 import { createHash } from "node:crypto";
-import type { Repository } from "../plugins/service-store/repository.js";
+import type { Repository } from "./db/repository.js";
 import type { SecretsApi } from "./secrets.js";
 
 export interface BundleCamera {

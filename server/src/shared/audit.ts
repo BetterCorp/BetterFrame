@@ -7,7 +7,7 @@
  * Pulls actor + ip out of the h3 event context. Never throws — logging
  * failure must not break the caller's request.
  */
-import type { Repository } from "../plugins/service-store/repository.js";
+import type { Repository } from "./db/repository.js";
 import type { AuditActorType, AuditResult } from "./types.js";
 
 interface AuditCtx {

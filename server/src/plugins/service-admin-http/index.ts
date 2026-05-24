@@ -15,14 +15,15 @@ import {
 import { H3, serve } from "h3";
 import type { Server } from "srvx";
 
-import { getRepo } from "../../shared/plugin-registry.js";
+import { dbConfigSchema, type DbConfig } from "../../shared/db/config.js";
+import { initDb } from "../../shared/db/init.js";
+import type { Repository } from "../../shared/db/repository.js";
 import { initSecrets, type SecretsApi } from "../../shared/secrets.js";
 import { createAuth, type AuthApi } from "../../shared/auth.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
 import { initOsUpdates, type OsUpdateApi } from "../../shared/os-updates.js";
 import { serverVersion } from "../../shared/version.js";
-import type { Repository } from "../service-store/repository.js";
 
 import { registerMiddleware } from "./middleware.js";
 import { registerSetupRoutes } from "./routes-setup.js";
@@ -38,6 +39,7 @@ import { registerCloudRoutes } from "./routes-cloud.js";
 
 const ConfigSchema = av.object(
   {
+    db: dbConfigSchema,
     host: av.string().default("127.0.0.1"),
     port: av.int().min(1).max(65535).default(18080),
     // Secrets config (was service-secrets)
@@ -108,11 +110,13 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   static override EventSchemas = EventSchemas;
 
   initBeforePlugins?: string[];
-  initAfterPlugins?: string[] = ["service-store"];
+  initAfterPlugins?: string[];
   runBeforePlugins?: string[];
   runAfterPlugins?: string[];
 
   private server?: Server;
+  private dbClose?: () => Promise<void>;
+  private purgeTimer?: ReturnType<typeof setInterval>;
   private cameraHealthChecker?: { stop: () => void };
   private artifactCleanup?: { stop: () => void };
 
@@ -128,7 +132,16 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     const cookieName = this.config.cookieName;
     const totpIssuer = this.config.totpIssuer;
 
-    const repo = getRepo();
+    const dbResult = await initDb(
+      this.config.db as DbConfig,
+      {
+        info: (m) => obs.log.info(m as any, {}),
+        warn: (m) => obs.log.warn(m as any, {}),
+      },
+    );
+    const repo = dbResult.repo;
+    this.dbClose = dbResult.close;
+
     const secrets = initSecrets(
       { dataDir, systemdCredsName: this.config.systemdCredsName, systemdCredsDir: this.config.systemdCredsDir || undefined },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
@@ -260,9 +273,29 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     // to set server URL + API key manually. Best-effort with retries because
     // Node-RED may still be starting.
     void this.provisionNoderedBridge(repo, secrets, auth, nodered, selfUrl, obs);
+
+    // Startup purge (inherited from old service-store)
+    this._repo = repo;
+    void this.runPurge(obs);
   }
 
-  async run(_obs: Observable): Promise<void> {}
+  private _repo?: Repository;
+
+  private async runPurge(obs: Observable): Promise<void> {
+    if (!this._repo) return;
+    const r = this._repo;
+    const kl = await r.purgeKioskLogs(14);
+    const el = await r.purgeEventLog(30, 100_000);
+    const al = await r.purgeAuditLog(90);
+    if (kl + el + al > 0) {
+      obs.log.info("purge: {kl} kiosk_logs, {el} event_log, {al} audit_log", { kl, el, al });
+    }
+  }
+
+  async run(obs: Observable): Promise<void> {
+    // Purge every 6 hours (inherited from old service-store).
+    this.purgeTimer = setInterval(() => this.runPurge(obs), 6 * 60 * 60 * 1000);
+  }
 
   private async provisionNoderedBridge(
     repo: Repository,
@@ -324,10 +357,12 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   }
 
   async dispose(): Promise<void> {
+    if (this.purgeTimer) clearInterval(this.purgeTimer);
     this.cameraHealthChecker?.stop();
     this.artifactCleanup?.stop();
     if (this.server) {
       await this.server.close();
     }
+    await this.dbClose?.();
   }
 }

@@ -27,6 +27,15 @@ export class PgAdapter implements DbAdapter {
   }
 
   private rewriteSql(sql: string): string {
+    // SQLite → PG dialect fixups.
+    if (/INSERT\s+OR\s+IGNORE/i.test(sql)) {
+      sql = sql.replace(/INSERT\s+OR\s+IGNORE\s+INTO/gi, "INSERT INTO");
+      sql = sql.trimEnd().replace(/;?\s*$/, " ON CONFLICT DO NOTHING");
+    }
+    if (/INSERT\s+OR\s+REPLACE/i.test(sql)) {
+      sql = sql.replace(/INSERT\s+OR\s+REPLACE\s+INTO/gi, "INSERT INTO");
+    }
+
     // `?` → `$1`, `$2`, ... Skips `?` characters inside string literals.
     let out = "";
     let n = 0;

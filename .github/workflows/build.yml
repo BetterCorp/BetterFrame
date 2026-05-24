@@ -237,10 +237,7 @@ jobs:
         with:
           image-name: betterframe-client-${{ inputs.version }}
           stage-list: stage0 stage1 stage2 ./deploy/pi-gen/stage-betterframe-client
-          # pi-gen default release is trixie (Debian 13).
           enable-ssh: 0
-          username: bfadmin
-          password: betterframe
           locale: en_US.UTF-8
           timezone: Etc/UTC
           hostname: betterframe-kiosk

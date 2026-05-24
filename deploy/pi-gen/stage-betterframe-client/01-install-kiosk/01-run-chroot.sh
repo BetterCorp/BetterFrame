@@ -3,6 +3,15 @@
 # systemd unit + cage PAM + plymouth theme. Mirrors setup-pi-kiosk.sh but
 # baked into the image so first boot is fully provisioned.
 
+# --- bfadmin user (replaces pi-gen's username/password config) ---
+# Pi-gen's built-in user setup reinstalls the firstboot wizard AFTER
+# custom stages run. We create the admin user ourselves to avoid that.
+if ! id -u bfadmin >/dev/null 2>&1; then
+  useradd -m -s /bin/bash -G sudo bfadmin
+fi
+echo "bfadmin:betterframe" | chpasswd
+passwd -e bfadmin
+
 # --- bfkiosk user ---
 if ! id -u bfkiosk >/dev/null 2>&1; then
   useradd -m -s /usr/sbin/nologin bfkiosk

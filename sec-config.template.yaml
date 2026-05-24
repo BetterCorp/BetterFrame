@@ -18,6 +18,7 @@ default:
       enabled: true
   services:
     service-store:
+      package: betterframe
       plugin: service-store
       enabled: true
       config:
@@ -31,6 +32,7 @@ default:
         pgPoolMax: ${BF_PG_POOL_MAX:-10}
 
     service-admin-http:
+      package: betterframe
       plugin: service-admin-http
       enabled: true
       config:
@@ -54,6 +56,7 @@ default:
         otaImportApiKey: "${BF_OTA_IMPORT_API_KEY:-}"
 
     service-api-http:
+      package: betterframe
       plugin: service-api-http
       enabled: true
       config:
@@ -73,6 +76,7 @@ default:
         mqttTopicPrefix: ${BF_MQTT_TOPIC_PREFIX:-betterframe}
 
     service-coordinator-ws:
+      package: betterframe
       plugin: service-coordinator-ws
       enabled: true
       config:

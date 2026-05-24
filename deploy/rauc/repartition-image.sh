@@ -96,7 +96,11 @@ cp "$WORK/bootfs.vfat" "$WORK/bootfs_A.vfat"
 BOOT_A_LOOP="$(losetup -f --show "$WORK/bootfs_A.vfat")"
 mkdir -p "$WORK/mnt-ba"
 mount "$BOOT_A_LOOP" "$WORK/mnt-ba"
+# Disable initramfs — it can't resolve LABEL= and we don't need it.
+# Kernel mounts root directly with rootwait.
+sed -i 's/^auto_initramfs=1/auto_initramfs=0/' "$WORK/mnt-ba/config.txt" 2>/dev/null || true
 sed -i 's|root=PARTUUID=[^ ]*|root=LABEL=BF_ROOT_A|' "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
+sed -i 's|root=/dev/[^ ]*|root=LABEL=BF_ROOT_A|' "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
 # autoboot.txt: normal boot → partition 1 (this one), tryboot → partition 2
 cat > "$WORK/mnt-ba/autoboot.txt" <<'AUTOBOOT'
 [all]
@@ -115,7 +119,9 @@ cp "$WORK/bootfs.vfat" "$WORK/bootfs_B.vfat"
 BOOT_B_LOOP="$(losetup -f --show "$WORK/bootfs_B.vfat")"
 mkdir -p "$WORK/mnt-bb"
 mount "$BOOT_B_LOOP" "$WORK/mnt-bb"
+sed -i 's/^auto_initramfs=1/auto_initramfs=0/' "$WORK/mnt-bb/config.txt" 2>/dev/null || true
 sed -i 's|root=PARTUUID=[^ ]*|root=LABEL=BF_ROOT_B|' "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
+sed -i 's|root=/dev/[^ ]*|root=LABEL=BF_ROOT_B|' "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
 cat > "$WORK/mnt-bb/autoboot.txt" <<'AUTOBOOT'
 [all]
 tryboot_a_b=1

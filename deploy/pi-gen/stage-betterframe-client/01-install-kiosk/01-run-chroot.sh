@@ -144,6 +144,13 @@ for name in ['default','left_ptr','arrow','watch','hand2','text','xterm',
 # Set as system default cursor theme
 update-alternatives --install /usr/share/icons/default/index.theme x-cursor-theme \
   /usr/share/icons/betterframe-empty/cursor.theme 100 2>/dev/null || true
+# Per-user cursor config for bfkiosk (cage reads user's icon theme)
+install -d -o bfkiosk -g bfkiosk -m 755 /home/bfkiosk/.icons/default
+cat > /home/bfkiosk/.icons/default/index.theme <<'CURSOR'
+[Icon Theme]
+Inherits=betterframe-empty
+CURSOR
+chown bfkiosk:bfkiosk /home/bfkiosk/.icons/default/index.theme
 
 # --- Enable services, disable noise ---
 systemctl enable seatd
@@ -217,11 +224,14 @@ rm -f /etc/systemd/system/getty.target.wants/* 2>/dev/null || true
 printf 'BetterFrame Kiosk\n\n' > /etc/issue
 rm -f /etc/update-motd.d/* 2>/dev/null || true
 
-# Nuke entire desktop environment if installed (stage3 leftovers).
-# This is the nuclear option — piwiz can't run if there's no desktop.
-apt-get -y purge 'lx*' 'labwc*' 'wayfire*' 'wf-*' lightdm gdm3 sddm \
-  xserver-xorg-core xwayland rpd-plym-splash pi-greeter \
-  desktop-base raspberrypi-ui-mods 2>/dev/null || true
+# Remove desktop packages that could show setup wizards. Be specific —
+# wildcard 'lx*' kills libwlroots which removes cage (our compositor).
+apt-get -y purge piwiz userconf-pi rpi-first-boot-wizard pi-greeter \
+  rpd-plym-splash lightdm gdm3 sddm desktop-base \
+  raspberrypi-ui-mods lxde lxde-core lxpanel lxsession lxterminal \
+  labwc wayfire 2>/dev/null || true
+# Mark cage as manually installed so autoremove won't touch it.
+apt-mark manual cage 2>/dev/null || true
 apt-get -y autoremove 2>/dev/null || true
 
 # Force multi-user via kernel cmdline (overrides any default target)

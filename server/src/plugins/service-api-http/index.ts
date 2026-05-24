@@ -15,7 +15,7 @@ import {
 import { H3, serve, readBody, getRequestHeader, getRouterParam, createError } from "h3";
 import type { Server } from "srvx";
 
-import { dbConfigSchema, type DbConfig } from "../../shared/db/config.js";
+import type { DbConfig } from "../../shared/db/config.js";
 import { initDb } from "../../shared/db/init.js";
 import type { Repository } from "../../shared/db/repository.js";
 import { initSecrets } from "../../shared/secrets.js";
@@ -36,7 +36,20 @@ import type { FirmwareChannel } from "../../shared/types.js";
 
 const ConfigSchema = av.object(
   {
-    db: dbConfigSchema,
+    db: av.object(
+      {
+        driver: av.enum_(["sqlite", "postgres"] as const).default("postgres"),
+        sqlitePath: av.string().minLength(1).default("/var/lib/betterframe/betterframe.db"),
+        pgUrl: av.string().default(""),
+        pgHost: av.string().default("postgres"),
+        pgPort: av.int().min(1).max(65535).default(5432),
+        pgDatabase: av.string().default("betterframe"),
+        pgUser: av.string().default("betterframe"),
+        pgPassword: av.string().default("betterframe"),
+        pgPoolMax: av.int().min(1).max(1000).default(10),
+      },
+      { unknownKeys: "strip" },
+    ),
     host: av.string().default("127.0.0.1"),
     port: av.int().min(1).max(65535).default(18081),
     codeTtlSeconds: av.int().min(60).max(3600).default(600),

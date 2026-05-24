@@ -23,7 +23,7 @@ import { createServer, type IncomingMessage, type Server as HttpServer } from "n
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 
-import { dbConfigSchema, type DbConfig } from "../../shared/db/config.js";
+import type { DbConfig } from "../../shared/db/config.js";
 import { initDb } from "../../shared/db/init.js";
 import { initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
@@ -34,7 +34,20 @@ import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-brid
 
 const ConfigSchema = av.object(
   {
-    db: dbConfigSchema,
+    db: av.object(
+      {
+        driver: av.enum_(["sqlite", "postgres"] as const).default("postgres"),
+        sqlitePath: av.string().minLength(1).default("/var/lib/betterframe/betterframe.db"),
+        pgUrl: av.string().default(""),
+        pgHost: av.string().default("postgres"),
+        pgPort: av.int().min(1).max(65535).default(5432),
+        pgDatabase: av.string().default("betterframe"),
+        pgUser: av.string().default("betterframe"),
+        pgPassword: av.string().default("betterframe"),
+        pgPoolMax: av.int().min(1).max(1000).default(10),
+      },
+      { unknownKeys: "strip" },
+    ),
     host: av.string().default("127.0.0.1"),
     port: av.int().min(1).max(65535).default(18082),
     noderedUrl: av.string().minLength(1).default("http://127.0.0.1:1880"),

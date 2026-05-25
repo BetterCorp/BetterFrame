@@ -92,8 +92,8 @@ get_part() {
   echo "$NEW_PT" | jq -r ".partitiontable.partitions[$1].$2"
 }
 
-PARTUUID_ROOT_A="$(get_part 2 uuid)"
-PARTUUID_ROOT_B="$(get_part 3 uuid)"
+PARTUUID_ROOT_A="$(get_part 2 uuid | tr '[:upper:]' '[:lower:]')"
+PARTUUID_ROOT_B="$(get_part 3 uuid | tr '[:upper:]' '[:lower:]')"
 echo "    BF_ROOT_A PARTUUID: $PARTUUID_ROOT_A"
 echo "    BF_ROOT_B PARTUUID: $PARTUUID_ROOT_B"
 
@@ -119,9 +119,10 @@ cp "$WORK/bootfs.vfat" "$WORK/bootfs_A.vfat"
 BOOT_A_LOOP="$(losetup -f --show "$WORK/bootfs_A.vfat")"
 mkdir -p "$WORK/mnt-ba"
 mount "$BOOT_A_LOOP" "$WORK/mnt-ba"
-# Replace root= with PARTUUID (works with initramfs)
+# Replace root= with PARTUUID (works with initramfs). Remove 'resize' (breaks GPT).
 sed -i "s|root=PARTUUID=[^ ]*|root=PARTUUID=${PARTUUID_ROOT_A}|" "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
 sed -i "s|root=/dev/[^ ]*|root=PARTUUID=${PARTUUID_ROOT_A}|" "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
+sed -i 's/ resize//' "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
 cat > "$WORK/mnt-ba/autoboot.txt" <<'AUTOBOOT'
 [all]
 tryboot_a_b=1
@@ -141,6 +142,7 @@ mkdir -p "$WORK/mnt-bb"
 mount "$BOOT_B_LOOP" "$WORK/mnt-bb"
 sed -i "s|root=PARTUUID=[^ ]*|root=PARTUUID=${PARTUUID_ROOT_B}|" "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
 sed -i "s|root=/dev/[^ ]*|root=PARTUUID=${PARTUUID_ROOT_B}|" "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
+sed -i 's/ resize//' "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
 cat > "$WORK/mnt-bb/autoboot.txt" <<'AUTOBOOT'
 [all]
 tryboot_a_b=1
@@ -171,10 +173,16 @@ P_START=$(get_part 3 start)
 P_SIZE=$(get_part 3 size)
 dd if=/dev/zero of="$WORK/out.img" bs=$SECTOR seek="$P_START" count="$P_SIZE" conv=notrunc status=none
 
-echo "==> Zeroing BF_DATA (partition 5)"
+echo "==> Formatting BF_DATA (partition 5)"
 P_START=$(get_part 4 start)
 P_SIZE=$(get_part 4 size)
 dd if=/dev/zero of="$WORK/out.img" bs=$SECTOR seek="$P_START" count="$P_SIZE" conv=notrunc status=none
+# Create a standalone ext4 image, then dd it in
+DATA_BYTES=$((P_SIZE * SECTOR))
+truncate -s "$DATA_BYTES" "$WORK/data.ext4"
+mkfs.ext4 -L BF_DATA -q "$WORK/data.ext4"
+dd if="$WORK/data.ext4" of="$WORK/out.img" bs=$SECTOR seek="$P_START" conv=notrunc status=none
+rm "$WORK/data.ext4"
 
 echo "==> Final partition table"
 sfdisk -d "$WORK/out.img"

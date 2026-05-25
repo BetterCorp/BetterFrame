@@ -89,6 +89,8 @@ jobs:
         env:
           BF_BUILD_ARCH: ${{ matrix.target }}
           BF_BUILD_VERSION: ${{ inputs.version }}
+          BF_AXIOM_KEY: ${{ secrets.BF_AXIOM_KEY }}
+          BF_AXIOM_DATASET: ${{ secrets.BF_AXIOM_DATASET }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Strip + rename

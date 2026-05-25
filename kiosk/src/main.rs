@@ -1,4 +1,5 @@
 mod at_rest;
+mod axiom;
 mod bundle;
 mod cec;
 mod firmware;
@@ -39,14 +40,22 @@ pub enum ServerMsg {
 use gstreamer::prelude::PluginFeatureExtManual;
 use gtk4::prelude::{ApplicationExt, ApplicationExtManual};
 use tracing::info;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env().add_directive("betterframe_kiosk=info".parse().unwrap()),
-        )
-        .init();
+    let env_filter = EnvFilter::from_default_env()
+        .add_directive("betterframe_kiosk=info".parse().unwrap());
+
+    let registry = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer());
+
+    if let Some(axiom_layer) = axiom::AxiomLayer::new() {
+        info!("axiom logging enabled");
+        registry.with(axiom_layer).init();
+    } else {
+        registry.init();
+    }
 
     gstreamer::init().expect("Failed to init GStreamer");
 

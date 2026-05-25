@@ -19,6 +19,13 @@ pub struct AxiomLayer {
     dataset: String,
     buffer: Arc<Mutex<Vec<serde_json::Value>>>,
     hostname: String,
+    kiosk_id: Arc<Mutex<Option<String>>>,
+}
+
+static GLOBAL_KIOSK_ID: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn set_kiosk_id(id: String) {
+    *GLOBAL_KIOSK_ID.lock().unwrap() = Some(id);
 }
 
 impl AxiomLayer {
@@ -39,6 +46,7 @@ impl AxiomLayer {
             dataset,
             buffer: Arc::new(Mutex::new(Vec::with_capacity(BATCH_SIZE))),
             hostname,
+            kiosk_id: Arc::new(Mutex::new(None)),
         };
 
         let flush_buffer = layer.buffer.clone();
@@ -125,6 +133,10 @@ impl<S: Subscriber> Layer<S> for AxiomLayer {
             .remove("message")
             .unwrap_or(serde_json::Value::String(String::new()));
 
+        let kiosk_id = GLOBAL_KIOSK_ID.lock().ok()
+            .and_then(|g| g.clone())
+            .unwrap_or_default();
+
         let entry = serde_json::json!({
             "_time": chrono_now(),
             "level": level,
@@ -132,6 +144,7 @@ impl<S: Subscriber> Layer<S> for AxiomLayer {
             "target": target,
             "host": self.hostname,
             "service": "betterframe-kiosk",
+            "kiosk_id": kiosk_id,
             "fields": serde_json::Value::Object(fields),
         });
 

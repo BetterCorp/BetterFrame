@@ -271,6 +271,7 @@ fn encrypt_key_file() -> PathBuf {
 #[derive(Deserialize)]
 struct ClaimResp {
     status: String,
+    kiosk_id: Option<String>,
     kiosk_key: Option<String>,
     kiosk_name: Option<String>,
     cluster_key: Option<String>,
@@ -298,6 +299,9 @@ pub fn poll_claim(server: &str, code: &str) -> (String, String) {
             if claim.status == "claimed" {
                 let key = claim.kiosk_key.expect("missing kiosk_key");
                 let name = claim.kiosk_name.unwrap_or_else(|| "kiosk".into());
+                if let Some(ref id) = claim.kiosk_id {
+                    crate::axiom::set_kiosk_id(id.clone());
+                }
                 crate::at_rest::write_encrypted(&key_file(), key.as_bytes())
                     .expect("failed to save kiosk key");
                 // Store cluster key for backward compat ONVIF password decryption.

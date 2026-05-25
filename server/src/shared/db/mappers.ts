@@ -59,8 +59,8 @@ import { b, j } from "./util.js";
 
 type Row = Record<string, unknown>;
 
-const s = (v: unknown): string => (typeof v === "string" ? v : "");
-const sn = (v: unknown): string | null => (typeof v === "string" ? v : null);
+const s = (v: unknown): string => (typeof v === "string" ? v : v instanceof Date ? v.toISOString() : String(v ?? ""));
+const sn = (v: unknown): string | null => (v == null ? null : typeof v === "string" ? v : v instanceof Date ? v.toISOString() : null);
 const n = (v: unknown): number => (typeof v === "number" ? v : Number(v) || 0);
 const nn = (v: unknown): number | null =>
   v === null || v === undefined ? null : typeof v === "number" ? v : Number(v) || null;

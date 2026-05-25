@@ -327,7 +327,8 @@ function registerPairingRoutes(
     const code = (body?.code ?? "").trim().toUpperCase();
     if (!code) throw createError({ statusCode: 400, statusMessage: "code required" });
 
-    const result = await claimPairing(repo, code);
+    const reqObs = event.context.obs!;
+    const result = await claimPairing(repo, code, reqObs);
     if (result.status === "pending") {
       return new Response(JSON.stringify({ status: "pending" }), {
         status: 202,
@@ -335,6 +336,10 @@ function registerPairingRoutes(
       });
     }
 
+    reqObs.log.info("pair/claim success for code {code} kiosk {kioskId}", {
+      code,
+      kioskId: String(result.kioskId),
+    });
     return {
       status: "claimed",
       kiosk_id: result.kioskId,

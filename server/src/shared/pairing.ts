@@ -7,6 +7,7 @@
  *   3. Admin enters code in UI → confirmPairing creates kiosk + kiosk_key
  */
 import { randomBytes } from "node:crypto";
+import type { Observable } from "@bsb/base";
 import type { Repository } from "./db/repository.js";
 import type { AuthApi } from "./auth.js";
 import type { SecretsApi } from "./secrets.js";
@@ -76,16 +77,17 @@ export interface PairingClaimResult {
 export async function claimPairing(
   repo: Repository,
   code: string,
+  obs?: Observable,
 ): Promise<PairingClaimResult> {
   const pc = await repo.getPairingCode(code);
-  if (!pc) return { status: "pending" };
-  if (new Date(pc.expires_at) < new Date()) return { status: "pending" };
-  if (!pc.consumed_at) return { status: "pending" };
+  if (!pc) { obs?.log.debug("claim {code}: code not found", { code }); return { status: "pending" }; }
+  if (new Date(pc.expires_at) < new Date()) { obs?.log.debug("claim {code}: expired", { code }); return { status: "pending" }; }
+  if (!pc.consumed_at) { obs?.log.debug("claim {code}: not yet consumed", { code }); return { status: "pending" }; }
 
   const extras = pc.extras as Record<string, unknown>;
   const kioskKey = extras["kiosk_key_plaintext"] as string | undefined;
 
-  if (!kioskKey || !pc.consumed_by_kiosk_id) return { status: "pending" };
+  if (!kioskKey || !pc.consumed_by_kiosk_id) { obs?.log.warn("claim {code}: consumed but missing key/id", { code }); return { status: "pending" }; }
 
   const kiosk = await repo.getKioskById(pc.consumed_by_kiosk_id);
   const clusterKey = extras["cluster_key"] as string | undefined;

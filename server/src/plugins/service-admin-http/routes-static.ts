@@ -8,11 +8,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
 import { type H3, getRouterParam, createError } from "h3";
 
-const STATIC_DIR = resolve(
-  import.meta.dirname ?? ".",
-  "../../web-static",
-);
-
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -25,12 +20,13 @@ const MIME_TYPES: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
-export function registerStaticRoutes(app: H3): void {
+export function registerStaticRoutes(app: H3, pluginCwd: string): void {
+  const STATIC_DIR = resolve(pluginCwd, "../../web-static");
+
   app.get("/static/**:path", (event) => {
     const reqPath = getRouterParam(event, "path");
     if (!reqPath) throw createError({ statusCode: 404 });
 
-    // Prevent directory traversal
     const resolved = resolve(STATIC_DIR, reqPath);
     if (!resolved.startsWith(STATIC_DIR)) {
       throw createError({ statusCode: 403 });

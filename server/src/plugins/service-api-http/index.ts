@@ -169,10 +169,12 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       onRequest: (event) => {
         const method = event.req.method ?? "GET";
         const path = event.req.url ?? "/";
-        event.context.obs = self.createTrace(`${method} ${path}`, {
+        const reqObs = self.createTrace(`${method} ${path}`, {
           "http.method": method,
           "http.url": path,
         });
+        reqObs.log.info("{method} {path}", { method, path });
+        event.context.obs = reqObs;
       },
       onError: (error, event) => {
         const reqObs = event.context.obs ?? obs;

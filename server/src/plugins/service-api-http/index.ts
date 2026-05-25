@@ -177,9 +177,17 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
         event.context.obs = reqObs;
       },
       onError: (error, event) => {
-        const reqObs = event.context.obs ?? obs;
+        const reqObs = event.context.obs;
         const status = error.status ?? 500;
         const path = event.req.url ?? "unknown";
+        if (!reqObs) {
+          obs.log.error("HTTP {status} {path}: {err} (no request trace)", {
+            status,
+            path,
+            err: error.message ?? String(error),
+          });
+          return;
+        }
         if (status >= 500) {
           reqObs.log.error("HTTP {status} {path}: {err}", {
             status,

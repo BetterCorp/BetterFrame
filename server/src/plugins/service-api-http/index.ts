@@ -175,37 +175,26 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
         });
         reqObs.log.info("{method} {path}", { method, path });
         event.context.obs = reqObs;
+        (event.context as any)._startMs = Date.now();
       },
       onError: (error, event) => {
         const reqObs = event.context.obs;
-        const status = error.status ?? 500;
         const path = event.req.url ?? "unknown";
+        const err = error.message ?? String(error);
         if (!reqObs) {
-          obs.log.error("HTTP {status} {path}: {err} (no request trace)", {
-            status,
-            path,
-            err: error.message ?? String(error),
-          });
+          obs.log.error("HTTP error {path}: {err} (no request trace)", { path, err });
           return;
         }
-        if (status >= 500) {
-          reqObs.log.error("HTTP {status} {path}: {err}", {
-            status,
-            path,
-            err: error.message ?? String(error),
-          });
-        } else if (status >= 400) {
-          reqObs.log.warn("HTTP {status} {path}: {err}", {
-            status,
-            path,
-            err: error.message ?? String(error),
-          });
-        }
+        reqObs.log.error("HTTP error {path}: {err}", { path, err });
       },
-      onResponse: (_response, event) => {
-        if (event.context.obs) {
-          event.context.obs.end();
-        }
+      onResponse: (response, event) => {
+        const reqObs = event.context.obs;
+        if (!reqObs) return;
+        const ms = Date.now() - ((event.context as any)._startMs ?? Date.now());
+        const status = response.status ?? 200;
+        const path = event.req.url ?? "unknown";
+        reqObs.log.info("{status} {path} {ms}ms", { status, path, ms });
+        reqObs.end();
       },
     });
 

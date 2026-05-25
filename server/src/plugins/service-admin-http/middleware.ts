@@ -16,6 +16,7 @@ declare module "h3" {
     user?: User;
     session?: Session;
     apiKeyPrefix?: string;
+    obs?: import("@bsb/base").Observable;
   }
 }
 

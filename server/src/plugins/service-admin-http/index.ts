@@ -195,16 +195,37 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       otaImportApiKey: this.config.otaImportApiKey || undefined,
     };
 
+    const self = this;
     const app = new H3({
+      onRequest: (event) => {
+        const method = event.req.method ?? "GET";
+        const path = event.req.url ?? "/";
+        event.context.obs = self.createTrace(`${method} ${path}`, {
+          "http.method": method,
+          "http.url": path,
+        });
+      },
       onError: (error, event) => {
+        const reqObs = event.context.obs ?? obs;
         const status = error.status ?? 500;
         const path = event.req.url ?? "unknown";
         if (status >= 500) {
-          obs.log.warn("HTTP {status} {path}: {err}", {
+          reqObs.log.error("HTTP {status} {path}: {err}", {
             status,
             path,
             err: error.message ?? String(error),
           });
+        } else if (status >= 400) {
+          reqObs.log.warn("HTTP {status} {path}: {err}", {
+            status,
+            path,
+            err: error.message ?? String(error),
+          });
+        }
+      },
+      onResponse: (_response, event) => {
+        if (event.context.obs) {
+          event.context.obs.end();
         }
       },
     });

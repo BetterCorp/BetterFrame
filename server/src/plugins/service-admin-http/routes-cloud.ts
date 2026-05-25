@@ -133,6 +133,7 @@ export function registerCloudRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/cloud-accounts/:id/sync", async (event) => {
+    event.context.obs?.log.info("cloud sync {id} by {user}", { id: getRouterParam(event, "id") ?? "?", user: event.context.user?.username ?? "unknown" });
     const id = String(getRouterParam(event, "id"));
     await syncCloudAccount(id, deps);
     return new Response(null, { status: 302, headers: { location: "/admin/cloud-accounts" } });

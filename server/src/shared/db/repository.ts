@@ -9,6 +9,7 @@
  * cross workers with the same handle.
  */
 import { randomBytes } from "node:crypto";
+import type { Observable } from "@bsb/base";
 import type { DbAdapter, RunResult, Row } from "./db-adapter.js";
 
 import type {
@@ -92,23 +93,63 @@ type NotifyFn = (
 export class Repository {
   readonly adapter: DbAdapter;
   private readonly notify: NotifyFn;
+  private _obs?: Observable;
 
   constructor(adapter: DbAdapter, notify: NotifyFn) {
     this.adapter = adapter;
     this.notify = notify;
   }
 
+  /** Set a per-request observable for DB call tracing. */
+  withObs(obs: Observable): this {
+    this._obs = obs;
+    return this;
+  }
+
+  /** Clear the per-request observable. */
+  clearObs(): this {
+    this._obs = undefined;
+    return this;
+  }
+
   /** Run a write statement. Params are passed as an array. */
-  private _run(sql: string, params: unknown[] = []): Promise<RunResult> {
-    return this.adapter.run(sql, params as any);
+  private async _run(sql: string, params: unknown[] = []): Promise<RunResult> {
+    const span = this._obs?.startSpan("db.run", { "db.statement": sql.slice(0, 100) });
+    try {
+      const result = await this.adapter.run(sql, params as any);
+      span?.end();
+      return result;
+    } catch (err) {
+      span?.log.error("db error: {err}", { err: (err as Error).message });
+      span?.end();
+      throw err;
+    }
   }
   /** Single-row query. */
-  private _get<T = Row>(sql: string, params: unknown[] = []): Promise<T | undefined> {
-    return this.adapter.get<T>(sql, params as any);
+  private async _get<T = Row>(sql: string, params: unknown[] = []): Promise<T | undefined> {
+    const span = this._obs?.startSpan("db.get", { "db.statement": sql.slice(0, 100) });
+    try {
+      const result = await this.adapter.get<T>(sql, params as any);
+      span?.end();
+      return result;
+    } catch (err) {
+      span?.log.error("db error: {err}", { err: (err as Error).message });
+      span?.end();
+      throw err;
+    }
   }
   /** Multi-row query. */
-  private _all<T = Row>(sql: string, params: unknown[] = []): Promise<T[]> {
-    return this.adapter.all<T>(sql, params as any);
+  private async _all<T = Row>(sql: string, params: unknown[] = []): Promise<T[]> {
+    const span = this._obs?.startSpan("db.all", { "db.statement": sql.slice(0, 100) });
+    try {
+      const result = await this.adapter.all<T>(sql, params as any);
+      span?.end();
+      return result;
+    } catch (err) {
+      span?.log.error("db error: {err}", { err: (err as Error).message });
+      span?.end();
+      throw err;
+    }
   }
   /** Execute DDL. */
   private _exec(sql: string): Promise<void> {

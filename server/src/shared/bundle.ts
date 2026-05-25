@@ -5,6 +5,7 @@
  * No label filtering for v0.1.
  */
 import { createHash } from "node:crypto";
+import type { Observable } from "@bsb/base";
 import type { Repository } from "./db/repository.js";
 import type { SecretsApi } from "./secrets.js";
 
@@ -126,9 +127,15 @@ export async function generateBundle(
   secrets: SecretsApi,
   kioskId: number,
   clusterKey: string | undefined,
+  obs?: Observable,
 ): Promise<KioskBundle | null> {
+  const span = obs?.startSpan("generateBundle", { "kiosk.id": kioskId });
   const kiosk = await repo.getKioskById(kioskId);
-  if (!kiosk) return null;
+  if (!kiosk) {
+    span?.log.info("bundle: kiosk {id} not found", { id: String(kioskId) });
+    span?.end();
+    return null;
+  }
 
   // Per-kiosk encryption key (preferred) — decrypt from server storage.
   let kioskEncryptKey: string | undefined;
@@ -149,7 +156,11 @@ export async function generateBundle(
 
   // Admin can disable a display — kiosk must never open a window on it.
   const displays = allDisplays.filter((d) => d.is_enabled);
-  if (displays.length === 0) return null;
+  if (displays.length === 0) {
+    span?.log.info("bundle: kiosk {id} has no enabled displays", { id: String(kioskId) });
+    span?.end();
+    return null;
+  }
 
   // Collect camera IDs across ALL displays' layouts (de-duped).
   const allLayoutIds = new Set<number>();
@@ -348,5 +359,10 @@ export async function generateBundle(
     .update(JSON.stringify(bundle))
     .digest("hex");
 
+  span?.log.info("bundle generated for kiosk {id} version {ver}", {
+    id: String(kioskId),
+    ver: bundle.version.slice(0, 12),
+  });
+  span?.end();
   return bundle;
 }

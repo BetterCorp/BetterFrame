@@ -371,8 +371,9 @@ function registerKioskRoutes(
     const kiosk = await auth.verifyKioskKey(token);
     if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
 
+    event.context.obs?.log.info("bundle fetch for kiosk {id}", { id: String(kiosk.id) });
     const clusterKey = await getClusterKey(repo, secrets);
-    const bundle = await generateBundle(repo, secrets, kiosk.id, clusterKey);
+    const bundle = await generateBundle(repo, secrets, kiosk.id, clusterKey, event.context.obs);
     if (!bundle) throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
 
     // Content-hash ETag: kiosk sends If-None-Match on subsequent fetches.
@@ -402,6 +403,7 @@ function registerKioskRoutes(
 
     const kiosk = await auth.verifyKioskKey(token);
     if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    event.context.obs?.log.info("heartbeat from kiosk {id}", { id: String(kiosk.id) });
 
     const body = await readBody<{
       bundle_version?: string;
@@ -607,6 +609,7 @@ function registerKioskRoutes(
     }>(event);
 
     if (!body?.topic) throw createError({ statusCode: 400, statusMessage: "topic required" });
+    event.context.obs?.log.info("event from kiosk {id} topic {topic}", { id: String(kiosk.id), topic: body.topic });
 
     // Dedup: Hikvision cameras send duplicate ONVIF events within ~1s.
     // Key = kiosk_id:camera_id:topic:source_keys_hash. Window = 2s.
@@ -747,6 +750,7 @@ function registerKioskRoutes(
     if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
     const verified = await auth.verifyKioskKey(token);
     if (!verified) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    event.context.obs?.log.info("firmware check for kiosk {id}", { id: String(verified.id) });
     const kiosk = await repo.getKioskById(verified.id);
     if (!kiosk) throw createError({ statusCode: 404, statusMessage: "kiosk not found" });
 
@@ -875,6 +879,7 @@ function registerKioskRoutes(
     if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
     const verified = await auth.verifyKioskKey(token);
     if (!verified) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    event.context.obs?.log.info("os update check for kiosk {id}", { id: String(verified.id) });
     const kiosk = await repo.getKioskById(verified.id);
     if (!kiosk) throw createError({ statusCode: 404, statusMessage: "kiosk not found" });
 

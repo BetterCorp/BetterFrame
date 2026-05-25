@@ -504,6 +504,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/cameras/new", async (event) => {
+    event.context.obs?.log.info("camera create by {user}", { user: event.context.user?.username ?? "unknown" });
     const user = event.context.user!;
     const body = await readBody<Record<string, string>>(event);
     const name = (body?.["name"] ?? "").trim();
@@ -842,6 +843,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/kiosks/pair", async (event) => {
+    event.context.obs?.log.info("kiosk pair by {user}", { user: event.context.user?.username ?? "unknown" });
     const body = await readBody<Record<string, string>>(event);
     const code = (body?.["code"] ?? "").trim().toUpperCase();
     const nameOverride = (body?.["name_override"] ?? "").trim() || undefined;
@@ -858,7 +860,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         initialLabels,
         replaceKioskId,
         force,
-      });
+      }, event.context.obs);
       await audit(deps.repo, event as any, replaceKioskId ? "kiosk.replace" : "kiosk.pair", {
         resource_type: "kiosk",
         resource_id: result.kioskId,
@@ -898,6 +900,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/layouts/new", async (event) => {
+    event.context.obs?.log.info("layout create by {user}", { user: event.context.user?.username ?? "unknown" });
     const user = event.context.user!;
     const body = await readBody<Record<string, string>>(event);
     const name = (body?.["name"] ?? "").trim();
@@ -949,6 +952,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/layouts/:id", async (event) => {
+    event.context.obs?.log.info("layout update {id} by {user}", { id: getRouterParam(event, "id") ?? "?", user: event.context.user?.username ?? "unknown" });
     const id = Number(getRouterParam(event, "id"));
     const body = await readBody<Record<string, string>>(event);
     const coolingStr = body?.["cooling_timeout_seconds"] ?? "";
@@ -1235,6 +1239,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/layouts/:id/delete", async (event) => {
+    event.context.obs?.log.info("layout delete {id} by {user}", { id: getRouterParam(event, "id") ?? "?", user: event.context.user?.username ?? "unknown" });
     const id = Number(getRouterParam(event, "id"));
     await deps.repo.deleteLayout(id);
     notifyKiosks();
@@ -1403,6 +1408,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/cameras/:id", async (event) => {
+    event.context.obs?.log.info("camera update {id} by {user}", { id: getRouterParam(event, "id") ?? "?", user: event.context.user?.username ?? "unknown" });
     const id = Number(getRouterParam(event, "id"));
     const cam = await deps.repo.getCameraById(id);
     if (cam?.type === "cloud") {
@@ -1547,6 +1553,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/cameras/:id/delete", async (event) => {
+    event.context.obs?.log.info("camera delete {id} by {user}", { id: getRouterParam(event, "id") ?? "?", user: event.context.user?.username ?? "unknown" });
     const id = Number(getRouterParam(event, "id"));
     await deps.repo.deleteCamera(id);
     notifyKiosks();
@@ -1804,6 +1811,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/kiosks/:id/delete", async (event) => {
+    event.context.obs?.log.info("kiosk delete {id} by {user}", { id: getRouterParam(event, "id") ?? "?", user: event.context.user?.username ?? "unknown" });
     const id = Number(getRouterParam(event, "id"));
     await deps.repo.deleteKiosk(id);
     return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });

@@ -125,7 +125,9 @@ export async function confirmPairing(
   auth: AuthApi,
   secrets: SecretsApi,
   input: PairingConfirmInput,
+  obs?: Observable,
 ): Promise<{ kioskId: number; kioskName: string }> {
+  obs?.log.info("confirm pairing for code {code}", { code: input.code });
   const pc = await repo.getPairingCode(input.code);
   if (!pc) throw new Error("pairing code not found");
   if (pc.consumed_at) throw new Error("pairing code already used");
@@ -237,5 +239,6 @@ export async function confirmPairing(
     encrypt_key: kioskEncryptKey,
   });
 
+  obs?.log.info("created kiosk {name} id {id}", { name: kioskName, id: String(kioskId) });
   return { kioskId, kioskName };
 }

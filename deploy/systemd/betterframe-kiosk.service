@@ -28,6 +28,7 @@ WorkingDirectory=/home/bfkiosk
 EnvironmentFile=-/etc/default/betterframe-kiosk
 Environment=XDG_SESSION_TYPE=wayland
 Environment=XDG_SESSION_CLASS=user
+Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=GST_DEBUG=1
 # Cursor: cage/wlroots draws a sprite in the gap between compositor start
 # and first kiosk frame. Collapse to 1px transparent + force software

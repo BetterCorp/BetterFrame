@@ -8,13 +8,9 @@
 # selector). Bootloader reads config.txt + autoboot.txt from partition 1.
 # On tryboot, switches to partition 2 (BF_BOOT_B).
 #
-# Avoids losetup -fP (kernel partition scanning fails on some CI runners).
-# Instead, parses partition offsets from sfdisk -J and uses dd skip/count.
-#
-# Usage:
-#   repartition-image.sh <in.img.xz> <out.img.xz> <rootfs.ext4> <bootfs.vfat>
-#
-# Requires: xz, sfdisk, dd, e2fsprogs, dosfstools, jq, mkfs.ext4, mkfs.vfat
+# Root is referenced by PARTUUID (not LABEL) because the initramfs
+# can't resolve filesystem labels. PARTUUIDs are read back from the
+# GPT after sfdisk creates it.
 set -euo pipefail
 
 IN_IMG_XZ="${1:?input .img.xz required}"
@@ -32,8 +28,6 @@ echo "==> Reading source partition table (sfdisk -J)"
 PTABLE="$(sfdisk -J "$WORK/in.img")"
 echo "$PTABLE" | jq .
 
-# Parse partition start + size in sectors (512 bytes each) via jq.
-# Pi-gen: p1 = boot (vfat), p2 = root (ext4).
 P1_START=$(echo "$PTABLE" | jq '.partitiontable.partitions[0].start')
 P1_SIZE=$(echo "$PTABLE" | jq '.partitiontable.partitions[0].size')
 P2_START=$(echo "$PTABLE" | jq '.partitiontable.partitions[1].start')
@@ -51,7 +45,6 @@ echo "==> Extracting rootfs.ext4 (dd)"
 dd if="$WORK/in.img" of="$WORK/rootfs.ext4" \
    bs=$SECTOR skip="$P2_START" count="$P2_SIZE" status=progress
 
-# Done with source image — free disk space.
 rm "$WORK/in.img"
 
 # Shrink rootfs to actual used + 25% headroom.
@@ -68,74 +61,11 @@ echo "    rootfs slot size: $((ROOTFS_BYTES_SLOT / 1024 / 1024)) MiB"
 BOOTFS_BYTES_SLOT="$(stat -c%s "$WORK/bootfs.vfat")"
 echo "    bootfs slot size: $((BOOTFS_BYTES_SLOT / 1024 / 1024)) MiB"
 
-# Patch rootfs fstab to use LABEL (slot-agnostic).
-echo "==> Patching rootfs /etc/fstab"
-ROOTFS_LOOP="$(losetup -f --show "$WORK/rootfs.ext4")"
-mkdir -p "$WORK/mnt-root"
-mount "$ROOTFS_LOOP" "$WORK/mnt-root"
-cat > "$WORK/mnt-root/etc/fstab" <<'FSTAB'
-LABEL=BF_BOOT_A  /boot/firmware  vfat  defaults  0  2
-LABEL=BF_ROOT_A  /               ext4  defaults,noatime  0  1
-LABEL=BF_DATA    /var/lib/betterframe  ext4  defaults,noatime,nofail  0  2
-FSTAB
-mkdir -p "$WORK/mnt-root/etc/betterframe"
-printf '%s\n' "${BF_BUILD_VERSION:-0.0.0}" > "$WORK/mnt-root/etc/betterframe/os-version"
-printf '%s\n' "${BF_RAUC_COMPATIBILITY:-betterframe-rpi5-aarch64}" > "$WORK/mnt-root/etc/betterframe/os-compatibility"
-umount "$WORK/mnt-root"
-losetup -d "$ROOTFS_LOOP"
-
-# Set ext4 filesystem label BEFORE dd into the output image. cmdline.txt
-# uses root=LABEL=BF_ROOT_A so the kernel needs this label to find root.
+# Set ext4 filesystem label (used by fstab, not cmdline).
 echo "==> Labeling rootfs.ext4 as BF_ROOT_A"
 e2label "$WORK/rootfs.ext4" BF_ROOT_A
 
-# Build two bootfs copies with slot-specific cmdline.txt + autoboot.txt.
-# Pi 5 bootloader reads autoboot.txt from the SAME partition as config.txt.
-echo "==> Building BF_BOOT_A (partition 1 — primary boot)"
-cp "$WORK/bootfs.vfat" "$WORK/bootfs_A.vfat"
-BOOT_A_LOOP="$(losetup -f --show "$WORK/bootfs_A.vfat")"
-mkdir -p "$WORK/mnt-ba"
-mount "$BOOT_A_LOOP" "$WORK/mnt-ba"
-# Disable initramfs — it can't resolve LABEL= and we don't need it.
-# Kernel mounts root directly with rootwait.
-sed -i 's/^auto_initramfs=1/auto_initramfs=0/' "$WORK/mnt-ba/config.txt" 2>/dev/null || true
-sed -i 's|root=PARTUUID=[^ ]*|root=LABEL=BF_ROOT_A|' "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
-sed -i 's|root=/dev/[^ ]*|root=LABEL=BF_ROOT_A|' "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
-# autoboot.txt: normal boot → partition 1 (this one), tryboot → partition 2
-cat > "$WORK/mnt-ba/autoboot.txt" <<'AUTOBOOT'
-[all]
-tryboot_a_b=1
-boot_partition=1
-
-[tryboot]
-boot_partition=2
-AUTOBOOT
-umount "$WORK/mnt-ba"
-losetup -d "$BOOT_A_LOOP"
-fatlabel "$WORK/bootfs_A.vfat" BF_BOOT_A
-
-echo "==> Building BF_BOOT_B (partition 2 — tryboot target)"
-cp "$WORK/bootfs.vfat" "$WORK/bootfs_B.vfat"
-BOOT_B_LOOP="$(losetup -f --show "$WORK/bootfs_B.vfat")"
-mkdir -p "$WORK/mnt-bb"
-mount "$BOOT_B_LOOP" "$WORK/mnt-bb"
-sed -i 's/^auto_initramfs=1/auto_initramfs=0/' "$WORK/mnt-bb/config.txt" 2>/dev/null || true
-sed -i 's|root=PARTUUID=[^ ]*|root=LABEL=BF_ROOT_B|' "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
-sed -i 's|root=/dev/[^ ]*|root=LABEL=BF_ROOT_B|' "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
-cat > "$WORK/mnt-bb/autoboot.txt" <<'AUTOBOOT'
-[all]
-tryboot_a_b=1
-boot_partition=2
-
-[tryboot]
-boot_partition=1
-AUTOBOOT
-umount "$WORK/mnt-bb"
-losetup -d "$BOOT_B_LOOP"
-fatlabel "$WORK/bootfs_B.vfat" BF_BOOT_B
-
-# Layout the new A/B image. GPT, 5 partitions (no separate selector).
-# Partition 1 = BF_BOOT_A (Pi bootloader looks here for config.txt).
+# ---- Create GPT FIRST so we can read back PARTUUIDs ----
 BOOT_MB=$((BOOTFS_BYTES_SLOT / 1024 / 1024))
 ROOT_MB=$((ROOTFS_BYTES_SLOT / 1024 / 1024))
 DATA_MB=512
@@ -154,15 +84,76 @@ size=$((ROOT_MB * 2048)), type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="BF_RO
 type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="BF_DATA"
 SFDISK
 
-# Re-read the new partition table to get exact offsets for dd writes.
+# Read back PARTUUIDs from the new GPT.
 NEW_PT="$(sfdisk -J "$WORK/out.img")"
 echo "$NEW_PT" | jq .
 
 get_part() {
-  echo "$NEW_PT" | jq ".partitiontable.partitions[$1].$2"
+  echo "$NEW_PT" | jq -r ".partitiontable.partitions[$1].$2"
 }
 
-# Write each partition content at its exact offset via dd.
+PARTUUID_ROOT_A="$(get_part 2 uuid)"
+PARTUUID_ROOT_B="$(get_part 3 uuid)"
+echo "    BF_ROOT_A PARTUUID: $PARTUUID_ROOT_A"
+echo "    BF_ROOT_B PARTUUID: $PARTUUID_ROOT_B"
+
+# ---- Patch rootfs fstab (uses LABEL — works after initramfs) ----
+echo "==> Patching rootfs /etc/fstab"
+ROOTFS_LOOP="$(losetup -f --show "$WORK/rootfs.ext4")"
+mkdir -p "$WORK/mnt-root"
+mount "$ROOTFS_LOOP" "$WORK/mnt-root"
+cat > "$WORK/mnt-root/etc/fstab" <<FSTAB
+LABEL=BF_BOOT_A  /boot/firmware  vfat  defaults  0  2
+PARTUUID=${PARTUUID_ROOT_A}  /               ext4  defaults,noatime  0  1
+LABEL=BF_DATA    /var/lib/betterframe  ext4  defaults,noatime,nofail  0  2
+FSTAB
+mkdir -p "$WORK/mnt-root/etc/betterframe"
+printf '%s\n' "${BF_BUILD_VERSION:-0.0.0}" > "$WORK/mnt-root/etc/betterframe/os-version"
+printf '%s\n' "${BF_RAUC_COMPATIBILITY:-betterframe-rpi5-aarch64}" > "$WORK/mnt-root/etc/betterframe/os-compatibility"
+umount "$WORK/mnt-root"
+losetup -d "$ROOTFS_LOOP"
+
+# ---- Build bootfs copies with PARTUUID + autoboot.txt ----
+echo "==> Building BF_BOOT_A (partition 1 — primary boot)"
+cp "$WORK/bootfs.vfat" "$WORK/bootfs_A.vfat"
+BOOT_A_LOOP="$(losetup -f --show "$WORK/bootfs_A.vfat")"
+mkdir -p "$WORK/mnt-ba"
+mount "$BOOT_A_LOOP" "$WORK/mnt-ba"
+# Replace root= with PARTUUID (works with initramfs)
+sed -i "s|root=PARTUUID=[^ ]*|root=PARTUUID=${PARTUUID_ROOT_A}|" "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
+sed -i "s|root=/dev/[^ ]*|root=PARTUUID=${PARTUUID_ROOT_A}|" "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
+cat > "$WORK/mnt-ba/autoboot.txt" <<'AUTOBOOT'
+[all]
+tryboot_a_b=1
+boot_partition=1
+
+[tryboot]
+boot_partition=2
+AUTOBOOT
+umount "$WORK/mnt-ba"
+losetup -d "$BOOT_A_LOOP"
+fatlabel "$WORK/bootfs_A.vfat" BF_BOOT_A
+
+echo "==> Building BF_BOOT_B (partition 2 — tryboot target)"
+cp "$WORK/bootfs.vfat" "$WORK/bootfs_B.vfat"
+BOOT_B_LOOP="$(losetup -f --show "$WORK/bootfs_B.vfat")"
+mkdir -p "$WORK/mnt-bb"
+mount "$BOOT_B_LOOP" "$WORK/mnt-bb"
+sed -i "s|root=PARTUUID=[^ ]*|root=PARTUUID=${PARTUUID_ROOT_B}|" "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
+sed -i "s|root=/dev/[^ ]*|root=PARTUUID=${PARTUUID_ROOT_B}|" "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
+cat > "$WORK/mnt-bb/autoboot.txt" <<'AUTOBOOT'
+[all]
+tryboot_a_b=1
+boot_partition=2
+
+[tryboot]
+boot_partition=1
+AUTOBOOT
+umount "$WORK/mnt-bb"
+losetup -d "$BOOT_B_LOOP"
+fatlabel "$WORK/bootfs_B.vfat" BF_BOOT_B
+
+# ---- Write partition contents into the image ----
 echo "==> Writing BF_BOOT_A (partition 1)"
 P_START=$(get_part 0 start)
 dd if="$WORK/bootfs_A.vfat" of="$WORK/out.img" bs=$SECTOR seek="$P_START" conv=notrunc status=none

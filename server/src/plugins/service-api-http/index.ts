@@ -164,7 +164,19 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       },
     );
 
-    const app = new H3();
+    const app = new H3({
+      onError: (error, event) => {
+        const status = error.status ?? 500;
+        const path = event.req.url ?? "unknown";
+        if (status >= 500) {
+          obs.log.warn("HTTP {status} {path}: {err}", {
+            status,
+            path,
+            err: error.message ?? String(error),
+          });
+        }
+      },
+    });
 
     app.get("/api/kiosk/_check", async (event) => {
       const token = extractBearerToken(event);

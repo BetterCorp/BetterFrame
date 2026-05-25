@@ -14,6 +14,8 @@ export function B(value: boolean): 0 | 1 {
 }
 
 export function j<T>(value: unknown, fallback: T): T {
+  if (value == null) return fallback;
+  if (typeof value === "object" || Array.isArray(value)) return value as T;
   if (typeof value !== "string" || value.length === 0) return fallback;
   try {
     return JSON.parse(value) as T;

@@ -605,4 +605,65 @@ export const TENANT_MIGRATIONS: readonly string[] = [
 
     RAISE NOTICE 'UUIDv7 migration: complete — all PKs and FKs are now TEXT';
   END $$`,
+
+  // ---- Backfill: replace bare-integer IDs with real UUIDv7 ----
+  // Existing rows have IDs like "1", "2" from the type conversion.
+  // This replaces them with proper UUIDv7-shaped UUIDs while updating
+  // all FK references so nothing breaks.
+  `DO $$
+  DECLARE
+    r record;
+    old_id text;
+    new_id text;
+    fk record;
+  BEGIN
+    -- Process each table that has a TEXT PK column named 'id'
+    -- where any value looks like a bare integer (no hyphens/letters).
+    FOR r IN
+      SELECT t.table_name
+        FROM information_schema.columns t
+       WHERE t.table_schema = current_schema()
+         AND t.column_name = 'id'
+         AND t.data_type = 'text'
+         AND t.table_name NOT IN ('schema_migrations', 'setup_state', 'pairing_codes', 'sessions')
+       ORDER BY t.table_name
+    LOOP
+      -- For each row with an integer-looking id, replace it.
+      FOR old_id IN
+        EXECUTE format('SELECT id FROM %I WHERE id ~ $1', r.table_name)
+        USING '^[0-9]+$'
+      LOOP
+        new_id := gen_random_uuid()::text;
+
+        -- Update all FK columns in other tables that reference this id.
+        FOR fk IN
+          SELECT
+            ccu.table_name AS ref_table,
+            kcu.table_name AS fk_table,
+            kcu.column_name AS fk_column
+          FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage kcu
+            ON tc.constraint_name = kcu.constraint_name
+            AND tc.table_schema = kcu.table_schema
+          JOIN information_schema.constraint_column_usage ccu
+            ON tc.constraint_name = ccu.constraint_name
+            AND tc.table_schema = ccu.table_schema
+          WHERE tc.constraint_type = 'FOREIGN KEY'
+            AND tc.table_schema = current_schema()
+            AND ccu.table_name = r.table_name
+            AND ccu.column_name = 'id'
+        LOOP
+          EXECUTE format('UPDATE %I SET %I = $1 WHERE %I = $2',
+                         fk.fk_table, fk.fk_column, fk.fk_column)
+          USING new_id, old_id;
+        END LOOP;
+
+        -- Update the PK itself.
+        EXECUTE format('UPDATE %I SET id = $1 WHERE id = $2', r.table_name)
+        USING new_id, old_id;
+      END LOOP;
+    END LOOP;
+
+    RAISE NOTICE 'UUIDv7 backfill: all integer-looking IDs replaced with UUIDs';
+  END $$`,
 ];

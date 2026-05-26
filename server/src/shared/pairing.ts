@@ -71,6 +71,7 @@ export interface PairingClaimResult {
   kioskName?: string;
   kioskKey?: string;
   clusterKey?: string;
+  encryptKey?: string;
   bundleUrl?: string;
 }
 
@@ -91,9 +92,15 @@ export async function claimPairing(
 
   const kiosk = await repo.getKioskById(pc.consumed_by_kiosk_id);
   const clusterKey = extras["cluster_key"] as string | undefined;
+  const encryptKey = extras["encrypt_key"] as string | undefined;
 
-  // Wipe plaintext key from extras after first claim
-  await repo.updatePairingCodeExtras(code, { ...extras, kiosk_key_plaintext: undefined, cluster_key: undefined });
+  // Wipe plaintext keys from extras after first claim
+  await repo.updatePairingCodeExtras(code, {
+    ...extras,
+    kiosk_key_plaintext: undefined,
+    cluster_key: undefined,
+    encrypt_key: undefined,
+  });
 
   return {
     status: "claimed",
@@ -101,6 +108,7 @@ export async function claimPairing(
     kioskName: kiosk?.name ?? pc.kiosk_proposed_name ?? "kiosk",
     kioskKey,
     clusterKey,
+    encryptKey,
     bundleUrl: "/api/kiosk/bundle",
   };
 }

@@ -344,6 +344,7 @@ function registerPairingRoutes(
       kiosk_name: result.kioskName,
       kiosk_key: result.kioskKey,
       cluster_key: result.clusterKey,
+      encrypt_key: result.encryptKey,
       bundle_url: result.bundleUrl,
     };
   });

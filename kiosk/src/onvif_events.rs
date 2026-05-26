@@ -448,6 +448,11 @@ fn parse_notification_messages(xml: &str) -> Vec<OnvifEvent> {
                 source.insert(name, value);
             }
         }
+        if let Some(key_block) = extract_section(block, "Key") {
+            for (name, value) in parse_simple_items(&key_block) {
+                data.insert(name, value);
+            }
+        }
         if let Some(data_block) = extract_section(block, "Data") {
             for (name, value) in parse_simple_items(&data_block) {
                 data.insert(name, value);

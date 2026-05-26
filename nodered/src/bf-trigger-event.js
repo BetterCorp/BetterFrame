@@ -15,7 +15,7 @@ module.exports = function (RED) {
   function BfTriggerEventNode(config) {
     RED.nodes.createNode(this, config);
     const node = this;
-    const filterCam = config.camera_id ? Number(config.camera_id) : null;
+    const filterCam = config.camera_id ? String(config.camera_id).trim() : null;
     const filterTopic = (config.topic_filter || "").trim();
 
     async function handler(req, res) {
@@ -27,7 +27,7 @@ module.exports = function (RED) {
       }
 
       const cameraId = body.camera_id ?? body.source_camera_id ?? null;
-      if (filterCam !== null && Number(cameraId) !== filterCam) {
+      if (filterCam !== null && String(cameraId) !== filterCam) {
         return res.status(200).end();
       }
 

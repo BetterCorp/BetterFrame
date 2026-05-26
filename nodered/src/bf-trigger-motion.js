@@ -22,7 +22,7 @@ module.exports = function (RED) {
   function BfTriggerMotionNode(config) {
     RED.nodes.createNode(this, config);
     const node = this;
-    const filterCam = config.camera_id ? Number(config.camera_id) : null;
+    const filterCam = config.camera_id ? String(config.camera_id).trim() : null;
 
     async function handler(req, res) {
       const body = await readJsonBody(req);
@@ -34,7 +34,7 @@ module.exports = function (RED) {
       }
 
       const cameraId = body.camera_id ?? body.source_camera_id ?? null;
-      if (filterCam !== null && Number(cameraId) !== filterCam) {
+      if (filterCam !== null && String(cameraId) !== filterCam) {
         return res.status(200).end();
       }
 

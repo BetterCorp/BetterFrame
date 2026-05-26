@@ -735,11 +735,11 @@ function registerKioskRoutes(
       nodered.forward(body.topic, out, markForwarded);
       mqtt.publishEvent(kiosk.id, body.topic, out);
 
-      // ONVIF events: also forward to the fixed onvif.event route so the
-      // bf-trigger-motion / bf-trigger-anpr / bf-trigger-event nodes
-      // receive them without needing per-topic route registration.
+      nodered.forward("camera.event", out);
       if (body.source_type === "onvif") {
         nodered.forward("onvif.event", out);
+        nodered.forward("onvif.motion", out);
+        nodered.forward("onvif.anpr", out);
       }
     }
 

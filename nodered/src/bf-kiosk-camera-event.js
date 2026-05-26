@@ -26,8 +26,7 @@ module.exports = function (RED) {
   function BfKioskCameraEventNode(config) {
     RED.nodes.createNode(this, config);
     const node = this;
-    const filterIdRaw = (config.camera_id || "").toString().trim();
-    const filterId = filterIdRaw && !isNaN(Number(filterIdRaw)) ? Number(filterIdRaw) : null;
+    const filterId = (config.camera_id || "").toString().trim() || null;
 
     async function handler(req, res) {
       const body = await readJsonBody(req);
@@ -37,7 +36,7 @@ module.exports = function (RED) {
       const cameraId = body.camera_id !== undefined ? body.camera_id
         : body.source_camera_id !== undefined ? body.source_camera_id
         : null;
-      if (filterId !== null && Number(cameraId) !== filterId) {
+      if (filterId !== null && String(cameraId) !== filterId) {
         return res.status(200).end();
       }
       const out = {

@@ -15,7 +15,7 @@ services:
       context: .
       dockerfile: deploy/docker/Dockerfile.server
       args:
-        BF_SERVER_VERSION: ${BF_SERVER_VERSION:-${COOLIFY_GIT_COMMIT:-${SOURCE_COMMIT:-dev}}}
+        BF_SERVER_VERSION: ${COOLIFY_GIT_COMMIT:-dev}
     container_name: betterframe-server
     restart: unless-stopped
     environment:

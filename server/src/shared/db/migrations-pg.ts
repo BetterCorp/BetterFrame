@@ -486,40 +486,6 @@ export const TENANT_MIGRATIONS: readonly string[] = [
 
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS partitions_json JSONB`,
 
-  // ---- AbleSign digital signage integration -----------------------------------
-  `CREATE TABLE IF NOT EXISTS ablesign_accounts (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    api_key_encrypted TEXT NOT NULL,
-    workspace_id TEXT,
-    is_active BOOLEAN NOT NULL DEFAULT true,
-    screen_count INTEGER NOT NULL DEFAULT 0,
-    last_sync_at TIMESTAMPTZ,
-    last_sync_error TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-  )`,
-  `CREATE TABLE IF NOT EXISTS ablesign_screens (
-    id TEXT PRIMARY KEY,
-    account_id TEXT NOT NULL REFERENCES ablesign_accounts(id) ON DELETE CASCADE,
-    ablesign_screen_id TEXT NOT NULL,
-    ablesign_screen_token_encrypted TEXT,
-    kiosk_id TEXT REFERENCES kiosks(id) ON DELETE SET NULL,
-    title TEXT NOT NULL,
-    orientation TEXT NOT NULL DEFAULT 'landscape',
-    online BOOLEAN NOT NULL DEFAULT false,
-    last_heartbeat_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE(account_id, ablesign_screen_id)
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_ablesign_screens_account ON ablesign_screens(account_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_ablesign_screens_kiosk ON ablesign_screens(kiosk_id)`,
-
-  // Add ablesign entity type + ablesign_screen_id column to entities
-  `ALTER TABLE entities DROP CONSTRAINT IF EXISTS entities_type_check`,
-  `ALTER TABLE entities ADD CONSTRAINT entities_type_check CHECK(type IN ('camera', 'html', 'web', 'dashboard', 'ablesign'))`,
-  `ALTER TABLE entities ADD COLUMN IF NOT EXISTS ablesign_screen_id TEXT REFERENCES ablesign_screens(id) ON DELETE CASCADE`,
-  `ALTER TABLE entities ADD COLUMN IF NOT EXISTS managed BOOLEAN NOT NULL DEFAULT false`,
-
   // ---- UUIDv7 PK migration for existing databases ----
   // Databases created before UUIDv7 migration have INTEGER PKs.
   // This migration converts them to TEXT in-place. Safe to run on
@@ -723,4 +689,36 @@ export const TENANT_MIGRATIONS: readonly string[] = [
 
     RAISE NOTICE 'UUIDv7 backfill: all integer-looking IDs replaced with UUIDs';
   END $$`,
+
+  // ---- AbleSign digital signage integration -----------------------------------
+  `CREATE TABLE IF NOT EXISTS ablesign_accounts (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    api_key_encrypted TEXT NOT NULL,
+    workspace_id TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    screen_count INTEGER NOT NULL DEFAULT 0,
+    last_sync_at TIMESTAMPTZ,
+    last_sync_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS ablesign_screens (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES ablesign_accounts(id) ON DELETE CASCADE,
+    ablesign_screen_id TEXT NOT NULL,
+    ablesign_screen_token_encrypted TEXT,
+    kiosk_id TEXT REFERENCES kiosks(id) ON DELETE SET NULL,
+    title TEXT NOT NULL,
+    orientation TEXT NOT NULL DEFAULT 'landscape',
+    online BOOLEAN NOT NULL DEFAULT false,
+    last_heartbeat_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(account_id, ablesign_screen_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_ablesign_screens_account ON ablesign_screens(account_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_ablesign_screens_kiosk ON ablesign_screens(kiosk_id)`,
+  `ALTER TABLE entities DROP CONSTRAINT IF EXISTS entities_type_check`,
+  `ALTER TABLE entities ADD CONSTRAINT entities_type_check CHECK(type IN ('camera', 'html', 'web', 'dashboard', 'ablesign'))`,
+  `ALTER TABLE entities ADD COLUMN IF NOT EXISTS ablesign_screen_id TEXT REFERENCES ablesign_screens(id) ON DELETE CASCADE`,
+  `ALTER TABLE entities ADD COLUMN IF NOT EXISTS managed BOOLEAN NOT NULL DEFAULT false`,
 ];

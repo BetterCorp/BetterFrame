@@ -140,3 +140,5 @@ jobs:
       BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}
       BF_RAUC_SIGNING_CERT:  ${{ secrets.BF_RAUC_SIGNING_CERT }}
       BF_RAUC_SIGNING_KEY:   ${{ secrets.BF_RAUC_SIGNING_KEY }}
+      BF_AXIOM_KEY:          ${{ secrets.BF_AXIOM_KEY }}
+      BF_AXIOM_DATASET:      ${{ secrets.BF_AXIOM_DATASET }}

@@ -42,6 +42,10 @@ on:
         required: false
       BF_RAUC_SIGNING_KEY:
         required: false
+      BF_AXIOM_KEY:
+        required: false
+      BF_AXIOM_DATASET:
+        required: false
 
 permissions:
   contents: write

@@ -485,4 +485,137 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_camera_event_subs_camera ON camera_event_subscriptions(camera_id)`,
 
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS partitions_json JSONB`,
+
+  // ---- UUIDv7 PK migration for existing databases ----
+  // Databases created before UUIDv7 migration have INTEGER PKs.
+  // This migration converts them to TEXT in-place. Safe to run on
+  // databases that already have TEXT PKs (DO NOTHING on conflict).
+  // gen_random_uuid() generates UUIDv4 — close enough for backfill.
+  // New rows already use app-generated UUIDv7 from repository.ts.
+  `DO $$
+  DECLARE
+    col_type text;
+  BEGIN
+    -- Only run if users.id is still integer (proxy for "needs migration").
+    SELECT data_type INTO col_type
+      FROM information_schema.columns
+     WHERE table_schema = current_schema()
+       AND table_name = 'users'
+       AND column_name = 'id';
+    IF col_type IS NULL OR col_type = 'text' THEN
+      RAISE NOTICE 'UUIDv7 migration: already TEXT or table missing, skipping';
+      RETURN;
+    END IF;
+
+    RAISE NOTICE 'UUIDv7 migration: converting INTEGER PKs to TEXT...';
+
+    -- 1. Drop all FK constraints first (PG won't let us alter referenced types).
+    -- sessions → users
+    ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_user_id_fkey;
+    -- api_keys → users
+    ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_user_id_fkey;
+    -- cameras — no FK to other tables with integer PK
+    -- camera_streams → cameras
+    ALTER TABLE camera_streams DROP CONSTRAINT IF EXISTS camera_streams_camera_id_fkey;
+    -- layouts — no FK from layout.id
+    -- display_layouts → displays, layouts
+    ALTER TABLE display_layouts DROP CONSTRAINT IF EXISTS display_layouts_display_id_fkey;
+    ALTER TABLE display_layouts DROP CONSTRAINT IF EXISTS display_layouts_layout_id_fkey;
+    -- layout_cells → layouts, cameras
+    ALTER TABLE layout_cells DROP CONSTRAINT IF EXISTS layout_cells_layout_id_fkey;
+    ALTER TABLE layout_cells DROP CONSTRAINT IF EXISTS layout_cells_camera_id_fkey;
+    -- kiosks → displays
+    ALTER TABLE kiosks DROP CONSTRAINT IF EXISTS kiosks_display_id_fkey;
+    -- labels — standalone
+    -- kiosk_labels → kiosks, labels
+    ALTER TABLE kiosk_labels DROP CONSTRAINT IF EXISTS kiosk_labels_kiosk_id_fkey;
+    ALTER TABLE kiosk_labels DROP CONSTRAINT IF EXISTS kiosk_labels_label_id_fkey;
+    -- camera_labels → cameras, labels
+    ALTER TABLE camera_labels DROP CONSTRAINT IF EXISTS camera_labels_camera_id_fkey;
+    ALTER TABLE camera_labels DROP CONSTRAINT IF EXISTS camera_labels_label_id_fkey;
+    -- layout_labels → layouts, labels
+    ALTER TABLE layout_labels DROP CONSTRAINT IF EXISTS layout_labels_layout_id_fkey;
+    ALTER TABLE layout_labels DROP CONSTRAINT IF EXISTS layout_labels_label_id_fkey;
+    -- event_log → kiosks, cameras
+    ALTER TABLE event_log DROP CONSTRAINT IF EXISTS event_log_source_kiosk_id_fkey;
+    ALTER TABLE event_log DROP CONSTRAINT IF EXISTS event_log_source_camera_id_fkey;
+    -- kiosk_gpio_bindings → kiosks
+    ALTER TABLE kiosk_gpio_bindings DROP CONSTRAINT IF EXISTS kiosk_gpio_bindings_kiosk_id_fkey;
+    -- kiosk_logs → kiosks
+    ALTER TABLE kiosk_logs DROP CONSTRAINT IF EXISTS kiosk_logs_kiosk_id_fkey;
+    -- camera_event_subscriptions → cameras, kiosks
+    ALTER TABLE camera_event_subscriptions DROP CONSTRAINT IF EXISTS camera_event_subscriptions_camera_id_fkey;
+    ALTER TABLE camera_event_subscriptions DROP CONSTRAINT IF EXISTS camera_event_subscriptions_subscribed_by_kiosk_id_fkey;
+    -- entities — standalone
+    -- audit_log — standalone
+    -- cloud_accounts — standalone (already TEXT PK)
+
+    -- 2. Convert PK columns: add TEXT column, backfill, swap.
+    -- Helper: for each table, ALTER COLUMN TYPE works if data is castable.
+    -- Integer → TEXT cast is safe.
+    ALTER TABLE users ALTER COLUMN id TYPE TEXT USING id::TEXT;
+    ALTER TABLE api_keys ALTER COLUMN id TYPE TEXT USING id::TEXT;
+    ALTER TABLE displays ALTER COLUMN id TYPE TEXT USING id::TEXT;
+    ALTER TABLE cameras ALTER COLUMN id TYPE TEXT USING id::TEXT;
+    ALTER TABLE camera_streams ALTER COLUMN id TYPE TEXT USING id::TEXT;
+    ALTER TABLE layouts ALTER COLUMN id TYPE TEXT USING id::TEXT;
+    ALTER TABLE layout_cells ALTER COLUMN id TYPE TEXT USING id::TEXT;
+    ALTER TABLE kiosks ALTER COLUMN id TYPE TEXT USING id::TEXT;
+    ALTER TABLE labels ALTER COLUMN id TYPE TEXT USING id::TEXT;
+    ALTER TABLE event_log ALTER COLUMN id TYPE TEXT USING id::TEXT;
+    ALTER TABLE entities ALTER COLUMN id TYPE TEXT USING id::TEXT;
+    ALTER TABLE kiosk_gpio_bindings ALTER COLUMN id TYPE TEXT USING id::TEXT;
+    ALTER TABLE audit_log ALTER COLUMN id TYPE TEXT USING id::TEXT;
+    ALTER TABLE kiosk_logs ALTER COLUMN id TYPE TEXT USING id::TEXT;
+    ALTER TABLE camera_event_subscriptions ALTER COLUMN id TYPE TEXT USING id::TEXT;
+
+    -- 3. Convert FK columns to TEXT too.
+    ALTER TABLE sessions ALTER COLUMN user_id TYPE TEXT USING user_id::TEXT;
+    ALTER TABLE api_keys ALTER COLUMN user_id TYPE TEXT USING user_id::TEXT;
+    ALTER TABLE camera_streams ALTER COLUMN camera_id TYPE TEXT USING camera_id::TEXT;
+    ALTER TABLE display_layouts ALTER COLUMN display_id TYPE TEXT USING display_id::TEXT;
+    ALTER TABLE display_layouts ALTER COLUMN layout_id TYPE TEXT USING layout_id::TEXT;
+    ALTER TABLE layout_cells ALTER COLUMN layout_id TYPE TEXT USING layout_id::TEXT;
+    ALTER TABLE layout_cells ALTER COLUMN camera_id TYPE TEXT USING camera_id::TEXT;
+    ALTER TABLE kiosks ALTER COLUMN display_id TYPE TEXT USING display_id::TEXT;
+    ALTER TABLE kiosk_labels ALTER COLUMN kiosk_id TYPE TEXT USING kiosk_id::TEXT;
+    ALTER TABLE kiosk_labels ALTER COLUMN label_id TYPE TEXT USING label_id::TEXT;
+    ALTER TABLE camera_labels ALTER COLUMN camera_id TYPE TEXT USING camera_id::TEXT;
+    ALTER TABLE camera_labels ALTER COLUMN label_id TYPE TEXT USING label_id::TEXT;
+    ALTER TABLE layout_labels ALTER COLUMN layout_id TYPE TEXT USING layout_id::TEXT;
+    ALTER TABLE layout_labels ALTER COLUMN label_id TYPE TEXT USING label_id::TEXT;
+    ALTER TABLE event_log ALTER COLUMN source_kiosk_id TYPE TEXT USING source_kiosk_id::TEXT;
+    ALTER TABLE event_log ALTER COLUMN source_camera_id TYPE TEXT USING source_camera_id::TEXT;
+    ALTER TABLE kiosk_gpio_bindings ALTER COLUMN kiosk_id TYPE TEXT USING kiosk_id::TEXT;
+    ALTER TABLE kiosk_logs ALTER COLUMN kiosk_id TYPE TEXT USING kiosk_id::TEXT;
+    ALTER TABLE camera_event_subscriptions ALTER COLUMN camera_id TYPE TEXT USING camera_id::TEXT;
+    ALTER TABLE camera_event_subscriptions ALTER COLUMN subscribed_by_kiosk_id TYPE TEXT USING subscribed_by_kiosk_id::TEXT;
+    -- displays.default_layout_id
+    ALTER TABLE displays ALTER COLUMN default_layout_id TYPE TEXT USING default_layout_id::TEXT;
+
+    -- 4. Re-add FK constraints.
+    ALTER TABLE sessions ADD CONSTRAINT sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+    ALTER TABLE api_keys ADD CONSTRAINT api_keys_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+    ALTER TABLE camera_streams ADD CONSTRAINT camera_streams_camera_id_fkey FOREIGN KEY (camera_id) REFERENCES cameras(id) ON DELETE CASCADE;
+    ALTER TABLE display_layouts ADD CONSTRAINT display_layouts_display_id_fkey FOREIGN KEY (display_id) REFERENCES displays(id) ON DELETE CASCADE;
+    ALTER TABLE display_layouts ADD CONSTRAINT display_layouts_layout_id_fkey FOREIGN KEY (layout_id) REFERENCES layouts(id) ON DELETE CASCADE;
+    ALTER TABLE layout_cells ADD CONSTRAINT layout_cells_layout_id_fkey FOREIGN KEY (layout_id) REFERENCES layouts(id) ON DELETE CASCADE;
+    ALTER TABLE layout_cells ADD CONSTRAINT layout_cells_camera_id_fkey FOREIGN KEY (camera_id) REFERENCES cameras(id) ON DELETE SET NULL;
+    ALTER TABLE kiosks ADD CONSTRAINT kiosks_display_id_fkey FOREIGN KEY (display_id) REFERENCES displays(id) ON DELETE SET NULL;
+    ALTER TABLE kiosk_labels ADD CONSTRAINT kiosk_labels_kiosk_id_fkey FOREIGN KEY (kiosk_id) REFERENCES kiosks(id) ON DELETE CASCADE;
+    ALTER TABLE kiosk_labels ADD CONSTRAINT kiosk_labels_label_id_fkey FOREIGN KEY (label_id) REFERENCES labels(id) ON DELETE CASCADE;
+    ALTER TABLE camera_labels ADD CONSTRAINT camera_labels_camera_id_fkey FOREIGN KEY (camera_id) REFERENCES cameras(id) ON DELETE CASCADE;
+    ALTER TABLE camera_labels ADD CONSTRAINT camera_labels_label_id_fkey FOREIGN KEY (label_id) REFERENCES labels(id) ON DELETE CASCADE;
+    ALTER TABLE layout_labels ADD CONSTRAINT layout_labels_layout_id_fkey FOREIGN KEY (layout_id) REFERENCES layouts(id) ON DELETE CASCADE;
+    ALTER TABLE layout_labels ADD CONSTRAINT layout_labels_label_id_fkey FOREIGN KEY (label_id) REFERENCES labels(id) ON DELETE CASCADE;
+    ALTER TABLE event_log ADD CONSTRAINT event_log_source_kiosk_id_fkey FOREIGN KEY (source_kiosk_id) REFERENCES kiosks(id) ON DELETE SET NULL;
+    ALTER TABLE event_log ADD CONSTRAINT event_log_source_camera_id_fkey FOREIGN KEY (source_camera_id) REFERENCES cameras(id) ON DELETE SET NULL;
+    ALTER TABLE kiosk_gpio_bindings ADD CONSTRAINT kiosk_gpio_bindings_kiosk_id_fkey FOREIGN KEY (kiosk_id) REFERENCES kiosks(id) ON DELETE CASCADE;
+    ALTER TABLE kiosk_logs ADD CONSTRAINT kiosk_logs_kiosk_id_fkey FOREIGN KEY (kiosk_id) REFERENCES kiosks(id) ON DELETE CASCADE;
+    ALTER TABLE camera_event_subscriptions ADD CONSTRAINT camera_event_subscriptions_camera_id_fkey FOREIGN KEY (camera_id) REFERENCES cameras(id) ON DELETE CASCADE;
+    ALTER TABLE camera_event_subscriptions ADD CONSTRAINT camera_event_subscriptions_subscribed_by_kiosk_id_fkey FOREIGN KEY (subscribed_by_kiosk_id) REFERENCES kiosks(id) ON DELETE SET NULL;
+    ALTER TABLE displays ADD CONSTRAINT displays_default_layout_id_fkey FOREIGN KEY (default_layout_id) REFERENCES layouts(id) ON DELETE SET NULL;
+
+    RAISE NOTICE 'UUIDv7 migration: complete — all PKs and FKs are now TEXT';
+  END $$`,
 ];

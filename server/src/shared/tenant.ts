@@ -15,8 +15,7 @@
  *   3. All queries run against tenant's schema
  *   4. Connection returned to pool with search_path reset
  *
- * SQLite mode: single-tenant, no schema switching. tenant_id is always
- * the static DEFAULT_TENANT_ID. The tenant table isn't created.
+ * Default tenant uses the public schema directly (slug = "default").
  */
 
 export const DEFAULT_TENANT_ID = "default";

@@ -24,8 +24,6 @@ default:
       enabled: true
       config:
         db:
-          driver: ${BF_DB_DRIVER}
-          sqlitePath: /var/lib/betterframe/betterframe.db
           host: ${BF_PG_HOST}
           port: ${BF_PG_PORT}
           database: ${BF_PG_DB}
@@ -57,8 +55,6 @@ default:
       enabled: true
       config:
         db:
-          driver: ${BF_DB_DRIVER}
-          sqlitePath: /var/lib/betterframe/betterframe.db
           host: ${BF_PG_HOST}
           port: ${BF_PG_PORT}
           database: ${BF_PG_DB}
@@ -86,8 +82,6 @@ default:
       enabled: true
       config:
         db:
-          driver: ${BF_DB_DRIVER}
-          sqlitePath: /var/lib/betterframe/betterframe.db
           host: ${BF_PG_HOST}
           port: ${BF_PG_PORT}
           database: ${BF_PG_DB}

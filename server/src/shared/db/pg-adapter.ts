@@ -1,10 +1,9 @@
 /**
  * Postgres backend for the repository.
  *
- * Translates SQLite-style `?` placeholders to Postgres `$1, $2, ...` at
- * execute time so the Repository code can stay dialect-neutral. RETURNING
- * id captures lastInsertRowid (caller must add `RETURNING id` to INSERTs
- * that need it — same for SQLite path so the SQL strings are portable).
+ * Translates `?` placeholders to Postgres `$1, $2, ...` at execute time
+ * so Repository SQL stays clean. Rewrites `INSERT OR IGNORE` to
+ * `INSERT ... ON CONFLICT DO NOTHING` for Postgres compatibility.
  *
  * Pool size: default 10 — configurable via pgPoolMax in sec-config.yaml.
  */

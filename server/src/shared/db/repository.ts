@@ -1,5 +1,5 @@
 /**
- * Repository — typed accessor over the sqlite handle.
+ * Repository — typed accessor over the DB adapter.
  *
  * Keeps prepared statements cached for the life of the connection. All
  * mutating methods invoke the `notify` callback with (table, op, id) so the

@@ -112,15 +112,17 @@ async function uniqueCameraName(deps: AdminDeps, rawName: string): Promise<strin
 }
 
 function rtspWithCredentials(raw: string, username: string, password: string): string {
-  if (!username) return raw;
+  // ONVIF returns XML — URIs may contain &amp; instead of &
+  let clean = raw.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+  if (!username) return clean;
   try {
-    const url = new URL(raw);
-    if (url.protocol !== "rtsp:" || url.username) return raw;
+    const url = new URL(clean);
+    if (url.protocol !== "rtsp:" || url.username) return clean;
     url.username = username;
     url.password = password;
     return url.toString();
   } catch {
-    return raw;
+    return clean;
   }
 }
 

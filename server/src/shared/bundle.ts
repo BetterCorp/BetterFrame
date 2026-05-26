@@ -8,6 +8,36 @@ import { createHash } from "node:crypto";
 import type { Observable } from "@bsb/base";
 import type { Repository } from "./db/repository.js";
 import type { SecretsApi } from "./secrets.js";
+import type { Camera, CameraStream } from "./types.js";
+
+/**
+ * Build a playable RTSP URL from stream component columns + camera credentials.
+ * If the stream has rtsp_host/rtsp_path set (ONVIF-discovered), constructs the
+ * URL from components with properly URL-encoded username and password from the
+ * camera row. Otherwise falls back to the stream's rtsp_uri as-is (backward
+ * compat for RTSP-type cameras and legacy data).
+ */
+function buildStreamRtspUri(stream: CameraStream, cam: Camera): string {
+  // Only build from components if both host and path are present
+  if (stream.rtsp_host && stream.rtsp_path != null) {
+    const host = stream.rtsp_host;
+    const port = stream.rtsp_port ?? 554;
+    const path = stream.rtsp_path.startsWith("/") ? stream.rtsp_path : `/${stream.rtsp_path}`;
+
+    // Inject credentials from the camera row
+    let userinfo = "";
+    if (cam.onvif_username) {
+      const user = encodeURIComponent(cam.onvif_username);
+      const pass = cam.onvif_password ? encodeURIComponent(cam.onvif_password) : "";
+      userinfo = pass ? `${user}:${pass}@` : `${user}@`;
+    }
+
+    const portSuffix = port === 554 ? "" : `:${String(port)}`;
+    return `rtsp://${userinfo}${host}${portSuffix}${path}`;
+  }
+  // Backward compat: use the stored rtsp_uri as-is
+  return stream.rtsp_uri;
+}
 
 export interface BundleCamera {
   id: number;
@@ -25,6 +55,7 @@ export interface BundleCamera {
     id: number;
     role: string;
     name: string;
+    /** Final playable RTSP URL with properly encoded credentials. */
     rtsp_uri: string;
     width: number | null;
     height: number | null;
@@ -313,7 +344,9 @@ export async function generateBundle(
         id: s.id,
         role: s.role,
         name: s.name,
-        rtsp_uri: s.rtsp_uri,
+        // Build final playable URL from components + camera credentials
+        // when available; falls back to stored rtsp_uri for backward compat.
+        rtsp_uri: "rtsp_host" in s ? buildStreamRtspUri(s as CameraStream, cam) : s.rtsp_uri,
         width: s.width,
         height: s.height,
         encoding: s.encoding,

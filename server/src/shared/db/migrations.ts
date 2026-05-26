@@ -1088,4 +1088,14 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     UNIQUE(camera_id, topic)
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS idx_camera_event_subs_camera ON camera_event_subscriptions(camera_id)`,
+
+  // ---- camera_streams: RTSP component columns for ONVIF-discovered streams ---
+  // Stores host/port/path separately so bundle generation can build the final
+  // URL with properly encoded credentials from the camera row. Existing streams
+  // with only rtsp_uri continue to work (backward compat for RTSP-type cameras).
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "camera_streams", "rtsp_host", "TEXT");
+    addColumnIfNotExists(db, "camera_streams", "rtsp_port", "INTEGER DEFAULT 554");
+    addColumnIfNotExists(db, "camera_streams", "rtsp_path", "TEXT");
+  },
 ];

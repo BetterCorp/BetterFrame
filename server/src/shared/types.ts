@@ -139,6 +139,12 @@ export interface CameraStream {
   name: string;
   profile_token: string | null;
   rtsp_uri: string;
+  /** Extracted host (nullable — falls back to camera's onvif_host). */
+  rtsp_host: string | null;
+  /** RTSP port (nullable — defaults to 554). */
+  rtsp_port: number | null;
+  /** Path + query string from ONVIF discovery (e.g. `/Streaming/Channels/101?transportmode=unicast`). */
+  rtsp_path: string | null;
   width: number | null;
   height: number | null;
   encoding: string | null;

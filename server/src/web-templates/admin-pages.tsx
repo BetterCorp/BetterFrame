@@ -1167,7 +1167,7 @@ interface CameraEditProps {
   camera: Camera;
   labels: Array<{ label_id: number; name: string }>;
   allLabels: Label[];
-  streams: Array<{ id: number; role: string; name: string; rtsp_uri: string }>;
+  streams: Array<{ id: number; role: string; name: string; rtsp_uri: string; rtsp_host: string | null; rtsp_port: number | null; rtsp_path: string | null }>;
   subscriptions: CameraSubscription[];
   eventSubscriptions?: CameraEventSubscription[];
   error?: string;
@@ -1454,13 +1454,16 @@ export function CameraEditPage(props: CameraEditProps) {
           {props.streams.length > 0 ? (
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Role</th><th>Name</th><th>URI</th></tr></thead>
+                <thead><tr><th>Role</th><th>Name</th><th>URI</th><th>Host</th><th>Port</th><th>Path</th></tr></thead>
                 <tbody>
                   {props.streams.map((s) => (
                     <tr>
                       <td><span class="badge badge-gray">{s.role}</span></td>
                       <td>{s.name}</td>
                       <td style="font-size:0.8rem; word-break:break-all">{maskRtspPassword(s.rtsp_uri)}</td>
+                      <td style="font-size:0.8rem">{s.rtsp_host ?? ""}</td>
+                      <td style="font-size:0.8rem">{s.rtsp_port != null ? String(s.rtsp_port) : ""}</td>
+                      <td style="font-size:0.8rem; word-break:break-all">{s.rtsp_path ?? ""}</td>
                     </tr>
                   ))}
                 </tbody>

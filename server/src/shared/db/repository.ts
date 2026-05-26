@@ -1042,6 +1042,9 @@ export class Repository {
     name: string;
     rtsp_uri: string;
     profile_token?: string | null;
+    rtsp_host?: string | null;
+    rtsp_port?: number | null;
+    rtsp_path?: string | null;
     width?: number | null;
     height?: number | null;
     encoding?: string | null;
@@ -1051,15 +1054,19 @@ export class Repository {
   }): Promise<CameraStream> {
     const result = await this._run(
       `INSERT INTO camera_streams
-        (camera_id, role, name, profile_token, rtsp_uri, width, height,
-         encoding, framerate, bitrate_kbps, is_discovered)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        (camera_id, role, name, profile_token, rtsp_uri,
+         rtsp_host, rtsp_port, rtsp_path,
+         width, height, encoding, framerate, bitrate_kbps, is_discovered)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       [
         input.camera_id,
         input.role,
         input.name,
         input.profile_token ?? null,
         input.rtsp_uri,
+        input.rtsp_host ?? null,
+        input.rtsp_port ?? null,
+        input.rtsp_path ?? null,
         input.width ?? null,
         input.height ?? null,
         input.encoding ?? null,

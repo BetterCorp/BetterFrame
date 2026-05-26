@@ -111,9 +111,20 @@ async function uniqueCameraName(deps: AdminDeps, rawName: string): Promise<strin
   return name;
 }
 
+/** Decode XML entities that ONVIF SOAP responses may embed in URIs. */
+function decodeXmlEntities(raw: string): string {
+  return raw.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+}
+
+/**
+ * Build a playable RTSP URL by injecting credentials into a raw URI.
+ * Used for the legacy `rtsp_uri` column (display / backward compat).
+ * For ONVIF-discovered streams the NEW path is: store components separately
+ * and build the final URL at bundle time. This function is still used for
+ * the camera row's `rtsp_url` and the stream's display-only `rtsp_uri`.
+ */
 function rtspWithCredentials(raw: string, username: string, password: string): string {
-  // ONVIF returns XML — URIs may contain &amp; instead of &
-  let clean = raw.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+  const clean = decodeXmlEntities(raw);
   if (!username) return clean;
   try {
     const url = new URL(clean);
@@ -123,6 +134,23 @@ function rtspWithCredentials(raw: string, username: string, password: string): s
     return url.toString();
   } catch {
     return clean;
+  }
+}
+
+/** Parse an RTSP URI into host / port / path components. */
+function parseRtspComponents(raw: string): { host: string | null; port: number | null; path: string | null } {
+  const clean = decodeXmlEntities(raw);
+  try {
+    const url = new URL(clean);
+    if (url.protocol !== "rtsp:") return { host: null, port: null, path: null };
+    const host = url.hostname || null;
+    const port = url.port ? Number(url.port) : 554;
+    // path + decoded query string (no hash — RTSP doesn't use fragments)
+    let path = url.pathname || "/";
+    if (url.search) path += url.search;
+    return { host, port, path };
+  } catch {
+    return { host: null, port: null, path: null };
   }
 }
 
@@ -184,6 +212,7 @@ async function importDiscoveredCamera(
 ): Promise<number | null> {
   if (streams.length === 0) return null;
   const main = streams.find((s) => s.role === "main") ?? streams[0]!;
+  // Camera row's rtsp_url: full URL with credentials for display / backward compat.
   const mainRtspUrl = rtspWithCredentials(main.stream_uri, username, password);
   const name = await uniqueCameraName(deps, rawName || "ONVIF camera");
 
@@ -200,11 +229,32 @@ async function importDiscoveredCamera(
     const width = stream.width == null ? null : Number(stream.width);
     const height = stream.height == null ? null : Number(stream.height);
     const framerate = stream.framerate == null ? null : Number(stream.framerate);
+
+    // Parse RTSP URI into components. Credentials come from the camera row
+    // at bundle time — do NOT bake them into the stream's rtsp_uri.
+    const cleanUri = decodeXmlEntities(stream.stream_uri);
+    const components = parseRtspComponents(stream.stream_uri);
+
+    // Stream rtsp_uri: store the XML-decoded URI WITHOUT credentials for
+    // display / backward compat. Bundle generation builds the final
+    // playable URL from components + camera credentials.
+    let displayUri = cleanUri;
+    try {
+      const parsed = new URL(cleanUri);
+      // Strip any credentials the ONVIF device may have embedded
+      parsed.username = "";
+      parsed.password = "";
+      displayUri = parsed.toString();
+    } catch { /* keep cleanUri as-is */ }
+
     await deps.repo.createCameraStream({
       camera_id: cam.id,
       role: stream.role === "main" || stream.role === "sub" ? stream.role : "other",
       name: stream.profile_name || stream.role,
-      rtsp_uri: rtspWithCredentials(stream.stream_uri, username, password),
+      rtsp_uri: displayUri,
+      rtsp_host: components.host ?? onvifHost,
+      rtsp_port: components.port ?? 554,
+      rtsp_path: components.path ?? null,
       profile_token: stream.profile_token || null,
       width: Number.isFinite(width) ? width : null,
       height: Number.isFinite(height) ? height : null,

@@ -306,6 +306,7 @@ fn activate(app: &Application) {
                 firmware::mark_firmware_applied();
                 mark_kiosk_healthy();
                 mark_rauc_slot_good();
+                cleanup_stale_files();
                 first_iter = false;
             }
             maybe_apply_os_update(&server, &key, &tx_progress);
@@ -496,10 +497,37 @@ fn mark_rauc_slot_good() {
         .status();
 }
 
+fn cleanup_stale_files() {
+    // Stale OS update downloads in staging dir.
+    let staging = std::path::Path::new("/var/lib/betterframe/tmp");
+    if staging.is_dir() {
+        if let Ok(entries) = fs::read_dir(staging) {
+            let cutoff = std::time::SystemTime::now() - Duration::from_secs(24 * 3600);
+            for entry in entries.flatten() {
+                let Ok(meta) = entry.metadata() else { continue };
+                let old = meta.modified().map(|m| m < cutoff).unwrap_or(false);
+                if old {
+                    info!("cleanup: removing stale staging file {}", entry.path().display());
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+    // Old firmware .prev binary (only keep if < 7 days old as rollback safety).
+    let prev = std::path::Path::new("/opt/betterframe/kiosk/betterframe-kiosk.prev");
+    if prev.exists() {
+        let cutoff = std::time::SystemTime::now() - Duration::from_secs(7 * 24 * 3600);
+        if let Ok(meta) = prev.metadata() {
+            if meta.modified().map(|m| m < cutoff).unwrap_or(false) {
+                info!("cleanup: removing old firmware .prev");
+                let _ = fs::remove_file(prev);
+            }
+        }
+    }
+}
+
 /// Ask the server whether a full-OS RAUC bundle is available for this
-/// kiosk. On hit, download + sha256 + `rauc install` + reboot. On miss or
-/// error: log + keep running. Gated by BF_ENABLE_OS_OTA=1 (default OFF
-/// for dev kiosks running a non-A/B image).
+/// kiosk.
 fn maybe_apply_os_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sender<WorkerMsg>) {
     if std::env::var("BF_ENABLE_OS_OTA").as_deref() != Ok("1") {
         return;

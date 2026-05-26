@@ -695,15 +695,32 @@ function registerKioskRoutes(
       }
     }
 
-    const eventId = await repo.insertEvent({
-      source_kiosk_id: kiosk.id,
-      source_camera_id: body.camera_id ?? null,
-      source_type: (body.source_type as any) ?? "system",
-      topic: body.topic,
-      property_op: body.property_op ?? null,
-      payload: body.payload ?? {},
-      forwarded_to_nodered: false,
-    });
+    let eventId: string;
+    try {
+      eventId = await repo.insertEvent({
+        source_kiosk_id: kiosk.id,
+        source_camera_id: body.camera_id ?? null,
+        source_type: (body.source_type as any) ?? "system",
+        topic: body.topic,
+        property_op: body.property_op ?? null,
+        payload: body.payload ?? {},
+        forwarded_to_nodered: false,
+      });
+    } catch (err: any) {
+      if (err?.code === "23503") {
+        eventId = await repo.insertEvent({
+          source_kiosk_id: kiosk.id,
+          source_camera_id: null,
+          source_type: (body.source_type as any) ?? "system",
+          topic: body.topic,
+          property_op: body.property_op ?? null,
+          payload: body.payload ?? {},
+          forwarded_to_nodered: false,
+        });
+      } else {
+        throw err;
+      }
+    }
 
     // Side-effect: persist active layout per display so the admin UI can
     // surface "currently showing X" without having to query event_log.

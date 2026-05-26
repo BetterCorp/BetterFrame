@@ -311,6 +311,7 @@ fn activate(app: &Application) {
             }
             maybe_apply_os_update(&server, &key, &tx_progress);
             maybe_apply_firmware_update(&server, &key, &tx_progress);
+            maybe_refresh_onvif(&server, &key);
             std::thread::sleep(std::time::Duration::from_secs(60));
         }
     });
@@ -622,6 +623,30 @@ fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sen
             .timeout(std::time::Duration::from_secs(5))
             .send();
     }
+}
+
+fn maybe_refresh_onvif(server_url: &str, kiosk_key: &str) {
+    if !onvif_events::needs_refresh() {
+        return;
+    }
+    info!("onvif: refreshing stale/failed subscriptions");
+    let bundle = match server::load_cached_bundle() {
+        Some(b) => b,
+        None => return,
+    };
+    let displays = bundle.normalized_displays();
+    let layout_cam_ids: std::collections::HashSet<String> = displays
+        .iter()
+        .flat_map(|d| d.layouts.iter())
+        .flat_map(|l| l.cells.iter())
+        .filter_map(|c| c.camera_id.clone())
+        .collect();
+    let layout_cameras: Vec<_> = bundle.cameras.iter()
+        .filter(|c| layout_cam_ids.contains(&c.id))
+        .cloned()
+        .collect();
+    let decrypt_key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
+    onvif_events::start(&layout_cameras, decrypt_key.as_deref(), server_url, kiosk_key);
 }
 
 /// Install the once-per-second watchdog that enforces idle/sleep timeouts

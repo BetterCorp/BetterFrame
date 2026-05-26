@@ -38,9 +38,25 @@ static STATUS: Mutex<Option<HashMap<String, SubStatus>>> = Mutex::new(None);
 
 #[derive(Clone, serde::Serialize)]
 pub struct SubStatus {
-    pub state: &'static str, // "subscribing", "active", "failed", "stopped"
+    pub state: &'static str,
     pub last_event_at: Option<String>,
+    pub subscribed_at: Option<String>,
     pub error: Option<String>,
+}
+
+fn epoch_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{secs}")
+}
+
+fn epoch_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn set_status(cam_id: &str, state: &'static str, error: Option<String>) {
@@ -49,19 +65,44 @@ fn set_status(cam_id: &str, state: &'static str, error: Option<String>) {
     let entry = map.entry(cam_id.to_string()).or_insert_with(|| SubStatus {
         state: "subscribing",
         last_event_at: None,
+        subscribed_at: None,
         error: None,
     });
     entry.state = state;
     entry.error = error;
+    if state == "active" {
+        entry.subscribed_at = Some(epoch_now());
+    }
 }
 
 fn mark_event_received(cam_id: &str) {
     let mut map = STATUS.lock().unwrap();
     if let Some(map) = map.as_mut() {
         if let Some(entry) = map.get_mut(cam_id) {
-            entry.last_event_at = Some(crate::os_update::current_os_version_public()); // reuse timestamp helper... actually just use epoch
+            entry.last_event_at = Some(epoch_now());
         }
     }
+}
+
+/// Check if any subscription needs a forced refresh (>24h since subscribe,
+/// or currently in failed/stopped state).
+pub fn needs_refresh() -> bool {
+    let map = STATUS.lock().unwrap();
+    let Some(map) = map.as_ref() else { return false };
+    let now = epoch_now_secs();
+    for status in map.values() {
+        if status.state == "failed" || status.state == "stopped" {
+            return true;
+        }
+        if let Some(ref sub_at) = status.subscribed_at {
+            if let Ok(ts) = sub_at.parse::<u64>() {
+                if now.saturating_sub(ts) > 24 * 3600 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Get current subscription statuses for all cameras. Used by heartbeat.
@@ -185,6 +226,7 @@ fn run_subscription(
                 Ok(events) => {
                     for evt in events {
                         forward_event(server, kiosk_key, &cam.id, &evt, user, pass);
+                        mark_event_received(&cam.id);
                     }
                 }
                 Err(e) => {

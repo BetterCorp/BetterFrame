@@ -529,7 +529,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
            c.column_name = 'id'
            OR c.column_name LIKE '%_id'
          )
-         AND c.table_name NOT IN ('schema_migrations')
+         AND c.table_name NOT IN ('schema_migrations', 'setup_state')
     LOOP
       EXECUTE format('ALTER TABLE %I ALTER COLUMN %I TYPE TEXT USING %I::TEXT',
                      r.table_name, r.column_name, r.column_name);

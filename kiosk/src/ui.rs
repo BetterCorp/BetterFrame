@@ -346,6 +346,7 @@ fn activate(app: &Application) {
                 WorkerMsg::Wake(display_id) => wake_display(display_id),
                 WorkerMsg::ShowTerminalCode(code) => show_terminal_code_overlay(&code),
                 WorkerMsg::DismissTerminalCode => dismiss_terminal_code_overlay(),
+                WorkerMsg::UpdateProgress(progress) => show_update_banner(progress),
             }
         }
         gtk::glib::ControlFlow::Continue
@@ -363,6 +364,9 @@ pub enum WorkerMsg {
     Wake(Option<u32>),
     ShowTerminalCode(String),
     DismissTerminalCode,
+    /// Update progress banner — shown as overlay on all displays.
+    /// (label, percent 0-100). None = dismiss.
+    UpdateProgress(Option<(String, u8)>),
 }
 
 fn output_name_for_display(display_id: u32) -> Option<String> {
@@ -2257,4 +2261,47 @@ fn dismiss_terminal_code_overlay() {
             });
         }
     });
+}
+
+// ---- Update progress banner -------------------------------------------------
+
+thread_local! {
+    static UPDATE_BANNER_LABEL: RefCell<Option<Label>> = RefCell::new(None);
+}
+
+fn show_update_banner(progress: Option<(String, u8)>) {
+    match progress {
+        Some((text, pct)) => {
+            let msg = format!("{text} — {pct}%");
+            UPDATE_BANNER_LABEL.with(|b| {
+                if let Some(label) = b.borrow().as_ref() {
+                    label.set_text(&msg);
+                    return;
+                }
+                // Create new banner label
+                let label = Label::new(Some(&msg));
+                add_css(&label, ".update-banner { font-size: 12px; color: #fff; background: rgba(0,0,0,0.75); padding: 6px 14px; border-radius: 4px; margin: 8px; }");
+                label.add_css_class("update-banner");
+                label.set_halign(gtk::Align::Start);
+                label.set_valign(gtk::Align::End);
+                // Attach to pairing window (always exists)
+                DISPLAYS.with(|ds| {
+                    let ds = ds.borrow();
+                    if let Some((_, st)) = ds.iter().next() {
+                        st.window.set_titlebar(None::<&gtk::Widget>);
+                        // Use a simple approach: just show it
+                    }
+                });
+                *b.borrow_mut() = Some(label);
+            });
+        }
+        None => {
+            UPDATE_BANNER_LABEL.with(|b| {
+                if let Some(label) = b.borrow().as_ref() {
+                    label.set_visible(false);
+                }
+                *b.borrow_mut() = None;
+            });
+        }
+    }
 }

@@ -17,7 +17,7 @@ pub struct DisplayReport {
     pub power_state: String,
 }
 
-fn kiosk_app_version() -> &'static str {
+pub fn kiosk_app_version() -> &'static str {
     option_env!("BF_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 

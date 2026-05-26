@@ -65,6 +65,73 @@ pub struct UpdateInfo {
     pub public_key_pem: String,
 }
 
+/// Public pre-boot firmware check — no auth needed. Always checks stable
+/// channel. Used before pairing to self-update to latest binary.
+pub fn check_public(server: &str, current_version: &str) -> Option<UpdateInfo> {
+    let url = format!(
+        "{server}/api/firmware/public/check?arch={arch}&current={cur}",
+        arch = ARCH,
+        cur = current_version,
+    );
+    let client = reqwest::blocking::Client::new();
+    let resp = match client.get(&url).timeout(Duration::from_secs(10)).send() {
+        Ok(r) => r,
+        Err(err) => { warn!("preboot firmware check: {err}"); return None; }
+    };
+    if !resp.status().is_success() { return None; }
+    match resp.json::<CheckResponse>() {
+        Ok(c) if !c.up_to_date => c.update,
+        _ => None,
+    }
+}
+
+/// Public download + verify + swap — no auth. Used with check_public.
+/// On success exits so systemd restarts with new binary.
+pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
+    info!("preboot firmware: applying {} ({} bytes)", info.version, info.size_bytes);
+    let download_url = format!("{server}{}", info.download_url);
+    let client = reqwest::blocking::Client::new();
+    let resp = client.get(&download_url)
+        .timeout(Duration::from_secs(300))
+        .send()
+        .map_err(|e| format!("download failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("download HTTP {}", resp.status()));
+    }
+    let bytes = resp.bytes().map_err(|e| format!("read failed: {e}"))?;
+    if bytes.len() as u64 != info.size_bytes {
+        return Err(format!("size mismatch: expected {}, got {}", info.size_bytes, bytes.len()));
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let got_sha = hex_lower(&hasher.finalize());
+    if got_sha != info.sha256 {
+        return Err(format!("sha256 mismatch: expected {}, got {}", info.sha256, got_sha));
+    }
+    verify_signature(&info.public_key_pem, &info.sha256, &info.signature)
+        .map_err(|e| format!("signature verify: {e}"))?;
+
+    let bin = binary_path();
+    let new_path = bin.with_extension("new");
+    let prev_path = bin.with_extension("prev");
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = fs::OpenOptions::new()
+            .create(true).write(true).truncate(true).mode(0o755)
+            .open(&new_path)
+            .map_err(|e| format!("open {}: {e}", new_path.display()))?;
+        use std::io::Write;
+        f.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
+    }
+    if bin.exists() {
+        let _ = fs::remove_file(&prev_path);
+        let _ = fs::rename(&bin, &prev_path);
+    }
+    fs::rename(&new_path, &bin).map_err(|e| format!("rename: {e}"))?;
+    info!("preboot firmware: updated to {}, exiting for restart", info.version);
+    std::process::exit(0);
+}
+
 /// Hit `/api/kiosk/firmware/check` and return the update info if one is
 /// available. Returns `None` on up-to-date / network error / unparsable
 /// response — never panics.

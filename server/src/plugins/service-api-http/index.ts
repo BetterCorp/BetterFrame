@@ -223,7 +223,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       });
     });
 
-    registerPairingRoutes(app, repo, auth, secrets, codeTtl);
+    registerPairingRoutes(app, repo, auth, secrets, codeTtl, firmware);
     registerKioskRoutes(app, repo, auth, secrets, nodered, firmware, osUpdates, mqtt);
 
     this.server = serve(app, {
@@ -279,6 +279,7 @@ function registerPairingRoutes(
   auth: AuthApi,
   secrets: SecretsApi,
   codeTtl: number,
+  firmware: FirmwareApi,
 ): void {
   // Constructed in-function so the BSB schema extractor (which evaluates the
   // module statically) doesn't see a top-level createRateLimiter call.
@@ -345,6 +346,60 @@ function registerPairingRoutes(
       cluster_key: result.clusterKey,
       bundle_url: result.bundleUrl,
     };
+  });
+
+  // Public firmware check — no auth. Used by kiosks on first boot before
+  // pairing to self-update to latest stable binary. Always stable channel.
+  app.get("/api/firmware/public/check", async (event) => {
+    const url = new URL(event.req.url);
+    const arch = url.searchParams.get("arch")?.trim();
+    if (!arch) throw createError({ statusCode: 400, statusMessage: "arch required" });
+    const current = url.searchParams.get("current")?.trim() ?? "";
+
+    const release = await repo.getLatestFirmwareRelease("stable", arch);
+    if (!release || release.version === current) {
+      return { up_to_date: true };
+    }
+
+    return {
+      up_to_date: false,
+      update: {
+        release_id: release.id,
+        version: release.version,
+        sha256: release.sha256,
+        signature: release.signature,
+        size_bytes: release.size_bytes,
+        download_url: `/api/firmware/public/download/${release.id}`,
+        public_key_pem: firmware.publicKeyPem(),
+      },
+    };
+  });
+
+  // Public firmware download — no auth. Rate-limited to prevent abuse.
+  const publicDlGuard = createRateLimiter({ windowMs: 60_000, max: 5 });
+  app.get("/api/firmware/public/download/:id", async (event) => {
+    const ip = getRequestHeader(event, "x-real-ip")
+      ?? getRequestHeader(event, "x-forwarded-for")?.split(",")[0]?.trim()
+      ?? "anon";
+    if (!publicDlGuard.take(`fwdl:${ip}`)) {
+      throw createError({ statusCode: 429, statusMessage: "rate limited" });
+    }
+
+    const id = getRouterParam(event, "id") ?? "";
+    const release = await repo.getFirmwareRelease(id);
+    if (!release || release.yanked_at) {
+      throw createError({ statusCode: 404, statusMessage: "release not found" });
+    }
+
+    const buf = await firmware.readBlob(release.artifact_path, release.sha256);
+    return new Response(buf, {
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": String(buf.length),
+        "x-bf-sha256": release.sha256,
+        "x-bf-signature": release.signature,
+      },
+    });
   });
 }
 

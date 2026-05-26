@@ -141,6 +141,19 @@ fn activate(app: &Application) {
         let server = server::discover_server(server_url.as_deref());
         info!("server: {server}");
 
+        // Pre-boot self-update: check for stable firmware before pairing.
+        // If an update is available, download + swap + exit. systemd restarts
+        // with the new binary which re-enters this flow.
+        if !server::is_paired() {
+            let current = crate::server::kiosk_app_version();
+            if let Some(update) = crate::firmware::check_public(&server, current) {
+                info!("preboot update available: {} → {}", current, update.version);
+                if let Err(e) = crate::firmware::apply_public(&server, &update) {
+                    tracing::warn!("preboot update failed: {e}");
+                }
+            }
+        }
+
         let key = if server::is_paired() {
             info!("already paired");
             server::load_key()

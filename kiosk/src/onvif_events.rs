@@ -136,7 +136,8 @@ fn run_subscription(
     let pass = password.unwrap_or("");
     let event_url = format!("http://{host}:{port}/onvif/event_service");
 
-    info!("onvif-events: cam {} ({}) subscribing at {event_url}", cam.id, cam.name);
+    let has_pass = !pass.is_empty();
+    info!("onvif-events: cam {} ({}) subscribing at {event_url} user={user} has_pass={has_pass}", cam.id, cam.name);
 
     loop {
         if generation.upgrade().is_none() {
@@ -258,10 +259,43 @@ fn soap_post(url: &str, action: &str, body: &str) -> Result<String, String> {
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().unwrap_or_default();
-        let preview: String = body.chars().take(500).collect();
-        return Err(format!("soap HTTP {status}: {preview}"));
+        let fault = extract_soap_fault(&body);
+        return Err(format!("soap HTTP {status}: {fault}"));
     }
     resp.text().map_err(|e| format!("soap body: {e}"))
+}
+
+/// Extract a human-readable fault reason from SOAP XML, stripping envelope noise.
+fn extract_soap_fault(xml: &str) -> String {
+    // Try common SOAP fault tags
+    for tag in &["Reason", "Text", "faultstring", "Detail", "Subcode"] {
+        if let Some(val) = extract_tag_ns(xml, tag) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    // Try Code/Value
+    if let Some(val) = extract_tag_ns(xml, "Value") {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() {
+            return format!("Code: {trimmed}");
+        }
+    }
+    // Fallback: first 300 chars stripped of XML tags
+    let stripped: String = xml.replace(|c: char| c == '<', "\n<")
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('<'))
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if stripped.is_empty() {
+        xml.chars().take(300).collect()
+    } else {
+        stripped.chars().take(300).collect()
+    }
 }
 
 fn create_pullpoint(url: &str, user: &str, pass: &str) -> Result<Subscription, String> {

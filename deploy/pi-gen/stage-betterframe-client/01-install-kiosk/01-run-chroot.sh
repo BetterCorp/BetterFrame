@@ -152,6 +152,15 @@ Inherits=betterframe-empty
 CURSOR
 chown bfkiosk:bfkiosk /home/bfkiosk/.icons/default/index.theme
 
+# --- NTP — critical for WSSE auth (camera checks timestamp) ---
+mkdir -p /etc/systemd/timesyncd.conf.d
+cat > /etc/systemd/timesyncd.conf.d/betterframe.conf <<'NTP'
+[Time]
+NTP=0.pool.ntp.org 1.pool.ntp.org 2.pool.ntp.org 3.pool.ntp.org
+FallbackNTP=time.google.com time.cloudflare.com
+NTP
+systemctl enable systemd-timesyncd 2>/dev/null || true
+
 # --- Enable services, disable noise ---
 systemctl enable seatd
 systemctl enable betterframe-kiosk.service

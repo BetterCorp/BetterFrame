@@ -18,14 +18,14 @@ pub use ui::WorkerMsg;
 
 pub enum ServerMsg {
     ReloadBundle,
-    Standby(Option<u32>),
-    Wake(Option<u32>),
+    Standby(Option<String>),
+    Wake(Option<String>),
     /// Some(0..=255) = manual PWM. None = restore auto.
     Fan(Option<u32>),
     /// Switch to a specific layout by ID, optionally scoped to one display.
     SwitchLayout {
-        display_id: Option<u32>,
-        layout_id: u32,
+        display_id: Option<String>,
+        layout_id: String,
     },
     /// Server-pushed "go check for a firmware update now".
     FirmwareCheck,

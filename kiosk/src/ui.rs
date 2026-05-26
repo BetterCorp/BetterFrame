@@ -30,7 +30,7 @@ use crate::ws_client;
 /// even though the GTK main loop is shared.
 struct DisplayState {
     window: ApplicationWindow,
-    current_layout_id: Option<u32>,
+    current_layout_id: Option<String>,
     last_activity: Instant,
     is_asleep: bool,
 }
@@ -58,7 +58,7 @@ struct PipelineEntry {
 /// per (main, sub, other) stream — each with independent warmth state. When a
 /// cell switches M↔S we promote the new variant to Warm/Hot but leave the old
 /// one to cool down naturally so a quick swap back is instant.
-type PoolKey = (u32, char);
+type PoolKey = (String, char);
 
 /// WebView pool entry. Same Hot/Warm/Cooling/Cold lifecycle as cameras —
 /// switching to a layout that doesn't reference a previously-loaded URL/HTML
@@ -95,7 +95,7 @@ thread_local! {
     static CURRENT_SYNC_LABEL: RefCell<String> = RefCell::new(String::from("unknown"));
 
     /// Per-display state, keyed by bundle display id.
-    static DISPLAYS: RefCell<HashMap<u32, DisplayState>> = RefCell::new(HashMap::new());
+    static DISPLAYS: RefCell<HashMap<String, DisplayState>> = RefCell::new(HashMap::new());
 
     /// Has the idle-watchdog already been installed on the main loop?
     static WATCHDOG_INSTALLED: Cell<bool> = const { Cell::new(false) };
@@ -171,7 +171,7 @@ fn activate(app: &Application) {
         // cached on-disk bundle and keep retrying every 30s in the background.
         let initial = match server::fetch_bundle(&server, &key) {
             Some(b) => {
-                crate::axiom::set_kiosk_id(b.kiosk_id.to_string());
+                crate::axiom::set_kiosk_id(b.kiosk_id.clone());
                 info!(
                     "bundle: {} cameras, {} display(s)",
                     b.cameras.len(),
@@ -329,14 +329,14 @@ fn activate(app: &Application) {
                     display_id,
                     layout_id,
                 } => {
-                    if let Some(display_id) = display_id {
-                        render_layout(display_id, layout_id);
+                    if let Some(display_id) = &display_id {
+                        render_layout(display_id, &layout_id);
                     } else {
-                        switch_layout_anywhere(layout_id);
+                        switch_layout_anywhere(&layout_id);
                     }
                 }
-                WorkerMsg::Standby(display_id) => standby_display(display_id),
-                WorkerMsg::Wake(display_id) => wake_display(display_id),
+                WorkerMsg::Standby(display_id) => standby_display(display_id.as_deref()),
+                WorkerMsg::Wake(display_id) => wake_display(display_id.as_deref()),
                 WorkerMsg::ShowTerminalCode(code) => show_terminal_code_overlay(&code),
                 WorkerMsg::DismissTerminalCode => dismiss_terminal_code_overlay(),
                 WorkerMsg::UpdateProgress(progress) => show_update_banner(progress),
@@ -350,11 +350,11 @@ pub enum WorkerMsg {
     ShowPairingCode(String),
     RenderBundle(KioskBundle, String, String),
     SwitchLayout {
-        display_id: Option<u32>,
-        layout_id: u32,
+        display_id: Option<String>,
+        layout_id: String,
     },
-    Standby(Option<u32>),
-    Wake(Option<u32>),
+    Standby(Option<String>),
+    Wake(Option<String>),
     ShowTerminalCode(String),
     DismissTerminalCode,
     /// Update progress banner — shown as overlay on all displays.
@@ -362,7 +362,7 @@ pub enum WorkerMsg {
     UpdateProgress(Option<(String, u8)>),
 }
 
-fn output_name_for_display(display_id: u32) -> Option<String> {
+fn output_name_for_display(display_id: &str) -> Option<String> {
     CURRENT_BUNDLE.with(|b| {
         b.borrow()
             .as_ref()
@@ -376,7 +376,7 @@ fn output_name_for_display(display_id: u32) -> Option<String> {
     })
 }
 
-fn standby_display(display_id: Option<u32>) {
+fn standby_display(display_id: Option<&str>) {
     if let Some(display_id) = display_id {
         if let Some(output_name) = output_name_for_display(display_id) {
             cec::standby_output(&output_name);
@@ -384,7 +384,7 @@ fn standby_display(display_id: Option<u32>) {
             cec::standby();
         }
         DISPLAYS.with(|ds| {
-            if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
+            if let Some(st) = ds.borrow_mut().get_mut(display_id) {
                 st.is_asleep = true;
             }
         });
@@ -398,7 +398,7 @@ fn standby_display(display_id: Option<u32>) {
     }
 }
 
-fn wake_display(display_id: Option<u32>) {
+fn wake_display(display_id: Option<&str>) {
     if let Some(display_id) = display_id {
         if let Some(output_name) = output_name_for_display(display_id) {
             cec::wake_output(&output_name);
@@ -406,7 +406,7 @@ fn wake_display(display_id: Option<u32>) {
             cec::wake();
         }
         DISPLAYS.with(|ds| {
-            if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
+            if let Some(st) = ds.borrow_mut().get_mut(display_id) {
                 st.is_asleep = false;
                 st.last_activity = Instant::now();
             }
@@ -423,9 +423,9 @@ fn wake_display(display_id: Option<u32>) {
 }
 
 /// Reset activity timer for one display. If asleep, wake it.
-fn mark_activity(display_id: u32) {
+fn mark_activity(display_id: &str) {
     DISPLAYS.with(|ds| {
-        if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
+        if let Some(st) = ds.borrow_mut().get_mut(display_id) {
             st.last_activity = Instant::now();
             if st.is_asleep {
                 info!("activity while asleep → waking display {display_id}");
@@ -451,11 +451,12 @@ fn send_heartbeat_now(server_url: &str, kiosk_key: &str) -> bool {
         .map(|(index, (name, width_px, height_px))| {
             let bundle_id = bundle_displays
                 .get(index)
-                .map(|d| d.id)
-                .or_else(|| bundle_displays.iter().find(|d| d.name == name).map(|d| d.id));
+                .map(|d| d.id.clone())
+                .or_else(|| bundle_displays.iter().find(|d| d.name == name).map(|d| d.id.clone()));
             let power_state = bundle_id
+                .as_deref()
                 .and_then(|id| {
-                    DISPLAYS.with(|ds| ds.borrow().get(&id).map(|st| st.is_asleep))
+                    DISPLAYS.with(|ds| ds.borrow().get(id).map(|st| st.is_asleep))
                 })
                 .map(|is_asleep| if is_asleep { "standby" } else { "awake" })
                 .unwrap_or("unknown")
@@ -614,8 +615,8 @@ fn install_idle_watchdog() {
 
         // Snapshot per-display timing decisions so we can act outside the borrow.
         struct Action {
-            display_id: u32,
-            revert_to: Option<u32>,
+            display_id: String,
+            revert_to: Option<String>,
             sleep: bool,
         }
         let mut actions: Vec<Action> = Vec::new();
@@ -632,10 +633,10 @@ fn install_idle_watchdog() {
                 let idle_to = d.idle_timeout_seconds as u64;
                 let sleep_to = d.sleep_timeout_seconds as u64;
                 let elapsed = st.last_activity.elapsed();
-                let default_id = d.default_layout_id;
+                let default_id = d.default_layout_id.clone();
 
                 let mut act = Action {
-                    display_id: *display_id,
+                    display_id: display_id.clone(),
                     revert_to: None,
                     sleep: false,
                 };
@@ -643,12 +644,13 @@ fn install_idle_watchdog() {
                 if idle_to > 0 && elapsed >= Duration::from_secs(idle_to) {
                     let cur_resets_idle = st
                         .current_layout_id
-                        .and_then(|cur_id| d.layouts.iter().find(|l| l.id == cur_id))
+                        .as_ref()
+                        .and_then(|cur_id| d.layouts.iter().find(|l| l.id == *cur_id))
                         .map(|l| l.resets_idle_timer)
                         .unwrap_or(false);
-                    if let (Some(cur_id), Some(def_id)) = (st.current_layout_id, default_id) {
+                    if let (Some(cur_id), Some(def_id)) = (&st.current_layout_id, &default_id) {
                         if cur_id != def_id && cur_resets_idle {
-                            act.revert_to = Some(def_id);
+                            act.revert_to = Some(def_id.clone());
                         }
                     }
                 }
@@ -667,7 +669,7 @@ fn install_idle_watchdog() {
                     "idle timeout reached → reverting display {} to default",
                     a.display_id
                 );
-                render_layout(a.display_id, layout_id);
+                render_layout(&a.display_id, &layout_id);
             }
             if a.sleep {
                 info!(
@@ -790,11 +792,11 @@ fn render_bundle(
 
     // Collect camera IDs actually referenced in layout cells.
     let displays = bundle.normalized_displays();
-    let layout_cam_ids: std::collections::HashSet<u32> = displays
+    let layout_cam_ids: std::collections::HashSet<String> = displays
         .iter()
         .flat_map(|d| d.layouts.iter())
         .flat_map(|l| l.cells.iter())
-        .filter_map(|c| c.camera_id)
+        .filter_map(|c| c.camera_id.clone())
         .collect();
 
     // Only subscribe to ONVIF events for cameras in layouts (not all bundle cameras).
@@ -825,12 +827,12 @@ fn render_bundle(
         .collect();
 
     // Tear down any previous per-display windows we no longer need.
-    let keep_ids: std::collections::HashSet<u32> = displays.iter().map(|d| d.id).collect();
-    let to_remove: Vec<u32> = DISPLAYS.with(|ds| {
+    let keep_ids: std::collections::HashSet<&str> = displays.iter().map(|d| d.id.as_str()).collect();
+    let to_remove: Vec<String> = DISPLAYS.with(|ds| {
         ds.borrow()
             .keys()
-            .filter(|id| !keep_ids.contains(id))
-            .copied()
+            .filter(|id| !keep_ids.contains(id.as_str()))
+            .cloned()
             .collect()
     });
     for id in to_remove {
@@ -845,7 +847,7 @@ fn render_bundle(
     // displays is correct once the loop finishes.
 
     // Build/reuse window per bundle display, then render its initial layout.
-    let mut new_state: HashMap<u32, DisplayState> = HashMap::new();
+    let mut new_state: HashMap<String, DisplayState> = HashMap::new();
     for (i, bd) in displays.iter().enumerate() {
         let existing = DISPLAYS.with(|ds| ds.borrow_mut().remove(&bd.id));
         let (window, was_asleep) = match existing {
@@ -872,7 +874,7 @@ fn render_bundle(
             }
         };
         new_state.insert(
-            bd.id,
+            bd.id.clone(),
             DisplayState {
                 window,
                 current_layout_id: None,
@@ -892,7 +894,7 @@ fn render_bundle(
     for bd in &displays {
         let target = pick_initial_layout(bd);
         if let Some(layout_id) = target {
-            render_layout(bd.id, layout_id);
+            render_layout(&bd.id, &layout_id);
         } else {
             warn!("display {} has no default layout", bd.id);
             DISPLAYS.with(|ds| {
@@ -905,19 +907,19 @@ fn render_bundle(
     }
 }
 
-fn pick_initial_layout(bd: &BundleDisplayWithLayouts) -> Option<u32> {
-    bd.default_layout_id
-        .or_else(|| bd.layouts.iter().find(|l| l.is_default).map(|l| l.id))
-        .or_else(|| bd.layouts.first().map(|l| l.id))
+fn pick_initial_layout(bd: &BundleDisplayWithLayouts) -> Option<String> {
+    bd.default_layout_id.clone()
+        .or_else(|| bd.layouts.iter().find(|l| l.is_default).map(|l| l.id.clone()))
+        .or_else(|| bd.layouts.first().map(|l| l.id.clone()))
 }
 
 /// Find which display owns a given layout_id and render it there.
-fn switch_layout_anywhere(layout_id: u32) {
+fn switch_layout_anywhere(layout_id: &str) {
     let bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
     let Some(bundle) = bundle else { return };
     for bd in bundle.normalized_displays() {
         if bd.layouts.iter().any(|l| l.id == layout_id) {
-            render_layout(bd.id, layout_id);
+            render_layout(&bd.id, layout_id);
             return;
         }
     }
@@ -925,7 +927,7 @@ fn switch_layout_anywhere(layout_id: u32) {
 }
 
 /// Render a specific layout id on a specific display.
-fn render_layout(display_id: u32, layout_id: u32) {
+fn render_layout(display_id: &str, layout_id: &str) {
     mark_activity(display_id);
 
     let snapshot: Option<(KioskBundle, String, String)> = CURRENT_BUNDLE.with(|b| {
@@ -950,7 +952,7 @@ fn render_layout(display_id: u32, layout_id: u32) {
         warn!(
             "render_layout: layout {layout_id} not on display {display_id}, falling back to default"
         );
-        bd.default_layout_id
+        bd.default_layout_id.as_deref()
             .and_then(|did| bd.layouts.iter().find(|l| l.id == did))
             .or_else(|| bd.layouts.iter().find(|l| l.is_default))
     });
@@ -958,7 +960,7 @@ fn render_layout(display_id: u32, layout_id: u32) {
     let Some(layout) = layout else {
         warn!("render_layout: no usable layout on display {display_id}");
         DISPLAYS.with(|ds| {
-            if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
+            if let Some(st) = ds.borrow_mut().get_mut(display_id) {
                 show_empty_display_reference(&st.window, &bundle, bd);
                 st.current_layout_id = None;
             }
@@ -971,10 +973,10 @@ fn render_layout(display_id: u32, layout_id: u32) {
     let previous_layout_id = DISPLAYS.with(|ds| {
         let prev = ds
             .borrow()
-            .get(&display_id)
-            .and_then(|s| s.current_layout_id);
-        if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
-            st.current_layout_id = Some(layout.id);
+            .get(display_id)
+            .and_then(|s| s.current_layout_id.clone());
+        if let Some(st) = ds.borrow_mut().get_mut(display_id) {
+            st.current_layout_id = Some(layout.id.clone());
         }
         prev
     });
@@ -992,17 +994,18 @@ fn render_layout(display_id: u32, layout_id: u32) {
     // Notify the server when the active layout actually changes so Node-RED
     // sees idle reverts + any other kiosk-initiated switch. Skip when the
     // layout id is unchanged (re-render of the same layout).
-    if previous_layout_id != Some(layout.id) {
+    if previous_layout_id.as_deref() != Some(layout.id.as_str()) {
         let layout_name = layout.name.clone();
-        let layout_id_for_report = layout.id;
+        let layout_id_for_report = layout.id.clone();
+        let display_id_for_report = display_id.to_string();
         let server = server_url.clone();
         let key = kiosk_key.clone();
         std::thread::spawn(move || {
             server::report_layout_change(
                 &server,
                 &key,
-                display_id,
-                layout_id_for_report,
+                &display_id_for_report,
+                &layout_id_for_report,
                 &layout_name,
             );
         });
@@ -1012,7 +1015,7 @@ fn render_layout(display_id: u32, layout_id: u32) {
         warn!("layout has no cells");
         recompute_global_state();
         DISPLAYS.with(|ds| {
-            if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
+            if let Some(st) = ds.borrow_mut().get_mut(display_id) {
                 show_logo(&st.window);
             }
         });
@@ -1033,21 +1036,21 @@ fn render_layout(display_id: u32, layout_id: u32) {
     grid.set_vexpand(true);
     grid.set_hexpand(true);
 
-    let cam_map: HashMap<u32, &crate::bundle::BundleCamera> =
-        bundle.cameras.iter().map(|c| (c.id, c)).collect();
+    let cam_map: HashMap<&str, &crate::bundle::BundleCamera> =
+        bundle.cameras.iter().map(|c| (c.id.as_str(), c)).collect();
 
     let total_area = (layout.grid_cols.max(1) * layout.grid_rows.max(1)) as f32;
 
     // Ensure preloaded cameras have pipelines even if not visible.
     for cam_id in &layout.preload_camera_ids {
-        if let Some(cam) = cam_map.get(cam_id) {
-            ensure_warm(*cam_id, cam, None, 0.0);
+        if let Some(cam) = cam_map.get(cam_id.as_str()) {
+            ensure_warm(cam_id, cam, None, 0.0);
         }
     }
 
     for cell in &layout.cells {
         let cell_key: Option<String> = match cell.content_type.as_str() {
-            "camera" => cell.camera_id.map(|id| {
+            "camera" => cell.camera_id.as_ref().map(|id| {
                 format!(
                     "cam:{id}:{}",
                     cell.stream_selector.as_deref().unwrap_or("auto")
@@ -1063,8 +1066,8 @@ fn render_layout(display_id: u32, layout_id: u32) {
         };
         let widget: gtk::Widget = match cell.content_type.as_str() {
             "camera" => {
-                if let Some(cam_id) = cell.camera_id {
-                    if let Some(cam) = cam_map.get(&cam_id) {
+                if let Some(cam_id) = cell.camera_id.as_ref() {
+                    if let Some(cam) = cam_map.get(cam_id.as_str()) {
                         let area = (cell.col_span * cell.row_span) as f32 / total_area;
                         if let Some((paintable, badge)) =
                             ensure_warm(cam_id, cam, cell.stream_selector.as_deref(), area)
@@ -1149,7 +1152,7 @@ fn render_layout(display_id: u32, layout_id: u32) {
     }
 
     DISPLAYS.with(|ds| {
-        if let Some(st) = ds.borrow_mut().get_mut(&display_id) {
+        if let Some(st) = ds.borrow_mut().get_mut(display_id) {
             animate_layout_swap(&st.window, &grid);
         }
     });
@@ -1401,14 +1404,14 @@ fn recompute_global_state() {
     let mut hot_set: std::collections::HashSet<PoolKey> = std::collections::HashSet::new();
     let mut max_cooling_secs: u32 = 0;
 
-    let cam_map: HashMap<u32, &crate::bundle::BundleCamera> =
-        bundle.cameras.iter().map(|c| (c.id, c)).collect();
+    let cam_map: HashMap<&str, &crate::bundle::BundleCamera> =
+        bundle.cameras.iter().map(|c| (c.id.as_str(), c)).collect();
 
     // Snapshot per-display active layout id outside any borrow of WARM_CAMERAS.
-    let active: Vec<(u32, Option<u32>)> = DISPLAYS.with(|ds| {
+    let active: Vec<(String, Option<String>)> = DISPLAYS.with(|ds| {
         ds.borrow()
             .iter()
-            .map(|(id, st)| (*id, st.current_layout_id))
+            .map(|(id, st)| (id.clone(), st.current_layout_id.clone()))
             .collect()
     });
 
@@ -1417,7 +1420,7 @@ fn recompute_global_state() {
     // missing or no streams).
     fn cell_keys(
         layout: &crate::bundle::BundleLayout,
-        cam_map: &HashMap<u32, &crate::bundle::BundleCamera>,
+        cam_map: &HashMap<&str, &crate::bundle::BundleCamera>,
         out: &mut std::collections::HashSet<PoolKey>,
     ) {
         let total_area = (layout.grid_cols.max(1) * layout.grid_rows.max(1)) as f32;
@@ -1425,24 +1428,24 @@ fn recompute_global_state() {
             if cell.content_type != "camera" {
                 continue;
             }
-            let Some(cam_id) = cell.camera_id else {
+            let Some(cam_id) = cell.camera_id.as_ref() else {
                 continue;
             };
-            let Some(cam) = cam_map.get(&cam_id) else {
+            let Some(cam) = cam_map.get(cam_id.as_str()) else {
                 continue;
             };
             let area = (cell.col_span * cell.row_span) as f32 / total_area;
             if let Some((_, badge)) = cam.pick_stream(cell.stream_selector.as_deref(), area) {
-                out.insert((cam_id, badge));
+                out.insert((cam_id.clone(), badge));
             }
         }
         // Preload cameras have no cell context — let pick_stream choose
         // (typically sub). Different layouts that actually render them will
         // promote whichever badge they end up using.
         for cam_id in &layout.preload_camera_ids {
-            if let Some(cam) = cam_map.get(cam_id) {
+            if let Some(cam) = cam_map.get(cam_id.as_str()) {
                 if let Some((_, badge)) = cam.pick_stream(None, 0.0) {
-                    out.insert((*cam_id, badge));
+                    out.insert((cam_id.clone(), badge));
                 }
             }
         }
@@ -1452,7 +1455,7 @@ fn recompute_global_state() {
         let active_id = active
             .iter()
             .find(|(id, _)| *id == bd.id)
-            .and_then(|(_, l)| *l);
+            .and_then(|(_, l)| l.clone());
         if let Some(cur_id) = active_id {
             if let Some(layout) = bd.layouts.iter().find(|l| l.id == cur_id) {
                 cell_keys(layout, &cam_map, &mut warm_set);
@@ -1475,7 +1478,7 @@ fn recompute_global_state() {
         let active_id = active
             .iter()
             .find(|(id, _)| *id == bd.id)
-            .and_then(|(_, l)| *l);
+            .and_then(|(_, l)| l.clone());
         if let Some(cur_id) = active_id {
             if let Some(layout) = bd.layouts.iter().find(|l| l.id == cur_id) {
                 web_keys_for_layout(layout, &mut warm_webs);
@@ -1525,7 +1528,7 @@ fn recompute_pool_states(
                     continue;
                 }
                 if max_cooling_secs == 0 {
-                    to_remove.push(*key);
+                    to_remove.push(key.clone());
                     to_stop.push(entry.pipeline.clone());
                 } else {
                     entry.state = WarmthState::Cooling;
@@ -1551,15 +1554,15 @@ fn recompute_pool_states(
 /// Remove warm camera entries for cameras no longer in the bundle.
 /// Immediately stops pipelines — no cooling period.
 fn purge_removed_cameras(bundle_cameras: &[crate::bundle::BundleCamera]) {
-    let valid_ids: std::collections::HashSet<u32> = bundle_cameras.iter().map(|c| c.id).collect();
+    let valid_ids: std::collections::HashSet<&str> = bundle_cameras.iter().map(|c| c.id.as_str()).collect();
     let mut to_remove: Vec<PoolKey> = Vec::new();
     let mut to_stop: Vec<gstreamer::Pipeline> = Vec::new();
 
     WARM_CAMERAS.with(|w| {
         let mut warm = w.borrow_mut();
         for (key, entry) in warm.iter() {
-            if !valid_ids.contains(&key.0) {
-                to_remove.push(*key);
+            if !valid_ids.contains(key.0.as_str()) {
+                to_remove.push(key.clone());
                 to_stop.push(entry.pipeline.clone());
             }
         }
@@ -1588,7 +1591,7 @@ fn expire_cooling_pipelines() {
             .filter(|(_, e)| {
                 e.state == WarmthState::Cooling && e.cooling_until.is_some_and(|t| now >= t)
             })
-            .map(|(k, _)| *k)
+            .map(|(k, _)| k.clone())
             .collect();
         for k in keys {
             if let Some(e) = warm.remove(&k) {
@@ -1771,13 +1774,13 @@ fn should_attach_kiosk_auth(url: &str, server_url: &str) -> bool {
 /// that sibling entry alone — recompute_pool_states will demote it to Cooling
 /// so it can be reused if the cell flips back before the cooldown elapses.
 fn ensure_warm(
-    cam_id: u32,
+    cam_id: &str,
     cam: &crate::bundle::BundleCamera,
     selector: Option<&str>,
     area_fraction: f32,
 ) -> Option<(gtk::gdk::Paintable, char)> {
     let (uri, desired_badge) = cam.pick_stream(selector, area_fraction)?;
-    let key: PoolKey = (cam_id, desired_badge);
+    let key: PoolKey = (cam_id.to_string(), desired_badge);
 
     let cached = WARM_CAMERAS.with(|w| {
         w.borrow()
@@ -2179,7 +2182,7 @@ fn add_css(widget: &impl IsA<gtk::Widget>, css: &str) {
 
 thread_local! {
     static TERMINAL_CODE_WIDGET: RefCell<Option<gtk::Widget>> = const { RefCell::new(None) };
-    static TERMINAL_CODE_SAVED_CHILD: RefCell<Option<(u32, gtk::Widget)>> = const { RefCell::new(None) };
+    static TERMINAL_CODE_SAVED_CHILD: RefCell<Option<(String, gtk::Widget)>> = const { RefCell::new(None) };
 }
 
 fn show_terminal_code_overlay(code: &str) {
@@ -2189,7 +2192,7 @@ fn show_terminal_code_overlay(code: &str) {
     // Instead, replace the first display window's child with the code
     // overlay and restore it when dismissed.
     let display_id = DISPLAYS.with(|ds| {
-        ds.borrow().keys().next().copied()
+        ds.borrow().keys().next().cloned()
     });
     let Some(display_id) = display_id else { return };
 
@@ -2201,7 +2204,7 @@ fn show_terminal_code_overlay(code: &str) {
         // Save current child for restore.
         let old_child = win.child();
         if let Some(ref c) = old_child {
-            TERMINAL_CODE_SAVED_CHILD.with(|s| *s.borrow_mut() = Some((display_id, c.clone())));
+            TERMINAL_CODE_SAVED_CHILD.with(|s| *s.borrow_mut() = Some((display_id.clone(), c.clone())));
         }
 
         // Match the pairing screen layout but with red warning theme.

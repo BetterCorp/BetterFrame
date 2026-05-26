@@ -1,5 +1,35 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
+fn de_flexible_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let v = serde_json::Value::deserialize(deserializer)?;
+    match v {
+        serde_json::Value::String(s) => Ok(s),
+        serde_json::Value::Number(n) => Ok(n.to_string()),
+        _ => Err(serde::de::Error::custom("expected string or number for id")),
+    }
+}
+
+fn de_flexible_id_opt<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    let v = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match v {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(s)) if s.is_empty() => Ok(None),
+        Some(serde_json::Value::String(s)) => Ok(Some(s)),
+        Some(serde_json::Value::Number(n)) => Ok(Some(n.to_string())),
+        _ => Err(serde::de::Error::custom("expected string or number for id")),
+    }
+}
+
+fn de_flexible_id_vec<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+    let v = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    v.into_iter()
+        .map(|item| match item {
+            serde_json::Value::String(s) => Ok(s),
+            serde_json::Value::Number(n) => Ok(n.to_string()),
+            _ => Err(serde::de::Error::custom("expected string or number in id array")),
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct KioskBundle {
@@ -49,37 +79,43 @@ impl KioskBundle {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleDisplay {
-    pub id: u32,
+    #[serde(deserialize_with = "de_flexible_id")]
+    pub id: String,
     pub name: String,
     pub width_px: u32,
     pub height_px: u32,
     pub idle_timeout_seconds: u32,
     pub sleep_timeout_seconds: u32,
-    pub default_layout_id: Option<u32>,
+    #[serde(default, deserialize_with = "de_flexible_id_opt")]
+    pub default_layout_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleDisplayWithLayouts {
-    pub id: u32,
+    #[serde(deserialize_with = "de_flexible_id")]
+    pub id: String,
     pub name: String,
     pub width_px: u32,
     pub height_px: u32,
     pub idle_timeout_seconds: u32,
     pub sleep_timeout_seconds: u32,
-    pub default_layout_id: Option<u32>,
+    #[serde(default, deserialize_with = "de_flexible_id_opt")]
+    pub default_layout_id: Option<String>,
     #[serde(default)]
     pub layouts: Vec<BundleLayout>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleLayout {
-    pub id: u32,
+    #[serde(deserialize_with = "de_flexible_id")]
+    pub id: String,
     pub name: String,
     pub grid_cols: u32,
     pub grid_rows: u32,
     pub priority: String,
     pub cooling_timeout_seconds: Option<u32>,
-    pub preload_camera_ids: Vec<u32>,
+    #[serde(default, deserialize_with = "de_flexible_id_vec")]
+    pub preload_camera_ids: Vec<String>,
     pub is_default: bool,
     pub resets_idle_timer: bool,
     pub cells: Vec<BundleCell>,
@@ -137,7 +173,8 @@ pub struct SmartUrlStep {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleCamera {
-    pub id: u32,
+    #[serde(deserialize_with = "de_flexible_id")]
+    pub id: String,
     pub name: String,
     #[serde(rename = "type")]
     pub cam_type: String,
@@ -162,7 +199,8 @@ pub struct BundleCamera {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleStream {
-    pub id: u32,
+    #[serde(deserialize_with = "de_flexible_id")]
+    pub id: String,
     pub role: String,
     pub name: String,
     pub rtsp_uri: String,
@@ -174,7 +212,8 @@ pub struct BundleStream {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleGpioBinding {
-    pub id: u32,
+    #[serde(deserialize_with = "de_flexible_id")]
+    pub id: String,
     pub chip: String,
     pub pin: u32,
     pub direction: String,

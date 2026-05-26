@@ -115,7 +115,7 @@ async fn local_info_handler(
 
 async fn local_layout_handler(
     State(state): State<LocalServerState>,
-    Path(id): Path<u32>,
+    Path(id): Path<String>,
     Query(auth): Query<LocalAuth>,
 ) -> Response {
     if !constant_time_eq(&auth.key, &state.local_key) {
@@ -127,7 +127,7 @@ async fn local_layout_handler(
     };
     if let Err(e) = tx.send(WorkerMsg::SwitchLayout {
         display_id: None,
-        layout_id: id,
+        layout_id: id.clone(),
     }) {
         warn!("local-server: send SwitchLayout failed: {e}");
         return (StatusCode::INTERNAL_SERVER_ERROR, "send failed").into_response();
@@ -152,7 +152,7 @@ async fn local_layout_handler(
 /// "good enough" and isolated.
 async fn local_snapshot_handler(
     State(state): State<LocalServerState>,
-    Path(camera_id): Path<u32>,
+    Path(camera_id): Path<String>,
     Query(auth): Query<LocalAuth>,
 ) -> Response {
     if !constant_time_eq(&auth.key, &state.local_key) {

@@ -25,7 +25,7 @@ use crate::bundle::BundleCamera;
 
 /// Active subscriptions keyed by camera id. Worker threads check this
 /// to know when to stop (camera removed from bundle / bundle changed).
-static ACTIVE: Mutex<Option<HashMap<u32, ()>>> = Mutex::new(None);
+static ACTIVE: Mutex<Option<HashMap<String, ()>>> = Mutex::new(None);
 
 /// Holds the current generation Arc. When start() replaces it, the old
 /// Arc drops → old threads' Weak::upgrade() returns None → they exit.
@@ -34,7 +34,7 @@ static ACTIVE: Mutex<Option<HashMap<u32, ()>>> = Mutex::new(None);
 static GENERATION: Mutex<Option<Arc<()>>> = Mutex::new(None);
 
 /// Subscription status per camera — reported in heartbeat for admin visibility.
-static STATUS: Mutex<Option<HashMap<u32, SubStatus>>> = Mutex::new(None);
+static STATUS: Mutex<Option<HashMap<String, SubStatus>>> = Mutex::new(None);
 
 #[derive(Clone, serde::Serialize)]
 pub struct SubStatus {
@@ -43,10 +43,10 @@ pub struct SubStatus {
     pub error: Option<String>,
 }
 
-fn set_status(cam_id: u32, state: &'static str, error: Option<String>) {
+fn set_status(cam_id: &str, state: &'static str, error: Option<String>) {
     let mut map = STATUS.lock().unwrap();
     let map = map.get_or_insert_with(HashMap::new);
-    let entry = map.entry(cam_id).or_insert_with(|| SubStatus {
+    let entry = map.entry(cam_id.to_string()).or_insert_with(|| SubStatus {
         state: "subscribing",
         last_event_at: None,
         error: None,
@@ -55,17 +55,17 @@ fn set_status(cam_id: u32, state: &'static str, error: Option<String>) {
     entry.error = error;
 }
 
-fn mark_event_received(cam_id: u32) {
+fn mark_event_received(cam_id: &str) {
     let mut map = STATUS.lock().unwrap();
     if let Some(map) = map.as_mut() {
-        if let Some(entry) = map.get_mut(&cam_id) {
+        if let Some(entry) = map.get_mut(cam_id) {
             entry.last_event_at = Some(crate::os_update::current_os_version_public()); // reuse timestamp helper... actually just use epoch
         }
     }
 }
 
 /// Get current subscription statuses for all cameras. Used by heartbeat.
-pub fn get_statuses() -> HashMap<u32, SubStatus> {
+pub fn get_statuses() -> HashMap<String, SubStatus> {
     STATUS.lock().unwrap().clone().unwrap_or_default()
 }
 
@@ -99,7 +99,7 @@ pub fn start(
 
     // Signal old workers to stop.
     let mut active = ACTIVE.lock().unwrap();
-    let new_map: HashMap<u32, ()> = onvif_cams.iter().map(|c| (c.id, ())).collect();
+    let new_map: HashMap<String, ()> = onvif_cams.iter().map(|c| (c.id.clone(), ())).collect();
     *active = Some(new_map);
     drop(active);
 
@@ -146,18 +146,18 @@ fn run_subscription(
         }
 
         // 1. CreatePullPointSubscription
-        set_status(cam.id, "subscribing", None);
+        set_status(&cam.id, "subscribing", None);
         let sub = match create_pullpoint(&event_url, user, pass) {
             Ok(s) => s,
             Err(e) => {
                 warn!("onvif-events: cam {} CreatePullPoint failed: {e}", cam.id);
-                set_status(cam.id, "failed", Some(e));
+                set_status(&cam.id, "failed", Some(e));
                 std::thread::sleep(Duration::from_secs(30));
                 continue;
             }
         };
         info!("onvif-events: cam {} subscribed, address={}", cam.id, sub.address);
-        set_status(cam.id, "active", None);
+        set_status(&cam.id, "active", None);
 
         // 2. Poll loop
         let poll_interval = Duration::from_secs(3);
@@ -184,12 +184,12 @@ fn run_subscription(
             match pull_messages(&sub.address, user, pass) {
                 Ok(events) => {
                     for evt in events {
-                        forward_event(server, kiosk_key, cam.id, &evt);
+                        forward_event(server, kiosk_key, &cam.id, &evt, user, pass);
                     }
                 }
                 Err(e) => {
                     warn!("onvif-events: cam {} pull failed: {e}", cam.id);
-                    set_status(cam.id, "failed", Some(e));
+                    set_status(&cam.id, "failed", Some(e));
                     std::thread::sleep(Duration::from_secs(15));
                     break; // resubscribe after backoff
                 }
@@ -542,12 +542,23 @@ fn extract_attr_inline(xml: &str, attr: &str) -> Option<String> {
 
 // ---- Forward to BF server --------------------------------------------------
 
-fn forward_event(server: &str, kiosk_key: &str, camera_id: u32, evt: &OnvifEvent) {
-    let payload = serde_json::json!({
+fn forward_event(
+    server: &str,
+    kiosk_key: &str,
+    camera_id: &str,
+    evt: &OnvifEvent,
+    cam_user: &str,
+    cam_pass: &str,
+) {
+    let attachments = fetch_image_attachments(&evt.data, cam_user, cam_pass);
+    let mut payload = serde_json::json!({
         "source": evt.source,
         "data": evt.data,
         "timestamp": evt.timestamp,
     });
+    if !attachments.is_empty() {
+        payload["attachments"] = serde_json::json!(attachments);
+    }
     let body = serde_json::json!({
         "topic": evt.topic,
         "source_type": "onvif",
@@ -559,8 +570,145 @@ fn forward_event(server: &str, kiosk_key: &str, camera_id: u32, evt: &OnvifEvent
         .post(format!("{server}/api/kiosk/event"))
         .header("Authorization", format!("Bearer {kiosk_key}"))
         .json(&body)
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
         .send();
+}
+
+fn fetch_image_attachments(
+    data: &HashMap<String, String>,
+    user: &str,
+    pass: &str,
+) -> HashMap<String, String> {
+    let mut attachments = HashMap::new();
+    let image_exts = [".jpg", ".jpeg", ".png", ".bmp"];
+    for (key, value) in data {
+        if !value.starts_with("http://") && !value.starts_with("https://") {
+            continue;
+        }
+        let lower = value.to_lowercase();
+        if !image_exts.iter().any(|ext| lower.contains(ext)) {
+            continue;
+        }
+        match fetch_image_b64(value, user, pass) {
+            Some(b64) => {
+                let mime = if lower.contains(".png") {
+                    "image/png"
+                } else {
+                    "image/jpeg"
+                };
+                attachments.insert(key.clone(), format!("data:{mime};base64,{b64}"));
+            }
+            None => {
+                warn!("onvif-events: failed to fetch image for {key}: {value}");
+            }
+        }
+    }
+    attachments
+}
+
+fn fetch_image_b64(url: &str, user: &str, pass: &str) -> Option<String> {
+    use base64::Engine;
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .get(url)
+        .basic_auth(user, Some(pass))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .ok()?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        // Retry with digest auth if basic auth returned 401.
+        if status.as_u16() == 401 {
+            return fetch_image_b64_digest(url, user, pass);
+        }
+        warn!("onvif-events: image fetch HTTP {status} for {url}");
+        return None;
+    }
+    let bytes = resp.bytes().ok()?;
+    if bytes.is_empty() || bytes.len() > 10 * 1024 * 1024 {
+        return None;
+    }
+    Some(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
+fn fetch_image_b64_digest(url: &str, user: &str, pass: &str) -> Option<String> {
+    use base64::Engine;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .ok()?;
+    let resp = client
+        .get(url)
+        .header("Authorization", digest_auth_header(url, user, pass)?)
+        .send()
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let bytes = resp.bytes().ok()?;
+    if bytes.is_empty() || bytes.len() > 10 * 1024 * 1024 {
+        return None;
+    }
+    Some(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
+fn digest_auth_header(url: &str, user: &str, pass: &str) -> Option<String> {
+    let client = reqwest::blocking::Client::new();
+    let resp = client.get(url).timeout(Duration::from_secs(3)).send().ok()?;
+    if resp.status().as_u16() != 401 {
+        return None;
+    }
+    let www_auth = resp.headers().get("www-authenticate")?.to_str().ok()?;
+    if !www_auth.to_lowercase().starts_with("digest ") {
+        return None;
+    }
+    let realm = extract_digest_field(www_auth, "realm")?;
+    let nonce = extract_digest_field(www_auth, "nonce")?;
+    let qop = extract_digest_field(www_auth, "qop").unwrap_or_default();
+    let uri = url::Url::parse(url).ok().map(|u| u.path().to_string()).unwrap_or_else(|| "/".to_string());
+    let ha1 = md5_hex(&format!("{user}:{realm}:{pass}"));
+    let ha2 = md5_hex(&format!("GET:{uri}"));
+    let cnonce = format!("{:08x}", rand::random::<u32>());
+    let nc = "00000001";
+    let response = if qop.contains("auth") {
+        md5_hex(&format!("{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}"))
+    } else {
+        md5_hex(&format!("{ha1}:{nonce}:{ha2}"))
+    };
+    if qop.contains("auth") {
+        Some(format!(
+            r#"Digest username="{user}", realm="{realm}", nonce="{nonce}", uri="{uri}", response="{response}", qop=auth, nc={nc}, cnonce="{cnonce}""#
+        ))
+    } else {
+        Some(format!(
+            r#"Digest username="{user}", realm="{realm}", nonce="{nonce}", uri="{uri}", response="{response}""#
+        ))
+    }
+}
+
+fn extract_digest_field(header: &str, field: &str) -> Option<String> {
+    let pat = format!("{field}=\"");
+    let start = header.find(&pat)? + pat.len();
+    let end = header[start..].find('"')?;
+    Some(header[start..start + end].to_string())
+}
+
+fn md5_hex(input: &str) -> String {
+    use md5::{Digest, Md5};
+    let mut hasher = Md5::new();
+    hasher.update(input.as_bytes());
+    let result = hasher.finalize();
+    hex_lower_bytes(&result)
+}
+
+fn hex_lower_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    s
 }
 
 // ---- Cluster key decryption ------------------------------------------------

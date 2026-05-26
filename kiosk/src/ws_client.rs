@@ -151,23 +151,21 @@ async fn handle_message(
     } else if text.contains("\"type\":\"standby\"") {
         let display_id = serde_json::from_str::<serde_json::Value>(text)
             .ok()
-            .and_then(|m| m.get("display_id").and_then(|v| v.as_u64()).map(|v| v as u32));
+            .and_then(|m| m.get("display_id").and_then(flexible_id_from_value));
         let _ = tx.send(ServerMsg::Standby(display_id));
     } else if text.contains("\"type\":\"wake\"") {
         let display_id = serde_json::from_str::<serde_json::Value>(text)
             .ok()
-            .and_then(|m| m.get("display_id").and_then(|v| v.as_u64()).map(|v| v as u32));
+            .and_then(|m| m.get("display_id").and_then(flexible_id_from_value));
         let _ = tx.send(ServerMsg::Wake(display_id));
     } else if text.contains("\"type\":\"layout-switch\"") {
         let msg = serde_json::from_str::<serde_json::Value>(text).ok();
         let layout_id = msg.as_ref()
             .and_then(|m| m.get("layout_id"))
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
+            .and_then(flexible_id_from_value);
         let display_id = msg.as_ref()
             .and_then(|m| m.get("display_id"))
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
+            .and_then(flexible_id_from_value);
         if let Some(layout_id) = layout_id {
             let _ = tx.send(ServerMsg::SwitchLayout { display_id, layout_id });
         }
@@ -363,6 +361,16 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
             "request_id": req.request_id,
             "error": format!("kiosk ONVIF request failed: {err}"),
         }).to_string(),
+    }
+}
+
+/// Extract an ID from a JSON value that may be a string or a number.
+/// Mirrors the flexible ID deserialization in bundle.rs.
+fn flexible_id_from_value(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
     }
 }
 

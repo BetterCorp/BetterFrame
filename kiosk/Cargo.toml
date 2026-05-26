@@ -44,6 +44,8 @@ urlencoding = "2"
 
 # ONVIF WSSE PasswordDigest auth
 sha1 = "0.10"
+# HTTP Digest auth for camera image fetch
+md5 = "0.7"
 
 # Hardware-bound at-rest encryption of state files (kiosk_key + bundle cache
 # contain camera RTSP credentials in URL form). Keys derived via HKDF from

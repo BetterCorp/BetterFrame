@@ -428,8 +428,8 @@ pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
 pub fn report_layout_change(
     server: &str,
     key: &str,
-    display_id: u32,
-    layout_id: u32,
+    display_id: &str,
+    layout_id: &str,
     layout_name: &str,
 ) {
     let client = reqwest::blocking::Client::new();

@@ -64,9 +64,9 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // Push OS update now: server pings the kiosk via WS coordinator.
-  app.post("/admin/kiosks/:id/os-update/push", (event) => {
+  app.post("/admin/kiosks/:id/os-update/push", async (event) => {
     const id = Number(getRouterParam(event, "id"));
-    const { getCoordinator } = require("../../shared/coordinator-registry.js");
+    const { getCoordinator } = await import("../../shared/coordinator-registry.js");
     const dispatched = getCoordinator().sendToKiosk(id, { type: "os_check" });
     return { ok: true, dispatched };
   });

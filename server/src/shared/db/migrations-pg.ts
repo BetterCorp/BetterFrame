@@ -552,6 +552,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
          AND (
            c.column_name = 'id'
            OR c.column_name LIKE '%_id'
+           OR c.column_name LIKE '%_by'
          )
          AND c.table_name NOT IN ('schema_migrations', 'setup_state')
     LOOP

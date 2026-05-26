@@ -7,6 +7,7 @@ import type { AdminDeps } from "./index.js";
 import { LoginPage, TotpPage, RecoveryPage } from "../../web-templates/auth-pages.js";
 import { audit } from "../../shared/audit.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
+import { LoginBody, TotpBody, validateBody } from "../../shared/api-schemas.js";
 
 
 export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
@@ -37,13 +38,14 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       });
     }
 
-    const body = await readBody<{ username?: string; password?: string }>(event);
-    const username = (body?.username ?? "").trim();
-    const password = body?.password ?? "";
-
-    if (!username || !password) {
-      return htmlPage(LoginPage({ error: "Username and password required.", username }));
+    let body: { username: string; password: string };
+    try {
+      body = validateBody(LoginBody, await readBody(event));
+    } catch {
+      return htmlPage(LoginPage({ error: "Username and password required.", username: "" }));
     }
+    const username = body.username.trim();
+    const password = body.password;
 
     const user = await deps.repo.getUserByUsername(username);
     if (!user || !user.is_active) {
@@ -128,10 +130,15 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
 
-    const body = await readBody<{ code?: string }>(event);
-    const code = (body?.code ?? "").trim().replace(/\s/g, "");
+    let totpBody: { code: string };
+    try {
+      totpBody = validateBody(TotpBody, await readBody(event));
+    } catch {
+      return htmlPage(TotpPage({ error: "Enter a 6-digit code." }));
+    }
+    const code = totpBody.code.trim().replace(/\s/g, "");
 
-    if (!code || code.length !== 6) {
+    if (code.length !== 6) {
       return htmlPage(TotpPage({ error: "Enter a 6-digit code." }));
     }
 

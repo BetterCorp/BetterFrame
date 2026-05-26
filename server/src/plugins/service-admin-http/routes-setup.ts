@@ -5,6 +5,7 @@ import { type H3, readBody } from "h3";
 import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { SetupPage } from "../../web-templates/auth-pages.js";
+import { SetupBody, validateBody } from "../../shared/api-schemas.js";
 
 export function registerSetupRoutes(app: H3, deps: AdminDeps): void {
   app.get("/setup", async () => {
@@ -19,18 +20,18 @@ export function registerSetupRoutes(app: H3, deps: AdminDeps): void {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
 
-    const body = await readBody<{ username?: string; password?: string }>(event);
-    const username = (body?.username ?? "").trim();
-    const password = body?.password ?? "";
+    let body: { username: string; password: string };
+    try {
+      body = validateBody(SetupBody, await readBody(event));
+    } catch {
+      return htmlPage(SetupPage({ error: "Username (3-64 chars) and password (12+ chars) required.", username: "" }));
+    }
+    const username = body.username.trim();
+    const password = body.password;
     const errors: string[] = [];
 
-    if (!username || username.length < 3 || username.length > 64) {
-      errors.push("Username must be 3–64 characters.");
-    } else if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
       errors.push("Username may only contain letters, digits, underscore, or hyphen.");
-    }
-    if (password.length < 12) {
-      errors.push("Password must be at least 12 characters.");
     }
 
     if (errors.length > 0) {

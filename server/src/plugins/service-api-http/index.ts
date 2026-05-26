@@ -31,6 +31,10 @@ import { createHash } from "node:crypto";
 import type { AuthApi } from "../../shared/auth.js";
 import type { SecretsApi } from "../../shared/secrets.js";
 import type { FirmwareChannel } from "../../shared/types.js";
+import {
+  PairInitiateBody, PairClaimBody, HeartbeatBody, EventBody,
+  KioskLogsBody, FirmwareAppliedBody, OsAppliedBody, validateBody,
+} from "../../shared/api-schemas.js";
 
 // ---- Config -----------------------------------------------------------------
 
@@ -292,18 +296,13 @@ function registerPairingRoutes(
       throw createError({ statusCode: 429, statusMessage: "rate limited" });
     }
 
-    const body = await readBody<{
-      proposed_name?: string;
-      hardware_model?: string;
-      capabilities?: string[];
-      managed_image?: boolean;
-    }>(event);
+    const body = validateBody(PairInitiateBody, await readBody(event));
 
     const result = await initiatePairing(repo, {
-      proposedName: body?.proposed_name ?? null,
-      hardwareModel: body?.hardware_model ?? null,
-      capabilities: body?.capabilities ?? [],
-      managedImage: body?.managed_image === true,
+      proposedName: body.proposed_name || null,
+      hardwareModel: body.hardware_model || null,
+      capabilities: body.capabilities,
+      managedImage: body.managed_image,
       codeTtlSeconds: codeTtl,
     });
 
@@ -319,9 +318,8 @@ function registerPairingRoutes(
       throw createError({ statusCode: 429, statusMessage: "rate limited" });
     }
 
-    const body = await readBody<{ code?: string }>(event);
-    const code = (body?.code ?? "").trim().toUpperCase();
-    if (!code) throw createError({ statusCode: 400, statusMessage: "code required" });
+    const body = validateBody(PairClaimBody, await readBody(event));
+    const code = body.code.trim().toUpperCase();
 
     const reqObs = event.context.obs!;
     const result = await claimPairing(repo, code, reqObs);
@@ -459,44 +457,7 @@ function registerKioskRoutes(
     if (!kiosk) return { bf_kiosk_deleted: true };
     event.context.obs?.log.info("heartbeat from kiosk {id}", { id: String(kiosk.id) });
 
-    const body = await readBody<{
-      bundle_version?: string;
-      kiosk_app_version?: string;
-      os_version?: string;
-      displays?: Array<{
-        index?: number;
-        name: string;
-        width_px: number;
-        height_px: number;
-        power_state?: "awake" | "standby" | "unknown";
-      }>;
-      cpu_temp_c?: number | null;
-      cpu_load_percent?: number | null;
-      fan_rpm?: number | null;
-      fan_pwm?: number | null;
-      memory_total_mb?: number | null;
-      memory_used_mb?: number | null;
-      disk_total_mb?: number | null;
-      disk_free_mb?: number | null;
-      disk_used_percent?: number | null;
-      local_key?: string | null;
-      local_port?: number | null;
-      reported_hostname?: string | null;
-      network_interfaces?: Array<Record<string, unknown>>;
-      partitions?: Array<{
-        device: string;
-        mountpoint: string;
-        total_mb: number;
-        used_mb: number;
-        free_mb: number;
-        used_percent: number;
-      }>;
-      // Managed-image kiosk echoes back the version it last applied, and the
-      // last apply error (if any). Server uses these to decide whether to
-      // include pending_config in the response.
-      managed_config_applied_version?: number;
-      managed_config_error?: string | null;
-    }>(event);
+    const body = validateBody(HeartbeatBody, await readBody(event));
 
     // Capture the kiosk's LAN-side IP from the heartbeat connection so admin
     // can render a copy-paste URL even when the kiosk has no DNS name.
@@ -505,26 +466,26 @@ function registerKioskRoutes(
       ?? null;
 
     await repo.touchKiosk(kiosk.id, {
-      bundle_version: body?.bundle_version ?? null,
-      kiosk_app_version: body?.kiosk_app_version ?? null,
-      os_version: body?.os_version ?? null,
-      cpu_temp_c: body?.cpu_temp_c ?? null,
-      cpu_load_percent: body?.cpu_load_percent ?? null,
-      fan_rpm: body?.fan_rpm ?? null,
-      fan_pwm: body?.fan_pwm ?? null,
-      memory_total_mb: body?.memory_total_mb ?? null,
-      memory_used_mb: body?.memory_used_mb ?? null,
-      disk_total_mb: body?.disk_total_mb ?? null,
-      disk_free_mb: body?.disk_free_mb ?? null,
-      disk_used_percent: body?.disk_used_percent ?? null,
-      local_key: body?.local_key ?? null,
-      local_port: body?.local_port ?? null,
+      bundle_version: body.bundle_version ?? null,
+      kiosk_app_version: body.kiosk_app_version ?? null,
+      os_version: body.os_version ?? null,
+      cpu_temp_c: body.cpu_temp_c ?? null,
+      cpu_load_percent: body.cpu_load_percent ?? null,
+      fan_rpm: body.fan_rpm ?? null,
+      fan_pwm: body.fan_pwm ?? null,
+      memory_total_mb: body.memory_total_mb ?? null,
+      memory_used_mb: body.memory_used_mb ?? null,
+      disk_total_mb: body.disk_total_mb ?? null,
+      disk_free_mb: body.disk_free_mb ?? null,
+      disk_used_percent: body.disk_used_percent ?? null,
+      local_key: body.local_key ?? null,
+      local_port: body.local_port ?? null,
       local_last_ip: remoteIp,
-      reported_hostname: body?.reported_hostname ?? null,
-      network_interfaces_json: Array.isArray(body?.network_interfaces)
+      reported_hostname: body.reported_hostname ?? null,
+      network_interfaces_json: Array.isArray(body.network_interfaces)
         ? JSON.stringify(body.network_interfaces)
         : null,
-      partitions_json: Array.isArray(body?.partitions)
+      partitions_json: Array.isArray(body.partitions)
         ? JSON.stringify(body.partitions)
         : null,
     });
@@ -534,7 +495,7 @@ function registerKioskRoutes(
     // successful apply (kiosk omits it). verifyKioskKey returns just {id};
     // re-read the full row to check the managed_image flag.
     const kioskFull = await repo.getKioskById(kiosk.id);
-    if (kioskFull?.managed_image && typeof body?.managed_config_applied_version === "number") {
+    if (kioskFull?.managed_image && typeof body.managed_config_applied_version === "number") {
       const patch: Record<string, unknown> = {
         managed_config_applied_version: body.managed_config_applied_version,
         managed_config_applied_at: new Date().toISOString(),
@@ -547,24 +508,24 @@ function registerKioskRoutes(
 
     // Mirror to MQTT bridge (no-op when BF_MQTT_URL unset).
     mqtt.publishTelemetry(kiosk.id, {
-      kiosk_app_version: body?.kiosk_app_version,
-      bundle_version: body?.bundle_version,
-      cpu_temp_c: body?.cpu_temp_c,
-      cpu_load_percent: body?.cpu_load_percent,
-      fan_rpm: body?.fan_rpm,
-      fan_pwm: body?.fan_pwm,
-      memory_total_mb: body?.memory_total_mb,
-      memory_used_mb: body?.memory_used_mb,
-      disk_total_mb: body?.disk_total_mb,
-      disk_free_mb: body?.disk_free_mb,
-      disk_used_percent: body?.disk_used_percent,
+      kiosk_app_version: body.kiosk_app_version,
+      bundle_version: body.bundle_version,
+      cpu_temp_c: body.cpu_temp_c,
+      cpu_load_percent: body.cpu_load_percent,
+      fan_rpm: body.fan_rpm,
+      fan_pwm: body.fan_pwm,
+      memory_total_mb: body.memory_total_mb,
+      memory_used_mb: body.memory_used_mb,
+      disk_total_mb: body.disk_total_mb,
+      disk_free_mb: body.disk_free_mb,
+      disk_used_percent: body.disk_used_percent,
       ip: remoteIp,
-      reported_hostname: body?.reported_hostname,
-      network_interfaces: body?.network_interfaces,
+      reported_hostname: body.reported_hostname,
+      network_interfaces: body.network_interfaces,
     });
 
     // Sync displays reported by the kiosk
-    if (Array.isArray(body?.displays)) {
+    if (Array.isArray(body.displays)) {
       const existing = await repo.listDisplaysForKiosk(kiosk.id);
       const seenDisplayIds = new Set<string>();
       for (const [position, reported] of body.displays.entries()) {
@@ -665,20 +626,11 @@ function registerKioskRoutes(
     const kiosk = await auth.verifyKioskKey(token);
     if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
 
-    const body = await readBody<{
-      topic: string;
-      source_type?: string;
-      camera_id?: string;
-      property_op?: string;
-      payload?: Record<string, unknown>;
-    }>(event);
-
-    if (!body?.topic) throw createError({ statusCode: 400, statusMessage: "topic required" });
+    const body = validateBody(EventBody, await readBody(event));
+    const payload = (body.payload ?? {}) as Record<string, unknown>;
     event.context.obs?.log.info("event from kiosk {id} topic {topic}", { id: String(kiosk.id), topic: body.topic });
 
-    // Dedup: Hikvision cameras send duplicate ONVIF events within ~1s.
-    // Key = kiosk_id:camera_id:topic:source_keys_hash. Window = 2s.
-    const dedupKey = `${kiosk.id}:${body.camera_id ?? 0}:${body.topic}:${JSON.stringify(body.payload?.["source"] ?? "")}`;
+    const dedupKey = `${kiosk.id}:${body.camera_id ?? 0}:${body.topic}:${JSON.stringify(payload["source"] ?? "")}`;
     const now = Date.now();
     if (eventDedupCache.has(dedupKey)) {
       const lastSeen = eventDedupCache.get(dedupKey)!;
@@ -703,7 +655,7 @@ function registerKioskRoutes(
         source_type: (body.source_type as any) ?? "system",
         topic: body.topic,
         property_op: body.property_op ?? null,
-        payload: body.payload ?? {},
+        payload,
         forwarded_to_nodered: false,
       });
     } catch (err: any) {
@@ -714,7 +666,7 @@ function registerKioskRoutes(
           source_type: (body.source_type as any) ?? "system",
           topic: body.topic,
           property_op: body.property_op ?? null,
-          payload: body.payload ?? {},
+          payload,
           forwarded_to_nodered: false,
         });
       } else {
@@ -725,8 +677,8 @@ function registerKioskRoutes(
     // Side-effect: persist active layout per display so the admin UI can
     // surface "currently showing X" without having to query event_log.
     if (body.topic === "layout.changed") {
-      const displayId = String(body.payload?.["display_id"] ?? "");
-      const layoutId = String(body.payload?.["layout_id"] ?? "");
+      const displayId = String(payload["display_id"] ?? "");
+      const layoutId = String(payload["layout_id"] ?? "");
       if (displayId && layoutId) {
         try {
           await repo.updateDisplay(displayId, { active_layout_id: layoutId } as any);
@@ -792,26 +744,19 @@ function registerKioskRoutes(
     const kiosk = await auth.verifyKioskKey(token);
     if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
 
-    const body = await readBody<{
-      entries?: Array<{ level?: string; message?: string; context?: Record<string, unknown>; logged_at?: string }>;
-    }>(event);
-
-    const raw = body?.entries;
-    if (!Array.isArray(raw) || raw.length === 0) {
+    const body = validateBody(KioskLogsBody, await readBody(event));
+    if (body.entries.length === 0) {
       throw createError({ statusCode: 400, statusMessage: "entries array required" });
-    }
-    if (raw.length > 100) {
-      throw createError({ statusCode: 400, statusMessage: "max 100 entries per batch" });
     }
 
     const validLevels = new Set(["debug", "info", "warn", "error"]);
-    const entries = raw
-      .filter((e) => e.message && typeof e.message === "string")
-      .map((e) => ({
-        level: (validLevels.has(e.level ?? "") ? e.level! : "info") as "debug" | "info" | "warn" | "error",
-        message: e.message!,
-        context: e.context ?? {},
-        logged_at: e.logged_at,
+    const entries = body.entries
+      .filter((e: any) => e.message.length > 0)
+      .map((e: any) => ({
+        level: (validLevels.has(e.level) ? e.level : "info") as "debug" | "info" | "warn" | "error",
+        message: String(e.message),
+        context: (e.context ?? {}) as Record<string, unknown>,
+        logged_at: e.logged_at as string | undefined,
       }));
 
     const count = await repo.insertKioskLogs(kiosk.id, entries);
@@ -935,10 +880,7 @@ function registerKioskRoutes(
     const kiosk = await auth.verifyKioskKey(token);
     if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
 
-    const body = await readBody<{ version: string; error?: string }>(event);
-    if (!body?.version) {
-      throw createError({ statusCode: 400, statusMessage: "version required" });
-    }
+    const body = validateBody(FirmwareAppliedBody, await readBody(event));
     await repo.recordKioskFirmwareAttempt(kiosk.id, body.version, body.error ?? null);
     await repo.insertEvent({
       source_kiosk_id: kiosk.id,
@@ -1079,10 +1021,7 @@ function registerKioskRoutes(
     const kiosk = await auth.verifyKioskKey(token);
     if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
 
-    const body = await readBody<{ version: string; error?: string }>(event);
-    if (!body?.version) {
-      throw createError({ statusCode: 400, statusMessage: "version required" });
-    }
+    const body = validateBody(OsAppliedBody, await readBody(event));
     await repo.recordKioskOsUpdateAttempt(kiosk.id, body.version, body.error ?? null);
     await repo.insertEvent({
       source_kiosk_id: kiosk.id,

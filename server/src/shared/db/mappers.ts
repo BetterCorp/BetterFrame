@@ -69,7 +69,7 @@ const nn = (v: unknown): number | null =>
 
 export function rowToUser(r: Row): User {
   return {
-    id: n(r["id"]),
+    id: s(r["id"]),
     username: s(r["username"]),
     password_hash: s(r["password_hash"]),
     role: s(r["role"]) as UserRole,
@@ -88,7 +88,7 @@ export function rowToUser(r: Row): User {
 export function rowToSession(r: Row): Session {
   return {
     id: s(r["id"]),
-    user_id: n(r["user_id"]),
+    user_id: s(r["user_id"]),
     csrf_token: s(r["csrf_token"]),
     totp_pending: b(r["totp_pending"]),
     user_agent: sn(r["user_agent"]),
@@ -102,7 +102,7 @@ export function rowToSession(r: Row): Session {
 
 export function rowToApiKey(r: Row): ApiKey {
   return {
-    id: n(r["id"]),
+    id: s(r["id"]),
     name: s(r["name"]),
     key_hash: s(r["key_hash"]),
     key_prefix: s(r["key_prefix"]),
@@ -128,14 +128,14 @@ export function rowToSetupState(r: Row): SetupState {
 
 export function rowToDisplay(r: Row): Display {
   return {
-    id: n(r["id"]),
+    id: s(r["id"]),
     name: s(r["name"]),
     index: n(r["index"]),
     is_primary: b(r["is_primary"]),
-    kiosk_id: nn(r["kiosk_id"]),
+    kiosk_id: sn(r["kiosk_id"]),
     width_px: n(r["width_px"]),
     height_px: n(r["height_px"]),
-    default_layout_id: nn(r["default_layout_id"]),
+    default_layout_id: sn(r["default_layout_id"]),
     idle_timeout_seconds: n(r["idle_timeout_seconds"]),
     sleep_timeout_seconds: n(r["sleep_timeout_seconds"]),
     cec_enabled: b(r["cec_enabled"]),
@@ -147,13 +147,13 @@ export function rowToDisplay(r: Row): Display {
     state_check_enabled: b(r["state_check_enabled"]),
     state_check_interval_seconds: n(r["state_check_interval_seconds"]),
     is_enabled: b(r["is_enabled"]),
-    active_layout_id: nn(r["active_layout_id"]),
+    active_layout_id: sn(r["active_layout_id"]),
   };
 }
 
 export function rowToCamera(r: Row): Camera {
   return {
-    id: n(r["id"]),
+    id: s(r["id"]),
     name: s(r["name"]),
     type: s(r["type"]) as CameraType,
     rtsp_url: sn(r["rtsp_url"]),
@@ -178,8 +178,8 @@ export function rowToCamera(r: Row): Camera {
 
 export function rowToCameraStream(r: Row): CameraStream {
   return {
-    id: n(r["id"]),
-    camera_id: n(r["camera_id"]),
+    id: s(r["id"]),
+    camera_id: s(r["camera_id"]),
     role: s(r["role"]) as StreamRole,
     name: s(r["name"]),
     profile_token: sn(r["profile_token"]),
@@ -198,7 +198,7 @@ export function rowToCameraStream(r: Row): CameraStream {
 
 export function rowToLayoutTemplate(r: Row): LayoutTemplate {
   return {
-    id: n(r["id"]),
+    id: s(r["id"]),
     name: s(r["name"]),
     description: sn(r["description"]),
     regions: j<LayoutRegion[]>(r["regions"], []),
@@ -210,17 +210,17 @@ export function rowToLayoutTemplate(r: Row): LayoutTemplate {
 
 export function rowToLayout(r: Row): Layout {
   return {
-    id: n(r["id"]),
+    id: s(r["id"]),
     name: s(r["name"]),
     description: sn(r["description"]),
-    template_id: nn(r["template_id"]),
+    template_id: sn(r["template_id"]),
     regions: j<LayoutRegion[]>(r["regions"], []),
     grid_cols: n(r["grid_cols"]) || 1,
     grid_rows: n(r["grid_rows"]) || 1,
-    display_id: nn(r["display_id"]),
+    display_id: sn(r["display_id"]),
     priority: s(r["priority"]) as LayoutPriority,
     cooling_timeout_seconds: nn(r["cooling_timeout_seconds"]),
-    preload_camera_ids: j<number[]>(r["preload_camera_ids"], []),
+    preload_camera_ids: j<string[]>(r["preload_camera_ids"], []),
     is_default: b(r["is_default"]),
     resets_idle_timer: b(r["resets_idle_timer"]),
   };
@@ -228,32 +228,32 @@ export function rowToLayout(r: Row): Layout {
 
 export function rowToLayoutCell(r: Row): LayoutCell {
   return {
-    id: n(r["id"]),
-    layout_id: n(r["layout_id"]),
+    id: s(r["id"]),
+    layout_id: s(r["layout_id"]),
     region_name: s(r["region_name"]),
     row: n(r["row"]),
     col: n(r["col"]),
     row_span: n(r["row_span"]) || 1,
     col_span: n(r["col_span"]) || 1,
     content_type: s(r["content_type"]) as CellContentType,
-    camera_id: nn(r["camera_id"]),
+    camera_id: sn(r["camera_id"]),
     stream_selector: s(r["stream_selector"]) as StreamSelector,
     web_url: sn(r["web_url"]),
     html_content: sn(r["html_content"]),
     cooling_timeout_seconds: nn(r["cooling_timeout_seconds"]),
     options: j<Record<string, unknown>>(r["options"], {}),
-    entity_id: nn(r["entity_id"]),
+    entity_id: sn(r["entity_id"]),
     fit: (s(r["fit"]) || "cover") as "cover" | "contain" | "fill",
   };
 }
 
 export function rowToEntity(r: Row): Entity {
   return {
-    id: n(r["id"]),
+    id: s(r["id"]),
     name: s(r["name"]),
     type: s(r["type"]) as EntityType,
     description: sn(r["description"]),
-    camera_id: nn(r["camera_id"]),
+    camera_id: sn(r["camera_id"]),
     html_content: sn(r["html_content"]),
     web_url: sn(r["web_url"]),
     dashboard_id: sn(r["dashboard_id"]),
@@ -263,7 +263,7 @@ export function rowToEntity(r: Row): Entity {
 
 export function rowToKiosk(r: Row): Kiosk {
   return {
-    id: n(r["id"]),
+    id: s(r["id"]),
     name: s(r["name"]),
     description: sn(r["description"]),
     key_hash: s(r["key_hash"]),
@@ -276,7 +276,7 @@ export function rowToKiosk(r: Row): Kiosk {
     paired_at: sn(r["paired_at"]),
     last_seen_at: sn(r["last_seen_at"]),
     last_bundle_version: sn(r["last_bundle_version"]),
-    display_id: nn(r["display_id"]),
+    display_id: sn(r["display_id"]),
     cpu_temp_c: nn(r["cpu_temp_c"]),
     cpu_load_percent: nn(r["cpu_load_percent"]),
     fan_rpm: nn(r["fan_rpm"]),
@@ -314,10 +314,10 @@ export function rowToKiosk(r: Row): Kiosk {
 
 export function rowToAuditEntry(r: Row): AuditEntry {
   return {
-    id: n(r["id"]),
+    id: s(r["id"]),
     ts: s(r["ts"]),
     actor_type: s(r["actor_type"]) as AuditActorType,
-    actor_id: nn(r["actor_id"]),
+    actor_id: sn(r["actor_id"]),
     actor_label: sn(r["actor_label"]),
     action: s(r["action"]),
     resource_type: sn(r["resource_type"]),
@@ -340,7 +340,7 @@ export function rowToFirmwareRelease(r: Row): FirmwareRelease {
     signature: s(r["signature"]),
     release_notes: sn(r["release_notes"]),
     uploaded_at: s(r["uploaded_at"]),
-    uploaded_by: nn(r["uploaded_by"]),
+    uploaded_by: sn(r["uploaded_by"]),
     yanked_at: sn(r["yanked_at"]),
   };
 }
@@ -349,13 +349,13 @@ export function rowToFirmwareRollout(r: Row): FirmwareRollout {
   return {
     id: s(r["id"]),
     release_id: s(r["release_id"]),
-    target_kiosk_ids: j<number[]>(r["target_kiosk_ids"], []),
+    target_kiosk_ids: j<string[]>(r["target_kiosk_ids"], []),
     state: s(r["state"]) as FirmwareRolloutState,
     percentage: n(r["percentage"]),
     started_at: sn(r["started_at"]),
     finished_at: sn(r["finished_at"]),
     created_at: s(r["created_at"]),
-    created_by: nn(r["created_by"]),
+    created_by: sn(r["created_by"]),
   };
 }
 
@@ -371,7 +371,7 @@ export function rowToOsUpdateRelease(r: Row): OsUpdateRelease {
     bundle_format: "raucb",
     release_notes: sn(r["release_notes"]),
     uploaded_at: s(r["uploaded_at"]),
-    uploaded_by: nn(r["uploaded_by"]),
+    uploaded_by: sn(r["uploaded_by"]),
     yanked_at: sn(r["yanked_at"]),
   };
 }
@@ -380,19 +380,19 @@ export function rowToOsUpdateRollout(r: Row): OsUpdateRollout {
   return {
     id: s(r["id"]),
     release_id: s(r["release_id"]),
-    target_kiosk_ids: j<number[]>(r["target_kiosk_ids"], []),
+    target_kiosk_ids: j<string[]>(r["target_kiosk_ids"], []),
     state: s(r["state"]) as OsUpdateRolloutState,
     percentage: n(r["percentage"]),
     started_at: sn(r["started_at"]),
     finished_at: sn(r["finished_at"]),
     created_at: s(r["created_at"]),
-    created_by: nn(r["created_by"]),
+    created_by: sn(r["created_by"]),
   };
 }
 
 export function rowToLabel(r: Row): Label {
   return {
-    id: n(r["id"]),
+    id: s(r["id"]),
     name: s(r["name"]),
     description: sn(r["description"]),
     color: sn(r["color"]),
@@ -402,8 +402,8 @@ export function rowToLabel(r: Row): Label {
 
 export function rowToKioskLabel(r: Row): KioskLabel {
   return {
-    kiosk_id: n(r["kiosk_id"]),
-    label_id: n(r["label_id"]),
+    kiosk_id: s(r["kiosk_id"]),
+    label_id: s(r["label_id"]),
     role: s(r["role"]) as LabelRole,
   };
 }
@@ -417,7 +417,7 @@ export function rowToPairingCode(r: Row): PairingCode {
     issued_at: s(r["issued_at"]),
     expires_at: s(r["expires_at"]),
     consumed_at: sn(r["consumed_at"]),
-    consumed_by_kiosk_id: nn(r["consumed_by_kiosk_id"]),
+    consumed_by_kiosk_id: sn(r["consumed_by_kiosk_id"]),
     extras: j<Record<string, unknown>>(r["extras"], {}),
   };
 }
@@ -426,8 +426,8 @@ export function rowToKioskGpioBinding(r: Row): KioskGpioBinding {
   const pullRaw = sn(r["pull"]);
   const edgeRaw = sn(r["edge"]);
   return {
-    id: n(r["id"]),
-    kiosk_id: n(r["kiosk_id"]),
+    id: s(r["id"]),
+    kiosk_id: s(r["kiosk_id"]),
     chip: s(r["chip"]) || "gpiochip0",
     pin: n(r["pin"]),
     direction: s(r["direction"]) as GpioDirection,
@@ -440,9 +440,9 @@ export function rowToKioskGpioBinding(r: Row): KioskGpioBinding {
 
 export function rowToEventLog(r: Row): EventLog {
   return {
-    id: n(r["id"]),
-    source_kiosk_id: nn(r["source_kiosk_id"]),
-    source_camera_id: nn(r["source_camera_id"]),
+    id: s(r["id"]),
+    source_kiosk_id: sn(r["source_kiosk_id"]),
+    source_camera_id: sn(r["source_camera_id"]),
     source_type: s(r["source_type"]) as EventSourceType,
     topic: s(r["topic"]),
     property_op: sn(r["property_op"]),
@@ -454,8 +454,8 @@ export function rowToEventLog(r: Row): EventLog {
 
 export function rowToKioskLog(r: Row): KioskLog {
   return {
-    id: n(r["id"]),
-    kiosk_id: n(r["kiosk_id"]),
+    id: s(r["id"]),
+    kiosk_id: s(r["kiosk_id"]),
     level: s(r["level"]) as KioskLogLevel,
     message: s(r["message"]),
     context: j<Record<string, unknown>>(r["context"], {}),
@@ -480,11 +480,11 @@ export function rowToCloudAccount(r: Row): CloudAccount {
 
 export function rowToCameraEventSubscription(r: Row): CameraEventSubscription {
   return {
-    id: n(r["id"]),
-    camera_id: n(r["camera_id"]),
+    id: s(r["id"]),
+    camera_id: s(r["camera_id"]),
     topic: s(r["topic"]),
     status: s(r["status"]) as EventSubscriptionStatus,
-    subscribed_by_kiosk_id: nn(r["subscribed_by_kiosk_id"]),
+    subscribed_by_kiosk_id: sn(r["subscribed_by_kiosk_id"]),
     event_source: sn(r["event_source"]),
     event_sink: sn(r["event_sink"]),
     last_event_at: sn(r["last_event_at"]),

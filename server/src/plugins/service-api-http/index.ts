@@ -557,7 +557,7 @@ function registerKioskRoutes(
     // Sync displays reported by the kiosk
     if (Array.isArray(body?.displays)) {
       const existing = await repo.listDisplaysForKiosk(kiosk.id);
-      const seenDisplayIds = new Set<number>();
+      const seenDisplayIds = new Set<string>();
       for (const [position, reported] of body.displays.entries()) {
         const reportedIndex = Number.isInteger(reported.index) && reported.index! >= 0
           ? reported.index!
@@ -659,7 +659,7 @@ function registerKioskRoutes(
     const body = await readBody<{
       topic: string;
       source_type?: string;
-      camera_id?: number;
+      camera_id?: string;
       property_op?: string;
       payload?: Record<string, unknown>;
     }>(event);
@@ -699,9 +699,9 @@ function registerKioskRoutes(
     // Side-effect: persist active layout per display so the admin UI can
     // surface "currently showing X" without having to query event_log.
     if (body.topic === "layout.changed") {
-      const displayId = Number(body.payload?.["display_id"]);
-      const layoutId = Number(body.payload?.["layout_id"]);
-      if (Number.isInteger(displayId) && Number.isInteger(layoutId)) {
+      const displayId = String(body.payload?.["display_id"] ?? "");
+      const layoutId = String(body.payload?.["layout_id"] ?? "");
+      if (displayId && layoutId) {
         try {
           await repo.updateDisplay(displayId, { active_layout_id: layoutId } as any);
         } catch {
@@ -1080,7 +1080,7 @@ function registerKioskRoutes(
     const kiosk = await auth.verifyKioskKey(token);
     if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
 
-    const cameraId = Number(getRouterParam(event, "id"));
+    const cameraId = (getRouterParam(event, "id") ?? "");
     const camera = await repo.getCameraById(cameraId);
     if (!camera || camera.type !== "cloud" || !camera.cloud_account_id || !camera.cloud_vendor_camera_id) {
       throw createError({ statusCode: 404, statusMessage: "Cloud camera not found" });
@@ -1117,11 +1117,11 @@ function registerKioskRoutes(
  * targets the same half of the fleet across re-checks. Switch from 50%→100%
  * gracefully adds the previously-excluded half rather than reshuffling.
  */
-function isKioskInRolloutBucket(kioskId: number, rolloutId: string, percentage: number): boolean {
+function isKioskInRolloutBucket(kioskId: string, rolloutId: string, percentage: number): boolean {
   if (percentage >= 100) return true;
   if (percentage <= 0) return false;
   const h = createHash("sha256")
-    .update(`${rolloutId}:${String(kioskId)}`)
+    .update(`${rolloutId}:${kioskId}`)
     .digest();
   const bucket = h.readUInt32BE(0) % 100;
   return bucket < percentage;

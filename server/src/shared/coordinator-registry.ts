@@ -3,11 +3,11 @@
  * service-coordinator-ws sets the implementation in its init().
  */
 export interface CoordinatorApi {
-  sendToKiosk(kioskId: number, message: object): boolean;
-  requestKiosk<T = unknown>(kioskId: number, message: object, timeoutMs?: number): Promise<T>;
+  sendToKiosk(kioskId: string, message: object): boolean;
+  requestKiosk<T = unknown>(kioskId: string, message: object, timeoutMs?: number): Promise<T>;
   broadcastAll(message: object): void;
   notifyBundleChanged(): void;
-  notifyKioskBundleChanged(kioskId: number): void;
+  notifyKioskBundleChanged(kioskId: string): void;
 }
 
 const noop: CoordinatorApi = {

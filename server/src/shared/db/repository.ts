@@ -9,6 +9,7 @@
  * cross workers with the same handle.
  */
 import { randomBytes } from "node:crypto";
+import { uuidv7 } from "uuidv7";
 import type { Observable } from "@bsb/base";
 import type { DbAdapter, RunResult, Row } from "./db-adapter.js";
 
@@ -215,7 +216,7 @@ export class Repository {
     return r?.c ?? 0;
   }
 
-  async getUserById(id: number): Promise<User | null> {
+  async getUserById(id: string): Promise<User | null> {
     const r = await this._get("SELECT * FROM users WHERE id = ?", [id]);
     return r ? rowToUser(r as Record<string, unknown>) : null;
   }
@@ -231,11 +232,13 @@ export class Repository {
     role?: UserRole;
     must_change_password?: boolean;
   }): Promise<User> {
+    const id = uuidv7();
     const role: UserRole = input.role ?? "operator";
-    const result = await this._run(
-      `INSERT INTO users (username, password_hash, role, is_active, must_change_password)
-       VALUES (?, ?, ?, ?, ?) RETURNING id`,
+    await this._run(
+      `INSERT INTO users (id, username, password_hash, role, is_active, must_change_password)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
+        id,
         input.username,
         input.password_hash,
         role,
@@ -243,14 +246,13 @@ export class Repository {
         Boolean(input.must_change_password),
       ],
     );
-    const id = Number(result.lastInsertRowid);
     void this.notify("users", "create", id);
     const u = await this.getUserById(id);
     if (!u) throw new Error("user vanished after insert");
     return u;
   }
 
-  async updateUser(id: number, patch: Partial<User>): Promise<void> {
+  async updateUser(id: string, patch: Partial<User>): Promise<void> {
     const cols: string[] = [];
     const vals: unknown[] = [];
     if ("password_hash" in patch) {
@@ -301,7 +303,7 @@ export class Repository {
 
   async createSession(input: {
     id: string;
-    user_id: number;
+    user_id: string;
     csrf_token: string;
     totp_pending: boolean;
     user_agent: string | null;
@@ -350,7 +352,7 @@ export class Repository {
     await this._run("UPDATE sessions SET revoked_at = ? WHERE id = ?", [isoNow(), id]);
   }
 
-  async revokeAllSessionsForUser(userId: number): Promise<void> {
+  async revokeAllSessionsForUser(userId: string): Promise<void> {
     await this._run(
       `UPDATE sessions SET revoked_at = ?
         WHERE user_id = ? AND revoked_at IS NULL`,
@@ -369,10 +371,12 @@ export class Repository {
     scopes: ApiKeyScope[];
     expires_at: string | null;
   }): Promise<ApiKey> {
-    const result = await this._run(
-      `INSERT INTO api_keys (name, key_hash, key_prefix, scopes, expires_at)
-       VALUES (?, ?, ?, ?, ?) RETURNING id`,
+    const id = uuidv7();
+    await this._run(
+      `INSERT INTO api_keys (id, name, key_hash, key_prefix, scopes, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
+        id,
         input.name,
         input.key_hash,
         input.key_prefix,
@@ -380,14 +384,13 @@ export class Repository {
         input.expires_at,
       ],
     );
-    const id = Number(result.lastInsertRowid);
     void this.notify("api_keys", "create", id);
     const k = await this.getApiKeyById(id);
     if (!k) throw new Error("api_key vanished after insert");
     return k;
   }
 
-  async getApiKeyById(id: number): Promise<ApiKey | null> {
+  async getApiKeyById(id: string): Promise<ApiKey | null> {
     const r = await this._get("SELECT * FROM api_keys WHERE id = ?", [id]);
     return r ? rowToApiKey(r as Record<string, unknown>) : null;
   }
@@ -401,7 +404,7 @@ export class Repository {
     return rs.map((r) => rowToApiKey(r as Record<string, unknown>));
   }
 
-  async touchApiKey(id: number, ip: string | null): Promise<void> {
+  async touchApiKey(id: string, ip: string | null): Promise<void> {
     await this._run(
       "UPDATE api_keys SET last_used_at = ?, last_used_ip = ? WHERE id = ?",
       [isoNow(), ip, id],
@@ -417,35 +420,37 @@ export class Repository {
     return rs.map((r) => rowToDisplay(r as Record<string, unknown>));
   }
 
-  async getDisplayById(id: number): Promise<Display | null> {
+  async getDisplayById(id: string): Promise<Display | null> {
     const r = await this._get("SELECT * FROM displays WHERE id = ?", [id]);
     return r ? rowToDisplay(r as Record<string, unknown>) : null;
   }
 
   async createDefaultDisplay(): Promise<Display> {
-    const result = await this._run(
-      `INSERT INTO displays (name, "index", is_primary)
-       VALUES ('primary', 0, ?) RETURNING id`,
-      [false],
+    const id = uuidv7();
+    await this._run(
+      `INSERT INTO displays (id, name, "index", is_primary)
+       VALUES (?, 'primary', 0, ?)`,
+      [id, false],
     );
-    const id = Number(result.lastInsertRowid);
     void this.notify("displays", "create", id);
     const d = await this.getDisplayById(id);
     if (!d) throw new Error("display vanished after insert");
     return d;
   }
 
-  async createDisplayForKiosk(kioskId: number, input: {
+  async createDisplayForKiosk(kioskId: string, input: {
     name: string;
     index?: number;
     width_px?: number;
     height_px?: number;
   }): Promise<Display> {
     const idx = input.index ?? await this.nextDisplayIndexForKiosk(kioskId);
-    const result = await this._run(
-      `INSERT INTO displays (name, "index", is_primary, kiosk_id, width_px, height_px)
-       VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+    const id = uuidv7();
+    await this._run(
+      `INSERT INTO displays (id, name, "index", is_primary, kiosk_id, width_px, height_px)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
+        id,
         input.name,
         idx,
         false,
@@ -454,14 +459,13 @@ export class Repository {
         input.height_px ?? 1080,
       ],
     );
-    const id = Number(result.lastInsertRowid);
     void this.notify("displays", "create", id);
     const d = await this.getDisplayById(id);
     if (!d) throw new Error("display vanished after insert");
     return d;
   }
 
-  async listDisplaysForKiosk(kioskId: number): Promise<Display[]> {
+  async listDisplaysForKiosk(kioskId: string): Promise<Display[]> {
     const rs = await this._all(
       'SELECT * FROM displays WHERE kiosk_id = ? ORDER BY "index"',
       [kioskId],
@@ -473,7 +477,7 @@ export class Repository {
    * Kiosks currently rendering this camera (active layout has a cell
    * pointing at it). Subset of listKiosksWithCameraInBundle.
    */
-  async listKiosksRenderingCamera(cameraId: number): Promise<Kiosk[]> {
+  async listKiosksRenderingCamera(cameraId: string): Promise<Kiosk[]> {
     const rs = await this._all(
       `SELECT DISTINCT k.*
          FROM kiosks k
@@ -495,7 +499,7 @@ export class Repository {
    * LAN position. Only when NO kiosk has the camera should the server
    * fall back to pulling the stream itself.
    */
-  async listKiosksWithCameraInBundle(cameraId: number): Promise<Kiosk[]> {
+  async listKiosksWithCameraInBundle(cameraId: string): Promise<Kiosk[]> {
     const rs = await this._all(
       `SELECT DISTINCT k.*
          FROM kiosks k
@@ -509,12 +513,12 @@ export class Repository {
     return rs.map((r) => rowToKiosk(r as Record<string, unknown>));
   }
 
-  private async nextDisplayIndexForKiosk(kioskId: number): Promise<number> {
+  private async nextDisplayIndexForKiosk(kioskId: string): Promise<number> {
     const r = await this._get<{ m: number | null }>('SELECT MAX("index") AS m FROM displays WHERE kiosk_id = ?', [kioskId]);
     return (r?.m ?? -1) + 1;
   }
 
-  async updateDisplay(id: number, patch: Partial<Display>): Promise<void> {
+  async updateDisplay(id: string, patch: Partial<Display>): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -542,7 +546,7 @@ export class Repository {
     return rs.map((r) => rowToLayout(r as Record<string, unknown>));
   }
 
-  async getLayoutById(id: number): Promise<Layout | null> {
+  async getLayoutById(id: string): Promise<Layout | null> {
     const r = await this._get("SELECT * FROM layouts WHERE id = ?", [id]);
     return r ? rowToLayout(r as Record<string, unknown>) : null;
   }
@@ -552,12 +556,12 @@ export class Repository {
    *             `display_layouts` join table. Kept as a thin alias for any
    *             callers still on the old API.
    */
-  async layoutsForDisplay(displayId: number): Promise<Layout[]> {
+  async layoutsForDisplay(displayId: string): Promise<Layout[]> {
     return this.listLayoutsForDisplay(displayId);
   }
 
   /** All layouts attached to the given display, via display_layouts. */
-  async listLayoutsForDisplay(displayId: number): Promise<Layout[]> {
+  async listLayoutsForDisplay(displayId: string): Promise<Layout[]> {
     const rs = await this._all(
       `SELECT l.* FROM layouts l
          JOIN display_layouts dl ON dl.layout_id = l.id
@@ -569,7 +573,7 @@ export class Repository {
   }
 
   /** Inverse: all displays that have this layout attached. */
-  async listDisplaysForLayout(layoutId: number): Promise<Display[]> {
+  async listDisplaysForLayout(layoutId: string): Promise<Display[]> {
     const rs = await this._all(
       `SELECT d.* FROM displays d
          JOIN display_layouts dl ON dl.display_id = d.id
@@ -581,7 +585,7 @@ export class Repository {
   }
 
   /** Idempotent attach. */
-  async attachLayoutToDisplay(displayId: number, layoutId: number): Promise<void> {
+  async attachLayoutToDisplay(displayId: string, layoutId: string): Promise<void> {
     await this._run(
       `INSERT OR IGNORE INTO display_layouts (display_id, layout_id)
        VALUES (?, ?)`,
@@ -591,7 +595,7 @@ export class Repository {
   }
 
   /** Detach. If the display's default_layout_id pointed at this layout, clear it. */
-  async detachLayoutFromDisplay(displayId: number, layoutId: number): Promise<void> {
+  async detachLayoutFromDisplay(displayId: string, layoutId: string): Promise<void> {
     await this._run(
       `DELETE FROM display_layouts WHERE display_id = ? AND layout_id = ?`,
       [displayId, layoutId],
@@ -609,13 +613,15 @@ export class Repository {
     description?: string | null;
     priority?: string;
     cooling_timeout_seconds?: number | null;
-    preload_camera_ids?: number[];
+    preload_camera_ids?: string[];
     resets_idle_timer?: boolean;
   }): Promise<Layout> {
-    const result = await this._run(
-      `INSERT INTO layouts (name, description, priority, cooling_timeout_seconds, preload_camera_ids, resets_idle_timer)
-       VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+    const id = uuidv7();
+    await this._run(
+      `INSERT INTO layouts (id, name, description, priority, cooling_timeout_seconds, preload_camera_ids, resets_idle_timer)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
+        id,
         input.name,
         input.description ?? null,
         input.priority ?? "normal",
@@ -624,14 +630,13 @@ export class Repository {
         Boolean(input.resets_idle_timer ?? true),
       ],
     );
-    const id = Number(result.lastInsertRowid);
     void this.notify("layouts", "create", id);
     const r = await this.getLayoutById(id);
     if (!r) throw new Error("layout vanished after insert");
     return r;
   }
 
-  async updateLayout(id: number, patch: Partial<Layout>): Promise<void> {
+  async updateLayout(id: string, patch: Partial<Layout>): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -647,7 +652,7 @@ export class Repository {
     void this.notify("layouts", "update", id);
   }
 
-  async cloneLayout(id: number): Promise<Layout> {
+  async cloneLayout(id: string): Promise<Layout> {
     const src = await this.getLayoutById(id);
     if (!src) throw new Error("layout not found");
 
@@ -687,7 +692,7 @@ export class Repository {
       });
     }
 
-    const labels = await this._all<{ label_id: number }>(
+    const labels = await this._all<{ label_id: string }>(
       "SELECT label_id FROM layout_labels WHERE layout_id = ?",
       [id],
     );
@@ -695,7 +700,7 @@ export class Repository {
       await this.attachLayoutLabel(clone.id, ll.label_id);
     }
 
-    const displays = await this._all<{ display_id: number }>(
+    const displays = await this._all<{ display_id: string }>(
       "SELECT display_id FROM display_layouts WHERE layout_id = ?",
       [id],
     );
@@ -706,7 +711,7 @@ export class Repository {
     return clone;
   }
 
-  async deleteLayout(id: number): Promise<void> {
+  async deleteLayout(id: string): Promise<void> {
     await this._run(`DELETE FROM layout_cells WHERE layout_id = ?`, [id]);
     await this._run(`DELETE FROM layout_labels WHERE layout_id = ?`, [id]);
     await this._run(`DELETE FROM display_layouts WHERE layout_id = ?`, [id]);
@@ -721,19 +726,19 @@ export class Repository {
   // ===========================================================================
 
   async createLayoutCell(input: {
-    layout_id: number;
+    layout_id: string;
     row: number;
     col: number;
     row_span?: number;
     col_span?: number;
     content_type?: string;
-    camera_id?: number | null;
+    camera_id?: string | null;
     stream_selector?: string | null;
     web_url?: string | null;
     html_content?: string | null;
     cooling_timeout_seconds?: number | null;
     options?: Record<string, unknown>;
-    entity_id?: number | null;
+    entity_id?: string | null;
     fit?: "cover" | "contain" | "fill";
   }): Promise<LayoutCell> {
     // Resolve content fields from the entity (if given). The legacy columns
@@ -741,7 +746,7 @@ export class Repository {
     // entities materialise as web cells pointing at /dash/<id> so the existing
     // kiosk's WebKit cell path renders them with no app changes.
     let contentType = input.content_type ?? "none";
-    let cameraId: number | null = input.camera_id ?? null;
+    let cameraId: string | null = input.camera_id ?? null;
     let webUrl: string | null = input.web_url ?? null;
     let htmlContent: string | null = input.html_content ?? null;
     if (input.entity_id != null) {
@@ -757,10 +762,12 @@ export class Repository {
       }
     }
 
-    const result = await this._run(
-      `INSERT INTO layout_cells (layout_id, "row", col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options, entity_id, fit)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    const id = uuidv7();
+    await this._run(
+      `INSERT INTO layout_cells (id, layout_id, "row", col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options, entity_id, fit)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        id,
         input.layout_id,
         input.row,
         input.col,
@@ -777,7 +784,6 @@ export class Repository {
         input.fit ?? "cover",
       ],
     );
-    const id = Number(result.lastInsertRowid);
     void this.notify("layout_cells", "create", id);
     const r = await this._get("SELECT * FROM layout_cells WHERE id = ?", [id]);
     if (!r) throw new Error("layout_cell vanished after insert");
@@ -789,7 +795,7 @@ export class Repository {
    * type/camera/url/html into the legacy cell columns so bundle generation stays
    * compatible with the existing kiosk.
    */
-  async assignCellEntity(cellId: number, entityId: number | null): Promise<void> {
+  async assignCellEntity(cellId: string, entityId: string | null): Promise<void> {
     if (entityId == null) {
       await this._run(
         `UPDATE layout_cells
@@ -831,7 +837,7 @@ export class Repository {
     void this.notify("layout_cells", "update", cellId);
   }
 
-  async updateLayoutCell(id: number, patch: Partial<LayoutCell>): Promise<void> {
+  async updateLayoutCell(id: string, patch: Partial<LayoutCell>): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -847,7 +853,7 @@ export class Repository {
     void this.notify("layout_cells", "update", id);
   }
 
-  async deleteLayoutCell(id: number): Promise<void> {
+  async deleteLayoutCell(id: string): Promise<void> {
     await this._run(`DELETE FROM layout_cells WHERE id = ?`, [id]);
     void this.notify("layout_cells", "delete", id);
   }
@@ -876,7 +882,7 @@ export class Repository {
     void this.notify("layout_cells", "update", layoutId);
   }
 
-  async listLayoutCells(layoutId: number): Promise<LayoutCell[]> {
+  async listLayoutCells(layoutId: string): Promise<LayoutCell[]> {
     const rs = await this._all(
       `SELECT * FROM layout_cells WHERE layout_id = ? ORDER BY "row", col`,
       [layoutId],
@@ -884,7 +890,7 @@ export class Repository {
     return rs.map((r) => rowToLayoutCell(r as Record<string, unknown>));
   }
 
-  async getLayoutCellById(id: number): Promise<LayoutCell | null> {
+  async getLayoutCellById(id: string): Promise<LayoutCell | null> {
     const r = await this._get("SELECT * FROM layout_cells WHERE id = ?", [id]);
     return r ? rowToLayoutCell(r as Record<string, unknown>) : null;
   }
@@ -894,11 +900,11 @@ export class Repository {
   // ===========================================================================
 
   /** Bundle generation: layouts attached to a display via display_layouts. */
-  async layoutsForDisplayId(displayId: number): Promise<Layout[]> {
+  async layoutsForDisplayId(displayId: string): Promise<Layout[]> {
     return this.listLayoutsForDisplay(displayId);
   }
 
-  async camerasForLayoutIds(layoutIds: number[]): Promise<Camera[]> {
+  async camerasForLayoutIds(layoutIds: string[]): Promise<Camera[]> {
     if (layoutIds.length === 0) return [];
     const placeholders = layoutIds.map(() => "?").join(",");
     const rs = await this._all(
@@ -921,7 +927,7 @@ export class Repository {
     return rs.map((r) => rowToCamera(r as Record<string, unknown>));
   }
 
-  async getCameraById(id: number): Promise<Camera | null> {
+  async getCameraById(id: string): Promise<Camera | null> {
     const r = await this._get("SELECT * FROM cameras WHERE id = ?", [id]);
     return r ? rowToCamera(r as Record<string, unknown>) : null;
   }
@@ -942,12 +948,14 @@ export class Repository {
     capabilities?: string[];
     stream_policy?: StreamPolicy;
   }): Promise<Camera> {
-    const result = await this._run(
+    const id = uuidv7();
+    await this._run(
       `INSERT INTO cameras
-         (name, type, rtsp_url, onvif_host, onvif_port, onvif_username,
+         (id, name, type, rtsp_url, onvif_host, onvif_port, onvif_username,
           onvif_password, capabilities, stream_policy)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        id,
         input.name,
         input.type,
         input.rtsp_url ?? null,
@@ -959,7 +967,6 @@ export class Repository {
         input.stream_policy ?? "auto",
       ],
     );
-    const id = Number(result.lastInsertRowid);
     void this.notify("cameras", "create", id);
     const c = await this.getCameraById(id);
     if (!c) throw new Error("camera vanished after insert");
@@ -989,14 +996,14 @@ export class Repository {
       void this.notify("cameras", "update", cam.id);
       return (await this.getCameraById(cam.id))!;
     }
-    const result = await this._run(
+    const id = uuidv7();
+    await this._run(
       `INSERT INTO cameras
-         (name, type, cloud_account_id, cloud_vendor_camera_id, cloud_stream_url, cloud_stream_type, enabled)
-       VALUES (?, 'cloud', ?, ?, ?, ?, ?) RETURNING id`,
-      [input.name, input.cloud_account_id, input.cloud_vendor_camera_id,
+         (id, name, type, cloud_account_id, cloud_vendor_camera_id, cloud_stream_url, cloud_stream_type, enabled)
+       VALUES (?, ?, 'cloud', ?, ?, ?, ?, ?)`,
+      [id, input.name, input.cloud_account_id, input.cloud_vendor_camera_id,
        input.cloud_stream_url, input.cloud_stream_type, Boolean(input.enabled)],
     );
-    const id = Number(result.lastInsertRowid);
     void this.notify("cameras", "create", id);
     const c = await this.getCameraById(id);
     if (!c) throw new Error("cloud camera vanished after insert");
@@ -1028,7 +1035,7 @@ export class Repository {
     return result.changes;
   }
 
-  async listCameraStreams(cameraId: number): Promise<CameraStream[]> {
+  async listCameraStreams(cameraId: string): Promise<CameraStream[]> {
     const rs = await this._all(
       "SELECT * FROM camera_streams WHERE camera_id = ?",
       [cameraId],
@@ -1037,7 +1044,7 @@ export class Repository {
   }
 
   async createCameraStream(input: {
-    camera_id: number;
+    camera_id: string;
     role: StreamRole;
     name: string;
     rtsp_uri: string;
@@ -1052,13 +1059,15 @@ export class Repository {
     bitrate_kbps?: number | null;
     is_discovered?: boolean;
   }): Promise<CameraStream> {
-    const result = await this._run(
+    const id = uuidv7();
+    await this._run(
       `INSERT INTO camera_streams
-        (camera_id, role, name, profile_token, rtsp_uri,
+        (id, camera_id, role, name, profile_token, rtsp_uri,
          rtsp_host, rtsp_port, rtsp_path,
          width, height, encoding, framerate, bitrate_kbps, is_discovered)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        id,
         input.camera_id,
         input.role,
         input.name,
@@ -1075,14 +1084,13 @@ export class Repository {
         Boolean(input.is_discovered),
       ],
     );
-    const id = Number(result.lastInsertRowid);
     const r = await this._get("SELECT * FROM camera_streams WHERE id = ?", [id]);
     if (!r) throw new Error("camera_stream vanished after insert");
     void this.notify("camera_streams", "create", id);
     return rowToCameraStream(r as Record<string, unknown>);
   }
 
-  async updateCameraStream(id: number, patch: Partial<CameraStream>): Promise<void> {
+  async updateCameraStream(id: string, patch: Partial<CameraStream>): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -1115,12 +1123,12 @@ export class Repository {
     description?: string | null;
     color?: string | null;
   }): Promise<Label> {
-    const result = await this._run(
-      `INSERT INTO labels (name, description, color)
-       VALUES (?, ?, ?) RETURNING id`,
-      [input.name, input.description ?? null, input.color ?? null],
+    const id = uuidv7();
+    await this._run(
+      `INSERT INTO labels (id, name, description, color)
+       VALUES (?, ?, ?, ?)`,
+      [id, input.name, input.description ?? null, input.color ?? null],
     );
-    const id = Number(result.lastInsertRowid);
     void this.notify("labels", "create", id);
     const r = await this._get("SELECT * FROM labels WHERE id = ?", [id]);
     if (!r) throw new Error("label vanished after insert");
@@ -1132,7 +1140,7 @@ export class Repository {
     return (await this.getLabelByName(name)) ?? (await this.createLabel({ name }));
   }
 
-  async attachKioskLabel(kioskId: number, labelId: number, role: LabelRole): Promise<void> {
+  async attachKioskLabel(kioskId: string, labelId: string, role: LabelRole): Promise<void> {
     await this._run(
       `INSERT OR IGNORE INTO kiosk_labels (kiosk_id, label_id, role)
        VALUES (?, ?, ?)`,
@@ -1140,7 +1148,7 @@ export class Repository {
     );
   }
 
-  async listKioskLabels(kioskId: number): Promise<Array<KioskLabel & { name: string }>> {
+  async listKioskLabels(kioskId: string): Promise<Array<KioskLabel & { name: string }>> {
     const rs = await this._all(
       `SELECT kl.kiosk_id, kl.label_id, kl.role, l.name
          FROM kiosk_labels kl
@@ -1151,15 +1159,15 @@ export class Repository {
     return rs.map((r) => {
       const row = r as Record<string, unknown>;
       return {
-        kiosk_id: Number(row["kiosk_id"]),
-        label_id: Number(row["label_id"]),
+        kiosk_id: String(row["kiosk_id"]),
+        label_id: String(row["label_id"]),
         role: String(row["role"]) as LabelRole,
         name: String(row["name"]),
       };
     });
   }
 
-  async attachCameraLabel(cameraId: number, labelId: number): Promise<void> {
+  async attachCameraLabel(cameraId: string, labelId: string): Promise<void> {
     await this._run(
       `INSERT OR IGNORE INTO camera_labels (camera_id, label_id)
        VALUES (?, ?)`,
@@ -1167,7 +1175,7 @@ export class Repository {
     );
   }
 
-  async attachLayoutLabel(layoutId: number, labelId: number): Promise<void> {
+  async attachLayoutLabel(layoutId: string, labelId: string): Promise<void> {
     await this._run(
       `INSERT OR IGNORE INTO layout_labels (layout_id, label_id)
        VALUES (?, ?)`,
@@ -1184,7 +1192,7 @@ export class Repository {
     return rs.map((r) => rowToKiosk(r as Record<string, unknown>));
   }
 
-  async getKioskById(id: number): Promise<Kiosk | null> {
+  async getKioskById(id: string): Promise<Kiosk | null> {
     const r = await this._get("SELECT * FROM kiosks WHERE id = ?", [id]);
     return r ? rowToKiosk(r as Record<string, unknown>) : null;
   }
@@ -1211,11 +1219,13 @@ export class Repository {
     hardware_model?: string | null;
     managed_image?: boolean;
   }): Promise<Kiosk> {
-    const result = await this._run(
+    const id = uuidv7();
+    await this._run(
       `INSERT INTO kiosks
-        (name, key_hash, key_prefix, capabilities, hardware_model, paired_at, managed_image)
-       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        (id, name, key_hash, key_prefix, capabilities, hardware_model, paired_at, managed_image)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        id,
         input.name,
         input.key_hash,
         input.key_prefix,
@@ -1225,7 +1235,6 @@ export class Repository {
         input.managed_image ? 1 : 0,
       ],
     );
-    const id = Number(result.lastInsertRowid);
     void this.notify("kiosks", "create", id);
     const k = await this.getKioskById(id);
     if (!k) throw new Error("kiosk vanished after insert");
@@ -1239,7 +1248,7 @@ export class Repository {
    * resets transient runtime state so the old hardware can't reconnect.
    */
   async replaceKioskKey(
-    id: number,
+    id: string,
     input: {
       key_hash: string;
       key_prefix: string;
@@ -1281,7 +1290,7 @@ export class Repository {
   }
 
   async touchKiosk(
-    id: number,
+    id: string,
     patch: {
       bundle_version?: string | null;
       kiosk_app_version?: string | null;
@@ -1353,7 +1362,7 @@ export class Repository {
 
   async insertAudit(input: {
     actor_type: AuditActorType;
-    actor_id: number | null;
+    actor_id: string | null;
     actor_label: string | null;
     action: string;
     resource_type: string | null;
@@ -1417,7 +1426,7 @@ export class Repository {
     sha256: string;
     signature: string;
     release_notes: string | null;
-    uploaded_by: number | null;
+    uploaded_by: string | null;
   }): Promise<FirmwareRelease> {
     await this._run(
       `INSERT INTO firmware_releases
@@ -1494,7 +1503,7 @@ export class Repository {
 
   /** Mark the per-kiosk firmware attempt state (called from /api/kiosk/firmware/applied). */
   async recordKioskFirmwareAttempt(
-    kioskId: number,
+    kioskId: string,
     version: string,
     error: string | null,
   ): Promise<void> {
@@ -1511,7 +1520,7 @@ export class Repository {
 
   /** Set the per-kiosk update channel + optional explicit version pin. */
   async setKioskFirmwarePref(
-    kioskId: number,
+    kioskId: string,
     patch: { channel?: FirmwareChannel; target_version?: string | null },
   ): Promise<void> {
     const sets: string[] = [];
@@ -1533,9 +1542,9 @@ export class Repository {
   async createFirmwareRollout(input: {
     id: string;
     release_id: string;
-    target_kiosk_ids: number[];
+    target_kiosk_ids: string[];
     percentage: number;
-    created_by: number | null;
+    created_by: string | null;
   }): Promise<FirmwareRollout> {
     await this._run(
       `INSERT INTO firmware_rollouts
@@ -1565,7 +1574,7 @@ export class Repository {
    * empty (= "all kiosks on the release channel"). Ordered most-recent first
    * so a newer rollout supersedes older ones.
    */
-  async listActiveRolloutsForKiosk(kioskId: number): Promise<FirmwareRollout[]> {
+  async listActiveRolloutsForKiosk(kioskId: string): Promise<FirmwareRollout[]> {
     const rs = await this._all(
       `SELECT * FROM firmware_rollouts WHERE state = 'active' ORDER BY created_at DESC`,
     );
@@ -1615,7 +1624,7 @@ export class Repository {
     size_bytes: number;
     sha256: string;
     release_notes: string | null;
-    uploaded_by: number | null;
+    uploaded_by: string | null;
   }): Promise<OsUpdateRelease> {
     await this._run(
       `INSERT INTO os_update_releases
@@ -1689,7 +1698,7 @@ export class Repository {
   }
 
   async recordKioskOsUpdateAttempt(
-    kioskId: number,
+    kioskId: string,
     version: string,
     error: string | null,
   ): Promise<void> {
@@ -1705,7 +1714,7 @@ export class Repository {
   }
 
   async setKioskOsUpdatePref(
-    kioskId: number,
+    kioskId: string,
     patch: { channel?: FirmwareChannel; target_version?: string | null },
   ): Promise<void> {
     const sets: string[] = [];
@@ -1727,9 +1736,9 @@ export class Repository {
   async createOsUpdateRollout(input: {
     id: string;
     release_id: string;
-    target_kiosk_ids: number[];
+    target_kiosk_ids: string[];
     percentage: number;
-    created_by: number | null;
+    created_by: string | null;
   }): Promise<OsUpdateRollout> {
     await this._run(
       `INSERT INTO os_update_rollouts
@@ -1754,7 +1763,7 @@ export class Repository {
     return r ? rowToOsUpdateRollout(r as Record<string, unknown>) : null;
   }
 
-  async listActiveOsUpdateRolloutsForKiosk(kioskId: number): Promise<OsUpdateRollout[]> {
+  async listActiveOsUpdateRolloutsForKiosk(kioskId: string): Promise<OsUpdateRollout[]> {
     const rs = await this._all(
       `SELECT * FROM os_update_rollouts WHERE state = 'active' ORDER BY created_at DESC`,
     );
@@ -1839,7 +1848,7 @@ export class Repository {
 
   async markPairingCodeClaimed(
     code: string,
-    kioskId: number,
+    kioskId: string,
     extras: Record<string, unknown>,
   ): Promise<void> {
     await this._run(
@@ -1864,20 +1873,22 @@ export class Repository {
   // ===========================================================================
 
   async insertEvent(input: {
-    source_kiosk_id: number | null;
-    source_camera_id: number | null;
+    source_kiosk_id: string | null;
+    source_camera_id: string | null;
     source_type: EventSourceType;
     topic: string;
     property_op: string | null;
     payload: Record<string, unknown>;
     forwarded_to_nodered: boolean;
-  }): Promise<number> {
-    const result = await this._run(
+  }): Promise<string> {
+    const id = uuidv7();
+    await this._run(
       `INSERT INTO event_log
-         (source_kiosk_id, source_camera_id, source_type, topic,
+         (id, source_kiosk_id, source_camera_id, source_type, topic,
           property_op, payload, forwarded_to_nodered)
-       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        id,
         input.source_kiosk_id,
         input.source_camera_id,
         input.source_type,
@@ -1887,7 +1898,7 @@ export class Repository {
         Boolean(input.forwarded_to_nodered),
       ],
     );
-    return Number(result.lastInsertRowid);
+    return id;
   }
 
   async recentEvents(limit = 10): Promise<EventLog[]> {
@@ -1898,7 +1909,7 @@ export class Repository {
     return rs.map((r) => rowToEventLog(r as Record<string, unknown>));
   }
 
-  async markEventForwarded(eventId: number): Promise<void> {
+  async markEventForwarded(eventId: string): Promise<void> {
     await this._run("UPDATE event_log SET forwarded_to_nodered = ? WHERE id = ?", [true, eventId]);
   }
 
@@ -1983,7 +1994,7 @@ export class Repository {
   // ===========================================================================
 
   async insertKioskLogs(
-    kioskId: number,
+    kioskId: string,
     entries: Array<{ level: KioskLogLevel; message: string; context?: Record<string, unknown>; logged_at?: string }>,
   ): Promise<number> {
     const now = isoNow();
@@ -2000,7 +2011,7 @@ export class Repository {
     return count;
   }
 
-  private async trimKioskLogs(kioskId: number, maxRows: number): Promise<void> {
+  private async trimKioskLogs(kioskId: string, maxRows: number): Promise<void> {
     await this._run(
       `DELETE FROM kiosk_logs WHERE kiosk_id = ? AND id NOT IN (
          SELECT id FROM kiosk_logs WHERE kiosk_id = ? ORDER BY received_at DESC LIMIT ?
@@ -2061,18 +2072,18 @@ export class Repository {
    * Returns label IDs + names attached to a kiosk by role.
    * Used by `service-bundle` to scope a kiosk's view of the world.
    */
-  async bundleScope(kioskId: number): Promise<{
-    labelIds: number[];
+  async bundleScope(kioskId: string): Promise<{
+    labelIds: string[];
     labelNames: string[];
-    operateLabelIds: number[];
+    operateLabelIds: string[];
     operateLabelNames: string[];
   }> {
     const all = await this.listKioskLabels(kioskId);
-    const labelIds: number[] = [];
+    const labelIds: string[] = [];
     const labelNames: string[] = [];
-    const operateLabelIds: number[] = [];
+    const operateLabelIds: string[] = [];
     const operateLabelNames: string[] = [];
-    const seen = new Set<number>();
+    const seen = new Set<string>();
     for (const kl of all) {
       if (!seen.has(kl.label_id)) {
         seen.add(kl.label_id);
@@ -2088,7 +2099,7 @@ export class Repository {
   }
 
   /** Cameras whose label set intersects the given label IDs. */
-  async camerasForLabelIds(labelIds: number[]): Promise<Camera[]> {
+  async camerasForLabelIds(labelIds: string[]): Promise<Camera[]> {
     if (labelIds.length === 0) return [];
     const placeholders = labelIds.map(() => "?").join(",");
     const rs = await this._all(
@@ -2102,7 +2113,7 @@ export class Repository {
     return rs.map((r) => rowToCamera(r as Record<string, unknown>));
   }
 
-  async layoutsForLabelIds(labelIds: number[]): Promise<Layout[]> {
+  async layoutsForLabelIds(labelIds: string[]): Promise<Layout[]> {
     if (labelIds.length === 0) return [];
     const placeholders = labelIds.map(() => "?").join(",");
     const rs = await this._all(
@@ -2115,16 +2126,16 @@ export class Repository {
     return rs.map((r) => rowToLayout(r as Record<string, unknown>));
   }
 
-  async layoutCells(layoutId: number): Promise<LayoutCell[]> {
+  async layoutCells(layoutId: string): Promise<LayoutCell[]> {
     return this.listLayoutCells(layoutId);
   }
 
   // Deprecated — layout_templates dropped in v0.5
-  layoutTemplates(_ids: number[]): LayoutTemplate[] {
+  layoutTemplates(_ids: string[]): LayoutTemplate[] {
     return [];
   }
 
-  async cameraLabelNames(cameraId: number): Promise<string[]> {
+  async cameraLabelNames(cameraId: string): Promise<string[]> {
     const rs = await this._all(
       `SELECT l.name FROM camera_labels cl
          JOIN labels l ON l.id = cl.label_id
@@ -2134,7 +2145,7 @@ export class Repository {
     return rs.map((r) => String((r as Record<string, unknown>)["name"]));
   }
 
-  async cameraLabelIds(cameraId: number): Promise<Array<{ label_id: number; name: string }>> {
+  async cameraLabelIds(cameraId: string): Promise<Array<{ label_id: string; name: string }>> {
     const rs = await this._all(
       `SELECT cl.label_id, l.name FROM camera_labels cl
          JOIN labels l ON l.id = cl.label_id
@@ -2143,11 +2154,11 @@ export class Repository {
     );
     return rs.map((r) => {
       const row = r as Record<string, unknown>;
-      return { label_id: Number(row["label_id"]), name: String(row["name"]) };
+      return { label_id: String(row["label_id"]), name: String(row["name"]) };
     });
   }
 
-  async updateCamera(id: number, patch: Partial<Camera>): Promise<void> {
+  async updateCamera(id: string, patch: Partial<Camera>): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -2163,7 +2174,7 @@ export class Repository {
     void this.notify("cameras", "update", id);
   }
 
-  async deleteCamera(id: number): Promise<void> {
+  async deleteCamera(id: string): Promise<void> {
     await this._run(`DELETE FROM camera_labels WHERE camera_id = ?`, [id]);
     await this._run(`DELETE FROM camera_streams WHERE camera_id = ?`, [id]);
     // Clear cells that referenced this camera (legacy column).
@@ -2183,7 +2194,7 @@ export class Repository {
     return rs.map((r) => rowToEntity(r as Record<string, unknown>));
   }
 
-  async getEntityById(id: number): Promise<Entity | null> {
+  async getEntityById(id: string): Promise<Entity | null> {
     const r = await this._get("SELECT * FROM entities WHERE id = ?", [id]);
     return r ? rowToEntity(r as Record<string, unknown>) : null;
   }
@@ -2193,7 +2204,7 @@ export class Repository {
     return r ? rowToEntity(r as Record<string, unknown>) : null;
   }
 
-  async getEntityForCamera(cameraId: number): Promise<Entity | null> {
+  async getEntityForCamera(cameraId: string): Promise<Entity | null> {
     const r = await this._get(
       `SELECT * FROM entities WHERE type = 'camera' AND camera_id = ? LIMIT 1`,
       [cameraId],
@@ -2205,15 +2216,17 @@ export class Repository {
     name: string;
     type: EntityType;
     description?: string | null;
-    camera_id?: number | null;
+    camera_id?: string | null;
     html_content?: string | null;
     web_url?: string | null;
     dashboard_id?: string | null;
   }): Promise<Entity> {
-    const result = await this._run(
-      `INSERT INTO entities (name, type, description, camera_id, html_content, web_url, dashboard_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    const id = uuidv7();
+    await this._run(
+      `INSERT INTO entities (id, name, type, description, camera_id, html_content, web_url, dashboard_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        id,
         input.name,
         input.type,
         input.description ?? null,
@@ -2223,7 +2236,6 @@ export class Repository {
         input.type === "dashboard" ? (input.dashboard_id ?? null) : null,
       ],
     );
-    const id = Number(result.lastInsertRowid);
     void this.notify("entities", "create", id);
     const e = await this.getEntityById(id);
     if (!e) throw new Error("entity vanished after insert");
@@ -2240,11 +2252,11 @@ export class Repository {
   }
 
   async updateEntity(
-    id: number,
+    id: string,
     patch: {
       name?: string;
       description?: string | null;
-      camera_id?: number | null;
+      camera_id?: string | null;
       html_content?: string | null;
       web_url?: string | null;
       dashboard_id?: string | null;
@@ -2288,7 +2300,7 @@ export class Repository {
     );
   }
 
-  async deleteEntity(id: number): Promise<void> {
+  async deleteEntity(id: string): Promise<void> {
     // FK ON DELETE SET NULL clears layout_cells.entity_id.
     await this._run(`DELETE FROM entities WHERE id = ?`, [id]);
     void this.notify("entities", "delete", id);
@@ -2304,12 +2316,12 @@ export class Repository {
     if (existing) return existing;
     let name = camera.name;
     if (await this.getEntityByName(name)) {
-      name = `${camera.name} (cam #${String(camera.id)})`;
+      name = `${camera.name} (cam ${camera.id.slice(0, 8)})`;
     }
     return this.createEntity({ name, type: "camera", camera_id: camera.id });
   }
 
-  async updateKiosk(id: number, patch: Partial<Kiosk>): Promise<void> {
+  async updateKiosk(id: string, patch: Partial<Kiosk>): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -2323,7 +2335,7 @@ export class Repository {
     void this.notify("kiosks", "update", id);
   }
 
-  async deleteKiosk(id: number): Promise<void> {
+  async deleteKiosk(id: string): Promise<void> {
     const displays = await this.listDisplaysForKiosk(id);
     await this.transact(async () => {
       for (const display of displays) {
@@ -2341,15 +2353,15 @@ export class Repository {
     void this.notify("kiosks", "delete", id);
   }
 
-  async detachCameraLabel(cameraId: number, labelId: number): Promise<void> {
+  async detachCameraLabel(cameraId: string, labelId: string): Promise<void> {
     await this._run(`DELETE FROM camera_labels WHERE camera_id = ? AND label_id = ?`, [cameraId, labelId]);
   }
 
-  async detachKioskLabel(kioskId: number, labelId: number): Promise<void> {
+  async detachKioskLabel(kioskId: string, labelId: string): Promise<void> {
     await this._run(`DELETE FROM kiosk_labels WHERE kiosk_id = ? AND label_id = ?`, [kioskId, labelId]);
   }
 
-  async deleteLabel(id: number): Promise<void> {
+  async deleteLabel(id: string): Promise<void> {
     await this._run(`DELETE FROM camera_labels WHERE label_id = ?`, [id]);
     await this._run(`DELETE FROM kiosk_labels WHERE label_id = ?`, [id]);
     await this._run(`DELETE FROM layout_labels WHERE label_id = ?`, [id]);
@@ -2361,7 +2373,7 @@ export class Repository {
   // kiosk GPIO bindings
   // ===========================================================================
 
-  async listGpioBindings(kioskId: number): Promise<KioskGpioBinding[]> {
+  async listGpioBindings(kioskId: string): Promise<KioskGpioBinding[]> {
     const rs = await this._all(
       "SELECT * FROM kiosk_gpio_bindings WHERE kiosk_id = ? ORDER BY chip, pin",
       [kioskId],
@@ -2369,13 +2381,13 @@ export class Repository {
     return rs.map((r) => rowToKioskGpioBinding(r as Record<string, unknown>));
   }
 
-  async getGpioBindingById(id: number): Promise<KioskGpioBinding | null> {
+  async getGpioBindingById(id: string): Promise<KioskGpioBinding | null> {
     const r = await this._get("SELECT * FROM kiosk_gpio_bindings WHERE id = ?", [id]);
     return r ? rowToKioskGpioBinding(r as Record<string, unknown>) : null;
   }
 
   async createGpioBinding(input: {
-    kiosk_id: number;
+    kiosk_id: string;
     chip?: string;
     pin: number;
     direction: GpioDirection;
@@ -2383,10 +2395,12 @@ export class Repository {
     edge?: GpioEdge | null;
     topic: string;
   }): Promise<KioskGpioBinding> {
-    const result = await this._run(
-      `INSERT INTO kiosk_gpio_bindings (kiosk_id, chip, pin, direction, pull, edge, topic)
-       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    const id = uuidv7();
+    await this._run(
+      `INSERT INTO kiosk_gpio_bindings (id, kiosk_id, chip, pin, direction, pull, edge, topic)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        id,
         input.kiosk_id,
         input.chip ?? "gpiochip0",
         input.pin,
@@ -2396,19 +2410,18 @@ export class Repository {
         input.topic,
       ],
     );
-    const id = Number(result.lastInsertRowid);
     void this.notify("kiosk_gpio_bindings", "create", id);
     const b = await this.getGpioBindingById(id);
     if (!b) throw new Error("gpio binding vanished after insert");
     return b;
   }
 
-  async deleteGpioBinding(id: number): Promise<void> {
+  async deleteGpioBinding(id: string): Promise<void> {
     await this._run(`DELETE FROM kiosk_gpio_bindings WHERE id = ?`, [id]);
     void this.notify("kiosk_gpio_bindings", "delete", id);
   }
 
-  async updateLabel(id: number, patch: { name?: string; description?: string | null; color?: string | null }): Promise<void> {
+  async updateLabel(id: string, patch: { name?: string; description?: string | null; color?: string | null }): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -2425,7 +2438,7 @@ export class Repository {
   // camera_event_subscriptions
   // ===========================================================================
 
-  async listEventSubscriptions(cameraId: number): Promise<CameraEventSubscription[]> {
+  async listEventSubscriptions(cameraId: string): Promise<CameraEventSubscription[]> {
     const rs = await this._all(
       "SELECT * FROM camera_event_subscriptions WHERE camera_id = ? ORDER BY topic",
       [cameraId],
@@ -2434,7 +2447,7 @@ export class Repository {
   }
 
   async upsertEventSubscription(input: {
-    camera_id: number;
+    camera_id: string;
     topic: string;
     status?: EventSubscriptionStatus;
   }): Promise<void> {
@@ -2448,7 +2461,7 @@ export class Repository {
   }
 
   async updateEventSubscriptionStatus(
-    cameraId: number,
+    cameraId: string,
     topic: string,
     status: EventSubscriptionStatus,
     error?: string | null,
@@ -2461,7 +2474,7 @@ export class Repository {
     );
   }
 
-  async markEventReceived(cameraId: number, topic: string): Promise<void> {
+  async markEventReceived(cameraId: string, topic: string): Promise<void> {
     await this._run(
       `UPDATE camera_event_subscriptions
           SET last_event_at = ?, status = 'active'
@@ -2471,7 +2484,7 @@ export class Repository {
   }
 
   async setAllEventSubscriptionsStatus(
-    cameraId: number,
+    cameraId: string,
     fromStatus: EventSubscriptionStatus,
     toStatus: EventSubscriptionStatus,
   ): Promise<void> {

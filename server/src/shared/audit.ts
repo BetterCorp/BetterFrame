@@ -12,7 +12,7 @@ import type { AuditActorType, AuditResult } from "./types.js";
 
 interface AuditCtx {
   context?: {
-    user?: { id?: number; username?: string };
+    user?: { id?: string; username?: string };
     apiKeyPrefix?: string;
     session?: unknown;
   };
@@ -26,7 +26,7 @@ export interface AuditInput {
   result?: AuditResult;
   /** Override actor (e.g. when system performs action on behalf of nobody). */
   actor_type?: AuditActorType;
-  actor_id?: number | null;
+  actor_id?: string | null;
   actor_label?: string | null;
 }
 
@@ -39,7 +39,7 @@ export async function audit(
   try {
     const ctx = event?.context;
     let actor_type: AuditActorType = input.actor_type ?? "system";
-    let actor_id: number | null = input.actor_id ?? null;
+    let actor_id: string | null = input.actor_id ?? null;
     let actor_label: string | null = input.actor_label ?? null;
 
     if (!input.actor_type && ctx) {

@@ -163,9 +163,9 @@ function formValues(v: FormValue): string[] {
   return v ? [v] : [];
 }
 
-function kioskOnvifSoapTransport(kioskId: number) {
+function kioskOnvifSoapTransport(kioskId: string) {
   return async (url: string, action: string, body: string, timeoutMs: number): Promise<string> => {
-    if (!Number.isInteger(kioskId) || kioskId <= 0) {
+    if (!kioskId) {
       throw new Error("invalid kiosk selected for discovery");
     }
     const response = await getCoordinator().requestKiosk<{
@@ -209,7 +209,7 @@ async function importDiscoveredCamera(
   username: string,
   password: string,
   streams: DiscoverAddStream[],
-): Promise<number | null> {
+): Promise<string | null> {
   if (streams.length === 0) return null;
   const main = streams.find((s) => s.role === "main") ?? streams[0]!;
   // Camera row's rtsp_url: full URL with credentials for display / backward compat.
@@ -283,7 +283,7 @@ function cellsOverlap(
 }
 
 interface CellPos {
-  id: number;
+  id: string;
   row: number;
   col: number;
   row_span: number;
@@ -292,12 +292,12 @@ interface CellPos {
 
 async function resolveOverlaps(
   deps: AdminDeps,
-  layoutId: number,
-  anchorId: number,
+  layoutId: string,
+  anchorId: string,
   pushAxis: "row" | "col",
 ): Promise<void> {
   const all = await deps.repo.layoutCells(layoutId);
-  const positions = new Map<number, CellPos>();
+  const positions = new Map<string, CellPos>();
   for (const c of all) {
     positions.set(c.id, { id: c.id, row: c.row, col: c.col, row_span: c.row_span, col_span: c.col_span });
   }
@@ -353,8 +353,8 @@ async function resolveOverlaps(
 
 async function shiftCellsForExpansion(
   deps: AdminDeps,
-  layoutId: number,
-  cellId: number,
+  layoutId: string,
+  cellId: string,
   direction: "left" | "right" | "above" | "bottom",
 ): Promise<void> {
   const cell = await deps.repo.getLayoutCellById(cellId);
@@ -379,7 +379,7 @@ async function shiftCellsForExpansion(
 
 async function shiftCellsForInsertion(
   deps: AdminDeps,
-  layoutId: number,
+  layoutId: string,
   axis: "row" | "col",
   fromIndex: number,
   crossStart: number,
@@ -541,8 +541,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.get("/admin/cameras", async (event) => {
     const user = event.context.user!;
     const cameras = await deps.repo.listCameras();
-    const streamCounts = new Map<number, number>();
-    const activeKiosks = new Map<number, number>(); // camera_id → count of kiosks rendering
+    const streamCounts = new Map<string, number>();
+    const activeKiosks = new Map<string, number>(); // camera_id → count of kiosks rendering
     for (const cam of cameras) {
       streamCounts.set(cam.id, (await deps.repo.listCameraStreams(cam.id)).length);
       activeKiosks.set(cam.id, (await deps.repo.listKiosksRenderingCamera(cam.id)).length);
@@ -643,7 +643,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
     try {
       const soapTransport = runner.startsWith("kiosk:")
-        ? kioskOnvifSoapTransport(Number(runner.slice("kiosk:".length)))
+        ? kioskOnvifSoapTransport(runner.slice("kiosk:".length))
         : undefined;
       const cameras = await onvifDiscover({ host, port, username, password, soapTransport });
       return htmlPage(CameraDiscoverResultsPage({
@@ -740,11 +740,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       errors.push("Select an entity type.");
     }
 
-    let cameraId: number | null = null;
+    let cameraId: string | null = null;
     let htmlContent: string | null = null;
     let webUrl: string | null = null;
     if (type === "camera") {
-      cameraId = body?.["camera_id"] ? Number(body["camera_id"]) : null;
+      cameraId = body?.["camera_id"] ? String(body["camera_id"] ?? "") : null;
       if (!cameraId) errors.push("Pick a camera.");
     } else if (type === "html") {
       htmlContent = body?.["html_content"] ?? null;
@@ -776,7 +776,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/entities/:id", async (event) => {
     const user = event.context.user!;
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const ent = await deps.repo.getEntityById(id);
     if (!ent) return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
     return htmlPage(EntityEditPage({
@@ -787,14 +787,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/entities/:id", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const ent = await deps.repo.getEntityById(id);
     if (!ent) return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
     const body = await readBody<Record<string, string>>(event);
     const patch: {
       name?: string;
       description?: string | null;
-      camera_id?: number | null;
+      camera_id?: string | null;
       html_content?: string | null;
       web_url?: string | null;
     } = {
@@ -802,7 +802,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       description: (body?.["description"] ?? "").trim() || null,
     };
     if (ent.type === "camera") {
-      patch.camera_id = body?.["camera_id"] ? Number(body["camera_id"]) : null;
+      patch.camera_id = body?.["camera_id"] ? String(body["camera_id"] ?? "") : null;
     } else if (ent.type === "html") {
       patch.html_content = body?.["html_content"] ?? null;
     } else if (ent.type === "web") {
@@ -814,7 +814,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/entities/:id/delete", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     await deps.repo.deleteEntity(id);
     notifyKiosks();
     return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
@@ -825,7 +825,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // no kiosk currently has the camera in its active layout (or every kiosk
   // attempt times out). Used by the EntityEditPage "Test" preview.
   app.get("/admin/entities/:id/snapshot", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const ent = await deps.repo.getEntityById(id);
     if (!ent || ent.type !== "camera" || ent.camera_id == null) {
       return new Response("Not a camera entity", { status: 404 });
@@ -902,7 +902,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const labelsStr = (body?.["initial_labels"] ?? "").trim();
     const initialLabels = labelsStr ? labelsStr.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
     const replaceIdRaw = (body?.["replace_kiosk_id"] ?? "").trim();
-    const replaceKioskId = replaceIdRaw && replaceIdRaw !== "0" ? Number(replaceIdRaw) : undefined;
+    const replaceKioskId = replaceIdRaw && replaceIdRaw !== "0" ? replaceIdRaw : undefined;
     const force = body?.["force"] === "1";
 
     try {
@@ -939,7 +939,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const user = event.context.user!;
     const layouts = await deps.repo.listLayouts();
     // For each layout, how many displays use it (for the list view).
-    const displayCounts = new Map<number, number>();
+    const displayCounts = new Map<string, number>();
     for (const l of layouts) {
       displayCounts.set(l.id, (await deps.repo.listDisplaysForLayout(l.id)).length);
     }
@@ -986,7 +986,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/layouts/:id", async (event) => {
     const user = event.context.user!;
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const layout = await deps.repo.getLayoutById(id);
     if (!layout) return new Response(null, { status: 302, headers: { location: "/admin/layouts" } });
     const cells = await deps.repo.layoutCells(id);
@@ -1005,7 +1005,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.post("/admin/layouts/:id", async (event) => {
     event.context.obs?.log.info("layout update {id} by {user}", { id: getRouterParam(event, "id") ?? "?", user: event.context.user?.username ?? "unknown" });
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
     const coolingStr = body?.["cooling_timeout_seconds"] ?? "";
     const coolingTimeout = coolingStr.trim() === "" ? null : parseInt(coolingStr, 10);
@@ -1026,7 +1026,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // For htmx requests (hx-request header), returns the grid fragment; otherwise
   // returns a 302 to the layout edit page.
   app.post("/admin/layouts/:id/cells", async (event) => {
-    const layoutId = Number(getRouterParam(event, "id"));
+    const layoutId = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string | number | { row: number; col: number }>>(event);
 
     let row = 0;
@@ -1036,7 +1036,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const direction = typeof body?.["direction"] === "string" ? (body["direction"] as string) : "";
 
     if (afterCellIdRaw && direction) {
-      const afterId = Number(afterCellIdRaw);
+      const afterId = String(afterCellIdRaw);
       const cells = await deps.repo.layoutCells(layoutId);
       const ref = cells.find((c) => c.id === afterId);
       if (!ref) {
@@ -1097,8 +1097,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // GET a single cell in read mode (used by htmx Cancel button in inline edit).
   app.get("/admin/layouts/:id/cells/:cellId", async (event) => {
-    const layoutId = Number(getRouterParam(event, "id"));
-    const cellId = Number(getRouterParam(event, "cellId"));
+    const layoutId = (getRouterParam(event, "id") ?? "");
+    const cellId = (getRouterParam(event, "cellId") ?? "");
     const cell = await deps.repo.getLayoutCellById(cellId);
     if (!cell || cell.layout_id !== layoutId) {
       return new Response("Not Found", { status: 404 });
@@ -1110,8 +1110,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // GET a single cell in edit mode (htmx swap target for cell click).
   app.get("/admin/layouts/:id/cells/:cellId/edit", async (event) => {
-    const layoutId = Number(getRouterParam(event, "id"));
-    const cellId = Number(getRouterParam(event, "cellId"));
+    const layoutId = (getRouterParam(event, "id") ?? "");
+    const cellId = (getRouterParam(event, "cellId") ?? "");
     const cell = await deps.repo.getLayoutCellById(cellId);
     if (!cell || cell.layout_id !== layoutId) {
       return new Response("Not Found", { status: 404 });
@@ -1124,14 +1124,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // Update a cell's entity binding + dimensions. Legacy content_type/web/html
   // columns are managed by assignCellEntity for bundle compatibility.
   app.post("/admin/layouts/:id/cells/:cellId", async (event) => {
-    const layoutId = Number(getRouterParam(event, "id"));
-    const cellId = Number(getRouterParam(event, "cellId"));
+    const layoutId = (getRouterParam(event, "id") ?? "");
+    const cellId = (getRouterParam(event, "cellId") ?? "");
     const body = await readBody<Record<string, string>>(event);
 
     const entityIdRaw = body?.["entity_id"];
     const entityId =
-      entityIdRaw && String(entityIdRaw).trim() !== "" ? Number(entityIdRaw) : null;
-    await deps.repo.assignCellEntity(cellId, Number.isFinite(entityId) ? entityId : null);
+      entityIdRaw && String(entityIdRaw).trim() !== "" ? String(entityIdRaw) : null;
+    await deps.repo.assignCellEntity(cellId, entityId != null && entityId !== "" ? entityId : null);
 
     // stream_selector + spans + fit are still settable on the cell.
     const dimsPatch: Record<string, unknown> = {};
@@ -1221,8 +1221,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // Resize a cell by ±1 on row_span or col_span. Returns the grid fragment.
   app.post("/admin/layouts/:id/cells/:cellId/resize", async (event) => {
-    const layoutId = Number(getRouterParam(event, "id"));
-    const cellId = Number(getRouterParam(event, "cellId"));
+    const layoutId = (getRouterParam(event, "id") ?? "");
+    const cellId = (getRouterParam(event, "cellId") ?? "");
     const body = await readBody<Record<string, string | number>>(event);
     const dim = String(body?.["dim"] ?? "");
     const delta = Number(body?.["delta"] ?? 0) || 0;
@@ -1257,8 +1257,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // Visual editor: drag-to-move a cell to a new grid position.
   app.post("/admin/layouts/:id/cells/:cellId/move", async (event) => {
-    const layoutId = Number(getRouterParam(event, "id"));
-    const cellId = Number(getRouterParam(event, "cellId"));
+    const layoutId = (getRouterParam(event, "id") ?? "");
+    const cellId = (getRouterParam(event, "cellId") ?? "");
     const body = await readBody<{ row: number; col: number }>(event);
     const row = Number(body?.row ?? 0);
     const col = Number(body?.col ?? 0);
@@ -1270,8 +1270,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/layouts/:id/cells/:cellId/delete", async (event) => {
-    const layoutId = Number(getRouterParam(event, "id"));
-    const cellId = Number(getRouterParam(event, "cellId"));
+    const layoutId = (getRouterParam(event, "id") ?? "");
+    const cellId = (getRouterParam(event, "cellId") ?? "");
     await deps.repo.deleteLayoutCell(cellId);
     notifyKiosks();
     if (isHtmxRequest(event)) {
@@ -1284,7 +1284,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/layouts/:id/clone", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const clone = await deps.repo.cloneLayout(id);
     notifyKiosks();
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${clone.id}` } });
@@ -1292,7 +1292,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.post("/admin/layouts/:id/delete", async (event) => {
     event.context.obs?.log.info("layout delete {id} by {user}", { id: getRouterParam(event, "id") ?? "?", user: event.context.user?.username ?? "unknown" });
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     await deps.repo.deleteLayout(id);
     notifyKiosks();
     return new Response(null, { status: 302, headers: { location: "/admin/layouts" } });
@@ -1308,7 +1308,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/displays/:id", async (event) => {
     const user = event.context.user!;
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const display = await deps.repo.getDisplayById(id);
     if (!display) return new Response(null, { status: 302, headers: { location: "/admin/displays" } });
     const attachedLayouts = await deps.repo.listLayoutsForDisplay(id);
@@ -1325,13 +1325,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/displays/:id", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
     const defaultLayoutIdRaw = body?.["default_layout_id"];
-    const defaultLayoutId = defaultLayoutIdRaw ? Number(defaultLayoutIdRaw) : null;
+    const defaultLayoutId = defaultLayoutIdRaw ? String(defaultLayoutIdRaw) : null;
 
     // Validate default_layout_id is actually attached to this display.
-    let validatedDefault: number | null = defaultLayoutId;
+    let validatedDefault: string | null = defaultLayoutId;
     if (defaultLayoutId != null) {
       const attached = await deps.repo.listLayoutsForDisplay(id);
       if (!attached.some((l) => l.id === defaultLayoutId)) {
@@ -1353,7 +1353,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // Render the attached + available layouts region for a display.
-  const renderDisplayLayoutsFragment = async (displayId: number): Promise<Response> => {
+  const renderDisplayLayoutsFragment = async (displayId: string): Promise<Response> => {
     const display = await deps.repo.getDisplayById(displayId);
     const attached = await deps.repo.listLayoutsForDisplay(displayId);
     const attachedIds = new Set(attached.map((l) => l.id));
@@ -1366,10 +1366,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // Attach a layout to a display.
   app.post("/admin/displays/:id/layouts", async (event) => {
-    const displayId = Number(getRouterParam(event, "id"));
+    const displayId = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
-    const layoutId = body?.["layout_id"] ? Number(body["layout_id"]) : null;
-    if (layoutId && Number.isFinite(layoutId)) {
+    const layoutId = body?.["layout_id"] ? String(body["layout_id"]) : null;
+    if (layoutId && layoutId) {
       await deps.repo.attachLayoutToDisplay(displayId, layoutId);
       notifyKiosks();
     }
@@ -1381,8 +1381,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // Detach a layout from a display.
   app.post("/admin/displays/:id/layouts/:layoutId/remove", async (event) => {
-    const displayId = Number(getRouterParam(event, "id"));
-    const layoutId = Number(getRouterParam(event, "layoutId"));
+    const displayId = (getRouterParam(event, "id") ?? "");
+    const layoutId = (getRouterParam(event, "layoutId") ?? "");
     await deps.repo.detachLayoutFromDisplay(displayId, layoutId);
     notifyKiosks();
     if (isHtmxRequest(event)) {
@@ -1412,7 +1412,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/labels/:id/delete", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     await deps.repo.deleteLabel(id);
     return new Response(null, { status: 302, headers: { location: "/admin/labels" } });
   });
@@ -1421,7 +1421,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/cameras/:id", async (event) => {
     const user = event.context.user!;
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const camera = await deps.repo.getCameraById(id);
     if (!camera) return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
 
@@ -1464,7 +1464,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.post("/admin/cameras/:id", async (event) => {
     event.context.obs?.log.info("camera update {id} by {user}", { id: getRouterParam(event, "id") ?? "?", user: event.context.user?.username ?? "unknown" });
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const cam = await deps.repo.getCameraById(id);
     if (cam?.type === "cloud") {
       return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
@@ -1541,10 +1541,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/cameras/:id/labels", async (event) => {
-    const camId = Number(getRouterParam(event, "id"));
+    const camId = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
     const newLabel = (body?.["new_label"] ?? "").trim().toLowerCase();
-    let labelId = body?.["label_id"] ? Number(body["label_id"]) : null;
+    let labelId = body?.["label_id"] ? String(body["label_id"] ?? "") : null;
 
     if (newLabel) {
       const label = await deps.repo.ensureLabel(newLabel);
@@ -1560,9 +1560,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/cameras/:id/labels/remove", async (event) => {
-    const camId = Number(getRouterParam(event, "id"));
+    const camId = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
-    const labelId = Number(body?.["label_id"]);
+    const labelId = String(body?.["label_id"] ?? "");
     await deps.repo.detachCameraLabel(camId, labelId);
     if (isHtmxRequest(event)) {
       return htmlFragment(renderCameraLabels(camId, await deps.repo.cameraLabelIds(camId), await deps.repo.listLabels()));
@@ -1573,7 +1573,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // Refresh supported ONVIF event topics from the camera.
   // MERGE: new topics are added to the existing list, never removed.
   app.post("/admin/cameras/:id/refresh-events", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const cam = await deps.repo.getCameraById(id);
     if (!cam || cam.type !== "onvif" || !cam.onvif_host) {
       return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
@@ -1591,7 +1591,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       runner = online ? `kiosk:${online.id}` : "server";
     }
     const soapTransport = runner.startsWith("kiosk:")
-      ? kioskOnvifSoapTransport(Number(runner.slice("kiosk:".length)))
+      ? kioskOnvifSoapTransport(runner.slice("kiosk:".length))
       : undefined;
     try {
       const discoveredTopics = await onvifGetEventProperties({
@@ -1618,7 +1618,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // Subscribe to all inactive event topics for this camera.
   app.post("/admin/cameras/:id/subscribe-events", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const cam = await deps.repo.getCameraById(id);
     if (!cam) {
       return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
@@ -1629,7 +1629,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.post("/admin/cameras/:id/delete", async (event) => {
     event.context.obs?.log.info("camera delete {id} by {user}", { id: getRouterParam(event, "id") ?? "?", user: event.context.user?.username ?? "unknown" });
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     await deps.repo.deleteCamera(id);
     notifyKiosks();
     deps.nodered.forward("camera.changed", { camera_id: id, event: "deleted", source: "server" });
@@ -1643,7 +1643,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   };
   const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   app.get("/admin/cameras/:id/events", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const { events } = await deps.repo.queryEvents({
       camera_id: id,
       limit: 20,
@@ -1672,7 +1672,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/kiosks/:id", async (event) => {
     const user = event.context.user!;
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
     const kioskLabels = (await deps.repo.listKioskLabels(id)).map((kl) => ({
@@ -1709,7 +1709,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- GPIO bindings ----------------------------------------------------
   app.post("/admin/kiosks/:id/gpio", async (event) => {
-    const kioskId = Number(getRouterParam(event, "id"));
+    const kioskId = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
     const pin = Number(body?.["pin"]);
     const direction = (body?.["direction"] ?? "in") === "out" ? "out" : "in";
@@ -1735,8 +1735,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/kiosks/:id/gpio/:bindingId/delete", async (event) => {
-    const kioskId = Number(getRouterParam(event, "id"));
-    const bindingId = Number(getRouterParam(event, "bindingId"));
+    const kioskId = (getRouterParam(event, "id") ?? "");
+    const bindingId = (getRouterParam(event, "bindingId") ?? "");
     await deps.repo.deleteGpioBinding(bindingId);
     notifyKiosks();
     if (isHtmxRequest(event)) {
@@ -1748,7 +1748,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/kiosks/:id", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
     const kiosk = await deps.repo.getKioskById(id);
     await deps.repo.updateKiosk(id, {
@@ -1776,7 +1776,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // cluster key it received at pairing), then bumps managed_config_version
   // so the next heartbeat ships it to the kiosk.
   app.post("/admin/kiosks/:id/managed-config", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) throw new Error("kiosk not found");
     if (!kiosk.managed_image) throw new Error("kiosk is not running a managed image");
@@ -1845,11 +1845,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/kiosks/:id/labels", async (event) => {
-    const kioskId = Number(getRouterParam(event, "id"));
+    const kioskId = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
     const newLabel = (body?.["new_label"] ?? "").trim().toLowerCase();
     const role = (body?.["role"] ?? "consume") as "consume" | "operate";
-    let labelId = body?.["label_id"] ? Number(body["label_id"]) : null;
+    let labelId = body?.["label_id"] ? String(body["label_id"] ?? "") : null;
 
     if (newLabel) {
       const label = await deps.repo.ensureLabel(newLabel);
@@ -1870,9 +1870,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/kiosks/:id/labels/remove", async (event) => {
-    const kioskId = Number(getRouterParam(event, "id"));
+    const kioskId = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
-    const labelId = Number(body?.["label_id"]);
+    const labelId = String(body?.["label_id"] ?? "");
     await deps.repo.detachKioskLabel(kioskId, labelId);
     if (isHtmxRequest(event)) {
       const kioskLabels = (await deps.repo.listKioskLabels(kioskId)).map((kl) => ({
@@ -1887,7 +1887,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.post("/admin/kiosks/:id/delete", async (event) => {
     event.context.obs?.log.info("kiosk delete {id} by {user}", { id: getRouterParam(event, "id") ?? "?", user: event.context.user?.username ?? "unknown" });
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     await deps.repo.deleteKiosk(id);
     return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
   });
@@ -1897,7 +1897,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // /ws/admin/debug/:kioskId and render output. The WS connection is
   // authenticated via the admin's API key.
   app.get("/admin/kiosks/:id/logs", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
     const user = event.context.user!;
@@ -1945,7 +1945,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.get("/admin/kiosks/:id/terminal", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
     // WS auth: browser sends session cookie automatically on WS upgrade.
@@ -2076,7 +2076,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // ---- Layout switch ----------------------------------------------------
-  const emitLayoutChanged = async (displayId: number | null, kioskId: number | null, layoutId: number) => {
+  const emitLayoutChanged = async (displayId: string | null, kioskId: string | null, layoutId: string) => {
     const layout = await deps.repo.getLayoutById(layoutId);
     deps.nodered.forward("layout.changed", {
       display_id: displayId,
@@ -2088,13 +2088,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   };
 
   const displayLayoutSwitch = async (event: any) => {
-    const displayId = Number(getRouterParam(event, "displayId"));
-    let layoutId = Number(getRouterParam(event, "layoutId"));
-    if (!Number.isFinite(layoutId) || layoutId <= 0) {
+    const displayId = (getRouterParam(event, "displayId") ?? "");
+    let layoutId = getRouterParam(event, "layoutId") ?? "";
+    if (!layoutId) {
       const body = await readBody<Record<string, string>>(event);
-      layoutId = Number(body?.["layout_id"]);
+      layoutId = String(body?.["layout_id"] ?? "");
     }
-    if (Number.isFinite(displayId) && Number.isFinite(layoutId)) {
+    if (displayId && layoutId) {
       const display = await deps.repo.getDisplayById(displayId);
       const attached = await deps.repo.listLayoutsForDisplay(displayId);
       const isAttached = attached.some((l) => l.id === layoutId);
@@ -2114,7 +2114,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.get("/admin/displays/:displayId/layout/:layoutId", displayLayoutSwitch);
 
   const displayPower = async (event: any, state: "on" | "standby") => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const display = await deps.repo.getDisplayById(id);
     if (display?.kiosk_id) {
       getCoordinator().sendToKiosk(display.kiosk_id, {
@@ -2144,7 +2144,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // ---- CEC power commands -----------------------------------------------
-  const emitDisplayPower = async (kioskId: number, state: "on" | "standby") => {
+  const emitDisplayPower = async (kioskId: string, state: "on" | "standby") => {
     const displays = await deps.repo.listDisplaysForKiosk(kioskId);
     const displayId = displays[0]?.id ?? null;
     const actual = state === "on" ? "awake" : "standby";
@@ -2164,7 +2164,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   };
 
   app.post("/admin/kiosks/:id/power/standby", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     getCoordinator().sendToKiosk(id, { type: "standby" });
     await emitDisplayPower(id, "standby");
     await audit(deps.repo, event as any, "display.standby", { resource_type: "kiosk", resource_id: id });
@@ -2172,7 +2172,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/kiosks/:id/power/wake", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     getCoordinator().sendToKiosk(id, { type: "wake" });
     await emitDisplayPower(id, "on");
     await audit(deps.repo, event as any, "display.wake", { resource_type: "kiosk", resource_id: id });
@@ -2181,7 +2181,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Fan control ------------------------------------------------------
   app.post("/admin/kiosks/:id/fan", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
     const mode = body?.["mode"];
     if (mode === "auto") {
@@ -2216,7 +2216,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.get("/api/admin/cameras/:id", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const cam = await deps.repo.getCameraById(id);
     if (!cam) return jsonResponse({ error: "not_found" }, 404);
     const streams = await deps.repo.listCameraStreams(id);
@@ -2231,7 +2231,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.get("/api/admin/displays/:id", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const display = await deps.repo.getDisplayById(id);
     if (!display) return jsonResponse({ error: "not_found" }, 404);
     const attachedLayouts = await deps.repo.listLayoutsForDisplay(id);
@@ -2258,7 +2258,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.get("/api/admin/kiosks/:id", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return jsonResponse({ error: "not_found" }, 404);
     const displays = await deps.repo.listDisplaysForKiosk(id);
@@ -2276,7 +2276,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.get("/api/admin/layouts/:id", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const layout = await deps.repo.getLayoutById(id);
     if (!layout) return jsonResponse({ error: "not_found" }, 404);
     const cells = await deps.repo.layoutCells(id);
@@ -2290,7 +2290,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.get("/api/admin/entities/:id", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const entity = await deps.repo.getEntityById(id);
     if (!entity) return jsonResponse({ error: "not_found" }, 404);
     return jsonResponse({ entity });
@@ -2302,11 +2302,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // across all set ops. Returns the post-mutation entity.
 
   app.post("/api/admin/displays/:id/default-layout", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const body = (await readBody<Record<string, unknown>>(event)) ?? {};
     const raw = body["value"] ?? body["default_layout_id"];
-    const layoutId = raw == null || raw === "" ? null : Number(raw);
-    if (raw != null && raw !== "" && !Number.isFinite(layoutId)) {
+    const layoutId = raw == null || raw === "" ? null : String(raw);
+    if (raw != null && raw !== "" && !layoutId) {
       return jsonResponse({ error: "invalid_value" }, 400);
     }
     if (layoutId != null) {
@@ -2322,7 +2322,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/api/admin/kiosks/:id/enabled", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const body = (await readBody<Record<string, unknown>>(event)) ?? {};
     const enabled = Boolean(body["value"] ?? body["enabled"]);
     await deps.repo.updateKiosk(id, { enabled } as any);
@@ -2332,7 +2332,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/api/admin/cameras/:id/enabled", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const body = (await readBody<Record<string, unknown>>(event)) ?? {};
     const enabled = Boolean(body["value"] ?? body["enabled"]);
     await deps.repo.updateCamera(id, { enabled } as any);
@@ -2344,7 +2344,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/api/admin/layouts/:id/priority", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const body = (await readBody<Record<string, unknown>>(event)) ?? {};
     const value = String(body["value"] ?? body["priority"] ?? "").toLowerCase();
     if (value !== "hot" && value !== "normal" && value !== "cold") {
@@ -2358,7 +2358,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/api/admin/entities/:id/name", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const body = (await readBody<Record<string, unknown>>(event)) ?? {};
     const name = String(body["value"] ?? body["name"] ?? "").trim();
     if (!name || name.length > 128) {

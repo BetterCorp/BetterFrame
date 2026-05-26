@@ -67,7 +67,7 @@ export async function initiatePairing(
 
 export interface PairingClaimResult {
   status: "pending" | "claimed";
-  kioskId?: number;
+  kioskId?: string;
   kioskName?: string;
   kioskKey?: string;
   clusterKey?: string;
@@ -123,7 +123,7 @@ export interface PairingConfirmInput {
    * pointed at the same kiosk id — only credentials + hardware metadata roll.
    * When set, nameOverride and initialLabels are ignored.
    */
-  replaceKioskId?: number;
+  replaceKioskId?: string;
   /** Bypass replacement-target sanity checks (hardware_model / capabilities / managed_image). */
   force?: boolean;
 }
@@ -134,7 +134,7 @@ export async function confirmPairing(
   secrets: SecretsApi,
   input: PairingConfirmInput,
   obs?: Observable,
-): Promise<{ kioskId: number; kioskName: string }> {
+): Promise<{ kioskId: string; kioskName: string }> {
   obs?.log.info("confirm pairing for code {code}", { code: input.code });
   const pc = await repo.getPairingCode(input.code);
   if (!pc) throw new Error("pairing code not found");
@@ -145,7 +145,7 @@ export async function confirmPairing(
   const kioskKeyHash = await auth.hashPassword(kioskKeyPlaintext);
   const kioskKeyPrefix = kioskKeyPlaintext.slice(0, 8);
 
-  let kioskId: number;
+  let kioskId: string;
   let kioskName: string;
 
   if (input.replaceKioskId != null) {

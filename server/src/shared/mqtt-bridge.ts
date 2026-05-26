@@ -25,10 +25,10 @@ export interface MqttBridgeLog {
 }
 
 export interface MqttBridge {
-  publishEvent(kioskId: number | "server", topic: string, payload: Record<string, unknown>): void;
-  publishTelemetry(kioskId: number, payload: Record<string, unknown>): void;
+  publishEvent(kioskId: string | "server", topic: string, payload: Record<string, unknown>): void;
+  publishTelemetry(kioskId: string, payload: Record<string, unknown>): void;
   /** Subscribe to inbound RPC. Callback gets parsed JSON or {} on parse error. */
-  onRpc(handler: (kioskId: number, method: string, body: Record<string, unknown>) => void): void;
+  onRpc(handler: (kioskId: string, method: string, body: Record<string, unknown>) => void): void;
   end(): void;
 }
 
@@ -57,7 +57,7 @@ export function initMqttBridge(config: MqttConfig, log: MqttBridgeLog): MqttBrid
   const password = config.password;
 
   let client: MqttClient | undefined;
-  let rpcHandlers: Array<(k: number, m: string, b: Record<string, unknown>) => void> = [];
+  let rpcHandlers: Array<(k: string, m: string, b: Record<string, unknown>) => void> = [];
 
   try {
     client = mqtt.connect(url, {
@@ -97,9 +97,9 @@ export function initMqttBridge(config: MqttConfig, log: MqttBridgeLog): MqttBrid
     // Expected: <prefix>/<kiosk_id>/rpc/req/<method>
     const parts = topic.split("/");
     if (parts.length !== 5 || parts[0] !== prefix || parts[2] !== "rpc" || parts[3] !== "req") return;
-    const kioskId = Number(parts[1]);
+    const kioskId = parts[1] ?? "";
     const method = parts[4];
-    if (!Number.isFinite(kioskId) || !method) return;
+    if (!kioskId || !method) return;
     let body: Record<string, unknown> = {};
     try { body = JSON.parse(payload.toString("utf8")) as Record<string, unknown>; }
     catch { /* ignore body parse errors — handler can use empty */ }

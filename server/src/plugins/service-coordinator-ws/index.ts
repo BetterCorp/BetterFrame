@@ -86,14 +86,14 @@ export const EventSchemas = createEventSchemas({
 // ---- Connected kiosks -------------------------------------------------------
 
 interface ConnectedKiosk {
-  id: number;
+  id: string;
   name: string;
   ws: WebSocket;
 }
 
-const connectedKiosks = new Map<number, ConnectedKiosk>();
+const connectedKiosks = new Map<string, ConnectedKiosk>();
 const pendingRequests = new Map<string, {
-  kioskId: number;
+  kioskId: string;
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -101,9 +101,9 @@ const pendingRequests = new Map<string, {
 
 // Admin debug subscribers: admin WS connections subscribed to a kiosk's
 // journal/terminal output. Keyed by kiosk id → set of admin WebSockets.
-const debugSubscribers = new Map<number, Set<WebSocket>>();
+const debugSubscribers = new Map<string, Set<WebSocket>>();
 
-function addDebugSubscriber(kioskId: number, adminWs: WebSocket): void {
+function addDebugSubscriber(kioskId: string, adminWs: WebSocket): void {
   let subs = debugSubscribers.get(kioskId);
   if (!subs) { subs = new Set(); debugSubscribers.set(kioskId, subs); }
   subs.add(adminWs);
@@ -117,7 +117,7 @@ function addDebugSubscriber(kioskId: number, adminWs: WebSocket): void {
   });
 }
 
-function relayToDebugSubscribers(kioskId: number, message: string): void {
+function relayToDebugSubscribers(kioskId: string, message: string): void {
   const subs = debugSubscribers.get(kioskId);
   if (!subs) return;
   for (const ws of subs) {
@@ -136,9 +136,9 @@ function parseCookieValue(header: string, name: string): string | null {
 // Per-kiosk message queue: if kiosk is offline, buffer messages here.
 // Drain on reconnect. FIFO, cap at 100 messages per kiosk.
 const MESSAGE_QUEUE_CAP = 100;
-const offlineQueues = new Map<number, string[]>();
+const offlineQueues = new Map<string, string[]>();
 
-function sendToKiosk(kioskId: number, message: object): boolean {
+function sendToKiosk(kioskId: string, message: object): boolean {
   const k = connectedKiosks.get(kioskId);
   const payload = JSON.stringify(message);
   if (!k || k.ws.readyState !== WebSocket.OPEN) {
@@ -153,7 +153,7 @@ function sendToKiosk(kioskId: number, message: object): boolean {
   return true;
 }
 
-function drainOfflineQueue(kioskId: number): void {
+function drainOfflineQueue(kioskId: string): void {
   const q = offlineQueues.get(kioskId);
   if (!q || q.length === 0) return;
   const k = connectedKiosks.get(kioskId);
@@ -164,7 +164,7 @@ function drainOfflineQueue(kioskId: number): void {
   offlineQueues.delete(kioskId);
 }
 
-function requestKiosk<T = unknown>(kioskId: number, message: object, timeoutMs = 10000): Promise<T> {
+function requestKiosk<T = unknown>(kioskId: string, message: object, timeoutMs = 10000): Promise<T> {
   const requestId = randomUUID();
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -271,8 +271,8 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       // Subscribes to a kiosk's journal + terminal output stream.
       if (url.pathname.startsWith("/ws/admin/debug/")) {
         const kioskIdStr = url.pathname.split("/").pop() ?? "";
-        const kioskId = Number(kioskIdStr);
-        if (!Number.isInteger(kioskId) || kioskId <= 0) {
+        const kioskId = String(kioskIdStr);
+        if (!Number.isInteger(kioskId) || kioskId === "") {
           socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
           socket.destroy();
           return;
@@ -454,7 +454,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       requestKiosk,
       broadcastAll,
       notifyBundleChanged: () => broadcastAll({ type: "reload-bundle" }),
-      notifyKioskBundleChanged: (kioskId: number) =>
+      notifyKioskBundleChanged: (kioskId: string) =>
         sendToKiosk(kioskId, { type: "reload-bundle" }),
     });
 

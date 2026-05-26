@@ -36,7 +36,7 @@ export const PUBLIC_MIGRATIONS: readonly string[] = [
   )`,
 
   `CREATE TABLE IF NOT EXISTS global_admins (
-    id SERIAL PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT true,
@@ -60,7 +60,7 @@ export const PUBLIC_MIGRATIONS: readonly string[] = [
 export const TENANT_MIGRATIONS: readonly string[] = [
   // ---- users ---------------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'operator' CHECK(role IN ('admin', 'operator')),
@@ -78,7 +78,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   // ---- sessions ------------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     csrf_token TEXT NOT NULL,
     totp_pending BOOLEAN NOT NULL DEFAULT false,
     user_agent TEXT,
@@ -93,7 +93,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
 
   // ---- api_keys ------------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS api_keys (
-    id SERIAL PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,
     key_hash TEXT NOT NULL,
     key_prefix TEXT NOT NULL,
@@ -119,14 +119,14 @@ export const TENANT_MIGRATIONS: readonly string[] = [
 
   // ---- displays (final schema — no UNIQUE on index, has kiosk_id) ----------
   `CREATE TABLE IF NOT EXISTS displays (
-    id SERIAL PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,
     "index" INTEGER NOT NULL,
     is_primary BOOLEAN NOT NULL DEFAULT false,
-    kiosk_id INTEGER,
+    kiosk_id TEXT,
     width_px INTEGER NOT NULL DEFAULT 1920,
     height_px INTEGER NOT NULL DEFAULT 1080,
-    default_layout_id INTEGER,
+    default_layout_id TEXT,
     idle_timeout_seconds INTEGER NOT NULL DEFAULT 600,
     sleep_timeout_seconds INTEGER NOT NULL DEFAULT 1800,
     cec_enabled BOOLEAN NOT NULL DEFAULT true,
@@ -140,14 +140,14 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     state_check_enabled BOOLEAN NOT NULL DEFAULT false,
     state_check_interval_seconds INTEGER NOT NULL DEFAULT 60,
     is_enabled BOOLEAN NOT NULL DEFAULT true,
-    active_layout_id INTEGER
+    active_layout_id TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_displays_kiosk ON displays(kiosk_id)`,
   `CREATE INDEX IF NOT EXISTS idx_displays_kiosk_index ON displays(kiosk_id, "index")`,
 
   // ---- cameras -------------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS cameras (
-    id SERIAL PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     type TEXT NOT NULL CHECK(type IN ('rtsp', 'onvif', 'cloud')),
     rtsp_url TEXT,
@@ -172,8 +172,8 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_cameras_cloud_account ON cameras(cloud_account_id)`,
 
   `CREATE TABLE IF NOT EXISTS camera_streams (
-    id SERIAL PRIMARY KEY,
-    camera_id INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    id TEXT NOT NULL PRIMARY KEY,
+    camera_id TEXT NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK(role IN ('main', 'sub', 'other')),
     name TEXT NOT NULL,
     profile_token TEXT,
@@ -192,7 +192,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
 
   // ---- kiosks (final schema — all telemetry + update columns) --------------
   `CREATE TABLE IF NOT EXISTS kiosks (
-    id SERIAL PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     description TEXT,
     key_hash TEXT NOT NULL,
@@ -205,7 +205,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     paired_at TIMESTAMPTZ,
     last_seen_at TIMESTAMPTZ,
     last_bundle_version TEXT,
-    display_id INTEGER REFERENCES displays(id) ON DELETE SET NULL,
+    display_id TEXT REFERENCES displays(id) ON DELETE SET NULL,
     encrypt_key_encrypted TEXT,
     cpu_temp_c REAL,
     cpu_load_percent REAL,
@@ -243,7 +243,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
 
   // ---- layouts (final schema — no template_id, no display_id) --------------
   `CREATE TABLE IF NOT EXISTS layouts (
-    id SERIAL PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     description TEXT,
     priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('hot', 'normal', 'cold')),
@@ -254,28 +254,28 @@ export const TENANT_MIGRATIONS: readonly string[] = [
 
   // ---- display_layouts (join table) ----------------------------------------
   `CREATE TABLE IF NOT EXISTS display_layouts (
-    display_id INTEGER NOT NULL REFERENCES displays(id) ON DELETE CASCADE,
-    layout_id INTEGER NOT NULL REFERENCES layouts(id) ON DELETE CASCADE,
+    display_id TEXT NOT NULL REFERENCES displays(id) ON DELETE CASCADE,
+    layout_id TEXT NOT NULL REFERENCES layouts(id) ON DELETE CASCADE,
     PRIMARY KEY (display_id, layout_id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_display_layouts_layout ON display_layouts(layout_id)`,
 
   // ---- layout_cells (final schema — no region_name) ------------------------
   `CREATE TABLE IF NOT EXISTS layout_cells (
-    id SERIAL PRIMARY KEY,
-    layout_id INTEGER NOT NULL REFERENCES layouts(id) ON DELETE CASCADE,
+    id TEXT NOT NULL PRIMARY KEY,
+    layout_id TEXT NOT NULL REFERENCES layouts(id) ON DELETE CASCADE,
     "row" INTEGER NOT NULL DEFAULT 0,
     col INTEGER NOT NULL DEFAULT 0,
     row_span INTEGER NOT NULL DEFAULT 1,
     col_span INTEGER NOT NULL DEFAULT 1,
     content_type TEXT NOT NULL CHECK(content_type IN ('none', 'camera', 'web', 'html')),
-    camera_id INTEGER REFERENCES cameras(id) ON DELETE SET NULL,
+    camera_id TEXT REFERENCES cameras(id) ON DELETE SET NULL,
     stream_selector TEXT,
     web_url TEXT,
     html_content TEXT,
     cooling_timeout_seconds INTEGER,
     options JSONB NOT NULL DEFAULT '{}',
-    entity_id INTEGER,
+    entity_id TEXT,
     fit TEXT NOT NULL DEFAULT 'cover'
   )`,
   `CREATE INDEX IF NOT EXISTS idx_layout_cells_layout ON layout_cells(layout_id)`,
@@ -283,26 +283,26 @@ export const TENANT_MIGRATIONS: readonly string[] = [
 
   // ---- labels --------------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS labels (
-    id SERIAL PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     description TEXT,
     color TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
   `CREATE TABLE IF NOT EXISTS kiosk_labels (
-    kiosk_id INTEGER NOT NULL REFERENCES kiosks(id) ON DELETE CASCADE,
-    label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+    kiosk_id TEXT NOT NULL REFERENCES kiosks(id) ON DELETE CASCADE,
+    label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK(role IN ('consume', 'operate')),
     PRIMARY KEY (kiosk_id, label_id, role)
   )`,
   `CREATE TABLE IF NOT EXISTS camera_labels (
-    camera_id INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
-    label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+    camera_id TEXT NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
     PRIMARY KEY (camera_id, label_id)
   )`,
   `CREATE TABLE IF NOT EXISTS layout_labels (
-    layout_id INTEGER NOT NULL REFERENCES layouts(id) ON DELETE CASCADE,
-    label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+    layout_id TEXT NOT NULL REFERENCES layouts(id) ON DELETE CASCADE,
+    label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
     PRIMARY KEY (layout_id, label_id)
   )`,
 
@@ -315,15 +315,15 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at TIMESTAMPTZ NOT NULL,
     consumed_at TIMESTAMPTZ,
-    consumed_by_kiosk_id INTEGER REFERENCES kiosks(id) ON DELETE SET NULL,
+    consumed_by_kiosk_id TEXT REFERENCES kiosks(id) ON DELETE SET NULL,
     extras JSONB NOT NULL DEFAULT '{}'
   )`,
 
   // ---- event_log -----------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS event_log (
-    id SERIAL PRIMARY KEY,
-    source_kiosk_id INTEGER REFERENCES kiosks(id) ON DELETE SET NULL,
-    source_camera_id INTEGER REFERENCES cameras(id) ON DELETE SET NULL,
+    id TEXT NOT NULL PRIMARY KEY,
+    source_kiosk_id TEXT REFERENCES kiosks(id) ON DELETE SET NULL,
+    source_camera_id TEXT REFERENCES cameras(id) ON DELETE SET NULL,
     source_type TEXT NOT NULL CHECK(source_type IN ('onvif', 'gpio', 'synthetic', 'system')),
     topic TEXT NOT NULL,
     property_op TEXT,
@@ -336,11 +336,11 @@ export const TENANT_MIGRATIONS: readonly string[] = [
 
   // ---- entities ------------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS entities (
-    id SERIAL PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     type TEXT NOT NULL CHECK(type IN ('camera', 'html', 'web', 'dashboard')),
     description TEXT,
-    camera_id INTEGER REFERENCES cameras(id) ON DELETE CASCADE,
+    camera_id TEXT REFERENCES cameras(id) ON DELETE CASCADE,
     html_content TEXT,
     web_url TEXT,
     dashboard_id TEXT,
@@ -360,7 +360,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     signature TEXT NOT NULL,
     release_notes TEXT,
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    uploaded_by TEXT REFERENCES users(id) ON DELETE SET NULL,
     yanked_at TIMESTAMPTZ,
     UNIQUE(version, arch)
   )`,
@@ -375,7 +375,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     started_at TIMESTAMPTZ,
     finished_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_firmware_rollouts_state ON firmware_rollouts(state)`,
 
@@ -391,7 +391,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     bundle_format TEXT NOT NULL DEFAULT 'raucb' CHECK(bundle_format = 'raucb'),
     release_notes TEXT,
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    uploaded_by TEXT REFERENCES users(id) ON DELETE SET NULL,
     yanked_at TIMESTAMPTZ,
     UNIQUE(version, compatibility)
   )`,
@@ -406,16 +406,16 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     started_at TIMESTAMPTZ,
     finished_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_os_update_rollouts_state ON os_update_rollouts(state)`,
 
   // ---- audit_log -----------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS audit_log (
-    id SERIAL PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     ts TIMESTAMPTZ NOT NULL DEFAULT now(),
     actor_type TEXT NOT NULL CHECK(actor_type IN ('user', 'api_key', 'system', 'kiosk')),
-    actor_id INTEGER,
+    actor_id TEXT,
     actor_label TEXT,
     action TEXT NOT NULL,
     resource_type TEXT,
@@ -430,8 +430,8 @@ export const TENANT_MIGRATIONS: readonly string[] = [
 
   // ---- kiosk GPIO bindings -------------------------------------------------
   `CREATE TABLE IF NOT EXISTS kiosk_gpio_bindings (
-    id SERIAL PRIMARY KEY,
-    kiosk_id INTEGER NOT NULL REFERENCES kiosks(id) ON DELETE CASCADE,
+    id TEXT NOT NULL PRIMARY KEY,
+    kiosk_id TEXT NOT NULL REFERENCES kiosks(id) ON DELETE CASCADE,
     chip TEXT NOT NULL DEFAULT 'gpiochip4',
     pin INTEGER NOT NULL,
     direction TEXT NOT NULL DEFAULT 'in' CHECK(direction IN ('in', 'out')),
@@ -445,8 +445,8 @@ export const TENANT_MIGRATIONS: readonly string[] = [
 
   // ---- kiosk_logs ----------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS kiosk_logs (
-    id SERIAL PRIMARY KEY,
-    kiosk_id INTEGER NOT NULL REFERENCES kiosks(id) ON DELETE CASCADE,
+    id TEXT NOT NULL PRIMARY KEY,
+    kiosk_id TEXT NOT NULL REFERENCES kiosks(id) ON DELETE CASCADE,
     level TEXT NOT NULL CHECK(level IN ('debug', 'info', 'warn', 'error')),
     message TEXT NOT NULL,
     context JSONB NOT NULL DEFAULT '{}',
@@ -471,11 +471,11 @@ export const TENANT_MIGRATIONS: readonly string[] = [
 
   // ---- camera_event_subscriptions ---------------------------------------------
   `CREATE TABLE IF NOT EXISTS camera_event_subscriptions (
-    id SERIAL PRIMARY KEY,
-    camera_id INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    id TEXT NOT NULL PRIMARY KEY,
+    camera_id TEXT NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
     topic TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'inactive' CHECK(status IN ('inactive', 'pending', 'active', 'failed')),
-    subscribed_by_kiosk_id INTEGER REFERENCES kiosks(id) ON DELETE SET NULL,
+    subscribed_by_kiosk_id TEXT REFERENCES kiosks(id) ON DELETE SET NULL,
     last_event_at TIMESTAMPTZ,
     error_message TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

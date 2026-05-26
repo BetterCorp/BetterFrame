@@ -22,7 +22,7 @@ declare module "h3" {
 
 function syntheticApiKeyUser(keyPrefix: string): User {
   return {
-    id: 0,
+    id: "",
     username: `api:${keyPrefix}`,
     password_hash: "",
     role: "admin",

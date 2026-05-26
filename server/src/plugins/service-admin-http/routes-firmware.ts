@@ -153,7 +153,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
   // ---- Per-kiosk firmware settings ----------------------------------------
   // POST channel + target_version (used by KioskFirmwarePanel form)
   app.post("/admin/kiosks/:id/firmware", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
     const channelRaw = (body?.["channel"] ?? "stable").trim() as FirmwareChannel;
     const targetRaw = (body?.["target_version"] ?? "").trim();
@@ -176,7 +176,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
   // and pulls /api/kiosk/firmware/check immediately. The actual download
   // happens kiosk-side over the existing kiosk_key channel.
   app.post("/admin/kiosks/:id/firmware/push", (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const dispatched = getCoordinator().sendToKiosk(id, { type: "firmware_check" });
     return { ok: true, dispatched };
   });
@@ -204,10 +204,10 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     if (!release) throw createError({ statusCode: 404, statusMessage: "release not found" });
     const percentage = clamp(Number(body?.["percentage"] ?? 100), 1, 100);
     const targetsRaw = body?.["target_kiosk_ids"];
-    const targets: number[] = Array.isArray(targetsRaw)
-      ? targetsRaw.map((s) => Number(s)).filter((n) => Number.isFinite(n))
+    const targets: string[] = Array.isArray(targetsRaw)
+      ? targetsRaw.map((s) => String(s)).filter((s) => s !== "")
       : typeof targetsRaw === "string" && targetsRaw
-        ? targetsRaw.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n))
+        ? targetsRaw.split(",").map((s) => s.trim()).filter((s) => s !== "")
         : [];
     const user = event.context.user!;
     const rollout = await deps.repo.createFirmwareRollout({

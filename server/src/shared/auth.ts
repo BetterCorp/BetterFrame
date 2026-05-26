@@ -52,7 +52,7 @@ export interface AuthApi {
     expiresAt: string | null;
   }): Promise<{ apiKey: ApiKey; plaintext: string }>;
   verifyApiKey(plaintext: string, ip: string | null): Promise<ApiKey | null>;
-  verifyKioskKey(plaintext: string): Promise<{ id: number } | null>;
+  verifyKioskKey(plaintext: string): Promise<{ id: string } | null>;
 }
 
 // ---- Constants --------------------------------------------------------------
@@ -274,7 +274,7 @@ export function createAuth(
     return null;
   }
 
-  async function verifyKioskKey(plaintext: string): Promise<{ id: number } | null> {
+  async function verifyKioskKey(plaintext: string): Promise<{ id: string } | null> {
     if (plaintext.length < 8) return null;
     const prefix = plaintext.slice(0, 8);
     const candidates = await repo.listKiosksByKeyPrefix(prefix);

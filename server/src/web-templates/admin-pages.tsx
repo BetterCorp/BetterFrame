@@ -114,8 +114,8 @@ export function OverviewPage(props: OverviewProps) {
 interface CamerasProps {
   user: string;
   cameras: Camera[];
-  streamCounts: Map<number, number>;
-  activeKiosks: Map<number, number>;
+  streamCounts: Map<string, number>;
+  activeKiosks: Map<string, number>;
 }
 
 export function CamerasPage(props: CamerasProps) {
@@ -1165,9 +1165,9 @@ interface CameraSubscription {
 interface CameraEditProps {
   user: string;
   camera: Camera;
-  labels: Array<{ label_id: number; name: string }>;
+  labels: Array<{ label_id: string; name: string }>;
   allLabels: Label[];
-  streams: Array<{ id: number; role: string; name: string; rtsp_uri: string; rtsp_host: string | null; rtsp_port: number | null; rtsp_path: string | null }>;
+  streams: Array<{ id: string; role: string; name: string; rtsp_uri: string; rtsp_host: string | null; rtsp_port: number | null; rtsp_path: string | null }>;
   subscriptions: CameraSubscription[];
   eventSubscriptions?: CameraEventSubscription[];
   error?: string;
@@ -1180,8 +1180,8 @@ interface CameraEditProps {
  * hx-target="#camera-labels-<id>" hx-swap="innerHTML".
  */
 export function renderCameraLabels(
-  cameraId: number,
-  labels: Array<{ label_id: number; name: string }>,
+  cameraId: string,
+  labels: Array<{ label_id: string; name: string }>,
   allLabels: Label[],
 ): string {
   const labelsTargetSelector = `#camera-labels-${String(cameraId)}`;
@@ -1542,7 +1542,7 @@ export function CameraEditPage(props: CameraEditProps) {
 interface KioskEditProps {
   user: string;
   kiosk: Kiosk;
-  labels: Array<{ label_id: number; name: string; role: string }>;
+  labels: Array<{ label_id: string; name: string; role: string }>;
   allLabels: Label[];
   displays?: Display[];
   displayLayouts?: Array<{ display: Display; layouts: LayoutType[] }>;
@@ -1561,8 +1561,8 @@ interface KioskEditProps {
  * hx-target="#kiosk-labels-<id>" hx-swap="innerHTML".
  */
 export function renderKioskLabels(
-  kioskId: number,
-  labels: Array<{ label_id: number; name: string; role: string }>,
+  kioskId: string,
+  labels: Array<{ label_id: string; name: string; role: string }>,
   allLabels: Label[],
 ): string {
   const labelsTargetSelector = `#kiosk-labels-${String(kioskId)}`;
@@ -2138,7 +2138,7 @@ interface LayoutsPageProps {
   user: string;
   layouts: LayoutType[];
   /** layout_id → number of displays the layout is attached to */
-  displayCounts: Map<number, number>;
+  displayCounts: Map<string, number>;
 }
 
 export function LayoutsPage(props: LayoutsPageProps) {
@@ -2305,8 +2305,8 @@ export const LAYOUT_BUILDER_CSS = `
 
 function cellLabel(
   c: LayoutCell,
-  entityById: Map<number, Entity>,
-  cameraById: Map<number, Camera>,
+  entityById: Map<string, Entity>,
+  cameraById: Map<string, Camera>,
 ): string {
   if (c.entity_id != null) {
     const ent = entityById.get(c.entity_id);
@@ -2331,15 +2331,15 @@ function cellGridStyle(c: LayoutCell): string {
  * suitable for hx-swap="outerHTML" against itself.
  */
 export function renderCell(
-  layoutId: number,
+  layoutId: string,
   c: LayoutCell,
   entities: Entity[],
   cameras: Camera[],
   mode: "read" | "edit",
 ): string {
-  const cameraById = new Map<number, Camera>();
+  const cameraById = new Map<string, Camera>();
   for (const cam of cameras) cameraById.set(cam.id, cam);
-  const entityById = new Map<number, Entity>();
+  const entityById = new Map<string, Entity>();
   for (const e of entities) entityById.set(e.id, e);
   const style = cellGridStyle(c);
   const cellGetUrl = `/admin/layouts/${String(layoutId)}/cells/${String(c.id)}`;
@@ -2535,7 +2535,7 @@ export function renderCell(
  * in via `hx-target="#layout-grid" hx-swap="innerHTML"` after add/delete/resize.
  */
 export function renderGrid(
-  layoutId: number,
+  layoutId: string,
   cells: LayoutCell[],
   entities: Entity[],
   cameras: Camera[],
@@ -2721,8 +2721,8 @@ interface DisplayEditPageProps {
  * `renderDefaultLayoutSelect`.
  */
 export function renderDisplayLayouts(
-  displayId: number,
-  defaultLayoutId: number | null,
+  displayId: string,
+  defaultLayoutId: string | null,
   attached: LayoutType[],
   available: LayoutType[],
 ): string {
@@ -2829,7 +2829,7 @@ export function renderDisplayLayouts(
  * page. The id matches the in-page select so swap-by-id works.
  */
 export function renderDefaultLayoutSelect(
-  defaultLayoutId: number | null,
+  defaultLayoutId: string | null,
   attached: LayoutType[],
   oob: boolean = false,
 ): string {

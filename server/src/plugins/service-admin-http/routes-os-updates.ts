@@ -44,7 +44,7 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Per-kiosk OS-update settings ---------------------------------------
   app.post("/admin/kiosks/:id/os-update", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
     const channelRaw = (body?.["channel"] ?? "stable").trim() as FirmwareChannel;
     const targetRaw = (body?.["target_version"] ?? "").trim();
@@ -65,7 +65,7 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
 
   // Push OS update now: server pings the kiosk via WS coordinator.
   app.post("/admin/kiosks/:id/os-update/push", async (event) => {
-    const id = Number(getRouterParam(event, "id"));
+    const id = (getRouterParam(event, "id") ?? "");
     const { getCoordinator } = await import("../../shared/coordinator-registry.js");
     const dispatched = getCoordinator().sendToKiosk(id, { type: "os_check" });
     return { ok: true, dispatched };
@@ -93,10 +93,10 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
     if (!release) throw createError({ statusCode: 404, statusMessage: "release not found" });
     const percentage = clamp(Number(body?.["percentage"] ?? 100), 1, 100);
     const targetsRaw = body?.["target_kiosk_ids"];
-    const targets: number[] = Array.isArray(targetsRaw)
-      ? targetsRaw.map((s) => Number(s)).filter((n) => Number.isFinite(n))
+    const targets: string[] = Array.isArray(targetsRaw)
+      ? targetsRaw.map((s) => String(s)).filter((s) => s !== "")
       : typeof targetsRaw === "string" && targetsRaw
-        ? targetsRaw.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n))
+        ? targetsRaw.split(",").map((s) => s.trim()).filter((s) => s !== "")
         : [];
     const user = event.context.user!;
     const rollout = await deps.repo.createOsUpdateRollout({

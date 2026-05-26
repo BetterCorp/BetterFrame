@@ -16,11 +16,11 @@ export type CellContentType = "none" | "camera" | "web" | "html";
 export type EntityType = "camera" | "html" | "web" | "dashboard";
 
 export interface Entity {
-  id: number;
+  id: string;
   name: string;
   type: EntityType;
   description: string | null;
-  camera_id: number | null;
+  camera_id: string | null;
   html_content: string | null;
   web_url: string | null;
   /** Node-RED dashboard tab id; populated when type === "dashboard". */
@@ -33,7 +33,7 @@ export type LabelRole = "consume" | "operate";
 export type EventSourceType = "onvif" | "gpio" | "synthetic" | "system";
 
 export interface User {
-  id: number;
+  id: string;
   username: string;
   password_hash: string;
   role: UserRole;
@@ -50,7 +50,7 @@ export interface User {
 
 export interface Session {
   id: string; // hex32
-  user_id: number;
+  user_id: string;
   csrf_token: string;
   totp_pending: boolean;
   user_agent: string | null;
@@ -62,7 +62,7 @@ export interface Session {
 }
 
 export interface ApiKey {
-  id: number;
+  id: string;
   name: string;
   key_hash: string;
   key_prefix: string; // indexed for O(1) lookup
@@ -84,14 +84,14 @@ export interface SetupState {
 }
 
 export interface Display {
-  id: number;
+  id: string;
   name: string;
   index: number; // unique
   is_primary: boolean; // deprecated — kept for backward compat, not used
-  kiosk_id: number | null; // FK → kiosks; displays belong to kiosks
+  kiosk_id: string | null; // FK → kiosks; displays belong to kiosks
   width_px: number;
   height_px: number;
-  default_layout_id: number | null;
+  default_layout_id: string | null;
   idle_timeout_seconds: number;
   sleep_timeout_seconds: number;
   cec_enabled: boolean;
@@ -103,14 +103,14 @@ export interface Display {
   state_check_enabled: boolean;
   state_check_interval_seconds: number;
   is_enabled: boolean;
-  active_layout_id: number | null;
+  active_layout_id: string | null;
 }
 
 export type EventSourceMode = "auto" | "server" | string; // string = "kiosk:<id>"
 export type EventSinkMode = "auto" | "server" | string;
 
 export interface Camera {
-  id: number;
+  id: string;
   name: string;
   type: CameraType;
   rtsp_url: string | null;
@@ -133,8 +133,8 @@ export interface Camera {
 }
 
 export interface CameraStream {
-  id: number;
-  camera_id: number;
+  id: string;
+  camera_id: string;
   role: StreamRole;
   name: string;
   profile_token: string | null;
@@ -154,7 +154,7 @@ export interface CameraStream {
 }
 
 export interface LayoutTemplate {
-  id: number;
+  id: string;
   name: string;
   description: string | null;
   regions: LayoutRegion[];
@@ -172,10 +172,10 @@ export interface LayoutRegion {
 }
 
 export interface Layout {
-  id: number;
+  id: string;
   name: string;
   description: string | null;
-  template_id: number | null; // deprecated — kept nullable for backward compat
+  template_id: string | null; // deprecated — kept nullable for backward compat
   /** @deprecated Cells now own their own position. Computed from cells at read time. */
   regions: LayoutRegion[];
   /** @deprecated Computed from cells: max(col + col_span). */
@@ -184,18 +184,18 @@ export interface Layout {
   grid_rows: number;
   /** @deprecated Layouts are now standalone; use display_layouts join table.
    *  Column kept on the row for backward compat — will be removed in a future migration. */
-  display_id: number | null;
+  display_id: string | null;
   priority: LayoutPriority;
   cooling_timeout_seconds: number | null;
-  preload_camera_ids: number[];
+  preload_camera_ids: string[];
   /** @deprecated Per-display defaults live on `display.default_layout_id`. */
   is_default: boolean;
   resets_idle_timer: boolean;
 }
 
 export interface LayoutCell {
-  id: number;
-  layout_id: number;
+  id: string;
+  layout_id: string;
   /** @deprecated Cells own their position via row/col/row_span/col_span now. */
   region_name: string;
   row: number;
@@ -203,18 +203,18 @@ export interface LayoutCell {
   row_span: number;
   col_span: number;
   content_type: CellContentType;
-  camera_id: number | null;
+  camera_id: string | null;
   stream_selector: StreamSelector;
   web_url: string | null;
   html_content: string | null;
   cooling_timeout_seconds: number | null;
   options: Record<string, unknown>;
-  entity_id: number | null;
+  entity_id: string | null;
   fit: "cover" | "contain" | "fill";
 }
 
 export interface Kiosk {
-  id: number;
+  id: string;
   name: string;
   description: string | null;
   key_hash: string;
@@ -227,7 +227,7 @@ export interface Kiosk {
   paired_at: string | null;
   last_seen_at: string | null;
   last_bundle_version: string | null;
-  display_id: number | null; // deprecated — displays now point to kiosks via kiosk_id
+  display_id: string | null; // deprecated — displays now point to kiosks via kiosk_id
   cpu_temp_c: number | null;
   cpu_load_percent: number | null;
   fan_rpm: number | null;
@@ -272,10 +272,10 @@ export type AuditActorType = "user" | "api_key" | "system" | "kiosk";
 export type AuditResult = "ok" | "failed";
 
 export interface AuditEntry {
-  id: number;
+  id: string;
   ts: string;
   actor_type: AuditActorType;
-  actor_id: number | null;
+  actor_id: string | null;
   actor_label: string | null;
   action: string;
   resource_type: string | null;
@@ -300,20 +300,20 @@ export interface FirmwareRelease {
   signature: string;
   release_notes: string | null;
   uploaded_at: string;
-  uploaded_by: number | null;
+  uploaded_by: string | null;
   yanked_at: string | null;
 }
 
 export interface FirmwareRollout {
   id: string;
   release_id: string;
-  target_kiosk_ids: number[];
+  target_kiosk_ids: string[];
   state: FirmwareRolloutState;
   percentage: number;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
-  created_by: number | null;
+  created_by: string | null;
 }
 
 export interface OsUpdateRelease {
@@ -327,20 +327,20 @@ export interface OsUpdateRelease {
   bundle_format: "raucb";
   release_notes: string | null;
   uploaded_at: string;
-  uploaded_by: number | null;
+  uploaded_by: string | null;
   yanked_at: string | null;
 }
 
 export interface OsUpdateRollout {
   id: string;
   release_id: string;
-  target_kiosk_ids: number[];
+  target_kiosk_ids: string[];
   state: OsUpdateRolloutState;
   percentage: number;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
-  created_by: number | null;
+  created_by: string | null;
 }
 
 export type CloudVendor = "hikconnect" | "dahua" | "tuya" | "uniview" | "tplink";
@@ -358,7 +358,7 @@ export interface CloudAccount {
 }
 
 export interface Label {
-  id: number;
+  id: string;
   name: string;
   description: string | null;
   color: string | null;
@@ -366,8 +366,8 @@ export interface Label {
 }
 
 export interface KioskLabel {
-  kiosk_id: number;
-  label_id: number;
+  kiosk_id: string;
+  label_id: string;
   role: LabelRole;
 }
 
@@ -379,7 +379,7 @@ export interface PairingCode {
   issued_at: string;
   expires_at: string;
   consumed_at: string | null;
-  consumed_by_kiosk_id: number | null;
+  consumed_by_kiosk_id: string | null;
   extras: Record<string, unknown>;
 }
 
@@ -388,8 +388,8 @@ export type GpioPull = "up" | "down" | "none";
 export type GpioEdge = "rising" | "falling" | "both";
 
 export interface KioskGpioBinding {
-  id: number;
-  kiosk_id: number;
+  id: string;
+  kiosk_id: string;
   chip: string;
   pin: number;
   direction: GpioDirection;
@@ -400,9 +400,9 @@ export interface KioskGpioBinding {
 }
 
 export interface EventLog {
-  id: number;
-  source_kiosk_id: number | null;
-  source_camera_id: number | null;
+  id: string;
+  source_kiosk_id: string | null;
+  source_camera_id: string | null;
   source_type: EventSourceType;
   topic: string;
   property_op: string | null;
@@ -414,11 +414,11 @@ export interface EventLog {
 export type EventSubscriptionStatus = "inactive" | "pending" | "active" | "failed";
 
 export interface CameraEventSubscription {
-  id: number;
-  camera_id: number;
+  id: string;
+  camera_id: string;
   topic: string;
   status: EventSubscriptionStatus;
-  subscribed_by_kiosk_id: number | null;
+  subscribed_by_kiosk_id: string | null;
   event_source: string | null;
   event_sink: string | null;
   last_event_at: string | null;
@@ -428,8 +428,8 @@ export interface CameraEventSubscription {
 
 export interface EventQueryFilters {
   topic?: string;
-  kiosk_id?: number;
-  camera_id?: number;
+  kiosk_id?: string;
+  camera_id?: string;
   source_type?: string;
   from?: string;
   to?: string;
@@ -440,8 +440,8 @@ export interface EventQueryFilters {
 export type KioskLogLevel = "debug" | "info" | "warn" | "error";
 
 export interface KioskLog {
-  id: number;
-  kiosk_id: number;
+  id: string;
+  kiosk_id: string;
   level: KioskLogLevel;
   message: string;
   context: Record<string, unknown>;
@@ -450,7 +450,7 @@ export interface KioskLog {
 }
 
 export interface KioskLogQueryFilters {
-  kiosk_id: number;
+  kiosk_id: string;
   level?: KioskLogLevel;
   from?: string;
   to?: string;

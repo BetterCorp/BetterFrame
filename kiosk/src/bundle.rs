@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct KioskBundle {
-    pub kiosk_id: u32,
+    #[serde(deserialize_with = "de_flexible_id")]
+    pub kiosk_id: String,
     pub kiosk_name: String,
     /// Legacy single-display field (mirrors `displays[0]`). New code should
     /// iterate `displays` instead.
@@ -31,7 +33,7 @@ impl KioskBundle {
         }
         if let Some(d) = &self.display {
             return vec![BundleDisplayWithLayouts {
-                id: d.id,
+                id: d.id.clone(),
                 name: d.name.clone(),
                 width_px: d.width_px,
                 height_px: d.height_px,
@@ -90,7 +92,8 @@ pub struct BundleCell {
     pub row_span: u32,
     pub col_span: u32,
     pub content_type: String,
-    pub camera_id: Option<u32>,
+    #[serde(default, deserialize_with = "de_flexible_id_opt")]
+    pub camera_id: Option<String>,
     pub stream_selector: Option<String>,
     pub web_url: Option<String>,
     pub html_content: Option<String>,

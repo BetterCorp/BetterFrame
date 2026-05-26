@@ -40,7 +40,7 @@ function buildStreamRtspUri(stream: CameraStream, cam: Camera): string {
 }
 
 export interface BundleCamera {
-  id: number;
+  id: string;
   name: string;
   type: string;
   rtsp_url: string | null;
@@ -52,7 +52,7 @@ export interface BundleCamera {
   event_sink: string;
   stream_policy: string;
   streams: Array<{
-    id: number;
+    id: string;
     role: string;
     name: string;
     /** Final playable RTSP URL with properly encoded credentials. */
@@ -70,7 +70,7 @@ export interface BundleCell {
   row_span: number;
   col_span: number;
   content_type: string;
-  camera_id: number | null;
+  camera_id: string | null;
   stream_selector: string | null;
   web_url: string | null;
   html_content: string | null;
@@ -94,7 +94,7 @@ export interface BundleCell {
 }
 
 export interface BundleLayout {
-  id: number;
+  id: string;
   name: string;
   /** Computed from cells: max(col + col_span). 1 if no cells. */
   grid_cols: number;
@@ -102,7 +102,7 @@ export interface BundleLayout {
   grid_rows: number;
   priority: string;
   cooling_timeout_seconds: number | null;
-  preload_camera_ids: number[];
+  preload_camera_ids: string[];
   resets_idle_timer: boolean;
   /** True if the kiosk's display has this layout as its default_layout_id. */
   is_default: boolean;
@@ -110,13 +110,13 @@ export interface BundleLayout {
 }
 
 export interface BundleDisplay {
-  id: number;
+  id: string;
   name: string;
   width_px: number;
   height_px: number;
   idle_timeout_seconds: number;
   sleep_timeout_seconds: number;
-  default_layout_id: number | null;
+  default_layout_id: string | null;
 }
 
 export interface BundleDisplayWithLayouts extends BundleDisplay {
@@ -124,7 +124,7 @@ export interface BundleDisplayWithLayouts extends BundleDisplay {
 }
 
 export interface BundleGpioBinding {
-  id: number;
+  id: string;
   chip: string;
   pin: number;
   direction: "in" | "out";
@@ -134,7 +134,7 @@ export interface BundleGpioBinding {
 }
 
 export interface KioskBundle {
-  kiosk_id: number;
+  kiosk_id: string;
   kiosk_name: string;
   /**
    * @deprecated Use `displays` (array). Kept for backward compat with older
@@ -156,7 +156,7 @@ export interface KioskBundle {
 export async function generateBundle(
   repo: Repository,
   secrets: SecretsApi,
-  kioskId: number,
+  kioskId: string,
   clusterKey: string | undefined,
   obs?: Observable,
 ): Promise<KioskBundle | null> {
@@ -194,13 +194,13 @@ export async function generateBundle(
   }
 
   // Collect camera IDs across ALL displays' layouts (de-duped).
-  const allLayoutIds = new Set<number>();
+  const allLayoutIds = new Set<string>();
   for (const d of displays) {
     for (const l of await repo.layoutsForDisplayId(d.id)) allLayoutIds.add(l.id);
   }
   const cameras = await repo.camerasForLayoutIds([...allLayoutIds]);
 
-  async function buildLayouts(displayId: number, defaultLayoutId: number | null): Promise<BundleLayout[]> {
+  async function buildLayouts(displayId: string, defaultLayoutId: string | null): Promise<BundleLayout[]> {
     const layouts = await repo.layoutsForDisplayId(displayId);
     const result: BundleLayout[] = [];
     for (const l of layouts) {
@@ -308,7 +308,7 @@ export async function generateBundle(
     const effectiveStreams = streams.length > 0 ? streams : (
       cam.type === "rtsp" && cam.rtsp_url
         ? [{
-          id: 0,
+          id: "",
           role: "main" as const,
           name: "Main",
           rtsp_uri: cam.rtsp_url,

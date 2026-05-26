@@ -211,6 +211,35 @@ pub fn is_paired() -> bool {
     key_file().exists()
 }
 
+/// Confirm with the server that our key is truly rejected before wiping.
+/// Calls /api/kiosk/_check — if 200 the key is still valid (false alarm).
+fn confirm_deletion(server: &str, key: &str) -> bool {
+    let client = reqwest::blocking::Client::new();
+    match client
+        .get(format!("{server}/api/kiosk/_check"))
+        .header("Authorization", format!("Bearer {key}"))
+        .timeout(Duration::from_secs(5))
+        .send()
+    {
+        Ok(r) => r.status().as_u16() == 401,
+        Err(_) => false, // network error — don't wipe
+    }
+}
+
+/// Wipe all kiosk state and exit. Systemd restarts the service,
+/// kiosk boots fresh with a new pairing code. Only called after
+/// double-verification (bf_kiosk_deleted + _check 401).
+fn wipe_and_restart() -> ! {
+    let dir = state_dir();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    tracing::info!("config wiped, exiting for systemd restart");
+    std::process::exit(1);
+}
+
 /// Load cluster key (if stored from pairing). Used for ONVIF password decrypt.
 pub fn load_cluster_key() -> Option<String> {
     crate::at_rest::read_text_maybe_encrypted(&cluster_key_file())
@@ -358,7 +387,22 @@ pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
         *BUNDLE_ETAG.lock().unwrap() = Some(etag.to_string());
     }
 
-    match resp.json::<KioskBundle>() {
+    let text = match resp.text() {
+        Ok(t) => t,
+        Err(e) => { tracing::warn!("bundle read failed: {e}"); return None; }
+    };
+
+    // Server signals kiosk was deleted — double-verify via _check before wiping
+    if text.contains("\"bf_kiosk_deleted\"") {
+        tracing::warn!("server reports kiosk deleted, confirming via _check");
+        if confirm_deletion(server, key) {
+            tracing::error!("deletion confirmed, wiping config and restarting");
+            wipe_and_restart();
+        }
+        tracing::info!("_check says key still valid, ignoring bf_kiosk_deleted");
+    }
+
+    match serde_json::from_str::<KioskBundle>(&text) {
         Ok(b) => {
             save_bundle(&b);
             Some(b)
@@ -470,8 +514,15 @@ pub fn heartbeat(
             if !r.status().is_success() {
                 return Ok(false);
             }
-            // Parse channels from heartbeat response and cache for terminal access check.
             if let Ok(body) = r.json::<serde_json::Value>() {
+                if body.get("bf_kiosk_deleted").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    tracing::warn!("server reports kiosk deleted via heartbeat, confirming via _check");
+                    if confirm_deletion(server, key) {
+                        tracing::error!("deletion confirmed via heartbeat, wiping config and restarting");
+                        wipe_and_restart();
+                    }
+                    tracing::info!("_check says key still valid, ignoring bf_kiosk_deleted from heartbeat");
+                }
                 if let Some(fc) = body.get("firmware_channel").and_then(|v| v.as_str()) {
                     CACHED_FIRMWARE_CHANNEL.lock().unwrap().replace(fc.to_string());
                 }

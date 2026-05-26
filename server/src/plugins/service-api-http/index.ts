@@ -369,7 +369,7 @@ function registerKioskRoutes(
     if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
 
     const kiosk = await auth.verifyKioskKey(token);
-    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    if (!kiosk) return { bf_kiosk_deleted: true };
 
     event.context.obs?.log.info("bundle fetch for kiosk {id}", { id: String(kiosk.id) });
     const clusterKey = await getClusterKey(repo, secrets);
@@ -402,7 +402,7 @@ function registerKioskRoutes(
     if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
 
     const kiosk = await auth.verifyKioskKey(token);
-    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    if (!kiosk) return { bf_kiosk_deleted: true };
     event.context.obs?.log.info("heartbeat from kiosk {id}", { id: String(kiosk.id) });
 
     const body = await readBody<{

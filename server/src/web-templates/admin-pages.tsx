@@ -1246,7 +1246,7 @@ export function CameraEditPage(props: CameraEditProps) {
         : undefined
       }
     >
-      <div style="max-width:700px">
+      <div>
         {cam.type === "cloud" && (
           <div class="card" style="margin-bottom:1.5rem">
             <h2 style="margin:0 0 1rem; font-size:1.1rem">
@@ -1400,7 +1400,7 @@ export function CameraEditPage(props: CameraEditProps) {
               {sortedTopics.length > 0 ? (
                 <div class="table-wrap">
                   <table>
-                    <thead><tr><th style="width:2rem">Status</th><th>Topic</th><th>Last Event</th><th>Error</th></tr></thead>
+                    <thead><tr><th style="width:2rem">Status</th><th>Topic</th><th>Source</th><th>Sink</th><th>Last Event</th><th>Error</th></tr></thead>
                     <tbody>
                       {[...sortedTopics].map((t) => {
                         const sub = subMap.get(t);
@@ -1421,6 +1421,8 @@ export function CameraEditPage(props: CameraEditProps) {
                               <span style={`display:inline-block; width:10px; height:10px; border-radius:50%; background:${dotColor}`}></span>
                             </td>
                             <td><code style="font-size:0.8rem">{t}</code></td>
+                            <td style="font-size:0.8rem; color:#666">{sub?.event_source ?? "—"}</td>
+                            <td style="font-size:0.8rem; color:#666">{sub?.event_sink ?? "—"}</td>
                             <td style="font-size:0.8rem; white-space:nowrap; color:#666">
                               {sub?.last_event_at ? formatTime(sub.last_event_at) : "—"}
                             </td>

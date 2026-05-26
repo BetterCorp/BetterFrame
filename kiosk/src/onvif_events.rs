@@ -694,11 +694,8 @@ fn extract_digest_field(header: &str, field: &str) -> Option<String> {
 }
 
 fn md5_hex(input: &str) -> String {
-    use md5::{Digest, Md5};
-    let mut hasher = Md5::new();
-    hasher.update(input.as_bytes());
-    let result = hasher.finalize();
-    hex_lower_bytes(&result)
+    let digest = md5::compute(input.as_bytes());
+    hex_lower_bytes(&digest.0)
 }
 
 fn hex_lower_bytes(bytes: &[u8]) -> String {

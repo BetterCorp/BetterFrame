@@ -69,7 +69,7 @@ impl KioskBundle {
                 height_px: d.height_px,
                 idle_timeout_seconds: d.idle_timeout_seconds,
                 sleep_timeout_seconds: d.sleep_timeout_seconds,
-                default_layout_id: d.default_layout_id,
+                default_layout_id: d.default_layout_id.clone(),
                 layouts: self.layouts.clone(),
             }];
         }

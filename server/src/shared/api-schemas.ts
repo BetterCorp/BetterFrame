@@ -155,9 +155,13 @@ export const PasswordChangeBody = av.object(
 export function validateBody<T>(schema: { safeParse(input: unknown): { success: boolean; data?: T; error?: unknown } }, raw: unknown): T {
   const result = schema.safeParse(raw);
   if (!result.success) {
-    const msg = typeof result.error === "object" && result.error && "message" in result.error
-      ? String((result.error as any).message)
-      : "invalid request body";
+    let msg = "invalid request body";
+    const err = result.error as any;
+    if (err?.issues) {
+      msg = err.issues.map((i: any) => `${i.path?.join?.(".") ?? "?"}: ${i.message}`).join("; ");
+    } else if (err?.message) {
+      msg = String(err.message);
+    }
     throw Object.assign(new Error(msg), { status: 400, statusText: "Bad Request" });
   }
   return result.data as T;

@@ -626,7 +626,17 @@ function registerKioskRoutes(
     const kiosk = await auth.verifyKioskKey(token);
     if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
 
-    const body = validateBody(EventBody, await readBody(event));
+    const raw = await readBody(event);
+    let body: ReturnType<typeof EventBody["parse"]>;
+    try {
+      body = validateBody(EventBody, raw);
+    } catch (err: any) {
+      event.context.obs?.log.warn("event validation failed: {msg} body={raw}", {
+        msg: err.message ?? "unknown",
+        raw: JSON.stringify(raw).slice(0, 500),
+      });
+      throw err;
+    }
     const payload = (body.payload ?? {}) as Record<string, unknown>;
     event.context.obs?.log.info("event from kiosk {id} topic {topic}", { id: String(kiosk.id), topic: body.topic });
 

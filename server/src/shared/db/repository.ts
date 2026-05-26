@@ -2435,6 +2435,7 @@ export class Repository {
       await this._run(`DELETE FROM displays WHERE kiosk_id = ?`, [id]);
       await this._run(`DELETE FROM kiosk_labels WHERE kiosk_id = ?`, [id]);
       await this._run(`DELETE FROM kiosk_gpio_bindings WHERE kiosk_id = ?`, [id]);
+      await this._run(`UPDATE cameras SET event_source = 'auto' WHERE event_source = ?`, [`kiosk:${id}`]);
       await this._run(`DELETE FROM kiosks WHERE id = ?`, [id]);
     });
     for (const display of displays) {
@@ -2528,6 +2529,18 @@ export class Repository {
   // ===========================================================================
   // camera_event_subscriptions
   // ===========================================================================
+
+  async getActiveOnvifOwners(): Promise<Map<string, string>> {
+    const rs = await this._all<{ camera_id: string; subscribed_by_kiosk_id: string }>(
+      `SELECT DISTINCT camera_id, subscribed_by_kiosk_id FROM camera_event_subscriptions
+       WHERE subscribed_by_kiosk_id IS NOT NULL AND status = 'active'`,
+    );
+    const map = new Map<string, string>();
+    for (const r of rs) {
+      map.set(r.camera_id, r.subscribed_by_kiosk_id);
+    }
+    return map;
+  }
 
   async listEventSubscriptions(cameraId: string): Promise<CameraEventSubscription[]> {
     const rs = await this._all(

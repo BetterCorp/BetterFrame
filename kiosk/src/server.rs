@@ -162,6 +162,10 @@ pub fn load_cached_bundle() -> Option<KioskBundle> {
     }
 }
 
+pub fn load_kiosk_id() -> Option<String> {
+    load_cached_bundle().map(|b| b.kiosk_id)
+}
+
 /// Discover the BetterFrame server.
 pub fn discover_server(override_url: Option<&str>) -> String {
     if let Some(url) = override_url {

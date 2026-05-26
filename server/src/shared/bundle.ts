@@ -302,6 +302,16 @@ export async function generateBundle(
     });
   }
 
+  // ONVIF event ownership: for "auto" cameras, first kiosk to fetch bundle
+  // takes ownership. Server writes "kiosk:<id>" into event_source so
+  // subsequent kiosks see it's taken and skip.
+  for (const cam of cameras) {
+    if (cam.type === "onvif" && cam.event_source === "auto") {
+      await repo.updateCamera(cam.id, { event_source: `kiosk:${kioskId}` } as any);
+      cam.event_source = `kiosk:${kioskId}`;
+    }
+  }
+
   const bundleCameras: BundleCamera[] = [];
   for (const cam of cameras) {
     const streams = await repo.listCameraStreams(cam.id);

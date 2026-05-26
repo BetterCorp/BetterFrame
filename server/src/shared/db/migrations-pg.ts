@@ -616,9 +616,34 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     old_id text;
     new_id text;
     fk record;
+    saved_fks jsonb := '[]'::jsonb;
   BEGIN
-    -- Process each table that has a TEXT PK column named 'id'
-    -- where any value looks like a bare integer (no hyphens/letters).
+    -- 1. Save and drop ALL FK constraints so updates are unconstrained.
+    FOR r IN
+      SELECT tc.constraint_name, tc.table_name,
+             kcu.column_name AS fk_col,
+             ccu.table_name AS ref_table,
+             ccu.column_name AS ref_col,
+             rc.delete_rule
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+        JOIN information_schema.constraint_column_usage ccu
+          ON tc.constraint_name = ccu.constraint_name AND tc.table_schema = ccu.table_schema
+        JOIN information_schema.referential_constraints rc
+          ON tc.constraint_name = rc.constraint_name AND tc.table_schema = rc.constraint_schema
+       WHERE tc.constraint_type = 'FOREIGN KEY'
+         AND tc.table_schema = current_schema()
+    LOOP
+      saved_fks := saved_fks || jsonb_build_object(
+        'name', r.constraint_name, 'tbl', r.table_name,
+        'col', r.fk_col, 'ref', r.ref_table, 'rcol', r.ref_col,
+        'del', r.delete_rule
+      );
+      EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', r.table_name, r.constraint_name);
+    END LOOP;
+
+    -- 2. Replace integer-looking IDs with UUIDs + cascade to FK columns.
     FOR r IN
       SELECT t.table_name
         FROM information_schema.columns t
@@ -628,40 +653,38 @@ export const TENANT_MIGRATIONS: readonly string[] = [
          AND t.table_name NOT IN ('schema_migrations', 'setup_state', 'pairing_codes', 'sessions')
        ORDER BY t.table_name
     LOOP
-      -- For each row with an integer-looking id, replace it.
       FOR old_id IN
         EXECUTE format('SELECT id FROM %I WHERE id ~ $1', r.table_name)
         USING '^[0-9]+$'
       LOOP
         new_id := gen_random_uuid()::text;
 
-        -- Update all FK columns in other tables that reference this id.
+        -- Update FK columns in other tables that point to this old_id.
         FOR fk IN
-          SELECT
-            ccu.table_name AS ref_table,
-            kcu.table_name AS fk_table,
-            kcu.column_name AS fk_column
-          FROM information_schema.table_constraints tc
-          JOIN information_schema.key_column_usage kcu
-            ON tc.constraint_name = kcu.constraint_name
-            AND tc.table_schema = kcu.table_schema
-          JOIN information_schema.constraint_column_usage ccu
-            ON tc.constraint_name = ccu.constraint_name
-            AND tc.table_schema = ccu.table_schema
-          WHERE tc.constraint_type = 'FOREIGN KEY'
-            AND tc.table_schema = current_schema()
-            AND ccu.table_name = r.table_name
-            AND ccu.column_name = 'id'
+          SELECT e->>'tbl' AS fk_table, e->>'col' AS fk_col
+            FROM jsonb_array_elements(saved_fks) e
+           WHERE e->>'ref' = r.table_name AND e->>'rcol' = 'id'
         LOOP
           EXECUTE format('UPDATE %I SET %I = $1 WHERE %I = $2',
-                         fk.fk_table, fk.fk_column, fk.fk_column)
+                         fk.fk_table, fk.fk_col, fk.fk_col)
           USING new_id, old_id;
         END LOOP;
 
-        -- Update the PK itself.
         EXECUTE format('UPDATE %I SET id = $1 WHERE id = $2', r.table_name)
         USING new_id, old_id;
       END LOOP;
+    END LOOP;
+
+    -- 3. Re-add all FK constraints.
+    FOR fk IN
+      SELECT e->>'name' AS cname, e->>'tbl' AS tbl, e->>'col' AS col,
+             e->>'ref' AS ref, e->>'rcol' AS rcol, e->>'del' AS del
+        FROM jsonb_array_elements(saved_fks) e
+    LOOP
+      EXECUTE format(
+        'ALTER TABLE %I ADD CONSTRAINT %I FOREIGN KEY (%I) REFERENCES %I(%I) ON DELETE %s',
+        fk.tbl, fk.cname, fk.col, fk.ref, fk.rcol, fk.del
+      );
     END LOOP;
 
     RAISE NOTICE 'UUIDv7 backfill: all integer-looking IDs replaced with UUIDs';

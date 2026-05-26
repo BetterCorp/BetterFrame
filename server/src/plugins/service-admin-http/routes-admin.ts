@@ -2193,6 +2193,29 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
+  app.post("/admin/kiosks/:id/reboot", async (event) => {
+    const id = (getRouterParam(event, "id") ?? "");
+    getCoordinator().sendToKiosk(id, { type: "reboot" });
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+  });
+
+  app.post("/admin/kiosks/:id/volume", async (event) => {
+    const id = (getRouterParam(event, "id") ?? "");
+    const body = await readBody<Record<string, string>>(event);
+    const action = body?.["action"];
+    if (action === "mute") {
+      getCoordinator().sendToKiosk(id, { type: "volume-mute", muted: true });
+    } else if (action === "unmute") {
+      getCoordinator().sendToKiosk(id, { type: "volume-mute", muted: false });
+    } else if (action === "output") {
+      getCoordinator().sendToKiosk(id, { type: "audio-output", output_id: body?.["output_id"] ?? "" });
+    } else {
+      const vol = Math.max(0, Math.min(100, Number(body?.["volume"]) || 0));
+      getCoordinator().sendToKiosk(id, { type: "volume-set", volume: vol });
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+  });
+
   // ---- JSON API (admin scope) — used by Node-RED bf-* nodes ---------------
   //
   // All payloads run through `stripSecrets` so credential-bearing fields

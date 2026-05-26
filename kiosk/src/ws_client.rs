@@ -169,6 +169,8 @@ async fn handle_message(
         if let Some(layout_id) = layout_id {
             let _ = tx.send(ServerMsg::SwitchLayout { display_id, layout_id });
         }
+    } else if text.contains("\"type\":\"reboot\"") {
+        let _ = tx.send(ServerMsg::Reboot);
     } else if text.contains("\"type\":\"firmware_check\"") {
         let _ = tx.send(ServerMsg::FirmwareCheck);
     } else if text.contains("\"type\":\"os_check\"") {
@@ -183,6 +185,20 @@ async fn handle_message(
             return;
         };
         let _ = tx.send(ServerMsg::Fan(pwm));
+    } else if text.contains("\"type\":\"volume-set\"") {
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else { return };
+        if let Some(vol) = msg.get("volume").and_then(|v| v.as_u64()) {
+            let _ = tx.send(ServerMsg::VolumeSet(vol.min(100) as u32));
+        }
+    } else if text.contains("\"type\":\"volume-mute\"") {
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else { return };
+        let muted = msg.get("muted").and_then(|v| v.as_bool()).unwrap_or(true);
+        let _ = tx.send(ServerMsg::VolumeMute(muted));
+    } else if text.contains("\"type\":\"audio-output\"") {
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else { return };
+        if let Some(id) = msg.get("output_id").and_then(|v| v.as_str()) {
+            let _ = tx.send(ServerMsg::AudioOutputSet(id.to_string()));
+        }
 
     // ---- Journal streaming --------------------------------------------------
     } else if text.contains("\"type\":\"journal-start\"") {

@@ -128,7 +128,9 @@ pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
         let _ = fs::rename(&bin, &prev_path);
     }
     fs::rename(&new_path, &bin).map_err(|e| format!("rename: {e}"))?;
-    info!("preboot firmware: updated to {}, exiting for restart", info.version);
+    info!("preboot firmware: updated to {}, rebooting", info.version);
+    let _ = std::process::Command::new("systemctl").arg("reboot").status();
+    std::thread::sleep(Duration::from_secs(30));
     std::process::exit(0);
 }
 
@@ -267,10 +269,18 @@ pub fn apply(
         .timeout(Duration::from_secs(5))
         .send();
 
-    on_progress("Restarting", 100);
-    info!("firmware: swap complete → exiting for systemd to relaunch");
-    // systemd Restart=always picks up the new binary on next start.
-    std::process::exit(0);
+    on_progress("Rebooting", 100);
+    info!("firmware: swap complete → rebooting to pick up new binary");
+    match std::process::Command::new("systemctl").arg("reboot").status() {
+        Ok(_) => {
+            std::thread::sleep(Duration::from_secs(30));
+            std::process::exit(0);
+        }
+        Err(e) => {
+            info!("systemctl reboot failed: {e}, falling back to exit");
+            std::process::exit(0);
+        }
+    }
 }
 
 fn verify_signature(public_key_pem: &str, sha256_hex: &str, sig_b64url: &str) -> Result<(), String> {

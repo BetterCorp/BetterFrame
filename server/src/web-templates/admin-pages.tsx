@@ -1915,6 +1915,56 @@ export function KioskEditPage(props: KioskEditProps) {
                 }}
               >Full</button>
             </div>
+
+            <div style="margin-top:1rem; padding-top:0.75rem; border-top:1px solid #f0f0f0; display:flex; gap:0.5rem; align-items:center">
+              <div style="font-size:0.8rem; font-weight:600">Power</div>
+              <button type="button" class="btn btn-sm btn-ghost" style="color:#c00" {...{
+                "hx-post": `/admin/kiosks/${String(k.id)}/reboot`,
+                "hx-swap": "none",
+                "hx-confirm": "Reboot this kiosk? It will be offline for ~30 seconds.",
+              }}>Reboot</button>
+            </div>
+            <div style="margin-top:1rem; padding-top:0.75rem; border-top:1px solid #f0f0f0">
+              <div style="font-size:0.8rem; font-weight:600; margin-bottom:0.5rem">Audio</div>
+              <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
+                <button type="button" class="btn btn-sm btn-ghost" {...{
+                  "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
+                  "hx-vals": JSON.stringify({ volume: "0" }),
+                  "hx-swap": "none",
+                }}>0%</button>
+                <button type="button" class="btn btn-sm btn-ghost" {...{
+                  "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
+                  "hx-vals": JSON.stringify({ volume: "25" }),
+                  "hx-swap": "none",
+                }}>25%</button>
+                <button type="button" class="btn btn-sm btn-ghost" {...{
+                  "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
+                  "hx-vals": JSON.stringify({ volume: "50" }),
+                  "hx-swap": "none",
+                }}>50%</button>
+                <button type="button" class="btn btn-sm btn-ghost" {...{
+                  "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
+                  "hx-vals": JSON.stringify({ volume: "75" }),
+                  "hx-swap": "none",
+                }}>75%</button>
+                <button type="button" class="btn btn-sm btn-ghost" {...{
+                  "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
+                  "hx-vals": JSON.stringify({ volume: "100" }),
+                  "hx-swap": "none",
+                }}>100%</button>
+                <span style="color:#999">|</span>
+                <button type="button" class="btn btn-sm btn-ghost" {...{
+                  "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
+                  "hx-vals": JSON.stringify({ action: "mute" }),
+                  "hx-swap": "none",
+                }}>Mute</button>
+                <button type="button" class="btn btn-sm btn-ghost" {...{
+                  "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
+                  "hx-vals": JSON.stringify({ action: "unmute" }),
+                  "hx-swap": "none",
+                }}>Unmute</button>
+              </div>
+            </div>
           </div>
         </div>
 

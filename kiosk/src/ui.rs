@@ -1,9 +1,12 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs;
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 use url::Url;
+
+static FIRMWARE_LOCK: Mutex<()> = Mutex::new(());
+static OS_UPDATE_LOCK: Mutex<()> = Mutex::new(());
 
 use gtk4::prelude::*;
 use gtk4::{
@@ -267,6 +270,18 @@ fn activate(app: &Application) {
                         }
                         send_heartbeat_now(&server_for_reload, &key_for_reload);
                     }
+                    ServerMsg::VolumeSet(vol) => {
+                        crate::audio::set_volume(vol);
+                        send_heartbeat_now(&server_for_reload, &key_for_reload);
+                    }
+                    ServerMsg::VolumeMute(muted) => {
+                        crate::audio::set_mute(muted);
+                        send_heartbeat_now(&server_for_reload, &key_for_reload);
+                    }
+                    ServerMsg::AudioOutputSet(id) => {
+                        crate::audio::set_output(&id);
+                        send_heartbeat_now(&server_for_reload, &key_for_reload);
+                    }
                     ServerMsg::SwitchLayout {
                         display_id,
                         layout_id,
@@ -275,6 +290,10 @@ fn activate(app: &Application) {
                             display_id,
                             layout_id,
                         });
+                    }
+                    ServerMsg::Reboot => {
+                        info!("reboot requested by admin");
+                        let _ = std::process::Command::new("systemctl").arg("reboot").status();
                     }
                     ServerMsg::FirmwareCheck => {
                         maybe_apply_firmware_update(&server_for_reload, &key_for_reload, &tx_for_reload);
@@ -533,6 +552,10 @@ fn maybe_apply_os_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sender<Wo
     if std::env::var("BF_ENABLE_OS_OTA").as_deref() != Ok("1") {
         return;
     }
+    let Ok(_lock) = OS_UPDATE_LOCK.try_lock() else {
+        info!("os-update: another update already in progress, skipping");
+        return;
+    };
     let Some(info) = os_update::check(server_url, kiosk_key) else {
         return;
     };
@@ -579,6 +602,10 @@ fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sen
     if std::env::var("BF_ENABLE_APP_OTA").as_deref() != Ok("1") {
         return;
     }
+    let Ok(_lock) = FIRMWARE_LOCK.try_lock() else {
+        info!("firmware: another update already in progress, skipping");
+        return;
+    };
     let current = option_env!("BF_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
     let Some(info) = firmware::check(server_url, kiosk_key, current) else {
         return;

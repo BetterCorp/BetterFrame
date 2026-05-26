@@ -514,6 +514,7 @@ pub fn heartbeat(
             "network_interfaces": network_interfaces,
             "onvif_subscriptions": serde_json::to_value(crate::onvif_events::get_statuses()).unwrap_or_default(),
             "partitions": serde_json::to_value(&hw.partitions).unwrap_or_default(),
+            "audio": serde_json::to_value(crate::audio::get_state()).unwrap_or_default(),
         }))
         .timeout(Duration::from_secs(5))
         .send()

@@ -1,4 +1,5 @@
 mod at_rest;
+mod audio;
 mod axiom;
 mod bundle;
 mod cec;
@@ -27,6 +28,11 @@ pub enum ServerMsg {
         display_id: Option<String>,
         layout_id: String,
     },
+    /// Audio controls from admin.
+    VolumeSet(u32),
+    VolumeMute(bool),
+    AudioOutputSet(String),
+    Reboot,
     /// Server-pushed "go check for a firmware update now".
     FirmwareCheck,
     /// Server-pushed "go check for an OS update now".

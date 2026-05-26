@@ -171,6 +171,7 @@ fn activate(app: &Application) {
         // cached on-disk bundle and keep retrying every 30s in the background.
         let initial = match server::fetch_bundle(&server, &key) {
             Some(b) => {
+                crate::axiom::set_kiosk_id(b.kiosk_id.to_string());
                 info!(
                     "bundle: {} cameras, {} display(s)",
                     b.cameras.len(),

@@ -256,7 +256,10 @@ fn soap_post(url: &str, action: &str, body: &str) -> Result<String, String> {
         .send()
         .map_err(|e| format!("soap: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("soap HTTP {}", resp.status()));
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        let preview: String = body.chars().take(500).collect();
+        return Err(format!("soap HTTP {status}: {preview}"));
     }
     resp.text().map_err(|e| format!("soap body: {e}"))
 }

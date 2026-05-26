@@ -709,6 +709,11 @@ function registerKioskRoutes(
       }
     }
 
+    // Mark event subscription as active (turns orange → green in admin UI)
+    if (body.camera_id != null && body.topic) {
+      repo.markEventReceived(body.camera_id, body.topic).catch(() => {});
+    }
+
     // Best-effort forward to Node-RED. Topics that have a dedicated trigger
     // node (bf-trigger-layout-changed etc.) expect a FLAT payload matching
     // what the admin-side emit produces — splat body.payload up to the top

@@ -482,6 +482,8 @@ export function rowToCameraEventSubscription(r: Row): CameraEventSubscription {
     topic: s(r["topic"]),
     status: s(r["status"]) as EventSubscriptionStatus,
     subscribed_by_kiosk_id: nn(r["subscribed_by_kiosk_id"]),
+    event_source: sn(r["event_source"]),
+    event_sink: sn(r["event_sink"]),
     last_event_at: sn(r["last_event_at"]),
     error_message: sn(r["error_message"]),
     created_at: s(r["created_at"]),

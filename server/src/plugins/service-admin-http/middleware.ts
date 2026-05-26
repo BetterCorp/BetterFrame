@@ -5,11 +5,14 @@
  * `Authorization: Bearer <bf-...>`. API-key callers get a synthetic User
  * record so downstream handlers (which always read `event.context.user`)
  * keep working unchanged.
+ *
+ * Multi-tenant: on PG, reads `bf_tenant` cookie to set the DB search_path
+ * per request. Falls back to "default" tenant.
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 import { type H3, getCookie, getRequestPath } from "h3";
 import type { AdminDeps } from "./index.js";
-import type { User, Session } from "../../shared/types.js";
+import type { User, Session, Tenant } from "../../shared/types.js";
 
 declare module "h3" {
   interface H3EventContext {
@@ -17,6 +20,8 @@ declare module "h3" {
     session?: Session;
     apiKeyPrefix?: string;
     obs?: import("@bsb/base").Observable;
+    /** Current tenant (PG multi-tenant mode). Undefined for SQLite. */
+    tenant?: Tenant;
   }
 }
 
@@ -46,6 +51,35 @@ function tokenMatchesExpected(token: string, expected: string | undefined): bool
 }
 
 export function registerMiddleware(app: H3, deps: AdminDeps): void {
+  // Tenant resolution middleware — sets search_path for PG multi-tenant.
+  // Runs before auth so that DB queries in auth resolution use the right schema.
+  app.use(async (event) => {
+    if (deps.repo.adapter.dialect() !== "postgres") return;
+
+    const path = getRequestPath(event);
+    // Skip tenant resolution for paths that don't query tenant-scoped data.
+    if (path.startsWith("/static/") || path === "/healthz" || path === "/readyz" || path === "/version") return;
+
+    // Read tenant slug from cookie.
+    const tenantSlug = getCookie(event, "bf_tenant") || "default";
+    const tenant = await deps.repo.getTenantBySlug(tenantSlug);
+    if (tenant && tenant.is_active) {
+      event.context.tenant = tenant;
+      // Set PG search_path to the tenant's schema.
+      if (tenant.schema_name !== "public") {
+        await deps.repo.adapter.setSearchPath(tenant.schema_name);
+      }
+    } else {
+      // Fall back to default tenant.
+      const defaultTenant = await deps.repo.getTenantBySlug("default");
+      if (defaultTenant) {
+        event.context.tenant = defaultTenant;
+      }
+      // Reset to public if we had a bad cookie.
+      await deps.repo.adapter.setSearchPath("public");
+    }
+  });
+
   app.use(async (event) => {
     const path = getRequestPath(event);
 

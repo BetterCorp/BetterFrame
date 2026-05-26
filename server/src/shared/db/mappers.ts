@@ -54,6 +54,7 @@ import type {
   StreamPolicy,
   StreamRole,
   StreamSelector,
+  Tenant,
   User,
   UserRole,
 } from "../types.js";
@@ -489,6 +490,20 @@ export function rowToCameraEventSubscription(r: Row): CameraEventSubscription {
     event_sink: sn(r["event_sink"]),
     last_event_at: sn(r["last_event_at"]),
     error_message: sn(r["error_message"]),
+    created_at: s(r["created_at"]),
+  };
+}
+
+export function rowToTenant(r: Row): Tenant {
+  return {
+    id: s(r["id"]),
+    name: s(r["name"]),
+    slug: s(r["slug"]),
+    schema_name: s(r["schema_name"]),
+    is_active: b(r["is_active"]),
+    max_kiosks: nn(r["max_kiosks"]),
+    max_cameras: nn(r["max_cameras"]),
+    max_users: nn(r["max_users"]),
     created_at: s(r["created_at"]),
   };
 }

@@ -426,6 +426,18 @@ export interface CameraEventSubscription {
   created_at: string;
 }
 
+export interface Tenant {
+  id: string;
+  name: string;
+  slug: string;
+  schema_name: string;
+  is_active: boolean;
+  max_kiosks: number | null;
+  max_cameras: number | null;
+  max_users: number | null;
+  created_at: string;
+}
+
 export interface EventQueryFilters {
   topic?: string;
   kiosk_id?: string;

@@ -21,6 +21,7 @@ import type {
   OsUpdateRollout,
   PairingCode,
   EventLog,
+  Tenant,
 } from "../shared/types.js";
 
 // ---- Overview ---------------------------------------------------------------
@@ -4104,5 +4105,190 @@ export function KioskOsUpdatePanel(props: KioskOsUpdatePanelProps) {
         </div>
       </form>
     </div>
+  );
+}
+
+// ---- Tenants ----------------------------------------------------------------
+
+interface TenantsPageProps {
+  user: string;
+  tenants: Tenant[];
+  currentTenantSlug: string;
+  error?: string;
+}
+
+export function TenantsPage(props: TenantsPageProps) {
+  return (
+    <Layout
+      title="Tenants"
+      user={props.user}
+      activeNav="tenants"
+      flash={props.error ? { type: "error", message: props.error } : undefined}
+    >
+      <div class="section-header">
+        <h2 class="section-title">All Tenants</h2>
+      </div>
+      <p style="color:#666; margin-bottom:1.25rem">
+        Each tenant is an isolated data boundary with its own cameras, kiosks, layouts,
+        and displays. The "default" tenant uses the public schema.
+      </p>
+      <div style="max-width:700px; margin-bottom:1.5rem">
+        <div class="card" style="margin-bottom:1rem">
+          <h3 class="card-title" style="font-size:1rem">Create Tenant</h3>
+          <form method="post" action="/admin/tenants">
+            <div class="two-col" style="gap:1rem; margin-bottom:1rem">
+              <div class="form-group" style="margin-bottom:0">
+                <label>Name</label>
+                <input name="name" type="text" class="form-input" placeholder="Acme Corp" required />
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label>Slug</label>
+                <input name="slug" type="text" class="form-input" placeholder="acme" required pattern="[a-z0-9][a-z0-9_-]*" />
+                <div class="form-hint">Lowercase letters, digits, hyphens, underscores. Used in schema name.</div>
+              </div>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:1rem; margin-bottom:1rem">
+              <div class="form-group" style="margin-bottom:0">
+                <label>Max Kiosks</label>
+                <input name="max_kiosks" type="number" class="form-input" placeholder="unlimited" min="1" />
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label>Max Cameras</label>
+                <input name="max_cameras" type="number" class="form-input" placeholder="unlimited" min="1" />
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label>Max Users</label>
+                <input name="max_users" type="number" class="form-input" placeholder="unlimited" min="1" />
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary">Create Tenant</button>
+          </form>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Slug</th>
+              <th>Schema</th>
+              <th>Status</th>
+              <th>Limits</th>
+              <th>Active</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {props.tenants.length === 0 ? (
+              <tr><td colspan="7" style="text-align:center; color:#999; padding:2rem">No tenants</td></tr>
+            ) : (
+              props.tenants.map((t) => (
+                <tr>
+                  <td><strong>{t.name}</strong></td>
+                  <td><code>{t.slug}</code></td>
+                  <td><code>{t.schema_name}</code></td>
+                  <td>
+                    {t.is_active
+                      ? <span class="badge badge-green">active</span>
+                      : <span class="badge badge-gray">inactive</span>
+                    }
+                  </td>
+                  <td style="font-size:0.8rem; color:#666">
+                    {[
+                      t.max_kiosks != null ? `K:${String(t.max_kiosks)}` : null,
+                      t.max_cameras != null ? `C:${String(t.max_cameras)}` : null,
+                      t.max_users != null ? `U:${String(t.max_users)}` : null,
+                    ].filter(Boolean).join(" ") || "none"}
+                  </td>
+                  <td>
+                    {t.slug === props.currentTenantSlug
+                      ? <span class="badge badge-blue">current</span>
+                      : (
+                        <form method="post" action="/admin/tenants/switch" style="display:inline">
+                          <input type="hidden" name="tenant_slug" value={t.slug} />
+                          <button type="submit" class="btn btn-sm btn-ghost">Switch</button>
+                        </form>
+                      )
+                    }
+                  </td>
+                  <td style="display:flex; gap:0.5rem">
+                    <a href={`/admin/tenants/${t.id}`} class="btn btn-sm btn-ghost">Edit</a>
+                    {t.slug !== "default" && (
+                      <form method="post" action={`/admin/tenants/${t.id}/delete`} style="display:inline">
+                        <button type="submit" class="btn btn-sm btn-danger" {...{"onclick": "return confirm('Delete this tenant? The database schema will NOT be dropped.')"}}>Delete</button>
+                      </form>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Layout>
+  );
+}
+
+interface TenantEditPageProps {
+  user: string;
+  tenant: Tenant;
+  error?: string;
+}
+
+export function TenantEditPage(props: TenantEditPageProps) {
+  const t = props.tenant;
+  return (
+    <Layout
+      title={`Edit Tenant: ${t.name}`}
+      user={props.user}
+      activeNav="tenants"
+      flash={props.error ? { type: "error", message: props.error } : undefined}
+    >
+      <div style="max-width:600px">
+        <a href="/admin/tenants" class="btn btn-ghost btn-sm" style="margin-bottom:1rem">&larr; Back to Tenants</a>
+        <div class="card">
+          <h2 class="card-title">Edit Tenant</h2>
+          <form method="post" action={`/admin/tenants/${t.id}`}>
+            <div class="form-group">
+              <label>Name</label>
+              <input name="name" type="text" class="form-input" value={t.name} required />
+            </div>
+            <div class="form-group">
+              <label>Slug</label>
+              <input type="text" class="form-input" value={t.slug} disabled />
+              <div class="form-hint">Slug cannot be changed after creation.</div>
+            </div>
+            <div class="form-group">
+              <label>Schema</label>
+              <input type="text" class="form-input" value={t.schema_name} disabled />
+            </div>
+            <div class="form-group">
+              <label style="display:flex; align-items:center; gap:0.5rem">
+                <input type="checkbox" name="is_active" checked={t.is_active} />
+                Active
+              </label>
+            </div>
+            <div class="two-col" style="gap:1rem; margin-bottom:1rem">
+              <div class="form-group" style="margin-bottom:0">
+                <label>Max Kiosks</label>
+                <input name="max_kiosks" type="number" class="form-input" value={t.max_kiosks != null ? String(t.max_kiosks) : ""} placeholder="unlimited" min="1" />
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label>Max Cameras</label>
+                <input name="max_cameras" type="number" class="form-input" value={t.max_cameras != null ? String(t.max_cameras) : ""} placeholder="unlimited" min="1" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Max Users</label>
+              <input name="max_users" type="number" class="form-input" value={t.max_users != null ? String(t.max_users) : ""} placeholder="unlimited" min="1" style="max-width:200px" />
+            </div>
+            <div style="display:flex; gap:0.5rem">
+              <button type="submit" class="btn btn-primary">Save</button>
+              <a href="/admin/tenants" class="btn btn-ghost">Cancel</a>
+            </div>
+          </form>
+        </div>
+      </div>
+    </Layout>
   );
 }

@@ -40,6 +40,11 @@ export interface DbAdapter {
   transaction<T>(fn: () => Promise<T>): Promise<T>;
   /** Identifies the backend. */
   dialect(): "sqlite" | "postgres";
+  /**
+   * Set the schema search_path for multi-tenant isolation (PG only).
+   * SQLite adapter implements this as a no-op.
+   */
+  setSearchPath(schema: string): Promise<void>;
   /** Release the connection / pool. */
   close(): Promise<void>;
 }

@@ -4,6 +4,7 @@
  */
 import { css, js } from "jsx-htmx";
 import { serverVersion } from "../shared/version.js";
+import type { Tenant } from "../shared/types.js";
 
 // ---- Shared types -----------------------------------------------------------
 
@@ -17,6 +18,10 @@ export interface PageProps {
   flash?: { type: "success" | "error" | "info"; message: string };
   /** Active nav item key. */
   activeNav?: string;
+  /** Available tenants for tenant switcher (PG multi-tenant only). */
+  tenants?: Tenant[];
+  /** Currently selected tenant slug. */
+  currentTenantSlug?: string;
   children?: string | string[];
 }
 
@@ -56,6 +61,7 @@ function Sidebar(props: { activeNav?: string }) {
         <NavItem href="/admin/labels" label="Labels" icon="&#9670;" active={a === "labels"} />
         <NavItem href="/admin/audit" label="Audit" icon="&#9678;" active={a === "audit"} />
         <NavItem href="/admin/backup" label="Backup" icon="&#9788;" active={a === "backup"} />
+        <NavItem href="/admin/tenants" label="Tenants" icon="&#9783;" active={a === "tenants"} />
         <hr />
         <NavItem href="/admin/account" label="Account" icon="&#9679;" active={a === "account"} />
         <NavItem href="/admin/nodered" label="Node-RED" icon="&#8594;" active={a === "nodered"} />
@@ -85,6 +91,27 @@ export function Layout(props: PageProps) {
             <header class="topbar">
               <span class="topbar-title">{props.title}</span>
               <div class="topbar-right">
+                {props.tenants && props.tenants.length > 1 ? (
+                  <form method="post" action="/admin/tenants/switch" style="display:inline-flex; align-items:center; gap:0.35rem">
+                    <label style="font-size:0.8rem; color:#666; white-space:nowrap">Tenant:</label>
+                    <select
+                      name="tenant_slug"
+                      class="form-input"
+                      style="width:auto; padding:0.25rem 0.5rem; font-size:0.8rem"
+                      {...{"onchange": "this.form.submit()"}}
+                    >
+                      {props.tenants.map((t) => (
+                        <option value={t.slug} selected={t.slug === props.currentTenantSlug}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                  </form>
+                ) : props.currentTenantSlug && props.currentTenantSlug !== "default" ? (
+                  <span class="badge badge-blue" style="font-size:0.75rem">
+                    tenant: {props.currentTenantSlug}
+                  </span>
+                ) : null}
                 <span class="topbar-user">{props.user}</span>
                 <form method="post" action="/auth/logout" style="display:inline">
                   <button type="submit" class="btn btn-sm btn-ghost">Logout</button>

@@ -149,6 +149,16 @@ export class PgAdapter implements DbAdapter {
 
   dialect(): "postgres" { return "postgres"; }
 
+  async setSearchPath(schema: string): Promise<void> {
+    // Validate schema name to prevent SQL injection (only allow alphanumeric + underscore).
+    if (!/^[a-z_][a-z0-9_]*$/i.test(schema)) {
+      throw new Error(`invalid schema name: ${schema}`);
+    }
+    await this.runner(async (c) => {
+      await c.query(`SET search_path TO ${schema}, public`);
+    });
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }

@@ -57,6 +57,7 @@ import type {
   SetupState,
   StreamPolicy,
   StreamRole,
+  Tenant,
   User,
   UserRole,
 } from "../types.js";
@@ -84,6 +85,7 @@ import {
   rowToPairingCode,
   rowToSession,
   rowToSetupState,
+  rowToTenant,
   rowToUser,
 } from "./mappers.js";
 import { J, isoIn, isoNow, j } from "./util.js";
@@ -163,6 +165,88 @@ export class Repository {
   /** Ad-hoc transaction. */
   async transact<T>(fn: () => Promise<T>): Promise<T> {
     return this.adapter.transaction(fn);
+  }
+
+  // ===========================================================================
+  // tenants (PUBLIC schema — always use public.tenants explicitly)
+  // ===========================================================================
+
+  /** List all tenants. Queries public.tenants regardless of current search_path. */
+  async listTenants(): Promise<Tenant[]> {
+    if (this.adapter.dialect() !== "postgres") return [];
+    const rs = await this._all(
+      "SELECT * FROM public.tenants ORDER BY created_at",
+    );
+    return rs.map((r) => rowToTenant(r as Record<string, unknown>));
+  }
+
+  /** Get tenant by UUID. */
+  async getTenantById(id: string): Promise<Tenant | null> {
+    if (this.adapter.dialect() !== "postgres") return null;
+    const r = await this._get("SELECT * FROM public.tenants WHERE id = ?", [id]);
+    return r ? rowToTenant(r as Record<string, unknown>) : null;
+  }
+
+  /** Get tenant by slug. */
+  async getTenantBySlug(slug: string): Promise<Tenant | null> {
+    if (this.adapter.dialect() !== "postgres") return null;
+    const r = await this._get("SELECT * FROM public.tenants WHERE slug = ?", [slug]);
+    return r ? rowToTenant(r as Record<string, unknown>) : null;
+  }
+
+  /** Create a new tenant in public.tenants. Does NOT create the PG schema — call createTenantSchema separately. */
+  async createTenant(input: {
+    name: string;
+    slug: string;
+    max_kiosks?: number | null;
+    max_cameras?: number | null;
+    max_users?: number | null;
+  }): Promise<Tenant> {
+    const schemaName = input.slug === "default" ? "public" : `tenant_${input.slug}`;
+    await this._run(
+      `INSERT INTO public.tenants (name, slug, schema_name, is_active, max_kiosks, max_cameras, max_users)
+       VALUES (?, ?, ?, true, ?, ?, ?)`,
+      [
+        input.name,
+        input.slug,
+        schemaName,
+        input.max_kiosks ?? null,
+        input.max_cameras ?? null,
+        input.max_users ?? null,
+      ],
+    );
+    void this.notify("tenants", "create");
+    const t = await this.getTenantBySlug(input.slug);
+    if (!t) throw new Error("tenant vanished after insert");
+    return t;
+  }
+
+  /** Update tenant metadata. */
+  async updateTenant(id: string, patch: Partial<Pick<Tenant, "name" | "is_active" | "max_kiosks" | "max_cameras" | "max_users">>): Promise<void> {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if ("name" in patch) { sets.push("name = ?"); vals.push(patch.name); }
+    if ("is_active" in patch) { sets.push("is_active = ?"); vals.push(Boolean(patch.is_active)); }
+    if ("max_kiosks" in patch) { sets.push("max_kiosks = ?"); vals.push(patch.max_kiosks ?? null); }
+    if ("max_cameras" in patch) { sets.push("max_cameras = ?"); vals.push(patch.max_cameras ?? null); }
+    if ("max_users" in patch) { sets.push("max_users = ?"); vals.push(patch.max_users ?? null); }
+    if (sets.length === 0) return;
+    vals.push(id);
+    await this._run(`UPDATE public.tenants SET ${sets.join(", ")} WHERE id = ?`, vals);
+    void this.notify("tenants", "update", id);
+  }
+
+  /** Delete a tenant. WARNING: does not drop the PG schema — that must be done separately if desired. */
+  async deleteTenant(id: string): Promise<void> {
+    await this._run("DELETE FROM public.tenants WHERE id = ?", [id]);
+    void this.notify("tenants", "delete", id);
+  }
+
+  /** Count tenants. Used to check if multi-tenant is enabled. */
+  async countTenants(): Promise<number> {
+    if (this.adapter.dialect() !== "postgres") return 0;
+    const r = await this._get<{ c: number }>("SELECT COUNT(*) AS c FROM public.tenants");
+    return r?.c ?? 0;
   }
 
   // ===========================================================================

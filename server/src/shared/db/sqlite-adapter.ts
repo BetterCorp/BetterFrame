@@ -88,6 +88,11 @@ export class SqliteAdapter implements DbAdapter {
 
   dialect(): "sqlite" { return "sqlite"; }
 
+  /** No-op for SQLite — single-tenant only. */
+  async setSearchPath(_schema: string): Promise<void> {
+    // SQLite doesn't support schemas — single tenant only.
+  }
+
   async close(): Promise<void> {
     this.db.close();
   }

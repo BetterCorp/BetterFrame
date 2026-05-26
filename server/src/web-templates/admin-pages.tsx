@@ -1840,6 +1840,43 @@ export function KioskEditPage(props: KioskEditProps) {
               <div>Disk: {k.disk_free_mb != null && k.disk_total_mb != null ? `${String(k.disk_free_mb)} MB free / ${String(k.disk_total_mb)} MB` : "—"} {k.disk_used_percent != null ? `(${k.disk_used_percent.toFixed(1)}%)` : ""}</div>
               <div>PWM: {k.fan_pwm != null ? `${k.fan_pwm}/255` : "—"}</div>
             </div>
+            {(() => {
+              const parts = (() => {
+                const raw = (k as any).partitions_json;
+                if (!raw) return [];
+                if (Array.isArray(raw)) return raw;
+                if (typeof raw === "string") { try { return JSON.parse(raw); } catch { return []; } }
+                return [];
+              })();
+              if (parts.length === 0) return null;
+              return (
+                <div style="margin-top:0.5rem">
+                  <div style="font-size:0.8rem; color:#999; margin-bottom:0.25rem">Partitions</div>
+                  <table style="font-size:0.8rem; border-collapse:collapse; width:100%">
+                    <thead><tr style="border-bottom:1px solid #eee; text-align:left">
+                      <th style="padding:2px 8px">Mount</th>
+                      <th style="padding:2px 8px">Device</th>
+                      <th style="padding:2px 8px">Total</th>
+                      <th style="padding:2px 8px">Used</th>
+                      <th style="padding:2px 8px">Free</th>
+                      <th style="padding:2px 8px">%</th>
+                    </tr></thead>
+                    <tbody>
+                      {parts.map((p: any) => (
+                        <tr style="border-bottom:1px solid #f5f5f5">
+                          <td style="padding:2px 8px; font-family:monospace">{p.mountpoint}</td>
+                          <td style="padding:2px 8px; font-family:monospace; color:#999">{p.device}</td>
+                          <td style="padding:2px 8px">{String(p.total_mb)} MB</td>
+                          <td style="padding:2px 8px">{String(p.used_mb)} MB</td>
+                          <td style="padding:2px 8px">{String(p.free_mb)} MB</td>
+                          <td style="padding:2px 8px">{typeof p.used_percent === "number" ? `${p.used_percent.toFixed(1)}%` : "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
               <button
                 type="button"

@@ -16,7 +16,7 @@ use std::process::Command;
 use std::time::Duration;
 use tracing::warn;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct HwInfo {
     pub cpu_temp_c: Option<f32>,
     pub cpu_load_percent: Option<f32>,
@@ -27,6 +27,17 @@ pub struct HwInfo {
     pub disk_total_mb: Option<u64>,
     pub disk_free_mb: Option<u64>,
     pub disk_used_percent: Option<f32>,
+    pub partitions: Vec<PartitionInfo>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PartitionInfo {
+    pub device: String,
+    pub mountpoint: String,
+    pub total_mb: u64,
+    pub used_mb: u64,
+    pub free_mb: u64,
+    pub used_percent: f32,
 }
 
 pub fn read() -> HwInfo {
@@ -42,6 +53,7 @@ pub fn read() -> HwInfo {
         disk_total_mb: disk.map(|d| d.0),
         disk_free_mb: disk.map(|d| d.1),
         disk_used_percent: disk.map(|d| d.2),
+        partitions: read_partitions(),
     }
 }
 
@@ -169,10 +181,53 @@ fn find_fan_hwmon() -> Option<PathBuf> {
     let entries = fs::read_dir("/sys/class/hwmon").ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
-        // Look for hwmon dirs that have pwm1 (the fan controller)
         if path.join("pwm1").exists() {
             return Some(path);
         }
     }
     None
+}
+
+fn read_partitions() -> Vec<PartitionInfo> {
+    let out = match Command::new("df").args(["-kP"]).output() {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    let text = match String::from_utf8(out.stdout) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let interesting = ["/", "/boot/firmware", "/var/lib/betterframe"];
+    text.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if cols.len() < 6 {
+                return None;
+            }
+            let mountpoint = cols[5];
+            if !interesting.contains(&mountpoint) {
+                return None;
+            }
+            let total_kb = cols[1].parse::<u64>().ok()?;
+            let used_kb = cols[2].parse::<u64>().ok()?;
+            let free_kb = cols[3].parse::<u64>().ok()?;
+            let total_mb = total_kb / 1024;
+            let used_mb = used_kb / 1024;
+            let free_mb = free_kb / 1024;
+            let used_percent = if total_mb == 0 {
+                0.0
+            } else {
+                (used_mb as f32 / total_mb as f32) * 100.0
+            };
+            Some(PartitionInfo {
+                device: cols[0].to_string(),
+                mountpoint: mountpoint.to_string(),
+                total_mb,
+                used_mb,
+                free_mb,
+                used_percent,
+            })
+        })
+        .collect()
 }

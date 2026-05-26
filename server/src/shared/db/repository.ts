@@ -1393,6 +1393,7 @@ export class Repository {
       local_last_ip?: string | null;
       reported_hostname?: string | null;
       network_interfaces_json?: string | null;
+      partitions_json?: string | null;
     },
   ): Promise<void> {
     await this._run(
@@ -1414,7 +1415,8 @@ export class Repository {
          local_port = COALESCE(?, local_port),
          local_last_ip = COALESCE(?, local_last_ip),
          reported_hostname = COALESCE(?, reported_hostname),
-         network_interfaces_json = COALESCE(?, network_interfaces_json)
+         network_interfaces_json = COALESCE(?, network_interfaces_json),
+         partitions_json = COALESCE(?, partitions_json)
        WHERE id = ?`,
       [
         isoNow(),
@@ -1435,6 +1437,7 @@ export class Repository {
         patch.local_last_ip ?? null,
         patch.reported_hostname ?? null,
         patch.network_interfaces_json ?? null,
+        patch.partitions_json ?? null,
         id,
       ],
     );

@@ -22,6 +22,9 @@ for grp in video render input audio systemd-journal; do
   fi
 done
 
+# --- Deps for first-boot partition expansion ---
+apt-get -y install cloud-guest-utils e2fsprogs 2>/dev/null || true
+
 # --- Binary ---
 install -d -o bfkiosk -g bfkiosk -m 755 /opt/betterframe/kiosk
 install -m 755 /tmp/bf-files/betterframe-kiosk /opt/betterframe/kiosk/betterframe-kiosk
@@ -37,6 +40,10 @@ install -m 644 /tmp/bf-files/betterframe-rauc-mark-good.service \
   /etc/systemd/system/betterframe-rauc-mark-good.service
 install -m 755 /tmp/bf-files/betterframe-rauc-mark-good.sh \
   /usr/local/sbin/betterframe-rauc-mark-good.sh
+install -m 644 /tmp/bf-files/betterframe-expand-data.service \
+  /etc/systemd/system/betterframe-expand-data.service
+install -m 755 /tmp/bf-files/betterframe-expand-data.sh \
+  /usr/local/sbin/betterframe-expand-data.sh
 install -d -m 755 /etc/tmpfiles.d
 install -m 644 /tmp/bf-files/betterframe-kiosk.conf /etc/tmpfiles.d/betterframe-kiosk.conf
 install -d -m 755 /etc/udev/rules.d
@@ -165,6 +172,7 @@ systemctl enable systemd-timesyncd 2>/dev/null || true
 systemctl enable seatd
 systemctl enable betterframe-kiosk.service
 systemctl enable betterframe-rauc-mark-good.service
+systemctl enable betterframe-expand-data.service
 systemctl enable rauc.service 2>/dev/null || true
 
 # Boot to multi-user, no display manager, no welcome wizard, no getty on tty1.

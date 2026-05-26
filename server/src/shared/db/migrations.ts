@@ -1098,4 +1098,8 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
     addColumnIfNotExists(db, "camera_streams", "rtsp_port", "INTEGER DEFAULT 554");
     addColumnIfNotExists(db, "camera_streams", "rtsp_path", "TEXT");
   },
+
+  (db: DatabaseSync) => {
+    addColumnIfNotExists(db, "kiosks", "partitions_json", "TEXT");
+  },
 ];

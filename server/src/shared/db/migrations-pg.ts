@@ -226,6 +226,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     local_last_ip TEXT,
     reported_hostname TEXT,
     network_interfaces_json JSONB,
+    partitions_json JSONB,
     managed_image BOOLEAN NOT NULL DEFAULT false,
     managed_config_json JSONB,
     managed_config_version INTEGER NOT NULL DEFAULT 0,
@@ -482,4 +483,6 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     UNIQUE(camera_id, topic)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_camera_event_subs_camera ON camera_event_subscriptions(camera_id)`,
+
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS partitions_json JSONB`,
 ];

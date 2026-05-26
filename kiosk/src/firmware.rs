@@ -173,8 +173,14 @@ pub fn check(server: &str, key: &str, current_version: &str) -> Option<UpdateInf
 /// Download + verify + swap. Reports outcome to the server. On success the
 /// process exits with code 0 so systemd's Restart=always picks up the new
 /// binary. On failure the function returns Err and the kiosk keeps running.
-pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
+pub fn apply(
+    server: &str,
+    key: &str,
+    info: &UpdateInfo,
+    on_progress: impl Fn(&str, u8),
+) -> Result<(), String> {
     info!("firmware: applying {} ({} bytes)", info.version, info.size_bytes);
+    on_progress("Downloading", 0);
 
     // 1. Download
     let url = format!("{}{}", server, info.download_url);
@@ -197,6 +203,7 @@ pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
         ));
     }
 
+    on_progress("Verifying", 70);
     // 2. sha256
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
@@ -210,6 +217,7 @@ pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
     verify_signature(&info.public_key_pem, &info.sha256, &info.signature)
         .map_err(|e| format!("signature verify: {e}"))?;
 
+    on_progress("Applying", 90);
     // 4. Atomic swap
     let bin = binary_path();
     let new_path = bin.with_extension("new");
@@ -259,6 +267,7 @@ pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
         .timeout(Duration::from_secs(5))
         .send();
 
+    on_progress("Restarting", 100);
     info!("firmware: swap complete → exiting for systemd to relaunch");
     // systemd Restart=always picks up the new binary on next start.
     std::process::exit(0);

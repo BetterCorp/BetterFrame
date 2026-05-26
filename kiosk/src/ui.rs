@@ -277,10 +277,10 @@ fn activate(app: &Application) {
                         });
                     }
                     ServerMsg::FirmwareCheck => {
-                        maybe_apply_firmware_update(&server_for_reload, &key_for_reload);
+                        maybe_apply_firmware_update(&server_for_reload, &key_for_reload, &tx_for_reload);
                     }
                     ServerMsg::OsCheck => {
-                        maybe_apply_os_update(&server_for_reload, &key_for_reload);
+                        maybe_apply_os_update(&server_for_reload, &key_for_reload, &tx_for_reload);
                     }
                     ServerMsg::ShowTerminalCode(code) => {
                         let _ = tx_for_reload.send(WorkerMsg::ShowTerminalCode(code));
@@ -298,25 +298,18 @@ fn activate(app: &Application) {
         // Reset terminal auth boot-attempt counter (lockout_count persists).
         remote_debug::reset_boot_attempts();
 
+        let tx_progress = tx.clone();
         let mut first_iter = true;
         loop {
             let heartbeat_ok = send_heartbeat_now(&server, &key);
             if first_iter && heartbeat_ok {
-                // Successfully heart-beat at least once → consider this boot a
-                // healthy one. Clears the rollback-pending marker so the next
-                // start doesn't try to roll back a healthy install, AND tells
-                // RAUC the current slot is good so its boot-attempts counter
-                // resets (otherwise three bad boots auto-roll back).
                 firmware::mark_firmware_applied();
                 mark_kiosk_healthy();
                 mark_rauc_slot_good();
                 first_iter = false;
             }
-            // OS bundle first — if it succeeds it reboots and we never reach
-            // the firmware check below this iteration. Order matters: an OS
-            // bundle update can ship an app-binary change anyway.
-            maybe_apply_os_update(&server, &key);
-            maybe_apply_firmware_update(&server, &key);
+            maybe_apply_os_update(&server, &key, &tx_progress);
+            maybe_apply_firmware_update(&server, &key, &tx_progress);
             std::thread::sleep(std::time::Duration::from_secs(60));
         }
     });
@@ -506,7 +499,7 @@ fn mark_rauc_slot_good() {
 /// kiosk. On hit, download + sha256 + `rauc install` + reboot. On miss or
 /// error: log + keep running. Gated by BF_ENABLE_OS_OTA=1 (default OFF
 /// for dev kiosks running a non-A/B image).
-fn maybe_apply_os_update(server_url: &str, kiosk_key: &str) {
+fn maybe_apply_os_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sender<WorkerMsg>) {
     if std::env::var("BF_ENABLE_OS_OTA").as_deref() != Ok("1") {
         return;
     }
@@ -526,7 +519,14 @@ fn maybe_apply_os_update(server_url: &str, kiosk_key: &str) {
             "size_bytes": info.size_bytes,
         }),
     );
-    if let Err(err) = os_update::apply(server_url, kiosk_key, &info) {
+    let version = info.version.clone();
+    let tx_cb = tx.clone();
+    let result = os_update::apply(server_url, kiosk_key, &info, move |phase, pct| {
+        let label = format!("OS Update {version}: {phase}");
+        let _ = tx_cb.send(WorkerMsg::UpdateProgress(Some((label, pct))));
+    });
+    if let Err(err) = result {
+        let _ = tx.send(WorkerMsg::UpdateProgress(None));
         warn!("os-update: apply failed: {err}");
         server::report_kiosk_log(
             server_url,
@@ -540,13 +540,12 @@ fn maybe_apply_os_update(server_url: &str, kiosk_key: &str) {
             }),
         );
     }
-    // Success path doesn't return — apply() reboots the system.
 }
 
 /// Ask the server whether an update is available. On hit, download + verify
 /// + swap + report + exit (systemd brings up the new binary). On miss or
 /// error: log + keep running. Designed to be safe to call from any thread.
-fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str) {
+fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sender<WorkerMsg>) {
     if std::env::var("BF_ENABLE_APP_OTA").as_deref() != Ok("1") {
         return;
     }
@@ -567,14 +566,21 @@ fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str) {
             "release_id": &info.release_id,
         }),
     );
-    if let Err(err) = firmware::apply(server_url, kiosk_key, &info) {
+    let version = info.version.clone();
+    let tx_cb = tx.clone();
+    let result = firmware::apply(server_url, kiosk_key, &info, move |phase, pct| {
+        let label = format!("App Update {version}: {phase}");
+        let _ = tx_cb.send(WorkerMsg::UpdateProgress(Some((label, pct))));
+    });
+    if let Err(err) = result {
+        let _ = tx.send(WorkerMsg::UpdateProgress(None));
         warn!("firmware: apply failed: {err}");
         server::report_kiosk_log(
             server_url,
             kiosk_key,
             "error",
-        "firmware update failed",
-        serde_json::json!({
+            "firmware update failed",
+            serde_json::json!({
                 "target_version": &info.version,
                 "release_id": &info.release_id,
                 "error": &err,
@@ -2274,22 +2280,36 @@ fn show_update_banner(progress: Option<(String, u8)>) {
         Some((text, pct)) => {
             let msg = format!("{text} — {pct}%");
             UPDATE_BANNER_LABEL.with(|b| {
-                if let Some(label) = b.borrow().as_ref() {
-                    label.set_text(&msg);
-                    return;
+                let existing = b.borrow();
+                if let Some(label) = existing.as_ref() {
+                    if label.parent().is_some() {
+                        label.set_text(&msg);
+                        return;
+                    }
                 }
-                // Create new banner label
+                drop(existing);
+
                 let label = Label::new(Some(&msg));
                 add_css(&label, ".update-banner { font-size: 12px; color: #fff; background: rgba(0,0,0,0.75); padding: 6px 14px; border-radius: 4px; margin: 8px; }");
                 label.add_css_class("update-banner");
                 label.set_halign(gtk::Align::Start);
                 label.set_valign(gtk::Align::End);
-                // Attach to pairing window (always exists)
+
                 DISPLAYS.with(|ds| {
                     let ds = ds.borrow();
-                    if let Some((_, st)) = ds.iter().next() {
-                        st.window.set_titlebar(None::<&gtk::Widget>);
-                        // Use a simple approach: just show it
+                    for (_, st) in ds.iter() {
+                        if let Some(child) = st.window.child() {
+                            if let Ok(overlay) = child.clone().downcast::<gtk::Overlay>() {
+                                overlay.add_overlay(&label);
+                                return;
+                            }
+                            let overlay = gtk::Overlay::new();
+                            st.window.set_child(None::<&gtk::Widget>);
+                            overlay.set_child(Some(&child));
+                            overlay.add_overlay(&label);
+                            st.window.set_child(Some(&overlay));
+                            return;
+                        }
                     }
                 });
                 *b.borrow_mut() = Some(label);
@@ -2298,7 +2318,11 @@ fn show_update_banner(progress: Option<(String, u8)>) {
         None => {
             UPDATE_BANNER_LABEL.with(|b| {
                 if let Some(label) = b.borrow().as_ref() {
-                    label.set_visible(false);
+                    if let Some(parent) = label.parent() {
+                        if let Some(overlay) = parent.downcast_ref::<gtk::Overlay>() {
+                            overlay.remove_overlay(label);
+                        }
+                    }
                 }
                 *b.borrow_mut() = None;
             });

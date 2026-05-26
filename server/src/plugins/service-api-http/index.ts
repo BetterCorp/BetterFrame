@@ -485,6 +485,14 @@ function registerKioskRoutes(
       local_port?: number | null;
       reported_hostname?: string | null;
       network_interfaces?: Array<Record<string, unknown>>;
+      partitions?: Array<{
+        device: string;
+        mountpoint: string;
+        total_mb: number;
+        used_mb: number;
+        free_mb: number;
+        used_percent: number;
+      }>;
       // Managed-image kiosk echoes back the version it last applied, and the
       // last apply error (if any). Server uses these to decide whether to
       // include pending_config in the response.
@@ -517,6 +525,9 @@ function registerKioskRoutes(
       reported_hostname: body?.reported_hostname ?? null,
       network_interfaces_json: Array.isArray(body?.network_interfaces)
         ? JSON.stringify(body.network_interfaces)
+        : null,
+      partitions_json: Array.isArray(body?.partitions)
+        ? JSON.stringify(body.partitions)
         : null,
     });
 

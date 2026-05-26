@@ -223,6 +223,10 @@ jobs:
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/systemd/betterframe-firstboot.sh \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/systemd/betterframe-expand-data.service \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/systemd/betterframe-expand-data.sh \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           # CA cert is operator-supplied — generated locally via
           # scripts/gen-rauc-signing-keys.sh and committed at
           # deploy/rauc/ca-cert.pem. Without it the image installs but

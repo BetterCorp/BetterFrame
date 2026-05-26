@@ -123,7 +123,12 @@ pub fn check(server: &str, key: &str) -> Option<UpdateInfo> {
 ///
 /// On success: reboots the system (does not return). On failure: posts the
 /// error to /api/kiosk/os/applied and returns Err so the caller logs it.
-pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
+pub fn apply(
+    server: &str,
+    key: &str,
+    info: &UpdateInfo,
+    on_progress: impl Fn(&str, u8),
+) -> Result<(), String> {
     info!(
         "os-update: applying {} ({} bytes, release {})",
         info.version, info.size_bytes, info.release_id
@@ -134,7 +139,8 @@ pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
     // resumes from where it left off using Range header. Retries up to
     // 5 times with 10s backoff between attempts.
     let url = format!("{}{}", server, info.download_url);
-    let staging_dir = PathBuf::from("/var/tmp/betterframe");
+    on_progress("Preparing", 0);
+    let staging_dir = PathBuf::from("/var/lib/betterframe/tmp");
     fs::create_dir_all(&staging_dir).map_err(|e| format!("mkdir staging: {e}"))?;
     let bundle_path = staging_dir.join(format!("os-{}.raucb", info.release_id));
 
@@ -198,11 +204,10 @@ pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
                 Ok(n) => {
                     file.write_all(&buf[..n]).map_err(|e| format!("write chunk: {e}"))?;
                     downloaded += n as u64;
-                    // Log progress every ~50MB
+                    let pct = ((downloaded as f64 / info.size_bytes as f64) * 90.0) as u8;
+                    on_progress("Downloading", pct);
                     if downloaded % (50 * 1024 * 1024) < (256 * 1024) as u64 {
-                        info!("os-update: {downloaded} / {} bytes ({:.0}%)",
-                            info.size_bytes,
-                            (downloaded as f64 / info.size_bytes as f64) * 100.0);
+                        info!("os-update: {downloaded} / {} bytes ({pct}%)", info.size_bytes);
                     }
                 }
                 Err(e) => {
@@ -226,6 +231,7 @@ pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
         }
     }
 
+    on_progress("Verifying", 90);
     // 2. sha256 verify the complete file on disk.
     let file_size = fs::metadata(&bundle_path)
         .map(|m| m.len())
@@ -256,6 +262,7 @@ pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
         return Err(format!("sha256 mismatch: expected {}, got {got_sha}", info.sha256));
     }
 
+    on_progress("Installing", 95);
     // 4. Hand off to rauc. `rauc install` blocks until the bundle is fully
     // copied into the inactive slot and bootloader is flipped. Exit code 0
     // = success; anything else = leave current slot booted, no reboot.
@@ -279,6 +286,7 @@ pub fn apply(server: &str, key: &str, info: &UpdateInfo) -> Result<(), String> {
     // admin UI shows progress immediately.
     let _ = report_applied(server, key, &info.version, None);
 
+    on_progress("Rebooting", 100);
     info!("os-update: rauc install OK → rebooting into the new slot");
     // RAUC's custom bootloader backend has already armed tryboot for the
     // freshly-written slot. Reboot picks it up. On failure to reach the

@@ -405,6 +405,7 @@ pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
             wipe_and_restart();
         }
         tracing::info!("_check says key still valid, ignoring bf_kiosk_deleted");
+        return None;
     }
 
     match serde_json::from_str::<KioskBundle>(&text) {

@@ -478,7 +478,7 @@ export class Repository {
          JOIN layout_cells lc ON lc.layout_id = d.active_layout_id
         WHERE lc.camera_id = ?
           AND d.active_layout_id IS NOT NULL
-          AND k.enabled = 1`,
+          AND k.enabled = true`,
       [cameraId],
     );
     return rs.map((r) => rowToKiosk(r as Record<string, unknown>));
@@ -500,7 +500,7 @@ export class Repository {
          JOIN display_layouts dl ON dl.display_id = d.id
          JOIN layout_cells lc ON lc.layout_id = dl.layout_id
         WHERE lc.camera_id = ?
-          AND k.enabled = 1`,
+          AND k.enabled = true`,
       [cameraId],
     );
     return rs.map((r) => rowToKiosk(r as Record<string, unknown>));
@@ -902,7 +902,7 @@ export class Repository {
       `SELECT DISTINCT c.* FROM cameras c
          JOIN layout_cells lc ON lc.camera_id = c.id
         WHERE lc.layout_id IN (${placeholders})
-          AND c.enabled = 1
+          AND c.enabled = true
         ORDER BY c.name`,
       layoutIds,
     );
@@ -1187,7 +1187,7 @@ export class Repository {
   /** Lookup candidates by Bearer-key prefix; verify hash at the call site. */
   async listKiosksByKeyPrefix(prefix: string): Promise<Kiosk[]> {
     const rs = await this._all(
-      "SELECT * FROM kiosks WHERE key_prefix = ? AND enabled = 1",
+      "SELECT * FROM kiosks WHERE key_prefix = ? AND enabled = true",
       [prefix],
     );
     return rs.map((r) => rowToKiosk(r as Record<string, unknown>));
@@ -2085,7 +2085,7 @@ export class Repository {
       `SELECT DISTINCT c.* FROM cameras c
          JOIN camera_labels cl ON cl.camera_id = c.id
         WHERE cl.label_id IN (${placeholders})
-          AND c.enabled = 1
+          AND c.enabled = true
         ORDER BY c.name`,
       labelIds,
     );

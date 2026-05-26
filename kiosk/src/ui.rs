@@ -745,8 +745,21 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
     vbox.append(&title);
     vbox.append(&code_label);
     vbox.append(&hint);
-    vbox.append(&spinner(28));
-    window.set_child(Some(&vbox));
+
+    let fw_ver = server::kiosk_app_version();
+    let os_ver = std::fs::read_to_string("/etc/betterframe/os-version")
+        .unwrap_or_else(|_| "unknown".into());
+    let ver_text = format!("FW: {}  OS: {}", fw_ver, os_ver.trim());
+    let ver_label = Label::new(Some(&ver_text));
+    add_css(&ver_label, ".ver { font-size: 11px; color: #555; margin: 8px; }");
+    ver_label.add_css_class("ver");
+    ver_label.set_halign(gtk::Align::Start);
+    ver_label.set_valign(gtk::Align::End);
+
+    let overlay = gtk::Overlay::new();
+    overlay.set_child(Some(&vbox));
+    overlay.add_overlay(&ver_label);
+    window.set_child(Some(&overlay));
 }
 
 /// Render a fresh bundle: rebuild the per-display window set, restart GPIO

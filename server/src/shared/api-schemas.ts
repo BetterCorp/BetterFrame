@@ -77,8 +77,8 @@ export const EventBody = av.object(
   {
     topic: av.string().minLength(1).maxLength(512),
     source_type: av.string().maxLength(32).default("system"),
-    camera_id: av.nullable(av.string().maxLength(64)).default(null),
-    property_op: av.nullable(av.string().maxLength(32)).default(null),
+    camera_id: av.optional(av.nullable(av.string().maxLength(64))).default(null),
+    property_op: av.optional(av.nullable(av.string().maxLength(32))).default(null),
     payload: av.any().default({}),
   },
   { unknownKeys: "strip" },

@@ -6,10 +6,20 @@ pub fn create_camera_pipeline(name: &str, rtsp_uri: &str) -> Option<(Pipeline, E
     let pipeline_name = format!("cam-{name}");
     let pipeline = Pipeline::with_name(&pipeline_name);
 
-    let src = gst::ElementFactory::make("rtspsrc")
-        .property("location", rtsp_uri)
+    // Parse user:pass from RTSP URL and set as properties so rtspsrc
+    // does proper digest auth negotiation (embedding in URL can skip it).
+    let (location, user, pass) = extract_rtsp_creds(rtsp_uri);
+    let mut builder = gst::ElementFactory::make("rtspsrc")
+        .property("location", &location)
         .property("latency", 300u32)
-        .property_from_str("protocols", "tcp")
+        .property_from_str("protocols", "tcp");
+    if let Some(ref u) = user {
+        builder = builder.property("user-id", u.as_str());
+    }
+    if let Some(ref p) = pass {
+        builder = builder.property("user-pw", p.as_str());
+    }
+    let src = builder
         .build()
         .map_err(|e| error!("[{pipeline_name}] rtspsrc: {e}"))
         .ok()?;
@@ -122,4 +132,26 @@ pub fn play(pipeline: &Pipeline) {
 
 pub fn stop(pipeline: &Pipeline) {
     let _ = pipeline.set_state(gst::State::Null);
+}
+
+/// Extract user:pass from rtsp://user:pass@host/... URL.
+/// Returns (url_without_creds, Option<user>, Option<pass>).
+fn extract_rtsp_creds(uri: &str) -> (String, Option<String>, Option<String>) {
+    if let Some(after_scheme) = uri.strip_prefix("rtsp://") {
+        if let Some(at_pos) = after_scheme.find('@') {
+            let creds = &after_scheme[..at_pos];
+            let rest = &after_scheme[at_pos + 1..];
+            let clean_url = format!("rtsp://{rest}");
+            let (user, pass) = match creds.find(':') {
+                Some(colon) => {
+                    let u = urlencoding::decode(&creds[..colon]).unwrap_or_default().to_string();
+                    let p = urlencoding::decode(&creds[colon + 1..]).unwrap_or_default().to_string();
+                    (Some(u), Some(p))
+                }
+                None => (Some(creds.to_string()), None),
+            };
+            return (clean_url, user, pass);
+        }
+    }
+    (uri.to_string(), None, None)
 }

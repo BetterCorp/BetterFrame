@@ -39,6 +39,20 @@ function NavItem(props: { href: string; label: string; icon: string; active?: bo
   );
 }
 
+function NavGroup(props: { label: string; icon: string; active?: boolean; children: string | string[] }) {
+  return (
+    <details class="nav-group" open={props.active}>
+      <summary class={`nav-item${props.active ? " active" : ""}`}>
+        <span class="nav-icon">{props.icon}</span>
+        {props.label}
+      </summary>
+      <div class="nav-group-items">
+        {props.children}
+      </div>
+    </details>
+  );
+}
+
 function Sidebar(props: { activeNav?: string }) {
   const a = props.activeNav;
   return (
@@ -58,7 +72,12 @@ function Sidebar(props: { activeNav?: string }) {
         <NavItem href="/admin/firmware" label="Firmware" icon="&#9650;" active={a === "firmware"} />
         <NavItem href="/admin/os-updates" label="OS Updates" icon="&#9679;" active={a === "os-updates"} />
         <NavItem href="/admin/cloud-accounts" label="Cloud Cams" icon="&#9729;" active={a === "cloud"} />
-        <NavItem href="/admin/ablesign" label="AbleSign" icon="&#9654;" active={a === "ablesign"} />
+        <NavGroup label="AbleSign" icon="&#9654;" active={a?.startsWith("ablesign")}>
+          <NavItem href="/admin/ablesign" label="Accounts" icon=" " active={a === "ablesign"} />
+          <NavItem href="/admin/ablesign/screens" label="Screens" icon=" " active={a === "ablesign-screens"} />
+          <NavItem href="/admin/ablesign/content" label="Content" icon=" " active={a === "ablesign-content"} />
+          <NavItem href="/admin/ablesign/playlists" label="Playlists" icon=" " active={a === "ablesign-playlists"} />
+        </NavGroup>
         <NavItem href="/admin/labels" label="Labels" icon="&#9670;" active={a === "labels"} />
         <NavItem href="/admin/audit" label="Audit" icon="&#9678;" active={a === "audit"} />
         <NavItem href="/admin/backup" label="Backup" icon="&#9788;" active={a === "backup"} />
@@ -200,6 +219,11 @@ const baseStyles = {
   ".nav-item:hover": { backgroundColor: "#2a2a4e", color: "#fff", textDecoration: "none" },
   ".nav-item.active": { backgroundColor: "#2563eb", color: "#fff" },
   ".nav-icon": { fontSize: "0.75rem", width: "1.25rem", textAlign: "center" as const },
+  ".nav-group": { margin: 0, padding: 0 },
+  ".nav-group summary": { cursor: "pointer", listStyle: "none" },
+  ".nav-group summary::-webkit-details-marker": { display: "none" },
+  ".nav-group-items": { paddingLeft: "1.25rem" },
+  ".nav-group-items .nav-item": { fontSize: "0.8rem", padding: "0.35rem 1rem" },
   ".sidebar hr": { border: "none", borderTop: "1px solid #2a2a4e", margin: "0.5rem 0" },
   ".topbar": {
     display: "flex",

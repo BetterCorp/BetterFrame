@@ -2402,6 +2402,14 @@ export class Repository {
    * the camera's name is already taken by another entity, append the camera
    * id to keep the name unique.
    */
+  async getEntityByAbleSignScreen(screenId: string): Promise<Entity | null> {
+    const r = await this._get(
+      `SELECT * FROM entities WHERE type = 'ablesign' AND ablesign_screen_id = ? LIMIT 1`,
+      [screenId],
+    );
+    return r ? rowToEntity(r as Record<string, unknown>) : null;
+  }
+
   async ensureCameraEntity(camera: Camera): Promise<Entity> {
     const existing = await this.getEntityForCamera(camera.id);
     if (existing) return existing;

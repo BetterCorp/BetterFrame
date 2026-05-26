@@ -6,7 +6,7 @@ import { type H3, getRouterParam, readBody, createError } from "h3";
 import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import * as ablesign from "../../shared/ablesign.js";
-import { AbleSignPage, AbleSignScreensPage } from "../../web-templates/admin-pages.js";
+import { AbleSignPage, AbleSignScreensPage, AbleSignContentPage, AbleSignPlaylistsPage } from "../../web-templates/admin-pages.js";
 
 export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
 
@@ -33,8 +33,29 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
     }
 
     const encrypted = deps.secrets.encryptString(apiKey, "ablesign-key");
-    await deps.repo.createAbleSignAccount({ name, api_key_encrypted: encrypted, workspace_id: workspaceId });
-    return new Response(null, { status: 302, headers: { location: "/admin/ablesign" } });
+    const accountId = await deps.repo.createAbleSignAccount({ name, api_key_encrypted: encrypted, workspace_id: workspaceId });
+
+    // Auto-sync screens on account creation.
+    try {
+      const opts = { apiKey, workspaceId };
+      const result = await ablesign.listScreens(opts);
+      for (const s of result.data) {
+        await deps.repo.upsertAbleSignScreen({
+          account_id: accountId,
+          ablesign_screen_id: String(s.id),
+          title: s.title,
+          online: !!s.heartbeatTime,
+          last_heartbeat_at: s.heartbeatTime || undefined,
+          orientation: s.orientation,
+        });
+      }
+      await deps.repo.updateAbleSignAccount(accountId, {
+        screen_count: result.data.length,
+        last_sync_at: new Date().toISOString(),
+      });
+    } catch { /* sync failure is non-fatal */ }
+
+    return new Response(null, { status: 302, headers: { location: `/admin/ablesign/${accountId}/screens` } });
   });
 
   app.get("/admin/ablesign/:id/screens", async (event) => {
@@ -43,6 +64,9 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
     if (!account) throw createError({ statusCode: 404, statusMessage: "Account not found" });
     const screens = await deps.repo.listAbleSignScreens(id);
     const kiosks = await deps.repo.listKiosks();
+    for (const s of screens) {
+      (s as any).has_entity = !!(await deps.repo.getEntityByAbleSignScreen(s.id));
+    }
     return htmlPage(AbleSignScreensPage({ account, screens, kiosks }));
   });
 
@@ -57,7 +81,7 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
       const result = await ablesign.listScreens(opts);
 
       for (const s of result.data) {
-        await deps.repo.upsertAbleSignScreen({
+        const screenRowId = await deps.repo.upsertAbleSignScreen({
           account_id: id,
           ablesign_screen_id: String(s.id),
           title: s.title,
@@ -169,5 +193,50 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
     }
     const accountId = screen?.account_id ?? "";
     return new Response(null, { status: 302, headers: { location: `/admin/ablesign/${accountId}/screens` } });
+  });
+
+  // ---- Global views (all accounts aggregated) --------------------------------
+
+  app.get("/admin/ablesign/screens", async () => {
+    const screens = await deps.repo.listAbleSignScreens();
+    const kiosks = await deps.repo.listKiosks();
+    const accounts = await deps.repo.listAbleSignAccounts();
+    for (const s of screens) {
+      (s as any).has_entity = !!(await deps.repo.getEntityByAbleSignScreen(s.id));
+    }
+    return htmlPage(AbleSignScreensPage({ account: null, screens, kiosks, accounts }));
+  });
+
+  app.get("/admin/ablesign/content", async () => {
+    const accounts = await deps.repo.listAbleSignAccounts();
+    const content: any[] = [];
+    for (const acct of accounts) {
+      try {
+        const apiKey = deps.secrets.decryptString(acct.api_key_encrypted, "ablesign-key");
+        const opts = { apiKey, workspaceId: acct.workspace_id || undefined };
+        const media = await ablesign.listMediaFiles(opts);
+        const webApps = await ablesign.listWebApps(opts);
+        for (const m of media.data) content.push({ ...m, account_name: acct.name, kind: "media" });
+        for (const w of webApps.data) content.push({ ...w, account_name: acct.name, kind: "webapp" });
+      } catch { /* skip failed accounts */ }
+    }
+    return htmlPage(AbleSignContentPage({ content, accounts }));
+  });
+
+  app.get("/admin/ablesign/playlists", async () => {
+    const accounts = await deps.repo.listAbleSignAccounts();
+    const screens = await deps.repo.listAbleSignScreens();
+    const playlists: any[] = [];
+    for (const s of screens) {
+      const acct = accounts.find((a: any) => a.id === s.account_id);
+      if (!acct) continue;
+      try {
+        const apiKey = deps.secrets.decryptString(acct.api_key_encrypted, "ablesign-key");
+        const opts = { apiKey, workspaceId: acct.workspace_id || undefined };
+        const pl = await ablesign.getPlaylist(opts, Number(s.ablesign_screen_id));
+        playlists.push({ screen_title: s.title, account_name: acct.name, ...pl });
+      } catch { /* skip */ }
+    }
+    return htmlPage(AbleSignPlaylistsPage({ playlists }));
   });
 }

@@ -4453,41 +4453,47 @@ export function AbleSignPage(props: AbleSignPageProps) {
 }
 
 interface AbleSignScreensPageProps {
-  account: any;
+  account: any | null;
   screens: any[];
   kiosks: any[];
+  accounts?: any[];
 }
 
 export function AbleSignScreensPage(props: AbleSignScreensPageProps) {
   const a = props.account;
+  const isGlobal = !a;
+  const title = isGlobal ? "AbleSign — All Screens" : `AbleSign — ${String(a.name)}`;
   return (
-    <Layout title={`AbleSign — ${String(a.name)}`} activeNav="ablesign">
-      <h1 style="font-size:1.5rem; margin:0 0 0.5rem">{a.name} — Screens</h1>
-      <p style="color:#999; margin:0 0 1.5rem; font-size:0.85rem">
-        {String(a.screen_count ?? 0)} screens
-        {a.last_sync_at && ` · synced ${formatTime(a.last_sync_at)}`}
-      </p>
-
-      <div class="card" style="margin-bottom:1.5rem">
-        <h2 style="font-size:1rem; margin:0 0 0.75rem">Add Screen</h2>
-        <form method="POST" action={`/admin/ablesign/${String(a.id)}/screens/add`} style="display:flex; gap:0.5rem; align-items:end">
-          <label style="font-size:0.85rem">
-            {"Screen Name"}<br/>
-            <input type="text" name="title" required style="width:16rem" placeholder="Lobby Display" />
-          </label>
-          <button type="submit" class="btn btn-sm">{"Create & Pair"}</button>
-        </form>
-        <p style="font-size:0.8rem; color:#999; margin:0.5rem 0 0">
-          Creates a new screen in AbleSign and pairs it automatically.
+    <Layout title={title} activeNav={isGlobal ? "ablesign-screens" : "ablesign"}>
+      <h1 style="font-size:1.5rem; margin:0 0 0.5rem">{isGlobal ? "All AbleSign Screens" : `${String(a.name)} — Screens`}</h1>
+      {a ? (
+        <p style="color:#999; margin:0 0 1.5rem; font-size:0.85rem">
+          {String(a.screen_count ?? 0)} screens
+          {a.last_sync_at ? ` · synced ${formatTime(a.last_sync_at)}` : ""}
         </p>
-      </div>
+      ) : ""}
+
+      {a ? (
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="font-size:1rem; margin:0 0 0.75rem">Add Screen</h2>
+          <form method="POST" action={`/admin/ablesign/${String(a.id)}/screens/add`} style="display:flex; gap:0.5rem; align-items:end">
+            <label style="font-size:0.85rem">
+              {"Screen Name"}<br/>
+              <input type="text" name="title" required style="width:16rem" placeholder="Lobby Display" />
+            </label>
+            <button type="submit" class="btn btn-sm">{"Create & Pair"}</button>
+          </form>
+        </div>
+      ) : ""}
 
       <div class="card" style="margin-bottom:1rem">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem">
           <h2 style="font-size:1rem; margin:0">Screens</h2>
-          <form method="POST" action={`/admin/ablesign/${String(a.id)}/sync`}>
-            <button type="submit" class="btn btn-sm btn-ghost">Sync from AbleSign</button>
-          </form>
+          {a ? (
+            <form method="POST" action={`/admin/ablesign/${String(a.id)}/sync`}>
+              <button type="submit" class="btn btn-sm btn-ghost">Sync from AbleSign</button>
+            </form>
+          ) : ""}
         </div>
 
         {props.screens.length === 0 ? (
@@ -4499,6 +4505,7 @@ export function AbleSignScreensPage(props: AbleSignScreensPageProps) {
                 <th>Title</th>
                 <th>Orientation</th>
                 <th>Status</th>
+                <th>Source</th>
                 <th>Assigned Kiosk</th>
                 <th>Actions</th>
               </tr></thead>
@@ -4511,6 +4518,11 @@ export function AbleSignScreensPage(props: AbleSignScreensPageProps) {
                       {s.online
                         ? <span class="badge badge-green">Online</span>
                         : <span class="badge badge-gray">Offline</span>}
+                    </td>
+                    <td>
+                      {s.has_entity
+                        ? <span class="badge badge-blue">Internal</span>
+                        : <span class="badge badge-gray">External</span>}
                     </td>
                     <td>
                       <form method="POST" action={`/admin/ablesign/screens/${String(s.id)}/assign`}
@@ -4536,6 +4548,62 @@ export function AbleSignScreensPage(props: AbleSignScreensPageProps) {
           </div>
         )}
       </div>
+    </Layout>
+  );
+}
+
+interface AbleSignContentPageProps { content: any[]; accounts: any[]; }
+
+export function AbleSignContentPage(props: AbleSignContentPageProps) {
+  return (
+    <Layout title="AbleSign — Content" activeNav="ablesign-content">
+      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">AbleSign Content</h1>
+      <div class="card">
+        {props.content.length === 0
+          ? <p style="color:#999; font-size:0.85rem">No content found. Add media or web apps in AbleSign CMS.</p>
+          : <div class="table-wrap">
+              <table>
+                <thead><tr><th>Title</th><th>Type</th><th>Account</th></tr></thead>
+                <tbody>
+                  {props.content.map((c: any) => (
+                    <tr>
+                      <td>{c.title}</td>
+                      <td style="font-size:0.85rem">{c.kind === "media" ? String(c.fileType || "media") : "web app"}</td>
+                      <td style="font-size:0.85rem; color:#999">{c.account_name}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>}
+      </div>
+    </Layout>
+  );
+}
+
+interface AbleSignPlaylistsPageProps { playlists: any[]; }
+
+export function AbleSignPlaylistsPage(props: AbleSignPlaylistsPageProps) {
+  const cards = props.playlists.map((pl: any) =>
+    `<div class="card" style="margin-bottom:1rem">
+      <h2 style="font-size:1rem; margin:0 0 0.5rem">${pl.screen_title as string}</h2>
+      <p style="font-size:0.8rem; color:#999; margin:0 0 0.5rem">
+        Account: ${pl.account_name as string} · ${String(pl.items?.length ?? 0)} items${pl.shufflePlay ? " · Shuffle" : ""}
+      </p>
+      ${Array.isArray(pl.items) && pl.items.length > 0
+        ? `<table style="font-size:0.85rem; width:100%"><thead><tr><th>#</th><th>Type</th><th>Duration</th></tr></thead><tbody>${
+            (pl.items as any[]).map((item: any, idx: number) =>
+              `<tr><td>${String(idx + 1)}</td><td>${item.mediafileId ? "Media" : item.webAppId ? "Web App" : "Unknown"}</td><td>${item.displayDuration ? `${String(item.displayDuration)}s` : "—"}</td></tr>`
+            ).join("")
+          }</tbody></table>`
+        : ""}
+    </div>`
+  ).join("");
+  return (
+    <Layout title="AbleSign — Playlists" activeNav="ablesign-playlists">
+      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">AbleSign Playlists</h1>
+      {props.playlists.length === 0
+        ? <div class="card"><p style="color:#999; font-size:0.85rem">No playlists found.</p></div>
+        : cards}
     </Layout>
   );
 }

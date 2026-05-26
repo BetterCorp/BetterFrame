@@ -19,6 +19,7 @@ import type {
   AuditEntry,
   AuditResult,
   Camera,
+  CameraEventSubscription,
   CameraStream,
   CameraType,
   CloudAccount,
@@ -28,6 +29,7 @@ import type {
   EventLog,
   EventQueryFilters,
   EventSourceType,
+  EventSubscriptionStatus,
   FirmwareChannel,
   FirmwareRelease,
   FirmwareRollout,
@@ -61,6 +63,7 @@ import {
   rowToApiKey,
   rowToAuditEntry,
   rowToCamera,
+  rowToCameraEventSubscription,
   rowToCloudAccount,
   rowToCameraStream,
   rowToDisplay,
@@ -2409,6 +2412,68 @@ export class Repository {
     vals.push(id);
     await this._run(`UPDATE labels SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("labels", "update", id);
+  }
+
+  // ===========================================================================
+  // camera_event_subscriptions
+  // ===========================================================================
+
+  async listEventSubscriptions(cameraId: number): Promise<CameraEventSubscription[]> {
+    const rs = await this._all(
+      "SELECT * FROM camera_event_subscriptions WHERE camera_id = ? ORDER BY topic",
+      [cameraId],
+    );
+    return rs.map((r) => rowToCameraEventSubscription(r as Record<string, unknown>));
+  }
+
+  async upsertEventSubscription(input: {
+    camera_id: number;
+    topic: string;
+    status?: EventSubscriptionStatus;
+  }): Promise<void> {
+    const status = input.status ?? "inactive";
+    await this._run(
+      `INSERT INTO camera_event_subscriptions (camera_id, topic, status)
+       VALUES (?, ?, ?)
+       ON CONFLICT (camera_id, topic) DO UPDATE SET status = COALESCE(NULLIF(?, ''), camera_event_subscriptions.status)`,
+      [input.camera_id, input.topic, status, status],
+    );
+  }
+
+  async updateEventSubscriptionStatus(
+    cameraId: number,
+    topic: string,
+    status: EventSubscriptionStatus,
+    error?: string | null,
+  ): Promise<void> {
+    await this._run(
+      `UPDATE camera_event_subscriptions
+          SET status = ?, error_message = ?
+        WHERE camera_id = ? AND topic = ?`,
+      [status, error ?? null, cameraId, topic],
+    );
+  }
+
+  async markEventReceived(cameraId: number, topic: string): Promise<void> {
+    await this._run(
+      `UPDATE camera_event_subscriptions
+          SET last_event_at = ?, status = 'active'
+        WHERE camera_id = ? AND topic = ?`,
+      [isoNow(), cameraId, topic],
+    );
+  }
+
+  async setAllEventSubscriptionsStatus(
+    cameraId: number,
+    fromStatus: EventSubscriptionStatus,
+    toStatus: EventSubscriptionStatus,
+  ): Promise<void> {
+    await this._run(
+      `UPDATE camera_event_subscriptions
+          SET status = ?
+        WHERE camera_id = ? AND status = ?`,
+      [toStatus, cameraId, fromStatus],
+    );
   }
 
   // ===========================================================================

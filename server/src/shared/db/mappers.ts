@@ -12,6 +12,7 @@ import type {
   AuditEntry,
   AuditResult,
   Camera,
+  CameraEventSubscription,
   CloudAccount,
   CloudVendor,
   CameraStream,
@@ -24,6 +25,7 @@ import type {
   EntityType,
   EventLog,
   EventSourceType,
+  EventSubscriptionStatus,
   FirmwareChannel,
   FirmwareRelease,
   FirmwareRollout,
@@ -469,6 +471,19 @@ export function rowToCloudAccount(r: Row): CloudAccount {
     last_sync_at: sn(r["last_sync_at"]),
     last_sync_error: sn(r["last_sync_error"]),
     camera_count: n(r["camera_count"]),
+    created_at: s(r["created_at"]),
+  };
+}
+
+export function rowToCameraEventSubscription(r: Row): CameraEventSubscription {
+  return {
+    id: n(r["id"]),
+    camera_id: n(r["camera_id"]),
+    topic: s(r["topic"]),
+    status: s(r["status"]) as EventSubscriptionStatus,
+    subscribed_by_kiosk_id: nn(r["subscribed_by_kiosk_id"]),
+    last_event_at: sn(r["last_event_at"]),
+    error_message: sn(r["error_message"]),
     created_at: s(r["created_at"]),
   };
 }

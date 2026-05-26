@@ -1074,4 +1074,18 @@ export const MIGRATIONS: readonly MigrationEntry[] = [
   },
   `CREATE INDEX IF NOT EXISTS idx_cameras_cloud_account ON cameras(cloud_account_id)`,
   `CREATE INDEX IF NOT EXISTS idx_cameras_cloud_vendor ON cameras(cloud_account_id, cloud_vendor_camera_id)`,
+
+  // ---- camera_event_subscriptions: per-camera per-topic subscription state ---
+  `CREATE TABLE IF NOT EXISTS camera_event_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    camera_id INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    topic TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'inactive' CHECK(status IN ('inactive', 'pending', 'active', 'failed')),
+    subscribed_by_kiosk_id INTEGER REFERENCES kiosks(id) ON DELETE SET NULL,
+    last_event_at TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(camera_id, topic)
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_camera_event_subs_camera ON camera_event_subscriptions(camera_id)`,
 ];

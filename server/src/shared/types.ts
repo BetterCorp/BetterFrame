@@ -405,6 +405,19 @@ export interface EventLog {
   forwarded_to_nodered: boolean;
 }
 
+export type EventSubscriptionStatus = "inactive" | "pending" | "active" | "failed";
+
+export interface CameraEventSubscription {
+  id: number;
+  camera_id: number;
+  topic: string;
+  status: EventSubscriptionStatus;
+  subscribed_by_kiosk_id: number | null;
+  last_event_at: string | null;
+  error_message: string | null;
+  created_at: string;
+}
+
 export interface EventQueryFilters {
   topic?: string;
   kiosk_id?: number;

@@ -6,6 +6,7 @@ import { Layout } from "./layout.js";
 import type {
   AuditEntry,
   Camera,
+  CameraEventSubscription,
   Display,
   Entity,
   FirmwareRelease,
@@ -1168,6 +1169,7 @@ interface CameraEditProps {
   allLabels: Label[];
   streams: Array<{ id: number; role: string; name: string; rtsp_uri: string }>;
   subscriptions: CameraSubscription[];
+  eventSubscriptions?: CameraEventSubscription[];
   error?: string;
   success?: string;
 }
@@ -1370,32 +1372,73 @@ export function CameraEditPage(props: CameraEditProps) {
           </form>
         </div>
 
-        {cam.type === "onvif" && (
-          <div class="card" style="margin-bottom:1.5rem">
-            <h2 style="margin:0 0 1rem; font-size:1.1rem">Supported Event Topics</h2>
-            <p style="color:#666; font-size:0.85rem; margin-bottom:0.75rem">
-              Topics this camera advertises via GetEventProperties. Click refresh
-              to re-query the camera (via the designated event source).
-            </p>
-            <form method="post" action={`/admin/cameras/${cam.id}/refresh-events`} style="margin-bottom:0.75rem">
-              <button type="submit" class="btn btn-sm">Refresh from camera</button>
-            </form>
-            {cam.supported_event_topics.length > 0 ? (
-              <div class="table-wrap">
-                <table>
-                  <thead><tr><th>Topic</th></tr></thead>
-                  <tbody>
-                    {cam.supported_event_topics.map((t) => (
-                      <tr><td><code style="font-size:0.8rem">{t}</code></td></tr>
-                    ))}
-                  </tbody>
-                </table>
+        {cam.type === "onvif" && (() => {
+          const subs = props.eventSubscriptions ?? [];
+          const subMap = new Map(subs.map((s) => [s.topic, s]));
+          // Merge: show all topics from subscriptions table + any in supported_event_topics not yet in DB
+          const allTopics = new Set([...subs.map((s) => s.topic), ...cam.supported_event_topics]);
+          const sortedTopics = [...allTopics].sort();
+          const hasInactive = subs.some((s) => s.status === "inactive");
+          return (
+            <div class="card" style="margin-bottom:1.5rem">
+              <h2 style="margin:0 0 1rem; font-size:1.1rem">Event Topics &amp; Subscriptions</h2>
+              <p style="color:#666; font-size:0.85rem; margin-bottom:0.75rem">
+                Topics this camera advertises via GetEventProperties. Click refresh
+                to re-query the camera (via the designated event source). New topics
+                are merged into the list and never removed.
+              </p>
+              <div style="display:flex; gap:0.5rem; margin-bottom:0.75rem">
+                <form method="post" action={`/admin/cameras/${cam.id}/refresh-events`}>
+                  <button type="submit" class="btn btn-sm">Refresh from camera</button>
+                </form>
+                {hasInactive && (
+                  <form method="post" action={`/admin/cameras/${cam.id}/subscribe-events`}>
+                    <button type="submit" class="btn btn-sm btn-primary">Subscribe all inactive</button>
+                  </form>
+                )}
               </div>
-            ) : (
-              <p style="color:#999">No topics discovered yet. Click refresh above.</p>
-            )}
-          </div>
-        )}
+              {sortedTopics.length > 0 ? (
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th style="width:2rem">Status</th><th>Topic</th><th>Last Event</th><th>Error</th></tr></thead>
+                    <tbody>
+                      {[...sortedTopics].map((t) => {
+                        const sub = subMap.get(t);
+                        const status = sub?.status ?? "inactive";
+                        const dotColor =
+                          status === "active" ? "#22c55e" :
+                          status === "pending" ? "#f59e0b" :
+                          status === "failed" ? "#ef4444" :
+                          "#9ca3af";
+                        const dotTitle =
+                          status === "active" ? "Active" :
+                          status === "pending" ? "Pending" :
+                          status === "failed" ? "Failed" :
+                          "Inactive";
+                        return (
+                          <tr>
+                            <td style="text-align:center" title={dotTitle}>
+                              <span style={`display:inline-block; width:10px; height:10px; border-radius:50%; background:${dotColor}`}></span>
+                            </td>
+                            <td><code style="font-size:0.8rem">{t}</code></td>
+                            <td style="font-size:0.8rem; white-space:nowrap; color:#666">
+                              {sub?.last_event_at ? formatTime(sub.last_event_at) : "—"}
+                            </td>
+                            <td style="font-size:0.75rem; color:#ef4444; max-width:200px; overflow:hidden; text-overflow:ellipsis">
+                              {sub?.error_message ?? ""}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p style="color:#999">No topics discovered yet. Click refresh above.</p>
+              )}
+            </div>
+          );
+        })()}
 
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Labels</h2>

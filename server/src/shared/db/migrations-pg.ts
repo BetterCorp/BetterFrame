@@ -465,4 +465,18 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS idx_cloud_accounts_vendor ON cloud_accounts(vendor)`,
+
+  // ---- camera_event_subscriptions ---------------------------------------------
+  `CREATE TABLE IF NOT EXISTS camera_event_subscriptions (
+    id SERIAL PRIMARY KEY,
+    camera_id INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    topic TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'inactive' CHECK(status IN ('inactive', 'pending', 'active', 'failed')),
+    subscribed_by_kiosk_id INTEGER REFERENCES kiosks(id) ON DELETE SET NULL,
+    last_event_at TIMESTAMPTZ,
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(camera_id, topic)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_camera_event_subs_camera ON camera_event_subscriptions(camera_id)`,
 ];

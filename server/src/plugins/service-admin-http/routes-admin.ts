@@ -1397,6 +1397,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       });
     }
 
+    const eventSubscriptions = await deps.repo.listEventSubscriptions(id);
+
     return htmlPage(CameraEditPage({
       user: user.username,
       camera,
@@ -1404,6 +1406,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       allLabels: await deps.repo.listLabels(),
       streams: await deps.repo.listCameraStreams(id),
       subscriptions,
+      eventSubscriptions,
     }));
   });
 
@@ -1516,6 +1519,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // Refresh supported ONVIF event topics from the camera.
+  // MERGE: new topics are added to the existing list, never removed.
   app.post("/admin/cameras/:id/refresh-events", async (event) => {
     const id = Number(getRouterParam(event, "id"));
     const cam = await deps.repo.getCameraById(id);
@@ -1538,17 +1542,36 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       ? kioskOnvifSoapTransport(Number(runner.slice("kiosk:".length)))
       : undefined;
     try {
-      const topics = await onvifGetEventProperties({
+      const discoveredTopics = await onvifGetEventProperties({
         host: cam.onvif_host,
         port: cam.onvif_port ?? 80,
         username: cam.onvif_username ?? "",
         password: cam.onvif_password ?? "",
         soapTransport,
       });
-      await deps.repo.updateCamera(id, { supported_event_topics: JSON.stringify(topics) } as any);
+      // Merge: keep existing topics, add new ones — never remove
+      const existingSet = new Set(cam.supported_event_topics);
+      for (const t of discoveredTopics) existingSet.add(t);
+      const merged = [...existingSet].sort();
+      await deps.repo.updateCamera(id, { supported_event_topics: JSON.stringify(merged) } as any);
+      // Upsert subscription rows for each discovered topic (additive only)
+      for (const topic of discoveredTopics) {
+        await deps.repo.upsertEventSubscription({ camera_id: id, topic, status: "inactive" });
+      }
     } catch {
       // Camera offline or events not supported — leave existing topics.
     }
+    return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
+  });
+
+  // Subscribe to all inactive event topics for this camera.
+  app.post("/admin/cameras/:id/subscribe-events", async (event) => {
+    const id = Number(getRouterParam(event, "id"));
+    const cam = await deps.repo.getCameraById(id);
+    if (!cam) {
+      return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
+    }
+    await deps.repo.setAllEventSubscriptionsStatus(id, "inactive", "pending");
     return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
   });
 

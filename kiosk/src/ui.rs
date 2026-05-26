@@ -778,13 +778,25 @@ fn render_bundle(
     // Restart GPIO workers (always — even if list is empty, this drops the old set).
     gpio::start_workers(&bundle.gpio_bindings, server_url, kiosk_key);
 
-    // (Re)start ONVIF event subscriptions for all ONVIF cameras in the bundle.
-    // Workers self-terminate when a new start() call replaces the generation.
-    // Prefer per-kiosk encryption key over shared cluster key.
-    let decrypt_key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
-    onvif_events::start(&bundle.cameras, decrypt_key.as_deref(), server_url, kiosk_key);
-
+    // Collect camera IDs actually referenced in layout cells.
     let displays = bundle.normalized_displays();
+    let layout_cam_ids: std::collections::HashSet<u32> = displays
+        .iter()
+        .flat_map(|d| d.layouts.iter())
+        .flat_map(|l| l.cells.iter())
+        .filter_map(|c| c.camera_id)
+        .collect();
+
+    // Only subscribe to ONVIF events for cameras in layouts (not all bundle cameras).
+    let layout_cameras: Vec<_> = bundle.cameras.iter()
+        .filter(|c| layout_cam_ids.contains(&c.id))
+        .cloned()
+        .collect();
+    let decrypt_key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
+    onvif_events::start(&layout_cameras, decrypt_key.as_deref(), server_url, kiosk_key);
+
+    // Purge warm camera pool entries for cameras no longer in the bundle at all.
+    purge_removed_cameras(&bundle.cameras);
     if displays.is_empty() {
         warn!("bundle has no displays");
         show_logo(pairing_window);
@@ -1523,6 +1535,34 @@ fn recompute_pool_states(
 
     for pipe in to_stop {
         pipeline::stop(&pipe);
+    }
+}
+
+/// Remove warm camera entries for cameras no longer in the bundle.
+/// Immediately stops pipelines — no cooling period.
+fn purge_removed_cameras(bundle_cameras: &[crate::bundle::BundleCamera]) {
+    let valid_ids: std::collections::HashSet<u32> = bundle_cameras.iter().map(|c| c.id).collect();
+    let mut to_remove: Vec<PoolKey> = Vec::new();
+    let mut to_stop: Vec<gstreamer::Pipeline> = Vec::new();
+
+    WARM_CAMERAS.with(|w| {
+        let mut warm = w.borrow_mut();
+        for (key, entry) in warm.iter() {
+            if !valid_ids.contains(&key.0) {
+                to_remove.push(*key);
+                to_stop.push(entry.pipeline.clone());
+            }
+        }
+        for k in &to_remove {
+            warm.remove(k);
+        }
+    });
+
+    for pipe in &to_stop {
+        pipeline::stop(pipe);
+    }
+    if !to_remove.is_empty() {
+        info!("purged {} camera pipelines no longer in bundle", to_remove.len());
     }
 }
 

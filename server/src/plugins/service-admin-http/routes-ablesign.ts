@@ -96,13 +96,32 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
     try {
       const apiKey = deps.secrets.decryptString(account.api_key_encrypted, "ablesign-key");
       const opts = { apiKey, workspaceId: account.workspace_id || undefined };
-      const { screen } = await ablesign.headlessPairScreen(opts, title);
+      const { screen, registrationCode } = await ablesign.headlessPairScreen(opts, title);
 
-      await deps.repo.createAbleSignScreen({
+      // Poll once for token (may not be available immediately).
+      let screenToken: string | undefined;
+      try {
+        const poll = await ablesign.pollRegistration(registrationCode);
+        screenToken = poll.screenToken;
+      } catch { /* token may not be ready yet — kiosk can work without it initially */ }
+
+      const screenRowId = await deps.repo.createAbleSignScreen({
         account_id: accountId,
         ablesign_screen_id: String(screen.id),
+        ablesign_screen_token_encrypted: screenToken
+          ? deps.secrets.encryptString(screenToken, "ablesign-token")
+          : undefined,
         title: screen.title,
         orientation: screen.orientation,
+      });
+
+      await deps.repo.createEntity({
+        name: `AbleSign: ${screen.title}`,
+        type: "ablesign",
+        description: `AbleSign screen (ID: ${String(screen.id)})`,
+        web_url: "https://player.ablesign.tv",
+        ablesign_screen_id: screenRowId,
+        managed: true,
       });
 
       await deps.repo.updateAbleSignAccount(accountId, {

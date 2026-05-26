@@ -514,6 +514,12 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_ablesign_screens_account ON ablesign_screens(account_id)`,
   `CREATE INDEX IF NOT EXISTS idx_ablesign_screens_kiosk ON ablesign_screens(kiosk_id)`,
 
+  // Add ablesign entity type + ablesign_screen_id column to entities
+  `ALTER TABLE entities DROP CONSTRAINT IF EXISTS entities_type_check`,
+  `ALTER TABLE entities ADD CONSTRAINT entities_type_check CHECK(type IN ('camera', 'html', 'web', 'dashboard', 'ablesign'))`,
+  `ALTER TABLE entities ADD COLUMN IF NOT EXISTS ablesign_screen_id TEXT REFERENCES ablesign_screens(id) ON DELETE CASCADE`,
+  `ALTER TABLE entities ADD COLUMN IF NOT EXISTS managed BOOLEAN NOT NULL DEFAULT false`,
+
   // ---- UUIDv7 PK migration for existing databases ----
   // Databases created before UUIDv7 migration have INTEGER PKs.
   // This migration converts them to TEXT in-place. Safe to run on

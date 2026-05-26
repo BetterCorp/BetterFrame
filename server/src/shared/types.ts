@@ -12,8 +12,8 @@ export type StreamRole = "main" | "sub" | "other";
 export type StreamSelector = "auto" | "main" | "sub";
 export type StreamPolicy = "auto" | "always_main" | "always_sub";
 export type LayoutPriority = "hot" | "normal" | "cold";
-export type CellContentType = "none" | "camera" | "web" | "html";
-export type EntityType = "camera" | "html" | "web" | "dashboard";
+export type CellContentType = "none" | "camera" | "web" | "html" | "ablesign";
+export type EntityType = "camera" | "html" | "web" | "dashboard" | "ablesign";
 
 export interface Entity {
   id: string;
@@ -25,6 +25,10 @@ export interface Entity {
   web_url: string | null;
   /** Node-RED dashboard tab id; populated when type === "dashboard". */
   dashboard_id: string | null;
+  /** AbleSign screen row id; populated when type === "ablesign". */
+  ablesign_screen_id: string | null;
+  /** True for entities auto-created by camera sync, cloud cams, AbleSign. Read-only in UI. */
+  managed: boolean;
   created_at: string;
 }
 export type DesiredPowerState = "follow_layout" | "on" | "standby";

@@ -790,6 +790,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = (getRouterParam(event, "id") ?? "");
     const ent = await deps.repo.getEntityById(id);
     if (!ent) return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
+    if ((ent as any).managed) {
+      return new Response(null, { status: 302, headers: { location: `/admin/entities/${String(id)}` } });
+    }
     const body = await readBody<Record<string, string>>(event);
     const patch: {
       name?: string;

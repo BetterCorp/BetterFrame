@@ -258,6 +258,8 @@ export function rowToEntity(r: Row): Entity {
     html_content: sn(r["html_content"]),
     web_url: sn(r["web_url"]),
     dashboard_id: sn(r["dashboard_id"]),
+    ablesign_screen_id: sn(r["ablesign_screen_id"]),
+    managed: !!r["managed"],
     created_at: s(r["created_at"]),
   };
 }

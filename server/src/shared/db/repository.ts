@@ -2307,11 +2307,13 @@ export class Repository {
     html_content?: string | null;
     web_url?: string | null;
     dashboard_id?: string | null;
+    ablesign_screen_id?: string | null;
+    managed?: boolean;
   }): Promise<Entity> {
     const id = uuidv7();
     await this._run(
-      `INSERT INTO entities (id, name, type, description, camera_id, html_content, web_url, dashboard_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO entities (id, name, type, description, camera_id, html_content, web_url, dashboard_id, ablesign_screen_id, managed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.name,
@@ -2319,8 +2321,10 @@ export class Repository {
         input.description ?? null,
         input.type === "camera" ? (input.camera_id ?? null) : null,
         input.type === "html" ? (input.html_content ?? null) : null,
-        input.type === "web" ? (input.web_url ?? null) : null,
+        input.type === "web" || input.type === "ablesign" ? (input.web_url ?? null) : null,
         input.type === "dashboard" ? (input.dashboard_id ?? null) : null,
+        input.type === "ablesign" ? (input.ablesign_screen_id ?? null) : null,
+        input.managed ?? false,
       ],
     );
     void this.notify("entities", "create", id);
@@ -2405,7 +2409,7 @@ export class Repository {
     if (await this.getEntityByName(name)) {
       name = `${camera.name} (cam ${camera.id.slice(0, 8)})`;
     }
-    return this.createEntity({ name, type: "camera", camera_id: camera.id });
+    return this.createEntity({ name, type: "camera", camera_id: camera.id, managed: true });
   }
 
   async updateKiosk(id: string, patch: Partial<Kiosk>): Promise<void> {

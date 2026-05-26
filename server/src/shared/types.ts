@@ -413,6 +413,8 @@ export interface CameraEventSubscription {
   topic: string;
   status: EventSubscriptionStatus;
   subscribed_by_kiosk_id: number | null;
+  event_source: string | null;
+  event_sink: string | null;
   last_event_at: string | null;
   error_message: string | null;
   created_at: string;

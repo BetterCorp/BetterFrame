@@ -35,6 +35,7 @@ import { registerOsUpdateRoutes } from "./routes-os-updates.js";
 import { registerStaticRoutes } from "./routes-static.js";
 import { registerCloudRoutes } from "./routes-cloud.js";
 import { registerTenantRoutes } from "./routes-tenants.js";
+import { registerAbleSignRoutes } from "./routes-ablesign.js";
 
 // ---- Config -----------------------------------------------------------------
 
@@ -238,6 +239,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     registerOsUpdateRoutes(app, deps);
     registerCloudRoutes(app, deps);
     registerTenantRoutes(app, deps);
+    registerAbleSignRoutes(app, deps);
 
     // Auth-check endpoint for Angie auth_request subrequest.
     // Returns 200 if session cookie is valid + admin role, 401 otherwise.

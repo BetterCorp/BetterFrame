@@ -2628,4 +2628,123 @@ export class Repository {
   async deleteCloudAccount(id: string): Promise<void> {
     await this._run("DELETE FROM cloud_accounts WHERE id = ?", [id]);
   }
+
+  // ===========================================================================
+  // AbleSign accounts + screens
+  // ===========================================================================
+
+  async listAbleSignAccounts(): Promise<any[]> {
+    return this._all("SELECT * FROM ablesign_accounts ORDER BY created_at DESC");
+  }
+
+  async getAbleSignAccount(id: string): Promise<any | undefined> {
+    return this._get("SELECT * FROM ablesign_accounts WHERE id = ?", [id]);
+  }
+
+  async createAbleSignAccount(input: {
+    name: string;
+    api_key_encrypted: string;
+    workspace_id?: string;
+  }): Promise<string> {
+    const id = uuidv7();
+    await this._run(
+      `INSERT INTO ablesign_accounts (id, name, api_key_encrypted, workspace_id)
+       VALUES (?, ?, ?, ?)`,
+      [id, input.name, input.api_key_encrypted, input.workspace_id ?? null],
+    );
+    return id;
+  }
+
+  async updateAbleSignAccount(id: string, patch: Record<string, unknown>): Promise<void> {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (k === "id" || k === "created_at") continue;
+      sets.push(`${k} = ?`);
+      vals.push(v === undefined ? null : v);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    await this._run(`UPDATE ablesign_accounts SET ${sets.join(", ")} WHERE id = ?`, vals);
+  }
+
+  async deleteAbleSignAccount(id: string): Promise<void> {
+    await this._run("DELETE FROM ablesign_accounts WHERE id = ?", [id]);
+  }
+
+  async listAbleSignScreens(accountId?: string): Promise<any[]> {
+    if (accountId) {
+      return this._all("SELECT * FROM ablesign_screens WHERE account_id = ? ORDER BY title", [accountId]);
+    }
+    return this._all("SELECT * FROM ablesign_screens ORDER BY title");
+  }
+
+  async getAbleSignScreen(id: string): Promise<any | undefined> {
+    return this._get("SELECT * FROM ablesign_screens WHERE id = ?", [id]);
+  }
+
+  async getAbleSignScreenByKiosk(kioskId: string): Promise<any | undefined> {
+    return this._get("SELECT * FROM ablesign_screens WHERE kiosk_id = ?", [kioskId]);
+  }
+
+  async createAbleSignScreen(input: {
+    account_id: string;
+    ablesign_screen_id: string;
+    ablesign_screen_token_encrypted?: string;
+    kiosk_id?: string;
+    title: string;
+    orientation?: string;
+  }): Promise<string> {
+    const id = uuidv7();
+    await this._run(
+      `INSERT INTO ablesign_screens (id, account_id, ablesign_screen_id, ablesign_screen_token_encrypted, kiosk_id, title, orientation)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, input.account_id, input.ablesign_screen_id, input.ablesign_screen_token_encrypted ?? null, input.kiosk_id ?? null, input.title, input.orientation ?? "landscape"],
+    );
+    return id;
+  }
+
+  async updateAbleSignScreen(id: string, patch: Record<string, unknown>): Promise<void> {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (k === "id" || k === "created_at") continue;
+      sets.push(`${k} = ?`);
+      vals.push(v === undefined ? null : v);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    await this._run(`UPDATE ablesign_screens SET ${sets.join(", ")} WHERE id = ?`, vals);
+  }
+
+  async deleteAbleSignScreen(id: string): Promise<void> {
+    await this._run("DELETE FROM ablesign_screens WHERE id = ?", [id]);
+  }
+
+  async upsertAbleSignScreen(input: {
+    account_id: string;
+    ablesign_screen_id: string;
+    title: string;
+    online: boolean;
+    last_heartbeat_at?: string;
+    orientation?: string;
+  }): Promise<string> {
+    const existing = await this._get<{ id: string }>(
+      "SELECT id FROM ablesign_screens WHERE account_id = ? AND ablesign_screen_id = ?",
+      [input.account_id, input.ablesign_screen_id],
+    );
+    if (existing) {
+      await this._run(
+        `UPDATE ablesign_screens SET title = ?, online = ?, last_heartbeat_at = COALESCE(?, last_heartbeat_at), orientation = COALESCE(?, orientation) WHERE id = ?`,
+        [input.title, input.online, input.last_heartbeat_at ?? null, input.orientation ?? null, existing.id],
+      );
+      return existing.id;
+    }
+    return this.createAbleSignScreen({
+      account_id: input.account_id,
+      ablesign_screen_id: input.ablesign_screen_id,
+      title: input.title,
+      orientation: input.orientation,
+    });
+  }
 }

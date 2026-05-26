@@ -47,12 +47,12 @@ dd if="$WORK/in.img" of="$WORK/rootfs.ext4" \
 
 rm "$WORK/in.img"
 
-# Shrink rootfs to actual used + 25% headroom.
+# Shrink rootfs to actual used + 50% headroom (25% was too tight for OTA).
 echo "==> Compacting rootfs.ext4"
 e2fsck -fy "$WORK/rootfs.ext4" || true
 resize2fs -M "$WORK/rootfs.ext4"
 ROOTFS_BYTES_USED="$(stat -c%s "$WORK/rootfs.ext4")"
-ROOTFS_BYTES_SLOT=$(( ROOTFS_BYTES_USED * 5 / 4 ))
+ROOTFS_BYTES_SLOT=$(( ROOTFS_BYTES_USED * 3 / 2 ))
 ROOTFS_BYTES_SLOT=$(( (ROOTFS_BYTES_SLOT + 1048575) / 1048576 * 1048576 ))
 truncate -s "$ROOTFS_BYTES_SLOT" "$WORK/rootfs.ext4"
 resize2fs "$WORK/rootfs.ext4"

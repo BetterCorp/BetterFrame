@@ -593,7 +593,7 @@ export function EntitiesPage(props: EntitiesPageProps) {
                 <tr>
                   <td><a href={`/admin/entities/${e.id}`}><strong>{e.name}</strong></a></td>
                   <td>{entityBadge(e.type)}</td>
-                  <td style="color:#666; font-size:0.85rem">{entityDetail(e)}</td>
+                  <td style="color:#666; font-size:0.85rem; max-width:20rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{entityDetail(e)}</td>
                 </tr>
               ))
             )}

@@ -63,30 +63,36 @@ interface ServiceAddresses {
   capabilitiesXml: string | null;
 }
 
-function wsseHeader(username: string, password: string): string {
-  // WS-Security UsernameToken with PasswordDigest (the ONVIF-standard form).
-  // PasswordDigest = Base64( SHA1( nonce + created + password ) )
-  const nonceRaw = randomBytes(16);
-  const nonce = nonceRaw.toString("base64");
-  const created = new Date().toISOString();
-  const digest = createHash("sha1")
-    .update(Buffer.concat([nonceRaw, Buffer.from(created, "utf8"), Buffer.from(password, "utf8")]))
-    .digest("base64");
+type WssePasswordMode = "digest" | "text";
+
+function wsseHeader(username: string, password: string, mode: WssePasswordMode = "digest"): string {
+  let passwordXml: string;
+  let extraXml = "";
+  if (mode === "digest") {
+    // WS-Security UsernameToken with PasswordDigest (the ONVIF-standard form).
+    // PasswordDigest = Base64( SHA1( nonce + created + password ) )
+    const nonceRaw = randomBytes(16);
+    const nonce = nonceRaw.toString("base64");
+    const created = new Date().toISOString();
+    const digest = createHash("sha1")
+      .update(Buffer.concat([nonceRaw, Buffer.from(created, "utf8"), Buffer.from(password, "utf8")]))
+      .digest("base64");
+    passwordXml = `<Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">${digest}</Password>`;
+    extraXml = `
+          <Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">${nonce}</Nonce>
+          <Created xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">${created}</Created>`;
+  } else {
+    passwordXml = `<Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText">${escapeXml(password)}</Password>`;
+  }
   return `
     <s:Header>
       <Security s:mustUnderstand="1" xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
         <UsernameToken>
           <Username>${escapeXml(username)}</Username>
-          <Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">${digest}</Password>
-          <Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">${nonce}</Nonce>
-          <Created xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">${created}</Created>
+          ${passwordXml}${extraXml}
         </UsernameToken>
       </Security>
     </s:Header>`;
-}
-
-function optionalWsseHeader(username: string, password: string): string {
-  return username ? wsseHeader(username, password) : "";
 }
 
 function escapeXml(s: string): string {
@@ -116,70 +122,89 @@ function extractSoapFault(xml: string): string | null {
 async function soap(
   url: string,
   action: string,
-  body: string,
+  bodyXml: string,
   timeoutMs: number,
   transport?: SoapTransport,
   username?: string,
   password?: string,
 ): Promise<string> {
-  if (transport) return transport(url, action, body, timeoutMs, username, password);
+  const envelopes = buildAuthEnvelopes(username ?? "", password ?? "", bodyXml);
+
+  if (transport) {
+    let lastError = "unknown ONVIF failure";
+    for (const envelope of envelopes) {
+      try {
+        const text = await transport(url, action, envelope.body, timeoutMs, username, password);
+        const fault = extractSoapFault(text);
+        if (!fault) return text;
+        lastError = `ONVIF ${action} SOAP fault (${envelope.kind}): ${fault}`;
+      } catch (err) {
+        lastError = (err as Error).message || lastError;
+      }
+    }
+    throw new Error(lastError);
+  }
 
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const attempts = [
-      { kind: "wsse", auth: "" },
-      ...(username ? [{ kind: "basic", auth: `Basic ${Buffer.from(`${username}:${password ?? ""}`, "utf8").toString("base64")}` }] : []),
-    ];
-
     let digestChallenge: string | null = null;
     let lastError = "unknown ONVIF failure";
 
-    for (const attempt of attempts) {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": `application/soap+xml; charset=utf-8; action="${action}"`,
-          "SOAPAction": action,
-          ...(attempt.auth ? { Authorization: attempt.auth } : {}),
-        },
-        body,
-        signal: controller.signal,
-      });
-      const text = await res.text();
-      if (!digestChallenge) {
-        digestChallenge = res.headers.get("www-authenticate");
-      }
-      const fault = extractSoapFault(text);
-      if (res.ok && !fault) {
-        return text;
-      }
-      lastError = fault
-        ? `ONVIF ${action} SOAP fault (${attempt.kind}): ${fault}`
-        : `ONVIF ${action} HTTP ${String(res.status)} (${attempt.kind}): ${text.slice(0, 300)}`;
-    }
+    for (const envelope of envelopes) {
+      const attempts = envelope.kind === "no-wsse" && username
+        ? [
+            { kind: "basic", auth: `Basic ${Buffer.from(`${username}:${password ?? ""}`, "utf8").toString("base64")}` },
+            { kind: "challenge", auth: "" },
+          ]
+        : [{ kind: envelope.kind, auth: "" }];
 
-    if (username && digestChallenge?.toLowerCase().includes("digest")) {
-      const digestAuth = buildDigestAuthHeader("POST", url, digestChallenge, username, password ?? "");
-      if (digestAuth) {
+      for (const attempt of attempts) {
         const res = await fetch(url, {
           method: "POST",
           headers: {
             "Content-Type": `application/soap+xml; charset=utf-8; action="${action}"`,
             "SOAPAction": action,
-            Authorization: digestAuth,
+            ...(attempt.auth ? { Authorization: attempt.auth } : {}),
           },
-          body,
+          body: envelope.body,
           signal: controller.signal,
         });
         const text = await res.text();
+        if (!digestChallenge) {
+          digestChallenge = res.headers.get("www-authenticate");
+        }
         const fault = extractSoapFault(text);
         if (res.ok && !fault) {
           return text;
         }
         lastError = fault
-          ? `ONVIF ${action} SOAP fault (digest): ${fault}`
-          : `ONVIF ${action} HTTP ${String(res.status)} (digest): ${text.slice(0, 300)}`;
+          ? `ONVIF ${action} SOAP fault (${envelope.kind}/${attempt.kind}): ${fault}`
+          : `ONVIF ${action} HTTP ${String(res.status)} (${envelope.kind}/${attempt.kind}): ${text.slice(0, 300)}`;
+      }
+
+      if (envelope.kind === "no-wsse" && username && digestChallenge?.toLowerCase().includes("digest")) {
+        const digestAuth = buildDigestAuthHeader("POST", url, digestChallenge, username, password ?? "");
+        if (digestAuth) {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": `application/soap+xml; charset=utf-8; action="${action}"`,
+              "SOAPAction": action,
+              Authorization: digestAuth,
+            },
+            body: envelope.body,
+            signal: controller.signal,
+          });
+          const text = await res.text();
+          const fault = extractSoapFault(text);
+          if (res.ok && !fault) {
+            return text;
+          }
+          lastError = fault
+            ? `ONVIF ${action} SOAP fault (digest): ${fault}`
+            : `ONVIF ${action} HTTP ${String(res.status)} (digest): ${text.slice(0, 300)}`;
+        }
       }
     }
     throw new Error(lastError);
@@ -266,6 +291,15 @@ function buildEnvelope(headerXml: string, bodyXml: string): string {
 </s:Envelope>`;
 }
 
+function buildAuthEnvelopes(username: string, password: string, bodyXml: string): Array<{ kind: string; body: string }> {
+  if (!username) return [{ kind: "no-wsse", body: buildEnvelope("", bodyXml) }];
+  return [
+    { kind: "wsse-digest", body: buildEnvelope(wsseHeader(username, password, "digest"), bodyXml) },
+    { kind: "wsse-text", body: buildEnvelope(wsseHeader(username, password, "text"), bodyXml) },
+    { kind: "no-wsse", body: buildEnvelope("", bodyXml) },
+  ];
+}
+
 // Extract all occurrences of a SOAP element value or attribute via regex.
 // XML parsing in regex is regrettable but adequate for ONVIF's small, stable
 // schema. Falls back to empty string when not found.
@@ -345,17 +379,10 @@ async function discoverServices(
     };
   }
 
-  const capabilitiesEnv = buildEnvelope(
-    optionalWsseHeader(input.username, input.password),
-    `<tds:GetCapabilities><tds:Category>All</tds:Category></tds:GetCapabilities>`,
-  ).replace(
-    'xmlns:tt="http://www.onvif.org/ver10/schema">',
-    'xmlns:tt="http://www.onvif.org/ver10/schema" xmlns:tds="http://www.onvif.org/ver10/device/wsdl">',
-  );
   const capabilitiesXml = await trySoap(
     endpoint.deviceUrl,
     "http://www.onvif.org/ver10/device/wsdl/GetCapabilities",
-    capabilitiesEnv,
+    `<tds:GetCapabilities xmlns:tds="http://www.onvif.org/ver10/device/wsdl"><tds:Category>All</tds:Category></tds:GetCapabilities>`,
     timeoutMs,
     transport,
     input.username,
@@ -458,16 +485,13 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
   const services = await discoverServices(input, endpoint, timeoutMs, input.soapTransport);
   const mediaUrl = services.mediaUrl;
 
-  const header = wsseHeader(input.username, input.password);
-
   // ---- GetDeviceInformation (best-effort, for friendly device name) ---------
   let deviceName: string | null = null;
   try {
-    const devInfoEnv = buildEnvelope(header, `<tds:GetDeviceInformation xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>`);
     const devInfoXml = await soap(
       endpoint.deviceUrl,
       "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation",
-      devInfoEnv,
+      `<tds:GetDeviceInformation xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>`,
       timeoutMs,
       input.soapTransport,
       input.username,
@@ -486,11 +510,10 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
   }
 
   // ---- GetProfiles -----------------------------------------------------------
-  const profilesEnv = buildEnvelope(header, `<trt:GetProfiles/>`);
   const profilesXml = await soap(
     mediaUrl,
     "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
-    profilesEnv,
+    `<trt:GetProfiles/>`,
     timeoutMs,
     input.soapTransport,
     input.username,
@@ -532,13 +555,12 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
       </trt:StreamSetup>
       <trt:ProfileToken>${escapeXml(token)}</trt:ProfileToken>
     </trt:GetStreamUri>`;
-    const streamEnv = buildEnvelope(wsseHeader(input.username, input.password), streamBody);
     let streamXml: string;
     try {
       streamXml = await soap(
         mediaUrl,
         "http://www.onvif.org/ver10/media/wsdl/GetStreamUri",
-        streamEnv,
+        streamBody,
         timeoutMs,
         input.soapTransport,
         input.username,
@@ -552,13 +574,12 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
     const snapshotBody = `<trt:GetSnapshotUri>
       <trt:ProfileToken>${escapeXml(token)}</trt:ProfileToken>
     </trt:GetSnapshotUri>`;
-    const snapshotEnv = buildEnvelope(wsseHeader(input.username, input.password), snapshotBody);
     let snapshotUri: string | null = null;
     try {
       const snapshotXml = await soap(
         mediaUrl,
         "http://www.onvif.org/ver10/media/wsdl/GetSnapshotUri",
-        snapshotEnv,
+        snapshotBody,
         timeoutMs,
         input.soapTransport,
         input.username,
@@ -608,18 +629,18 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
 export async function getEventProperties(input: DiscoverInput): Promise<string[]> {
   const timeoutMs = input.timeoutMs ?? 8000;
   const endpoint = normalizeEndpoint(input);
-  const header = wsseHeader(input.username, input.password);
   const services = await discoverServices(input, endpoint, timeoutMs, input.soapTransport);
   const eventUrl = services.eventUrl;
-
-  const body = buildEnvelope(header,
-    `<tev:GetEventProperties xmlns:tev="http://www.onvif.org/ver10/events/wsdl"/>`);
 
   let xml: string;
   try {
     xml = await soap(eventUrl,
       "http://www.onvif.org/ver10/events/wsdl/EventPortType/GetEventPropertiesRequest",
-      body, timeoutMs, input.soapTransport, input.username, input.password);
+      `<tev:GetEventProperties xmlns:tev="http://www.onvif.org/ver10/events/wsdl"/>`,
+      timeoutMs,
+      input.soapTransport,
+      input.username,
+      input.password);
   } catch {
     return [];
   }

@@ -1409,6 +1409,7 @@ export class Repository {
       local_last_ip?: string | null;
       reported_hostname?: string | null;
       network_interfaces_json?: string | null;
+      logging_json?: string | null;
       partitions_json?: string | null;
     },
   ): Promise<void> {
@@ -1432,6 +1433,7 @@ export class Repository {
          local_last_ip = COALESCE(?, local_last_ip),
          reported_hostname = COALESCE(?, reported_hostname),
          network_interfaces_json = COALESCE(?, network_interfaces_json),
+         logging_json = COALESCE(?, logging_json),
          partitions_json = COALESCE(?, partitions_json)
        WHERE id = ?`,
       [
@@ -1453,6 +1455,7 @@ export class Repository {
         patch.local_last_ip ?? null,
         patch.reported_hostname ?? null,
         patch.network_interfaces_json ?? null,
+        patch.logging_json ?? null,
         patch.partitions_json ?? null,
         id,
       ],

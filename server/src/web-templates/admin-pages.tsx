@@ -1591,6 +1591,17 @@ interface KioskEditProps {
   success?: string;
 }
 
+function parseKioskLogging(raw: string | null): { axiomEnabled: boolean | null } {
+  if (!raw) return { axiomEnabled: null };
+  try {
+    const parsed = JSON.parse(raw);
+    const enabled = parsed?.axiom?.enabled;
+    return { axiomEnabled: typeof enabled === "boolean" ? enabled : null };
+  } catch {
+    return { axiomEnabled: null };
+  }
+}
+
 /**
  * Render the kiosk labels region (chips + add forms). Returned standalone so
  * htmx label add/remove can swap just this fragment via
@@ -1770,6 +1781,7 @@ function ManagedConfigCard(props: { kiosk: Kiosk }) {
 
 export function KioskEditPage(props: KioskEditProps) {
   const k = props.kiosk;
+  const logging = parseKioskLogging(k.logging_json);
   return (
     <Layout
       title={`Kiosk: ${k.name}`}
@@ -1802,6 +1814,15 @@ export function KioskEditPage(props: KioskEditProps) {
             <div>Hardware: {k.hardware_model ?? "—"}</div>
             <div>Paired: {k.paired_at ? formatTime(k.paired_at) : "—"}</div>
             <div>Last seen: {k.last_seen_at ? formatTime(k.last_seen_at) : "Never"}</div>
+            <div>
+              Axiom logging: {
+                logging.axiomEnabled == null
+                  ? "Unknown"
+                  : logging.axiomEnabled
+                    ? "Enabled"
+                    : "Disabled"
+              }
+            </div>
           </div>
           <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
             <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Display Power</div>

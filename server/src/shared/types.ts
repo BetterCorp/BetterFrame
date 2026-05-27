@@ -261,6 +261,7 @@ export interface Kiosk {
   encrypt_key_encrypted: string | null;
   reported_hostname: string | null;
   network_interfaces_json: string | null;
+  logging_json: string | null;
   // Managed-image device config. Only meaningful when managed_image=true; for
   // BYO-OS kiosks these fields stay at defaults and the admin UI hides them.
   managed_image: boolean;

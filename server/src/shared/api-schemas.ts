@@ -65,6 +65,7 @@ export const HeartbeatBody = av.object(
     local_port: av.nullable(av.int().min(1).max(65535)).default(null),
     reported_hostname: av.nullable(av.string().maxLength(256)).default(null),
     network_interfaces: av.array(av.any()).default([]),
+    logging: av.optional(av.any()),
     partitions: av.array(HeartbeatPartition).default([]),
     managed_config_applied_version: av.optional(av.int().min(0)),
     managed_config_error: av.optional(av.nullable(av.string().maxLength(4096))),

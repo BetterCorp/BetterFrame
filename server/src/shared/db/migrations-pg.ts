@@ -226,6 +226,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     local_last_ip TEXT,
     reported_hostname TEXT,
     network_interfaces_json JSONB,
+    logging_json JSONB,
     partitions_json JSONB,
     managed_image BOOLEAN NOT NULL DEFAULT false,
     managed_config_json JSONB,
@@ -485,6 +486,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_camera_event_subs_camera ON camera_event_subscriptions(camera_id)`,
 
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS partitions_json JSONB`,
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS logging_json JSONB`,
 
   // ---- UUIDv7 PK migration for existing databases ----
   // Databases created before UUIDv7 migration have INTEGER PKs.

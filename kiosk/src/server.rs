@@ -541,6 +541,11 @@ pub fn heartbeat(
             "local_port": local_port,
             "reported_hostname": hostname,
             "network_interfaces": network_interfaces,
+            "logging": {
+                "axiom": {
+                    "enabled": crate::axiom::enabled(),
+                },
+            },
             "onvif_subscriptions": serde_json::to_value(crate::onvif_events::get_statuses()).unwrap_or_default(),
             "partitions": serde_json::to_value(&hw.partitions).unwrap_or_default(),
             "audio": serde_json::to_value(crate::audio::get_state()).unwrap_or_default(),

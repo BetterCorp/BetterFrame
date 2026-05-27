@@ -721,4 +721,6 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `ALTER TABLE entities ADD CONSTRAINT entities_type_check CHECK(type IN ('camera', 'html', 'web', 'dashboard', 'ablesign'))`,
   `ALTER TABLE entities ADD COLUMN IF NOT EXISTS ablesign_screen_id TEXT REFERENCES ablesign_screens(id) ON DELETE CASCADE`,
   `ALTER TABLE entities ADD COLUMN IF NOT EXISTS managed BOOLEAN NOT NULL DEFAULT false`,
+  `ALTER TABLE layout_cells DROP CONSTRAINT IF EXISTS layout_cells_content_type_check`,
+  `ALTER TABLE layout_cells ADD CONSTRAINT layout_cells_content_type_check CHECK(content_type IN ('none', 'camera', 'web', 'html', 'ablesign'))`,
 ];

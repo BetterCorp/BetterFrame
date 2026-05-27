@@ -332,6 +332,30 @@ jobs:
           echo "bundle-path=$out" >> "$GITHUB_OUTPUT"
           echo "bundle-sha256=$(sha256sum "$out" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
+      - name: Verify RAUC signing cert matches CA
+        if: ${{ env.HAS_RAUC_SECRETS == 'true' }}
+        env:
+          BF_RAUC_SIGNING_CERT: ${{ secrets.BF_RAUC_SIGNING_CERT }}
+        run: |
+          set -e
+          printf '%s\n' "$BF_RAUC_SIGNING_CERT" > /tmp/signing-cert.pem
+          ca_cert="deploy/rauc/ca-cert.pem"
+          if [ ! -f "$ca_cert" ]; then
+            echo "::error::deploy/rauc/ca-cert.pem missing — cannot verify signing cert"
+            exit 1
+          fi
+          echo "==> Verifying signing cert was issued by CA..."
+          if ! openssl verify -CAfile "$ca_cert" /tmp/signing-cert.pem; then
+            echo "::error::RAUC signing cert does NOT match ca-cert.pem in repo. Kiosks will reject this bundle."
+            echo "::error::Regenerate keys with scripts/gen-rauc-signing-keys.sh and update both the repo ca-cert.pem and GitHub secrets."
+            rm -f /tmp/signing-cert.pem
+            exit 1
+          fi
+          echo "==> CA fingerprint: $(openssl x509 -in "$ca_cert" -noout -fingerprint -sha256)"
+          echo "==> Signing cert fingerprint: $(openssl x509 -in /tmp/signing-cert.pem -noout -fingerprint -sha256)"
+          echo "✓ Signing cert verified against CA"
+          rm -f /tmp/signing-cert.pem
+
       - name: Upload RAUC bundle to GitHub Release
         if: ${{ steps.raucb.outputs.bundle-path != '' }}
         uses: softprops/action-gh-release@v3

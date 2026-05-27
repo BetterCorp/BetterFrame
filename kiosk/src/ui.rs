@@ -1978,6 +1978,7 @@ fn ensure_web(
     let wv = webkit6::WebView::new();
     wv.set_vexpand(true);
     wv.set_hexpand(true);
+    wv.set_background_color(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 1.0));
 
     // Hide the pointer inside every WebKit page. The default GTK CSS cursor:
     // none we set on top-level windows doesn't propagate into the WebView's

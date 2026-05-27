@@ -103,11 +103,12 @@ export async function registerScreen(
   title: string,
   orientation: string = "landscape",
 ): Promise<AbleSignScreen> {
-  return apiFetch("POST", "/screens", opts, {
+  const resp = await apiFetch<{ status?: string; data?: AbleSignScreen } & AbleSignScreen>("POST", "/screens", opts, {
     registrationCode,
     title,
     orientation,
   });
+  return resp.data ?? resp;
 }
 
 export async function updateScreen(
@@ -194,7 +195,10 @@ export async function pollRegistration(code: number): Promise<{ screenId: number
     });
     if (!resp.ok) throw new Error(`registration poll: HTTP ${resp.status}`);
     const data = (await resp.json()) as Record<string, unknown>;
-    return { screenId: (data.screenId as number) ?? -1, screenToken: data.screenToken as string | undefined };
+    return {
+      screenId: (data.screenId as number) ?? -1,
+      screenToken: (data.token as string | undefined) ?? (data.screenToken as string | undefined),
+    };
   } finally {
     clearTimeout(t);
   }

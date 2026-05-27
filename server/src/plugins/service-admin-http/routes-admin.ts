@@ -241,6 +241,24 @@ function parseDiscoveredStreams(raw: string): DiscoverAddStream[] {
   }
 }
 
+function normalizeCameraProxyPath(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (/[\r\n]/.test(trimmed)) return null;
+  try {
+    const url = new URL(trimmed);
+    return `${url.pathname || "/"}${url.search}`;
+  } catch {
+    return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  }
+}
+
+function safeProxyContentType(value: unknown): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw || /[\r\n]/.test(raw)) return "application/octet-stream";
+  return raw.slice(0, 120);
+}
+
 async function importDiscoveredCamera(
   deps: AdminDeps,
   rawName: string,
@@ -2331,6 +2349,62 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       });
     }
     return jsonResponse({ cameras: payload });
+  });
+
+  app.get("/api/admin/cameras/:id/proxy", async (event) => {
+    const id = (getRouterParam(event, "id") ?? "");
+    const cam = await deps.repo.getCameraById(id);
+    if (!cam) return jsonResponse({ error: "not_found" }, 404);
+    const url = new URL(event.req.url, "http://localhost");
+    const path = normalizeCameraProxyPath(url.searchParams.get("path") ?? "");
+    if (!path) return jsonResponse({ error: "path_required" }, 400);
+
+    const requestedKioskId = url.searchParams.get("kiosk_id")?.trim() || "";
+    const candidates = requestedKioskId
+      ? (await deps.repo.listKiosksWithCameraInBundle(id)).filter((k) => k.id === requestedKioskId)
+      : await deps.repo.listKiosksWithCameraInBundle(id);
+    const STALE_MS = 2 * 60 * 1000;
+    const now = Date.now();
+    let lastError = "no connected kiosk has this camera";
+    for (const k of candidates) {
+      if (k.last_seen_at && now - new Date(k.last_seen_at).getTime() > STALE_MS) continue;
+      try {
+        const response = await getCoordinator().requestKiosk<{
+          type?: string;
+          request_id?: string;
+          status?: number;
+          content_type?: string;
+          body_b64?: string;
+          error?: string;
+        }>(k.id, {
+          type: "camera-proxy-request",
+          camera_id: id,
+          path,
+          timeout_ms: 8000,
+        }, 11000);
+        const status = Number(response.status ?? 0);
+        if (response.error) {
+          lastError = response.error;
+          continue;
+        }
+        if (status < 200 || status >= 300 || !response.body_b64) {
+          lastError = `camera proxy HTTP ${String(status || 0)}`;
+          continue;
+        }
+        const body = Buffer.from(response.body_b64, "base64");
+        return new Response(new Uint8Array(body), {
+          status,
+          headers: {
+            "content-type": safeProxyContentType(response.content_type),
+            "cache-control": "no-store",
+            "x-bf-camera-proxy-source": `kiosk:${String(k.id)}`,
+          },
+        });
+      } catch (err) {
+        lastError = (err as Error).message || lastError;
+      }
+    }
+    return jsonResponse({ error: "proxy_failed", message: lastError }, 502);
   });
 
   app.get("/api/admin/cameras/:id", async (event) => {

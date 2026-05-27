@@ -247,7 +247,7 @@ fn run_subscription(
                 Ok(events) => {
                     consecutive_errors = 0;
                     for evt in events {
-                        forward_event(server, kiosk_key, &cam.id, &evt, user, pass);
+                        forward_event(server, kiosk_key, &cam.id, &evt);
                         mark_event_received(&cam.id);
                     }
                 }
@@ -752,22 +752,15 @@ fn extract_attr_inline(xml: &str, attr: &str) -> Option<String> {
 
 // ---- Forward to BF server --------------------------------------------------
 
-fn forward_event(
-    server: &str,
-    kiosk_key: &str,
-    camera_id: &str,
-    evt: &OnvifEvent,
-    cam_user: &str,
-    cam_pass: &str,
-) {
-    let attachments = fetch_image_attachments(&evt.data, cam_user, cam_pass);
+fn forward_event(server: &str, kiosk_key: &str, camera_id: &str, evt: &OnvifEvent) {
+    let (data, camera_proxy_paths) = camera_proxy_event_data(&evt.data);
     let mut payload = serde_json::json!({
         "source": evt.source,
-        "data": evt.data,
+        "data": data,
         "timestamp": evt.timestamp,
     });
-    if !attachments.is_empty() {
-        payload["attachments"] = serde_json::json!(attachments);
+    if !camera_proxy_paths.is_empty() {
+        payload["camera_proxy_paths"] = serde_json::json!(camera_proxy_paths);
     }
     let body = serde_json::json!({
         "topic": evt.topic,
@@ -784,96 +777,40 @@ fn forward_event(
         .send();
 }
 
-fn fetch_image_attachments(
+fn camera_proxy_event_data(
     data: &HashMap<String, String>,
-    user: &str,
-    pass: &str,
-) -> HashMap<String, String> {
-    let mut attachments = HashMap::new();
+) -> (HashMap<String, String>, HashMap<String, String>) {
+    let mut out = data.clone();
+    let mut camera_proxy_paths = HashMap::new();
     let image_exts = [".jpg", ".jpeg", ".png", ".bmp"];
     for (key, value) in data {
         if !value.starts_with("http://") && !value.starts_with("https://") {
             continue;
         }
         let lower = value.to_lowercase();
-        if !image_exts.iter().any(|ext| lower.contains(ext)) {
+        let image_like_key = key.to_lowercase().contains("picture") || key.to_lowercase().contains("image");
+        if !image_like_key && !image_exts.iter().any(|ext| lower.contains(ext)) {
             continue;
         }
-        match fetch_image_b64(value, user, pass) {
-            Some(b64) => {
-                let mime = if lower.contains(".png") {
-                    "image/png"
-                } else {
-                    "image/jpeg"
-                };
-                attachments.insert(key.clone(), format!("data:{mime};base64,{b64}"));
-            }
-            None => {
-                warn!("onvif-events: failed to fetch image for {key}: {value}");
-            }
+        if let Some(path) = image_proxy_path(value) {
+            out.insert(key.clone(), path.clone());
+            camera_proxy_paths.insert(key.clone(), path);
         }
     }
-    attachments
+    (out, camera_proxy_paths)
 }
 
-fn fetch_image_b64(url: &str, user: &str, pass: &str) -> Option<String> {
-    use base64::Engine;
-    let client = reqwest::blocking::Client::new();
-    let resp = client
-        .get(url)
-        .basic_auth(user, Some(pass))
-        .timeout(Duration::from_secs(5))
-        .send()
-        .ok()?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        // Retry with digest auth if basic auth returned 401.
-        if status.as_u16() == 401 {
-            return fetch_image_b64_digest(url, user, pass);
-        }
-        warn!("onvif-events: image fetch HTTP {status} for {url}");
-        return None;
+fn image_proxy_path(raw: &str) -> Option<String> {
+    let parsed = url::Url::parse(raw).ok()?;
+    let mut path = parsed.path().to_string();
+    if path.is_empty() {
+        path = "/".to_string();
     }
-    let bytes = resp.bytes().ok()?;
-    if bytes.is_empty() || bytes.len() > 10 * 1024 * 1024 {
-        return None;
+    if let Some(query) = parsed.query() {
+        path.push('?');
+        path.push_str(query);
     }
-    Some(base64::engine::general_purpose::STANDARD.encode(&bytes))
-}
-
-fn fetch_image_b64_digest(url: &str, user: &str, pass: &str) -> Option<String> {
-    use base64::Engine;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .ok()?;
-    let resp = client
-        .get(url)
-        .header("Authorization", digest_auth_header(url, user, pass)?)
-        .send()
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let bytes = resp.bytes().ok()?;
-    if bytes.is_empty() || bytes.len() > 10 * 1024 * 1024 {
-        return None;
-    }
-    Some(base64::engine::general_purpose::STANDARD.encode(&bytes))
-}
-
-fn digest_auth_header(url: &str, user: &str, pass: &str) -> Option<String> {
-    let client = reqwest::blocking::Client::new();
-    let resp = client
-        .get(url)
-        .timeout(Duration::from_secs(3))
-        .send()
-        .ok()?;
-    if resp.status().as_u16() != 401 {
-        return None;
-    }
-    let www_auth = resp.headers().get("www-authenticate")?.to_str().ok()?;
-    digest_auth_header_from_challenge("GET", url, www_auth, user, pass)
+    Some(path)
 }
 
 fn digest_auth_header_from_challenge(
@@ -952,8 +889,8 @@ pub fn decrypt_cluster_public(ciphertext: &str, key: &str) -> Option<String> {
 
 fn decrypt_cluster(ciphertext: &str, cluster_key_b64u: &str) -> Option<String> {
     use aes_gcm::{
-        aead::{Aead, KeyInit},
         Aes256Gcm, Key, Nonce,
+        aead::{Aead, KeyInit},
     };
     use base64::Engine;
 

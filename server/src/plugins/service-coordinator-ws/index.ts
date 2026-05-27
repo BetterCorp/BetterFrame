@@ -366,7 +366,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
             try {
               const msg = JSON.parse(data.toString()) as Record<string, unknown>;
               if (msg["type"] === "pong") return;
-              if (msg["type"] === "onvif-soap-response") {
+              if (msg["type"] === "onvif-soap-response" || msg["type"] === "camera-proxy-response") {
                 const requestId = typeof msg["request_id"] === "string" ? msg["request_id"] : "";
                 const pending = pendingRequests.get(requestId);
                 if (!pending || pending.kioskId !== kiosk.id) return;

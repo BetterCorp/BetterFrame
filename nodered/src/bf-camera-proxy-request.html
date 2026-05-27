@@ -1,0 +1,44 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-camera-proxy-request", {
+    category: "BetterFrame",
+    color: "#a6d4ff",
+    defaults: {
+      name: { value: "" },
+      config: { value: "", type: "bf-server-config", required: true },
+      camera_id: { value: "" },
+      path: { value: "" },
+    },
+    inputs: 1,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      return this.name || "bf camera proxy";
+    },
+    paletteLabel: "bf camera proxy",
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-camera-proxy-request">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-config"><i class="fa fa-cog"></i> BF</label>
+    <input type="text" id="node-input-config" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-camera_id"><i class="fa fa-camera"></i> Camera ID</label>
+    <input type="text" id="node-input-camera_id" placeholder="msg.camera_id" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-path"><i class="fa fa-link"></i> Path</label>
+    <input type="text" id="node-input-path" placeholder="msg.path or msg.pictureUri" />
+  </div>
+  <div class="form-tips">
+    Fetches a camera/NVR-relative path through the kiosk that can reach that
+    camera. Full URLs are normalized to path + query. Sets
+    <code>msg.payload</code> to a Buffer and <code>msg.contentType</code> from
+    the camera response.
+  </div>
+</script>

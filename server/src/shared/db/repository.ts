@@ -2644,12 +2644,12 @@ export class Repository {
            SET status = ?,
                subscribed_by_kiosk_id = ?,
                event_source = ?,
-               event_sink = ?,
+               event_sink = COALESCE(?, camera_event_subscriptions.event_sink),
                subscribed_at = COALESCE(?, camera_event_subscriptions.subscribed_at),
                error_message = ?`,
         [
-          uuidv7(), cameraId, status, kioskId, `kiosk:${kioskId}`, info.resolved_sink ?? null, info.subscribed_at ?? now, info.error ?? null,
-          status, kioskId, `kiosk:${kioskId}`, info.resolved_sink ?? null, info.subscribed_at ?? now, info.error ?? null,
+          uuidv7(), cameraId, status, kioskId, `kiosk:${kioskId}`, info.resolved_sink ?? (status === "active" ? "poll" : null), info.subscribed_at ?? now, info.error ?? null,
+          status, kioskId, `kiosk:${kioskId}`, info.resolved_sink ?? (status === "active" ? "poll" : null), info.subscribed_at ?? now, info.error ?? null,
         ],
       );
     }

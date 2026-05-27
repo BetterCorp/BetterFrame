@@ -623,6 +623,40 @@ fn soap_post_body(
     Ok((status, text, challenge))
 }
 
+/// Cached auth method per host origin. Once we discover which auth works for
+/// a camera, reuse it for all subsequent SOAP calls to avoid 401 probing.
+static AUTH_CACHE: Mutex<Option<HashMap<String, CachedAuth>>> = Mutex::new(None);
+
+#[derive(Clone)]
+enum CachedAuth {
+    WsseDigest,
+    WsseText,
+    Basic,
+    HttpDigest(String), // stored challenge
+}
+
+fn origin_key(url: &str) -> String {
+    url::Url::parse(url)
+        .map(|u| format!("{}:{}", u.host_str().unwrap_or(""), u.port().unwrap_or(80)))
+        .unwrap_or_else(|_| url.to_string())
+}
+
+fn get_cached_auth(url: &str) -> Option<CachedAuth> {
+    AUTH_CACHE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|m| m.get(&origin_key(url)).cloned())
+}
+
+fn set_cached_auth(url: &str, method: CachedAuth) {
+    AUTH_CACHE
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(origin_key(url), method);
+}
+
 fn soap_post_authed(
     url: &str,
     action: &str,
@@ -633,18 +667,34 @@ fn soap_post_authed(
     use base64::Engine;
 
     let client = reqwest::blocking::Client::new();
+
+    // Try cached auth method first — avoids 401 probing on every call.
+    if let Some(cached) = get_cached_auth(url) {
+        let (body, auth) = build_auth_attempt(cached.clone(), user, pass, body_inner, url);
+        if let Ok((status, text, _)) = soap_post_body(&client, url, action, &body, auth) {
+            let fault = extract_soap_fault(&text);
+            if status.is_success() && fault.is_empty() {
+                return Ok(text);
+            }
+            // Cache miss — method no longer works, clear and re-probe.
+        }
+    }
+
+    // Probe all auth methods.
     let mut last_error = String::from("unknown ONVIF SOAP error");
     let mut digest_challenge: Option<String> = None;
-    let attempts = [
+    let attempts: [(&str, String, Option<String>, Option<CachedAuth>); 4] = [
         (
             "wsse-digest",
             soap_envelope(Some(&wsse_header(user, pass)), body_inner),
             None,
+            Some(CachedAuth::WsseDigest),
         ),
         (
             "wsse-text",
             soap_envelope(Some(&wsse_text_header(user, pass)), body_inner),
             None,
+            Some(CachedAuth::WsseText),
         ),
         (
             "basic",
@@ -653,18 +703,27 @@ fn soap_post_authed(
                 "Basic {}",
                 base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"))
             )),
+            Some(CachedAuth::Basic),
         ),
-        ("challenge", soap_envelope(None, body_inner), None),
+        (
+            "challenge",
+            soap_envelope(None, body_inner),
+            None,
+            None, // just to grab digest challenge
+        ),
     ];
 
-    for (kind, body, auth) in attempts {
-        match soap_post_body(&client, url, action, &body, auth) {
+    for (kind, body, auth, cache_entry) in &attempts {
+        match soap_post_body(&client, url, action, body, auth.clone()) {
             Ok((status, text, challenge)) => {
                 if digest_challenge.is_none() {
                     digest_challenge = challenge;
                 }
                 let fault = extract_soap_fault(&text);
                 if status.is_success() && fault.is_empty() {
+                    if let Some(entry) = cache_entry {
+                        set_cached_auth(url, entry.clone());
+                    }
                     return Ok(text);
                 }
                 last_error = format!("soap {kind} HTTP {status}: {fault}");
@@ -673,12 +732,14 @@ fn soap_post_authed(
         }
     }
 
+    // HTTP Digest auth using challenge from the probe round.
     if let Some(challenge) = digest_challenge.as_deref() {
         if let Some(auth) = digest_auth_header_from_challenge("POST", url, challenge, user, pass) {
             let body = soap_envelope(None, body_inner);
             let (status, text, _) = soap_post_body(&client, url, action, &body, Some(auth))?;
             let fault = extract_soap_fault(&text);
             if status.is_success() && fault.is_empty() {
+                set_cached_auth(url, CachedAuth::HttpDigest(challenge.to_string()));
                 return Ok(text);
             }
             last_error = format!("soap digest HTTP {status}: {fault}");
@@ -686,6 +747,37 @@ fn soap_post_authed(
     }
 
     Err(last_error)
+}
+
+fn build_auth_attempt(
+    method: CachedAuth,
+    user: &str,
+    pass: &str,
+    body_inner: &str,
+    url: &str,
+) -> (String, Option<String>) {
+    use base64::Engine;
+    match method {
+        CachedAuth::WsseDigest => (
+            soap_envelope(Some(&wsse_header(user, pass)), body_inner),
+            None,
+        ),
+        CachedAuth::WsseText => (
+            soap_envelope(Some(&wsse_text_header(user, pass)), body_inner),
+            None,
+        ),
+        CachedAuth::Basic => (
+            soap_envelope(None, body_inner),
+            Some(format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"))
+            )),
+        ),
+        CachedAuth::HttpDigest(ref challenge) => {
+            let auth = digest_auth_header_from_challenge("POST", url, challenge, user, pass);
+            (soap_envelope(None, body_inner), auth)
+        }
+    }
 }
 
 /// Extract a human-readable fault reason from SOAP XML, stripping envelope noise.

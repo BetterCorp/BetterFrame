@@ -259,7 +259,6 @@ fn is_same_subnet(
 
 struct PushSubscription {
     subscription_reference: String,
-    resolved_sink: String,
 }
 
 fn create_push_subscription(
@@ -290,15 +289,8 @@ fn create_push_subscription(
             format!("no SubscriptionReference in Subscribe response: {preview}")
         })?;
 
-    let resolved_sink = if callback_url.contains(":18090") {
-        "push:kiosk".to_string()
-    } else {
-        "push:server".to_string()
-    };
-
     Ok(PushSubscription {
         subscription_reference: address,
-        resolved_sink,
     })
 }
 
@@ -345,25 +337,36 @@ fn run_subscription(
     );
 
     // Determine callback URL for push subscription.
-    // If camera is on the same subnet as the kiosk, use direct kiosk callback.
-    // Otherwise fall back to PullPoint polling.
+    // Determine callback URL for push subscription.
+    // 1. Same subnet as kiosk → push to kiosk (http://<kiosk_ip>:18090/...)
+    // 2. Different subnet → push to server (https://<server>/api/onvif-callback/...)
+    // 3. If admin set event_sink="poll" → skip push entirely
     let local_port: u16 = std::env::var("BF_KIOSK_LOCAL_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(18090);
     let force_poll = cam.event_sink.as_deref() == Some("poll");
     let callback_url = if force_poll {
+        info!(
+            "onvif-events: cam {} event_sink=poll, skipping push",
+            cam.id
+        );
         None
     } else {
         let interfaces = read_local_interfaces();
-        if let Some(kiosk_ip) = is_same_subnet(host, &interfaces) {
-            Some(format!(
-                "http://{}:{}/onvif/events/{}",
-                kiosk_ip, local_port, cam.id
-            ))
+        let (cb_url, sink_label) = if let Some(kiosk_ip) = is_same_subnet(host, &interfaces) {
+            let url = format!("http://{}:{}/oce/{}", kiosk_ip, local_port, cam.id);
+            info!("onvif-events: cam {} same subnet, callback={url}", cam.id);
+            (url, "push:kiosk")
         } else {
-            None
-        }
+            let url = format!("{}/oce/{}", server, cam.id);
+            info!(
+                "onvif-events: cam {} different subnet, server callback={url}",
+                cam.id
+            );
+            (url, "push:server")
+        };
+        Some((cb_url, sink_label))
     };
 
     let mut backoff_secs: u64 = 60;
@@ -376,7 +379,7 @@ fn run_subscription(
         set_status(&cam.id, "subscribing", None);
 
         // ---- Try push subscription first ----
-        if let Some(ref cb_url) = callback_url {
+        if let Some((ref cb_url, sink_label)) = callback_url {
             info!(
                 "onvif-events: cam {} trying push subscription, callback={cb_url}",
                 cam.id
@@ -384,15 +387,10 @@ fn run_subscription(
             match create_push_subscription(&event_url, cb_url, user, pass) {
                 Ok(push_sub) => {
                     info!(
-                        "onvif-events: cam {} push subscription active, ref={}, sink={}",
-                        cam.id, push_sub.subscription_reference, push_sub.resolved_sink
+                        "onvif-events: cam {} push subscription active, ref={}, sink={sink_label}",
+                        cam.id, push_sub.subscription_reference
                     );
-                    set_status_with_sink(
-                        &cam.id,
-                        "active",
-                        None,
-                        Some(push_sub.resolved_sink.clone()),
-                    );
+                    set_status_with_sink(&cam.id, "active", None, Some(sink_label.to_string()));
                     backoff_secs = 30;
 
                     // Push mode: just renew periodically. Events arrive via HTTP callback.

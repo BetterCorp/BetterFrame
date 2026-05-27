@@ -80,7 +80,7 @@ pub fn start(state: LocalServerState) {
                 .route("/local/info", get(local_info_handler))
                 .route("/local/layout/:id", get(local_layout_handler))
                 .route("/local/snapshot/:camera_id", get(local_snapshot_handler))
-                .route("/onvif/events/:camera_id", post(onvif_event_callback))
+                .route("/oce/:camera_id", post(onvif_event_callback))
                 .route("/proxy/*path", any(proxy_handler))
                 .with_state(state);
 

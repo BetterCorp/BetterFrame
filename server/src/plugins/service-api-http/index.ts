@@ -776,6 +776,78 @@ function registerKioskRoutes(
     return { ok: true, event_id: eventId };
   });
 
+  // ---- ONVIF push callback (camera → server directly) ----------------------
+  // Cameras that can't reach a kiosk push SOAP Notify envelopes here.
+  // No auth — cameras can't send Bearer tokens. Path contains camera UUID.
+  app.post("/oce/:cameraId", async (event) => {
+    const cameraId = getRouterParam(event, "cameraId") ?? "";
+    const rawBody = await readBody<string>(event);
+    const xml = typeof rawBody === "string" ? rawBody : String(rawBody ?? "");
+    if (!xml || !cameraId) {
+      return { ok: true, count: 0 };
+    }
+
+    const cam = await repo.getCameraById(cameraId);
+    if (!cam) {
+      event.context.obs?.log.warn("onvif-callback: unknown camera {id}", { id: cameraId });
+      return { ok: false, error: "unknown camera" };
+    }
+
+    // Find which kiosk manages this camera's events (for attribution).
+    const subs = await repo.listEventSubscriptions(cameraId);
+    const activeSub = subs.find((s: any) => s.status === "active");
+    const kioskId = activeSub?.subscribed_by_kiosk_id ?? null;
+
+    // Parse ONVIF Notify SOAP envelope — extract NotificationMessage blocks.
+    const events = parseOnvifNotify(xml);
+    if (events.length === 0) {
+      return { ok: true, count: 0 };
+    }
+
+    event.context.obs?.log.info("onvif-callback: {n} events for camera {cam}", { n: events.length, cam: cameraId });
+
+    for (const evt of events) {
+      try {
+        const eventId = await repo.insertEvent({
+          source_kiosk_id: kioskId,
+          source_camera_id: cameraId,
+          source_type: "onvif",
+          topic: evt.topic,
+          property_op: evt.propertyOp ?? null,
+          payload: evt.payload,
+          forwarded_to_nodered: false,
+        });
+
+        if (evt.topic) {
+          repo.markEventReceived(cameraId, evt.topic).catch(() => {});
+        }
+
+        const out = {
+          event_id: eventId,
+          kiosk_id: kioskId,
+          camera_id: cameraId,
+          source_type: "onvif",
+          property_op: evt.propertyOp ?? null,
+          topic: evt.topic,
+          payload: evt.payload,
+          timestamp: new Date().toISOString(),
+          source: "camera-push",
+        };
+        const tenantInfo = { tenant_slug: (cam as any).tenant_slug ?? undefined, tenant_name: (cam as any).tenant_name ?? undefined };
+        nodered.forward(evt.topic, out, tenantInfo);
+        mqtt.publishEvent(kioskId ?? "server", evt.topic, out);
+        nodered.forward("camera.event", out, tenantInfo);
+        nodered.forward("onvif.event", out, tenantInfo);
+        nodered.forward("onvif.motion", out, tenantInfo);
+        nodered.forward("onvif.anpr", out, tenantInfo);
+      } catch (err: any) {
+        event.context.obs?.log.warn("onvif-callback: event insert failed: {msg}", { msg: err.message ?? "unknown" });
+      }
+    }
+
+    return { ok: true, count: events.length };
+  });
+
   // ---- Kiosk log ingestion (batch) -----------------------------------------
   app.post("/api/kiosk/logs", async (event) => {
     const kiosk = await requireKiosk(event, repo, auth);
@@ -1105,4 +1177,65 @@ function isKioskInRolloutBucket(kioskId: string, rolloutId: string, percentage: 
     .digest();
   const bucket = h.readUInt32BE(0) % 100;
   return bucket < percentage;
+}
+
+/**
+ * Parse ONVIF SOAP Notify envelope into structured events.
+ * Extracts topic, source key/value pairs, and data key/value pairs from
+ * each NotificationMessage block.
+ */
+function parseOnvifNotify(xml: string): Array<{
+  topic: string;
+  propertyOp: string | null;
+  payload: Record<string, unknown>;
+}> {
+  const results: Array<{ topic: string; propertyOp: string | null; payload: Record<string, unknown> }> = [];
+
+  // Split on NotificationMessage boundaries
+  const msgRegex = /<[^:]*:?NotificationMessage[^>]*>([\s\S]*?)<\/[^:]*:?NotificationMessage>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = msgRegex.exec(xml)) !== null) {
+    const block = match[1]!;
+
+    // Extract topic
+    const topicMatch = block.match(/<[^:]*:?Topic[^>]*>([\s\S]*?)<\/[^:]*:?Topic>/i);
+    let topic = topicMatch?.[1]?.trim() ?? "";
+    // ONVIF topics look like "tns1:RuleEngine/CellMotionDetector/Motion" — strip namespace prefix
+    topic = topic.replace(/^[a-z0-9]+:/i, "");
+
+    // Extract source items
+    const source: Record<string, string> = {};
+    const sourceBlock = block.match(/<[^:]*:?Source[^>]*>([\s\S]*?)<\/[^:]*:?Source>/i);
+    if (sourceBlock) {
+      const itemRegex = /<[^:]*:?SimpleItem[^>]*Name="([^"]*)"[^>]*Value="([^"]*)"/gi;
+      let si: RegExpExecArray | null;
+      while ((si = itemRegex.exec(sourceBlock[1]!)) !== null) {
+        source[si[1]!] = si[2]!;
+      }
+    }
+
+    // Extract data items
+    const data: Record<string, string> = {};
+    const dataBlock = block.match(/<[^:]*:?Data[^>]*>([\s\S]*?)<\/[^:]*:?Data>/i);
+    if (dataBlock) {
+      const itemRegex = /<[^:]*:?SimpleItem[^>]*Name="([^"]*)"[^>]*Value="([^"]*)"/gi;
+      let di: RegExpExecArray | null;
+      while ((di = itemRegex.exec(dataBlock[1]!)) !== null) {
+        data[di[1]!] = di[2]!;
+      }
+    }
+
+    // Property operation (Changed/Initialized/Deleted)
+    const propMatch = block.match(/PropertyOperation="([^"]*)"/i);
+
+    if (topic) {
+      results.push({
+        topic,
+        propertyOp: propMatch?.[1] ?? null,
+        payload: { source, data, raw_topic: topicMatch?.[1]?.trim() ?? topic },
+      });
+    }
+  }
+
+  return results;
 }

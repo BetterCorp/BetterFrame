@@ -130,9 +130,9 @@ function loadServerKey(config: SecretsConfig, log: SecretsLog): Buffer {
     }
   }
 
-  // 3. Generate new dev key
-  log.warn(
-    `GENERATING DEV SERVER KEY at ${keyPath} — production should use systemd-creds`,
+  // 3. No key found — generate one and persist.
+  log.info(
+    `encryption key not found, generating new key at ${keyPath}`,
   );
   try {
     mkdirSync(dirname(keyPath), { recursive: true });

@@ -351,7 +351,10 @@ fn run_subscription(
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(18090);
-    let callback_url = {
+    let force_poll = cam.event_sink.as_deref() == Some("poll");
+    let callback_url = if force_poll {
+        None
+    } else {
         let interfaces = read_local_interfaces();
         if let Some(kiosk_ip) = is_same_subnet(host, &interfaces) {
             Some(format!(
@@ -359,8 +362,6 @@ fn run_subscription(
                 kiosk_ip, local_port, cam.id
             ))
         } else {
-            // Camera not on same subnet — no reachable callback URL.
-            // Future: could use server callback URL from bundle if available.
             None
         }
     };

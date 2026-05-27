@@ -1381,6 +1381,7 @@ export function CameraEditPage(props: CameraEditProps) {
                     <label for="event_sink">Event Sink (push target)</label>
                     <select id="event_sink" name="event_sink" class="form-input">
                       <option value="auto" selected={cam.event_sink === "auto"}>Auto (same subnet → kiosk, else server)</option>
+                      <option value="poll" selected={cam.event_sink === "poll"}>Poll (PullPoint, 5s interval)</option>
                       <option value="server" selected={cam.event_sink === "server"}>Server</option>
                       {props.subscriptions.map((sub) => (
                         <option value={`kiosk:${sub.kiosk.id}`} selected={cam.event_sink === `kiosk:${sub.kiosk.id}`}>
@@ -1441,6 +1442,14 @@ export function CameraEditPage(props: CameraEditProps) {
                           status === "pending" ? "Pending" :
                           status === "failed" ? "Failed" :
                           "Inactive";
+                        const sinkRaw = sub?.event_sink ?? null;
+                        const sinkLabel = sinkRaw === "push:kiosk" ? "Push → Kiosk"
+                          : sinkRaw === "push:server" ? "Push → Server"
+                          : sinkRaw === "poll" ? "Poll (5s)"
+                          : sinkRaw ? sinkRaw : (status === "active" ? "unknown" : "—");
+                        const sinkColor = sinkRaw?.startsWith("push:") ? "#22c55e"
+                          : sinkRaw === "poll" ? "#f59e0b"
+                          : "#9ca3af";
                         return (
                           <tr>
                             <td style="text-align:center" title={dotTitle}>
@@ -1448,7 +1457,11 @@ export function CameraEditPage(props: CameraEditProps) {
                             </td>
                             <td><code style="font-size:0.8rem">{t}</code></td>
                             <td style="font-size:0.8rem; color:#666">{sub?.event_source ?? "—"}</td>
-                            <td style="font-size:0.8rem; color:#666">{sub?.event_sink ?? "—"}</td>
+                            <td style="font-size:0.8rem">
+                              <span style={`display:inline-block; padding:0.1rem 0.4rem; border-radius:3px; font-size:0.75rem; color:#fff; background:${sinkColor}`}>
+                                {sinkLabel}
+                              </span>
+                            </td>
                             <td style="font-size:0.8rem; white-space:nowrap; color:#666">
                               {sub?.last_event_at ? formatTime(sub.last_event_at) : "—"}
                             </td>

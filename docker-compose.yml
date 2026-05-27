@@ -38,6 +38,7 @@ services:
         source: ${SERVER_SEC_CONFIG:-./sec-config.yaml}
         target: /home/bsb/sec-config.yaml
         read_only: true
+      - betterframe-data:/var/lib/betterframe
     expose:
       - "18080"
       - "18081"

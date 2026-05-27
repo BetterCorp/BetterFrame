@@ -1961,20 +1961,17 @@ fn ensure_web(
             }
         });
         // Detach from previous container so the new grid can take it.
-        let was_parented = wv.parent().is_some();
-        if was_parented {
+        if wv.parent().is_some() {
             wv.unparent();
         }
-        // WebKit loses its rendering surface when unparented. Schedule a
-        // reload after the caller re-attaches it to the new grid.
-        if !was_parented {
-            let wv_weak = wv.downgrade();
-            gtk::glib::idle_add_local_once(move || {
-                if let Some(wv) = wv_weak.upgrade() {
-                    webkit6::prelude::WebViewExt::reload(&wv);
-                }
-            });
-        }
+        // Always reload after re-attach — WebKit can lose rendering surface
+        // when reparented between grids (layout switches).
+        let wv_weak = wv.downgrade();
+        gtk::glib::idle_add_local_once(move || {
+            if let Some(wv) = wv_weak.upgrade() {
+                webkit6::prelude::WebViewExt::reload(&wv);
+            }
+        });
         return wv;
     }
 

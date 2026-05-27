@@ -266,19 +266,26 @@ pub fn apply(
     // 4. Hand off to rauc. `rauc install` blocks until the bundle is fully
     // copied into the inactive slot and bootloader is flipped. Exit code 0
     // = success; anything else = leave current slot booted, no reboot.
-    let status = Command::new("rauc")
+    let output = Command::new("rauc")
         .args(["install", bundle_path.to_str().unwrap_or("")])
-        .status()
+        .output()
         .map_err(|e| {
             let _ = report_applied(server, key, &info.version, Some(&format!("rauc spawn: {e}")));
             format!("rauc spawn: {e}")
         })?;
-    let _ = fs::remove_file(&bundle_path);
-    if !status.success() {
-        let msg = format!("rauc install exit {status:?}");
+    if !output.status.success() {
+        let msg = format_command_failure(
+            "rauc install",
+            output.status,
+            &output.stdout,
+            &output.stderr,
+        );
+        warn!("os-update: {msg}");
         let _ = report_applied(server, key, &info.version, Some(&msg));
+        let _ = fs::remove_file(&bundle_path);
         return Err(msg);
     }
+    let _ = fs::remove_file(&bundle_path);
 
     // 5. Report success BEFORE reboot. After this we lose the server
     // connection mid-call; that's fine, server sets last_attempt_at from
@@ -316,6 +323,47 @@ fn report_applied(server: &str, key: &str, version: &str, error: Option<&str>) -
         .send()
         .map(|_| ())
         .map_err(|e| format!("report applied: {e}"))
+}
+
+fn format_command_failure(
+    command: &str,
+    status: std::process::ExitStatus,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> String {
+    let code = status
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let mut msg = format!("{command} failed (exit code {code}, status {status:?})");
+    append_command_output(&mut msg, "stdout", stdout);
+    append_command_output(&mut msg, "stderr", stderr);
+    msg
+}
+
+fn append_command_output(msg: &mut String, label: &str, bytes: &[u8]) {
+    let text = String::from_utf8_lossy(bytes);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    const MAX_OUTPUT_CHARS: usize = 4000;
+    msg.push_str("; ");
+    msg.push_str(label);
+    msg.push_str(": ");
+    if trimmed.chars().count() <= MAX_OUTPUT_CHARS {
+        msg.push_str(trimmed);
+        return;
+    }
+
+    let start = trimmed
+        .char_indices()
+        .nth(trimmed.chars().count().saturating_sub(MAX_OUTPUT_CHARS))
+        .map(|(idx, _)| idx)
+        .unwrap_or(0);
+    msg.push_str("[truncated] ");
+    msg.push_str(&trimmed[start..]);
 }
 
 fn hex_lower(bytes: &[u8]) -> String {

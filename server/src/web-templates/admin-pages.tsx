@@ -4453,51 +4453,51 @@ export function AbleSignPage(props: AbleSignPageProps) {
 }
 
 interface AbleSignScreensPageProps {
-  account: any | null;
   screens: any[];
-  kiosks: any[];
-  accounts?: any[];
+  accountId: string | null;
+  error?: string;
 }
 
 export function AbleSignScreensPage(props: AbleSignScreensPageProps) {
-  const a = props.account;
-  const isGlobal = !a;
-  const title = isGlobal ? "AbleSign — All Screens" : `AbleSign — ${String(a.name)}`;
+  const aid = props.accountId;
   return (
-    <Layout title={title} activeNav={isGlobal ? "ablesign-screens" : "ablesign"}>
-      <h1 style="font-size:1.5rem; margin:0 0 0.5rem">{isGlobal ? "All AbleSign Screens" : `${String(a.name)} — Screens`}</h1>
-      {a ? (
-        <p style="color:#999; margin:0 0 1.5rem; font-size:0.85rem">
-          {String(a.screen_count ?? 0)} screens
-          {a.last_sync_at ? ` · synced ${formatTime(a.last_sync_at)}` : ""}
-        </p>
-      ) : ""}
+    <Layout title="AbleSign — Screens" activeNav="ablesign-screens">
+      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">AbleSign Screens</h1>
 
-      {a ? (
+      {props.error ? <div class="alert alert-error" style="margin-bottom:1rem">{props.error}</div> : ""}
+
+      {!aid ? (
         <div class="card" style="margin-bottom:1.5rem">
-          <h2 style="font-size:1rem; margin:0 0 0.75rem">Add Screen</h2>
-          <form method="POST" action={`/admin/ablesign/${String(a.id)}/screens/add`} style="display:flex; gap:0.5rem; align-items:end">
+          <p style="color:#999; font-size:0.85rem">No AbleSign account configured. Add one under Account settings first.</p>
+        </div>
+      ) : (
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="font-size:1rem; margin:0 0 0.75rem">Create Screen</h2>
+          <form method="POST" action={`/admin/ablesign/${aid}/screens/add`} style="display:flex; gap:0.5rem; align-items:end">
             <label style="font-size:0.85rem">
               {"Screen Name"}<br/>
               <input type="text" name="title" required style="width:16rem" placeholder="Lobby Display" />
             </label>
             <button type="submit" class="btn btn-sm">{"Create & Pair"}</button>
           </form>
+          <p style="font-size:0.8rem; color:#999; margin:0.5rem 0 0">
+            Registers a new screen in AbleSign headlessly and creates a linked entity for use in layouts.
+          </p>
         </div>
-      ) : ""}
+      )}
 
       <div class="card" style="margin-bottom:1rem">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem">
           <h2 style="font-size:1rem; margin:0">Screens</h2>
-          {a ? (
-            <form method="POST" action={`/admin/ablesign/${String(a.id)}/sync`}>
+          {aid ? (
+            <form method="POST" action={`/admin/ablesign/${aid}/sync`}>
               <button type="submit" class="btn btn-sm btn-ghost">Sync from AbleSign</button>
             </form>
           ) : ""}
         </div>
 
         {props.screens.length === 0 ? (
-          <p style="color:#999; font-size:0.85rem">No screens yet. Add one above or sync from AbleSign.</p>
+          <p style="color:#999; font-size:0.85rem">No screens yet. Create one above or sync from AbleSign.</p>
         ) : (
           <div class="table-wrap">
             <table>
@@ -4506,13 +4506,12 @@ export function AbleSignScreensPage(props: AbleSignScreensPageProps) {
                 <th>Orientation</th>
                 <th>Status</th>
                 <th>Source</th>
-                <th>Assigned Kiosk</th>
                 <th>Actions</th>
               </tr></thead>
               <tbody>
                 {props.screens.map((s: any) => (
                   <tr>
-                    <td>{s.title}</td>
+                    <td><a href={`/admin/ablesign/screens/${String(s.id)}`}>{s.title}</a></td>
                     <td style="font-size:0.85rem">{s.orientation}</td>
                     <td>
                       {s.online
@@ -4525,18 +4524,6 @@ export function AbleSignScreensPage(props: AbleSignScreensPageProps) {
                         : <span class="badge badge-gray">External</span>}
                     </td>
                     <td>
-                      <form method="POST" action={`/admin/ablesign/screens/${String(s.id)}/assign`}
-                        style="display:flex; gap:0.25rem; align-items:center">
-                        <select name="kiosk_id" style="font-size:0.85rem; max-width:14rem">
-                          <option value="">— None —</option>
-                          {props.kiosks.map((k: any) => (
-                            <option value={String(k.id)} selected={k.id === s.kiosk_id}>{k.name}</option>
-                          ))}
-                        </select>
-                        <button type="submit" class="btn btn-sm btn-ghost">Assign</button>
-                      </form>
-                    </td>
-                    <td>
                       <form method="POST" action={`/admin/ablesign/screens/${String(s.id)}/delete`} style="display:inline">
                         <button type="submit" class="btn btn-sm btn-ghost" style="color:#c00">Delete</button>
                       </form>
@@ -4547,6 +4534,64 @@ export function AbleSignScreensPage(props: AbleSignScreensPageProps) {
             </table>
           </div>
         )}
+      </div>
+    </Layout>
+  );
+}
+
+// ---- AbleSign Screen Detail Page ---------------------------------------------
+
+interface AbleSignScreenDetailPageProps {
+  screen: any;
+  remoteScreen: any | null;
+  entity: any | null;
+}
+
+export function AbleSignScreenDetailPage(props: AbleSignScreenDetailPageProps) {
+  const s = props.screen;
+  const r = props.remoteScreen;
+  return (
+    <Layout title={`AbleSign — ${String(s.title)}`} activeNav="ablesign-screens">
+      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">{s.title}</h1>
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="font-size:1rem; margin:0 0 0.75rem">Screen Configuration</h2>
+        <form method="POST" action={`/admin/ablesign/screens/${String(s.id)}`}>
+          <div style="display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:1rem">
+            <label style="font-size:0.85rem">
+              {"Title"}<br/>
+              <input type="text" name="title" value={s.title} style="width:16rem" />
+            </label>
+            <label style="font-size:0.85rem">
+              {"Orientation"}<br/>
+              <select name="orientation" style="font-size:0.85rem">
+                <option value="landscape" selected={s.orientation === "landscape"}>Landscape</option>
+                <option value="portrait" selected={s.orientation === "portrait"}>Portrait</option>
+              </select>
+            </label>
+            <label style="font-size:0.85rem">
+              {"Description"}<br/>
+              <input type="text" name="description" value={r?.description ?? ""} style="width:20rem" placeholder="Optional" />
+            </label>
+          </div>
+          <button type="submit" class="btn btn-sm">Save</button>
+        </form>
+      </div>
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="font-size:1rem; margin:0 0 0.5rem">Status</h2>
+        <div style="display:flex; gap:1.5rem; flex-wrap:wrap; font-size:0.85rem; color:#666">
+          <div>{"AbleSign ID: "}{String(s.ablesign_screen_id)}</div>
+          <div>{"Status: "}{s.online ? "Online" : "Offline"}</div>
+          <div>{"Source: "}{props.entity ? "Internal" : "External"}</div>
+          {props.entity ? <div>{"Entity: "}<a href={`/admin/entities/${String(props.entity.id)}`}>{props.entity.name}</a></div> : ""}
+          {r?.heartbeatTime ? <div>{"Last heartbeat: "}{formatTime(r.heartbeatTime)}</div> : ""}
+          {r?.timezone ? <div>{"Timezone: "}{String(r.timezone)}</div> : ""}
+        </div>
+      </div>
+
+      <div style="display:flex; gap:0.5rem">
+        <a href="/admin/ablesign/screens" class="btn btn-sm btn-ghost">Back to Screens</a>
       </div>
     </Layout>
   );

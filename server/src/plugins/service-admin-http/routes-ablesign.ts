@@ -6,7 +6,7 @@ import { type H3, getRouterParam, readBody, createError } from "h3";
 import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import * as ablesign from "../../shared/ablesign.js";
-import { AbleSignPage, AbleSignScreensPage, AbleSignContentPage, AbleSignPlaylistsPage } from "../../web-templates/admin-pages.js";
+import { AbleSignPage, AbleSignScreensPage, AbleSignScreenDetailPage, AbleSignContentPage, AbleSignPlaylistsPage } from "../../web-templates/admin-pages.js";
 
 export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
 
@@ -55,19 +55,12 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
       });
     } catch { /* sync failure is non-fatal */ }
 
-    return new Response(null, { status: 302, headers: { location: `/admin/ablesign/${accountId}/screens` } });
+    return new Response(null, { status: 302, headers: { location: "/admin/ablesign/screens" } });
   });
 
-  app.get("/admin/ablesign/:id/screens", async (event) => {
-    const id = getRouterParam(event, "id") ?? "";
-    const account = await deps.repo.getAbleSignAccount(id);
-    if (!account) throw createError({ statusCode: 404, statusMessage: "Account not found" });
-    const screens = await deps.repo.listAbleSignScreens(id);
-    const kiosks = await deps.repo.listKiosks();
-    for (const s of screens) {
-      (s as any).has_entity = !!(await deps.repo.getEntityByAbleSignScreen(s.id));
-    }
-    return htmlPage(AbleSignScreensPage({ account, screens, kiosks }));
+  // Redirect old per-account route to global screens page.
+  app.get("/admin/ablesign/:id/screens", async () => {
+    return new Response(null, { status: 302, headers: { location: "/admin/ablesign/screens" } });
   });
 
   app.post("/admin/ablesign/:id/sync", async (event) => {
@@ -114,7 +107,7 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
     const body = await readBody<Record<string, string>>(event);
     const title = (body?.title ?? "").trim();
     if (!title) {
-      return new Response(null, { status: 302, headers: { location: `/admin/ablesign/${accountId}/screens` } });
+      return new Response(null, { status: 302, headers: { location: "/admin/ablesign/screens" } });
     }
 
     try {
@@ -155,7 +148,7 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
       // redirect back — error handling TODO
     }
 
-    return new Response(null, { status: 302, headers: { location: `/admin/ablesign/${accountId}/screens` } });
+    return new Response(null, { status: 302, headers: { location: "/admin/ablesign/screens" } });
   });
 
   app.post("/admin/ablesign/screens/:sid/assign", async (event) => {
@@ -166,7 +159,55 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
 
     const screen = await deps.repo.getAbleSignScreen(sid);
     const accountId = screen?.account_id ?? "";
-    return new Response(null, { status: 302, headers: { location: `/admin/ablesign/${accountId}/screens` } });
+    return new Response(null, { status: 302, headers: { location: "/admin/ablesign/screens" } });
+  });
+
+  // ---- Screen detail + config -------------------------------------------------
+
+  app.get("/admin/ablesign/screens/:sid", async (event) => {
+    const sid = getRouterParam(event, "sid") ?? "";
+    const screen = await deps.repo.getAbleSignScreen(sid);
+    if (!screen) throw createError({ statusCode: 404, statusMessage: "Screen not found" });
+    const account = await deps.repo.getAbleSignAccount(screen.account_id);
+    let remoteScreen: any = null;
+    if (account) {
+      try {
+        const apiKey = deps.secrets.decryptString(account.api_key_encrypted, "ablesign-key");
+        remoteScreen = await ablesign.getScreen(
+          { apiKey, workspaceId: account.workspace_id || undefined },
+          Number(screen.ablesign_screen_id),
+        );
+      } catch { /* remote fetch failed */ }
+    }
+    const entity = await deps.repo.getEntityByAbleSignScreen(sid);
+    return htmlPage(AbleSignScreenDetailPage({ screen, remoteScreen, entity }));
+  });
+
+  app.post("/admin/ablesign/screens/:sid", async (event) => {
+    const sid = getRouterParam(event, "sid") ?? "";
+    const screen = await deps.repo.getAbleSignScreen(sid);
+    if (!screen) throw createError({ statusCode: 404, statusMessage: "Screen not found" });
+    const account = await deps.repo.getAbleSignAccount(screen.account_id);
+    if (!account) throw createError({ statusCode: 404, statusMessage: "Account not found" });
+
+    const body = await readBody<Record<string, string>>(event);
+    const title = (body?.title ?? "").trim();
+    const orientation = body?.orientation ?? "landscape";
+    const description = (body?.description ?? "").trim();
+
+    try {
+      const apiKey = deps.secrets.decryptString(account.api_key_encrypted, "ablesign-key");
+      await ablesign.updateScreen(
+        { apiKey, workspaceId: account.workspace_id || undefined },
+        Number(screen.ablesign_screen_id),
+        { title: title || undefined, orientation, description: description || undefined },
+      );
+      if (title) {
+        await deps.repo.updateAbleSignScreen(sid, { title, orientation });
+      }
+    } catch { /* update failed */ }
+
+    return new Response(null, { status: 302, headers: { location: `/admin/ablesign/screens/${sid}` } });
   });
 
   app.post("/admin/ablesign/:id/delete", async (event) => {
@@ -192,19 +233,19 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
       await deps.repo.deleteAbleSignScreen(sid);
     }
     const accountId = screen?.account_id ?? "";
-    return new Response(null, { status: 302, headers: { location: `/admin/ablesign/${accountId}/screens` } });
+    return new Response(null, { status: 302, headers: { location: "/admin/ablesign/screens" } });
   });
 
   // ---- Global views (all accounts aggregated) --------------------------------
 
   app.get("/admin/ablesign/screens", async () => {
-    const screens = await deps.repo.listAbleSignScreens();
-    const kiosks = await deps.repo.listKiosks();
     const accounts = await deps.repo.listAbleSignAccounts();
+    const account = accounts[0] ?? null;
+    const screens = account ? await deps.repo.listAbleSignScreens(account.id) : [];
     for (const s of screens) {
       (s as any).has_entity = !!(await deps.repo.getEntityByAbleSignScreen(s.id));
     }
-    return htmlPage(AbleSignScreensPage({ account: null, screens, kiosks, accounts }));
+    return htmlPage(AbleSignScreensPage({ screens, accountId: account?.id ?? null }));
   });
 
   app.get("/admin/ablesign/content", async () => {

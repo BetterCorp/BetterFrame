@@ -73,7 +73,6 @@ function Sidebar(props: { activeNav?: string }) {
         <NavItem href="/admin/os-updates" label="OS Updates" icon="&#9679;" active={a === "os-updates"} />
         <NavItem href="/admin/cloud-accounts" label="Cloud Cams" icon="&#9729;" active={a === "cloud"} />
         <NavGroup label="AbleSign" icon="&#9654;" active={a?.startsWith("ablesign")}>
-          <NavItem href="/admin/ablesign" label="Accounts" icon=" " active={a === "ablesign"} />
           <NavItem href="/admin/ablesign/screens" label="Screens" icon=" " active={a === "ablesign-screens"} />
           <NavItem href="/admin/ablesign/content" label="Content" icon=" " active={a === "ablesign-content"} />
           <NavItem href="/admin/ablesign/playlists" label="Playlists" icon=" " active={a === "ablesign-playlists"} />

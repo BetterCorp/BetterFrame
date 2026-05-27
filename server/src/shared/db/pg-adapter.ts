@@ -13,9 +13,9 @@ import type { DbAdapter, RunResult, Row, SqlValue } from "./db-adapter.js";
 
 export class PgAdapter implements DbAdapter {
   private readonly pool: Pool;
-  /** Per-async-context client when inside transaction(). */
   private currentTxClient: PoolClient | null = null;
   private txDepth = 0;
+  private searchPath = "public";
 
   constructor(connectionString: string, poolMax: number = 10) {
     this.pool = new Pool({
@@ -70,8 +70,12 @@ export class PgAdapter implements DbAdapter {
   private async runner<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
     if (this.currentTxClient) return fn(this.currentTxClient);
     const client = await this.pool.connect();
-    try { return await fn(client); }
-    finally { client.release(); }
+    try {
+      await client.query(`SET search_path TO ${this.searchPath}, public`);
+      return await fn(client);
+    } finally {
+      client.release();
+    }
   }
 
   async run(sql: string, params: ReadonlyArray<SqlValue> = []): Promise<RunResult> {
@@ -149,13 +153,10 @@ export class PgAdapter implements DbAdapter {
   dialect(): "postgres" { return "postgres"; }
 
   async setSearchPath(schema: string): Promise<void> {
-    // Validate schema name to prevent SQL injection (only allow alphanumeric + underscore).
     if (!/^[a-z_][a-z0-9_]*$/i.test(schema)) {
       throw new Error(`invalid schema name: ${schema}`);
     }
-    await this.runner(async (c) => {
-      await c.query(`SET search_path TO ${schema}, public`);
-    });
+    this.searchPath = schema;
   }
 
   async close(): Promise<void> {

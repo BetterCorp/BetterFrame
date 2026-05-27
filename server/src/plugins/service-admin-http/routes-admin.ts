@@ -2219,6 +2219,21 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
+  // ---- Tenant switcher fragment (htmx) ----------------------------------------
+  app.get("/admin/_tenant_switcher", async (event) => {
+    const tenants = await deps.repo.listTenants();
+    if (tenants.length <= 1) return new Response("", { headers: { "content-type": "text/html" } });
+    const current = (event.context as any).tenant?.slug ?? "default";
+    const options = tenants.map((t: any) =>
+      `<option value="${t.slug as string}"${t.slug === current ? " selected" : ""}>${t.name as string}</option>`
+    ).join("");
+    const html = `<form method="post" action="/admin/tenants/switch" style="padding:0.5rem 1rem">
+      <label style="font-size:0.75rem; color:#888; display:block; margin-bottom:0.25rem">Tenant</label>
+      <select name="tenant_slug" style="width:100%; font-size:0.8rem; padding:0.25rem" onchange="this.form.submit()">${options}</select>
+    </form>`;
+    return new Response(html, { headers: { "content-type": "text/html" } });
+  });
+
   // ---- JSON API (admin scope) — used by Node-RED bf-* nodes ---------------
   //
   // All payloads run through `stripSecrets` so credential-bearing fields

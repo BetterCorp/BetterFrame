@@ -84,6 +84,7 @@ function Sidebar(props: { activeNav?: string }) {
         <hr />
         <NavItem href="/admin/account" label="Account" icon="&#9679;" active={a === "account"} />
         <NavItem href="/admin/nodered" label="Node-RED" icon="&#8594;" active={a === "nodered"} />
+        <div class="tenant-switcher" {...{"hx-get": "/admin/_tenant_switcher", "hx-trigger": "load", "hx-swap": "innerHTML"}}></div>
       </nav>
     </aside>
   );
@@ -223,6 +224,7 @@ const baseStyles = {
   ".nav-group summary::-webkit-details-marker": { display: "none" },
   ".nav-group-items": { paddingLeft: "1.25rem" },
   ".nav-group-items .nav-item": { fontSize: "0.8rem", padding: "0.35rem 1rem" },
+  ".tenant-switcher": { marginTop: "auto", borderTop: "1px solid #2a2a4e", paddingTop: "0.25rem" },
   ".sidebar hr": { border: "none", borderTop: "1px solid #2a2a4e", margin: "0.5rem 0" },
   ".topbar": {
     display: "flex",

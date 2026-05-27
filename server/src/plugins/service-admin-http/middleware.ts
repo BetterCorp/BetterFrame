@@ -65,12 +65,8 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
     const tenant = await deps.repo.getTenantBySlug(tenantSlug);
     if (tenant && tenant.is_active) {
       event.context.tenant = tenant;
-      // Set PG search_path to the tenant's schema.
-      if (tenant.schema_name !== "public") {
-        await deps.repo.adapter.setSearchPath(tenant.schema_name);
-      }
+      await deps.repo.adapter.setSearchPath(tenant.schema_name);
     } else {
-      // Fall back to default tenant.
       const defaultTenant = await deps.repo.getTenantBySlug("default");
       if (defaultTenant) {
         event.context.tenant = defaultTenant;

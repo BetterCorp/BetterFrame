@@ -26,6 +26,7 @@ use crate::os_update;
 use crate::pipeline;
 use crate::remote_debug;
 use crate::server;
+use crate::thermal;
 use crate::ws_client;
 
 /// Per-display runtime state. Kept inside a thread-local hashmap keyed by

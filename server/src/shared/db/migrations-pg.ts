@@ -730,4 +730,9 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `ALTER TABLE camera_event_subscriptions ADD COLUMN IF NOT EXISTS event_source TEXT`,
   `ALTER TABLE camera_event_subscriptions ADD COLUMN IF NOT EXISTS event_sink TEXT`,
   `ALTER TABLE camera_event_subscriptions ADD COLUMN IF NOT EXISTS subscribed_at TIMESTAMPTZ`,
+
+  // ---- Fix: logging_json was inserted mid-array in 918076f, so existing
+  // databases skipped it (the version counter already covered that index).
+  // Re-append at the end so it actually runs on databases that missed it.
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS logging_json JSONB`,
 ];

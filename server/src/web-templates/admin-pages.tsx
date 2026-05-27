@@ -1512,7 +1512,7 @@ export function CameraEditPage(props: CameraEditProps) {
                 "hx-trigger": "load, every 5s",
                 "hx-swap": "innerHTML",
               }}
-              style="max-height:300px; overflow-y:auto"
+              style="max-height:300px; overflow:auto"
             >
               <div style="color:#999; font-size:0.85rem; padding:1rem 0">Loading...</div>
             </div>

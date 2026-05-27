@@ -427,6 +427,7 @@ export interface CameraEventSubscription {
   event_sink: string | null;
   last_event_at: string | null;
   error_message: string | null;
+  subscribed_at: string | null;
   created_at: string;
 }
 

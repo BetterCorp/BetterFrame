@@ -545,6 +545,18 @@ function registerKioskRoutes(
       network_interfaces: body.network_interfaces,
     });
 
+    // Sync ONVIF subscription statuses reported by the kiosk.
+    // This is the mechanism that keeps camera_event_subscriptions fresh
+    // across kiosk reboots — the kiosk reports its current subscription
+    // state and the server upserts it.
+    if (body.onvif_subscriptions && typeof body.onvif_subscriptions === "object") {
+      try {
+        await repo.syncKioskSubscriptions(kiosk.id, body.onvif_subscriptions as any);
+      } catch (err: any) {
+        event.context.obs?.log.warn("subscription sync failed: {msg}", { msg: err.message ?? "unknown" });
+      }
+    }
+
     // Sync displays reported by the kiosk
     if (Array.isArray(body.displays)) {
       const existing = await repo.listDisplaysForKiosk(kiosk.id);

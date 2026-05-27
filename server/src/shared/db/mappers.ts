@@ -492,6 +492,7 @@ export function rowToCameraEventSubscription(r: Row): CameraEventSubscription {
     event_sink: sn(r["event_sink"]),
     last_event_at: sn(r["last_event_at"]),
     error_message: sn(r["error_message"]),
+    subscribed_at: sn(r["subscribed_at"]),
     created_at: s(r["created_at"]),
   };
 }

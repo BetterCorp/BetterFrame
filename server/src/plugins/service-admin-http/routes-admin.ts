@@ -1657,7 +1657,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         <td style="font-size:0.8rem; white-space:nowrap">${formatTimeShort(e.received_at)}</td>
         <td><code style="font-size:0.75rem">${escapeHtml(e.topic)}</code></td>
         <td style="font-size:0.75rem">${escapeHtml(e.source_type)}</td>
-        <td><pre style="margin:0; font-size:0.7rem; max-height:80px; overflow:auto; background:#fafafa; padding:2px 4px">${escapeHtml(payload)}</pre></td>
+        <td style="max-width:300px"><pre style="margin:0; font-size:0.7rem; max-height:80px; overflow:auto; white-space:pre-wrap; word-break:break-all; background:#fafafa; padding:2px 4px">${escapeHtml(payload)}</pre></td>
       </tr>`;
     }).join("");
     return htmlFragment(

@@ -723,4 +723,9 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `ALTER TABLE entities ADD COLUMN IF NOT EXISTS managed BOOLEAN NOT NULL DEFAULT false`,
   `ALTER TABLE layout_cells DROP CONSTRAINT IF EXISTS layout_cells_content_type_check`,
   `ALTER TABLE layout_cells ADD CONSTRAINT layout_cells_content_type_check CHECK(content_type IN ('none', 'camera', 'web', 'html', 'ablesign'))`,
+
+  // ---- camera_event_subscriptions: source/sink tracking + subscribed_at ------
+  `ALTER TABLE camera_event_subscriptions ADD COLUMN IF NOT EXISTS event_source TEXT`,
+  `ALTER TABLE camera_event_subscriptions ADD COLUMN IF NOT EXISTS event_sink TEXT`,
+  `ALTER TABLE camera_event_subscriptions ADD COLUMN IF NOT EXISTS subscribed_at TIMESTAMPTZ`,
 ];

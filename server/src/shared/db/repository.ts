@@ -2624,6 +2624,68 @@ export class Repository {
     );
   }
 
+  /**
+   * Sync subscription statuses reported by a kiosk heartbeat.
+   * Upserts per camera+topic, sets source/sink/status/subscribed_at.
+   */
+  async syncKioskSubscriptions(
+    kioskId: string,
+    subs: Record<string, { state: string; last_event_at?: string | null; subscribed_at?: string | null; error?: string | null }>,
+  ): Promise<void> {
+    const now = isoNow();
+    for (const [cameraId, info] of Object.entries(subs)) {
+      const status = info.state === "active" ? "active"
+        : info.state === "failed" ? "failed"
+          : info.state === "subscribing" ? "pending"
+            : "inactive";
+      await this._run(
+        `INSERT INTO camera_event_subscriptions (id, camera_id, topic, status, subscribed_by_kiosk_id, event_source, subscribed_at, error_message)
+         VALUES (?, ?, 'onvif', ?, ?, ?, ?, ?)
+         ON CONFLICT (camera_id, topic) DO UPDATE
+           SET status = ?,
+               subscribed_by_kiosk_id = ?,
+               event_source = ?,
+               subscribed_at = COALESCE(?, camera_event_subscriptions.subscribed_at),
+               error_message = ?`,
+        [
+          uuidv7(), cameraId, status, kioskId, `kiosk:${kioskId}`, info.subscribed_at ?? now, info.error ?? null,
+          status, kioskId, `kiosk:${kioskId}`, info.subscribed_at ?? now, info.error ?? null,
+        ],
+      );
+    }
+  }
+
+  /**
+   * Release event_source ownership for cameras where the owning kiosk
+   * hasn't been seen in > maxAgeHours. Only releases "auto" mode cameras
+   * (event_source started as "auto" before being claimed).
+   * Returns number of cameras released.
+   */
+  async releaseStaleEventOwnership(maxAgeHours: number = 24): Promise<number> {
+    const cutoff = new Date(Date.now() - maxAgeHours * 3600_000).toISOString();
+    const result = await this._run(
+      `UPDATE cameras
+          SET event_source = 'auto'
+        WHERE event_source LIKE 'kiosk:%'
+          AND id IN (
+            SELECT c.id FROM cameras c
+            JOIN kiosks k ON k.id = SUBSTRING(c.event_source FROM 7)
+            WHERE k.last_seen_at < ? OR k.last_seen_at IS NULL
+          )`,
+      [cutoff],
+    );
+    // Also mark corresponding subscriptions as inactive
+    await this._run(
+      `UPDATE camera_event_subscriptions
+          SET status = 'inactive'
+        WHERE subscribed_by_kiosk_id IN (
+          SELECT id FROM kiosks WHERE last_seen_at < ? OR last_seen_at IS NULL
+        ) AND status IN ('active', 'pending')`,
+      [cutoff],
+    );
+    return result.changes;
+  }
+
   // ===========================================================================
   // cloud_accounts
   // ===========================================================================

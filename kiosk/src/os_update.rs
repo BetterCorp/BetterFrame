@@ -299,7 +299,41 @@ pub fn apply(
         let _ = fs::remove_file(&bundle_path);
         return Err("os update canceled after channel change".to_string());
     }
-    // 4. Hand off to rauc. `rauc install` blocks until the bundle is fully
+    // 4. Ensure rauc daemon is running. `rauc install` talks to the D-Bus
+    // daemon; if it's not active the CLI exits with code 2.
+    if let Ok(status) = Command::new("systemctl")
+        .args(["is-active", "--quiet", "rauc.service"])
+        .status()
+    {
+        if !status.success() {
+            info!("os-update: rauc.service not active, attempting start");
+            let start = Command::new("systemctl")
+                .args(["start", "rauc.service"])
+                .output();
+            match start {
+                Ok(out) if out.status.success() => {
+                    info!("os-update: rauc.service started");
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    let msg = format!("rauc.service failed to start: {stderr}");
+                    warn!("os-update: {msg}");
+                    let _ = report_applied(server, key, &info.version, Some(&msg));
+                    let _ = fs::remove_file(&bundle_path);
+                    return Err(msg);
+                }
+                Err(e) => {
+                    let msg = format!("systemctl start rauc.service: {e}");
+                    warn!("os-update: {msg}");
+                    let _ = report_applied(server, key, &info.version, Some(&msg));
+                    let _ = fs::remove_file(&bundle_path);
+                    return Err(msg);
+                }
+            }
+        }
+    }
+
+    // Hand off to rauc. `rauc install` blocks until the bundle is fully
     // copied into the inactive slot and bootloader is flipped. Exit code 0
     // = success; anything else = leave current slot booted, no reboot.
     let mut child = Command::new("rauc")

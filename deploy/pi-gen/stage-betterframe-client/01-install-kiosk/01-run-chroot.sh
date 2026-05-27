@@ -69,6 +69,13 @@ else
   echo "WARNING: no rauc-keyring.pem staged — OS OTA will refuse all bundles" >&2
 fi
 install -m 755 /tmp/bf-files/betterframe-rauc-boot.sh /usr/local/sbin/betterframe-rauc-boot.sh
+# RAUC's Debian package ships without systemd unit + D-Bus activation file.
+# Without these, `rauc install` and `rauc status` fail because the D-Bus
+# daemon name de.pengutronix.rauc is never registered.
+install -m 644 /tmp/bf-files/rauc.service /etc/systemd/system/rauc.service
+install -d -m 755 /usr/share/dbus-1/system-services
+install -m 644 /tmp/bf-files/de.pengutronix.rauc.service \
+  /usr/share/dbus-1/system-services/de.pengutronix.rauc.service
 
 # --- Firewall: default-drop inbound, LAN-only kiosk local API ---
 # Replaces any default nftables config Debian ships.

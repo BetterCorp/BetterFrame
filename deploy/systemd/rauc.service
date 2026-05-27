@@ -1,0 +1,12 @@
+[Unit]
+Description=RAUC Update Service
+Documentation=https://rauc.readthedocs.io
+After=dbus.service
+
+[Service]
+Type=dbus
+BusName=de.pengutronix.rauc
+ExecStart=/usr/bin/rauc service
+
+[Install]
+WantedBy=multi-user.target

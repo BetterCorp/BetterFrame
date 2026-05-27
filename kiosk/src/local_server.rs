@@ -80,7 +80,7 @@ pub fn start(state: LocalServerState) {
                 .route("/local/info", get(local_info_handler))
                 .route("/local/layout/:id", get(local_layout_handler))
                 .route("/local/snapshot/:camera_id", get(local_snapshot_handler))
-                .route("/oce/:camera_id", post(onvif_event_callback))
+                .route("/oce/:tenant/:camera_id", post(onvif_event_callback))
                 .route("/proxy/*path", any(proxy_handler))
                 .with_state(state);
 
@@ -276,7 +276,7 @@ fn capture_jpeg_blocking(
 /// subscription) and the camera was told the callback URL by the kiosk.
 async fn onvif_event_callback(
     State(state): State<LocalServerState>,
-    Path(camera_id): Path<String>,
+    Path((_tenant, camera_id)): Path<(String, String)>,
     body: String,
 ) -> Response {
     let events = crate::onvif_events::parse_notification_messages(&body);

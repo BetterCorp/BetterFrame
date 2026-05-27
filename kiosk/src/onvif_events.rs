@@ -140,6 +140,7 @@ pub fn start(
     cluster_key: Option<&str>,
     server_url: &str,
     kiosk_key: &str,
+    tenant_slug: &str,
 ) {
     let my_kiosk_id = crate::server::load_kiosk_id();
     let onvif_cams: Vec<_> = cameras
@@ -179,6 +180,7 @@ pub fn start(
     for cam in onvif_cams {
         let server = server_url.to_string();
         let key = kiosk_key.to_string();
+        let tenant = tenant_slug.to_string();
         let weak_gen = Arc::downgrade(&generation);
         let password = match (&cam.onvif_password_encrypted, cluster_key) {
             (Some(enc), Some(ck)) => decrypt_cluster(enc, ck),
@@ -186,7 +188,7 @@ pub fn start(
         };
 
         std::thread::spawn(move || {
-            run_subscription(cam, password.as_deref(), &server, &key, weak_gen);
+            run_subscription(cam, password.as_deref(), &server, &key, &tenant, weak_gen);
         });
     }
 }
@@ -321,6 +323,7 @@ fn run_subscription(
     password: Option<&str>,
     server: &str,
     kiosk_key: &str,
+    tenant_slug: &str,
     generation: std::sync::Weak<()>,
 ) {
     let host = cam.onvif_host.as_deref().unwrap_or("");
@@ -336,11 +339,10 @@ fn run_subscription(
         cam.id, cam.name
     );
 
-    // Determine callback URL for push subscription.
-    // Determine callback URL for push subscription.
-    // 1. Same subnet as kiosk → push to kiosk (http://<kiosk_ip>:18090/...)
-    // 2. Different subnet → push to server (https://<server>/api/onvif-callback/...)
-    // 3. If admin set event_sink="poll" → skip push entirely
+    // Callback URL for push subscription:
+    // 1. Same subnet → push to kiosk at /oce/{tenant}/{camid}
+    // 2. Different subnet → push to server at /oce/{tenant}/{camid}
+    // 3. Admin set event_sink="poll" → skip push entirely
     let local_port: u16 = std::env::var("BF_KIOSK_LOCAL_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -355,11 +357,14 @@ fn run_subscription(
     } else {
         let interfaces = read_local_interfaces();
         let (cb_url, sink_label) = if let Some(kiosk_ip) = is_same_subnet(host, &interfaces) {
-            let url = format!("http://{}:{}/oce/{}", kiosk_ip, local_port, cam.id);
+            let url = format!(
+                "http://{}:{}/oce/{}/{}",
+                kiosk_ip, local_port, tenant_slug, cam.id
+            );
             info!("onvif-events: cam {} same subnet, callback={url}", cam.id);
             (url, "push:kiosk")
         } else {
-            let url = format!("{}/oce/{}", server, cam.id);
+            let url = format!("{}/oce/{}/{}", server, tenant_slug, cam.id);
             info!(
                 "onvif-events: cam {} different subnet, server callback={url}",
                 cam.id

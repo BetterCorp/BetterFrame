@@ -138,6 +138,7 @@ export interface BundleGpioBinding {
 export interface KioskBundle {
   kiosk_id: string;
   kiosk_name: string;
+  tenant_slug: string;
   /**
    * @deprecated Use `displays` (array). Kept for backward compat with older
    * kiosk builds that consume a single display. Mirrors `displays[0]`.
@@ -411,6 +412,7 @@ export async function generateBundle(
   const bundle: KioskBundle = {
     kiosk_id: kioskId,
     kiosk_name: kiosk.name,
+    tenant_slug: "default",
     display: {
       id: primary.id,
       name: primary.name,

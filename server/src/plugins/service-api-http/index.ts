@@ -448,6 +448,7 @@ function registerKioskRoutes(
     const clusterKey = await getClusterKey(repo, secrets);
     const bundle = await generateBundle(repo, secrets, kiosk.id, clusterKey, event.context.obs);
     if (!bundle) throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
+    bundle.tenant_slug = kiosk.tenant_slug;
 
     // Content-hash ETag: kiosk sends If-None-Match on subsequent fetches.
     // If bundle hasn't changed → 304 Not Modified (no body, saves bandwidth).
@@ -779,7 +780,8 @@ function registerKioskRoutes(
   // ---- ONVIF push callback (camera → server directly) ----------------------
   // Cameras that can't reach a kiosk push SOAP Notify envelopes here.
   // No auth — cameras can't send Bearer tokens. Path contains camera UUID.
-  app.post("/oce/:cameraId", async (event) => {
+  app.post("/oce/:tenantSlug/:cameraId", async (event) => {
+    const tenantSlug = getRouterParam(event, "tenantSlug") ?? "default";
     const cameraId = getRouterParam(event, "cameraId") ?? "";
     const rawBody = await readBody<string>(event);
     const xml = typeof rawBody === "string" ? rawBody : String(rawBody ?? "");
@@ -833,7 +835,7 @@ function registerKioskRoutes(
           timestamp: new Date().toISOString(),
           source: "camera-push",
         };
-        const tenantInfo = { tenant_slug: (cam as any).tenant_slug ?? undefined, tenant_name: (cam as any).tenant_name ?? undefined };
+        const tenantInfo = { tenant_slug: tenantSlug, tenant_name: null as string | null };
         nodered.forward(evt.topic, out, tenantInfo);
         mqtt.publishEvent(kioskId ?? "server", evt.topic, out);
         nodered.forward("camera.event", out, tenantInfo);

@@ -1,5 +1,9 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
+fn default_tenant() -> String {
+    "default".to_string()
+}
+
 fn de_flexible_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     let v = serde_json::Value::deserialize(deserializer)?;
     match v {
@@ -40,6 +44,8 @@ pub struct KioskBundle {
     #[serde(deserialize_with = "de_flexible_id")]
     pub kiosk_id: String,
     pub kiosk_name: String,
+    #[serde(default = "default_tenant")]
+    pub tenant_slug: String,
     /// Legacy single-display field (mirrors `displays[0]`). New code should
     /// iterate `displays` instead.
     #[serde(default)]

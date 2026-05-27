@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs;
-use std::sync::{Mutex, mpsc};
+use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -14,7 +14,6 @@ use gtk4::{
 };
 use tracing::{info, warn};
 
-use crate::ServerMsg;
 use crate::bundle::{BundleDisplayWithLayouts, KioskBundle};
 use crate::cec;
 use crate::firmware;
@@ -28,6 +27,7 @@ use crate::remote_debug;
 use crate::server;
 use crate::thermal;
 use crate::ws_client;
+use crate::ServerMsg;
 
 /// Per-display runtime state. Kept inside a thread-local hashmap keyed by
 /// display id, so all the idle/sleep/layout tracking is local to that display
@@ -757,11 +757,13 @@ fn maybe_refresh_onvif(server_url: &str, kiosk_key: &str) {
         .cloned()
         .collect();
     let decrypt_key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
+    let tenant = bundle.tenant_slug.as_str();
     onvif_events::start(
         &layout_cameras,
         decrypt_key.as_deref(),
         server_url,
         kiosk_key,
+        tenant,
     );
 }
 
@@ -981,6 +983,7 @@ fn render_bundle(
         decrypt_key.as_deref(),
         server_url,
         kiosk_key,
+        &bundle.tenant_slug,
     );
 
     // Purge warm camera pool entries for cameras no longer in the bundle at all.

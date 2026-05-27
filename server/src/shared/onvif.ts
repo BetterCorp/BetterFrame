@@ -197,25 +197,25 @@ async function soap(
   const envelopes = buildAuthEnvelopes(username ?? "", password ?? "", bodyXml);
 
   if (transport) {
-    let lastError = "unknown ONVIF failure";
+    const errors: string[] = [];
     for (const envelope of envelopes) {
       try {
         const text = await transport(url, action, envelope.body, timeoutMs, username, password);
         const fault = extractSoapFault(text);
         if (!fault) return text;
-        lastError = `ONVIF ${action} SOAP fault (${envelope.kind}): ${fault}`;
+        errors.push(`[${envelope.kind}] SOAP fault: ${fault} | response body: ${text.slice(0, 800)}`);
       } catch (err) {
-        lastError = (err as Error).message || lastError;
+        errors.push(`[${envelope.kind}] ${(err as Error).message}`);
       }
     }
-    throw new Error(lastError);
+    throw new Error(`ONVIF ${action} failed all auth methods:\n${errors.join("\n")}`);
   }
 
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
     let digestChallenge: string | null = null;
-    let lastError = "unknown ONVIF failure";
+    const errors: string[] = [];
 
     for (const envelope of envelopes) {
       const attempts = envelope.kind === "no-wsse" && username
@@ -244,9 +244,9 @@ async function soap(
         if (res.ok && !fault) {
           return text;
         }
-        lastError = fault
-          ? `ONVIF ${action} SOAP fault (${envelope.kind}/${attempt.kind}): ${fault}`
-          : `ONVIF ${action} HTTP ${String(res.status)} (${envelope.kind}/${attempt.kind}): ${text.slice(0, 300)}`;
+        errors.push(fault
+          ? `[${envelope.kind}/${attempt.kind}] SOAP fault: ${fault} | response body: ${text.slice(0, 800)}`
+          : `[${envelope.kind}/${attempt.kind}] HTTP ${String(res.status)}: ${text.slice(0, 800)}`);
       }
 
       if (envelope.kind === "no-wsse" && username && digestChallenge?.toLowerCase().includes("digest")) {
@@ -267,13 +267,13 @@ async function soap(
           if (res.ok && !fault) {
             return text;
           }
-          lastError = fault
-            ? `ONVIF ${action} SOAP fault (digest): ${fault}`
-            : `ONVIF ${action} HTTP ${String(res.status)} (digest): ${text.slice(0, 300)}`;
+          errors.push(fault
+            ? `[digest] SOAP fault: ${fault} | response body: ${text.slice(0, 800)}`
+            : `[digest] HTTP ${String(res.status)}: ${text.slice(0, 800)}`);
         }
       }
     }
-    throw new Error(lastError);
+    throw new Error(`ONVIF ${action} failed all auth methods:\n${errors.join("\n")}`);
   } catch (err) {
     if ((err as Error).name === "AbortError") {
       throw new Error(`ONVIF ${action} timed out after ${String(timeoutMs)}ms`);

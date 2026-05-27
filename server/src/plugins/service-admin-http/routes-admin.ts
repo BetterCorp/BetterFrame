@@ -232,12 +232,14 @@ function extractOnvifErrorDebug(msg: string): {
   const bodyIndex = msg.indexOf(bodyMarker);
   if (bodyIndex >= 0) {
     const rawBody = msg.slice(bodyIndex + bodyMarker.length).trim();
-    if (rawBody.startsWith("<")) {
+    const endOfXml = rawBody.indexOf("\n[");
+    const xml = endOfXml >= 0 ? rawBody.slice(0, endOfXml).trim() : rawBody;
+    if (xml.startsWith("<")) {
       return {
         mediaUrl: "unknown",
         deviceName: null,
         profileCount: 0,
-        rawProfilesXml: rawBody,
+        rawProfilesXml: msg,
         rawCapabilitiesXml: null,
       };
     }
@@ -257,6 +259,16 @@ function extractOnvifErrorDebug(msg: string): {
         rawCapabilitiesXml: null,
       };
     }
+  }
+
+  if (msg.includes("failed all auth methods")) {
+    return {
+      mediaUrl: "unknown",
+      deviceName: null,
+      profileCount: 0,
+      rawProfilesXml: msg,
+      rawCapabilitiesXml: null,
+    };
   }
 
   return undefined;

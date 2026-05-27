@@ -20,6 +20,8 @@ services:
     restart: unless-stopped
     environment:
       - TZ=UTC
+    volumes:
+      - betterframe-data:/var/lib/betterframe
     expose:
       - "18080"
       - "18081"
@@ -93,6 +95,11 @@ services:
       start_period: 10s
     networks:
       - betterframe
+
+volumes:
+  betterframe-data:
+  nrdata:
+  pgdata:
 
 networks:
   betterframe:

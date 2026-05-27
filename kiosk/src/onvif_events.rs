@@ -182,7 +182,7 @@ fn run_subscription(
     let has_pass = !pass.is_empty();
     info!("onvif-events: cam {} ({}) subscribing at {event_url} user={user} has_pass={has_pass}", cam.id, cam.name);
 
-    let mut backoff_secs: u64 = 30;
+    let mut backoff_secs: u64 = 60;
     loop {
         if generation.upgrade().is_none() {
             info!("onvif-events: cam {} generation expired, exiting", cam.id);
@@ -196,7 +196,7 @@ fn run_subscription(
                 warn!("onvif-events: cam {} CreatePullPoint failed: {e} (backoff {backoff_secs}s)", cam.id);
                 set_status(&cam.id, "failed", Some(e));
                 std::thread::sleep(Duration::from_secs(backoff_secs));
-                backoff_secs = (backoff_secs * 2).min(600);
+                backoff_secs = (backoff_secs * 2).min(900);
                 continue;
             }
         };

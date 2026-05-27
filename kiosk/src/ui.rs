@@ -652,10 +652,22 @@ fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sen
     }
 }
 
+static LAST_ONVIF_REFRESH: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
 fn maybe_refresh_onvif(server_url: &str, kiosk_key: &str) {
     if !onvif_events::needs_refresh() {
         return;
     }
+    // Cooldown: only refresh once per 30 minutes to avoid hammering locked-out cameras.
+    let now = std::time::Instant::now();
+    let mut last = LAST_ONVIF_REFRESH.lock().unwrap();
+    if let Some(prev) = *last {
+        if now.duration_since(prev) < Duration::from_secs(30 * 60) {
+            return;
+        }
+    }
+    *last = Some(now);
+    drop(last);
     info!("onvif: refreshing stale/failed subscriptions");
     let bundle = match server::load_cached_bundle() {
         Some(b) => b,

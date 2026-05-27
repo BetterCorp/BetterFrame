@@ -71,18 +71,17 @@ function Sidebar(props: { activeNav?: string }) {
         <NavItem href="/admin/kiosks" label="Kiosks" icon="&#9672;" active={a === "kiosks"} />
         <NavItem href="/admin/firmware" label="Firmware" icon="&#9650;" active={a === "firmware"} />
         <NavItem href="/admin/os-updates" label="OS Updates" icon="&#9679;" active={a === "os-updates"} />
-        <NavItem href="/admin/cloud-accounts" label="Cloud Cams" icon="&#9729;" active={a === "cloud"} />
         <NavGroup label="AbleSign" icon="&#9654;" active={a?.startsWith("ablesign")}>
           <NavItem href="/admin/ablesign/screens" label="Screens" icon=" " active={a === "ablesign-screens"} />
           <NavItem href="/admin/ablesign/content" label="Content" icon=" " active={a === "ablesign-content"} />
           <NavItem href="/admin/ablesign/playlists" label="Playlists" icon=" " active={a === "ablesign-playlists"} />
-          <NavItem href="/admin/ablesign" label="Config" icon=" " active={a === "ablesign"} />
         </NavGroup>
         <NavItem href="/admin/labels" label="Labels" icon="&#9670;" active={a === "labels"} />
         <NavItem href="/admin/audit" label="Audit" icon="&#9678;" active={a === "audit"} />
         <NavItem href="/admin/backup" label="Backup" icon="&#9788;" active={a === "backup"} />
         <NavItem href="/admin/tenants" label="Tenants" icon="&#9783;" active={a === "tenants"} />
         <hr />
+        <NavItem href="/admin/settings" label="Settings" icon="&#9881;" active={a === "settings"} />
         <NavItem href="/admin/account" label="Account" icon="&#9679;" active={a === "account"} />
         <NavItem href="/admin/nodered" label="Node-RED" icon="&#8594;" active={a === "nodered"} />
         <div class="tenant-switcher" {...{"hx-get": "/admin/_tenant_switcher", "hx-trigger": "load", "hx-swap": "innerHTML"}}></div>

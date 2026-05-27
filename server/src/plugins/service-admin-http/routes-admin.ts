@@ -34,6 +34,7 @@ import {
   renderKioskLabels,
   renderDisplayLayouts,
   renderDefaultLayoutSelect,
+  SettingsPage,
 } from "../../web-templates/admin-pages.js";
 import { discover as onvifDiscover, getEventProperties as onvifGetEventProperties } from "../../shared/onvif.js";
 import { generateBundle } from "../../shared/bundle.js";
@@ -2217,6 +2218,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       getCoordinator().sendToKiosk(id, { type: "volume-set", volume: vol });
     }
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+  });
+
+  // ---- Settings page ----------------------------------------------------------
+
+  app.get("/admin/settings", async () => {
+    const cloudAccounts = await deps.repo.listCloudAccounts();
+    const ablesignAccounts = await deps.repo.listAbleSignAccounts();
+    return htmlPage(SettingsPage({ cloudAccounts, ablesignAccounts }));
   });
 
   // ---- Tenant switcher fragment (htmx) ----------------------------------------

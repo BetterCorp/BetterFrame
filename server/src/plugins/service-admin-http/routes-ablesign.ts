@@ -217,7 +217,7 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/ablesign/:id/delete", async (event) => {
     const id = getRouterParam(event, "id") ?? "";
     await deps.repo.deleteAbleSignAccount(id);
-    return new Response(null, { status: 302, headers: { location: "/admin/ablesign" } });
+    return new Response(null, { status: 302, headers: { location: "/admin/settings" } });
   });
 
   app.post("/admin/ablesign/screens/:sid/delete", async (event) => {

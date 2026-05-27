@@ -4380,6 +4380,73 @@ export function TenantEditPage(props: TenantEditPageProps) {
   );
 }
 
+// ---- Settings Page ----------------------------------------------------------
+
+interface SettingsPageProps {
+  cloudAccounts: any[];
+  ablesignAccounts: any[];
+  error?: string;
+}
+
+export function SettingsPage(props: SettingsPageProps) {
+  return (
+    <Layout title="Settings" activeNav="settings">
+      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">Settings</h1>
+
+      {props.error ? <div class="alert alert-error" style="margin-bottom:1rem">{props.error}</div> : ""}
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="font-size:1.1rem; margin:0 0 1rem">AbleSign Account</h2>
+        {props.ablesignAccounts.length > 0 ? (
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Screens</th><th>Last Sync</th><th>Actions</th></tr></thead>
+              <tbody>
+                {props.ablesignAccounts.map((a: any) => (
+                  <tr>
+                    <td>{a.name}</td>
+                    <td>{String(a.screen_count ?? 0)}</td>
+                    <td style="font-size:0.85rem">{a.last_sync_at ? formatTime(a.last_sync_at) : "Never"}</td>
+                    <td>
+                      <form method="POST" action={`/admin/ablesign/${String(a.id)}/delete`} style="display:inline">
+                        <button type="submit" class="btn btn-sm btn-ghost" style="color:#c00">Remove</button>
+                      </form>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <form method="POST" action="/admin/ablesign/add" style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:end">
+            <label style="font-size:0.85rem">
+              {"Name"}<br/>
+              <input type="text" name="name" required style="width:10rem" placeholder="My AbleSign" />
+            </label>
+            <label style="font-size:0.85rem">
+              {"API Key"}<br/>
+              <input type="password" name="api_key" required style="width:14rem" placeholder="ak_..." />
+            </label>
+            <label style="font-size:0.85rem">
+              {"Workspace ID"}<br/>
+              <input type="text" name="workspace_id" style="width:6rem" />
+            </label>
+            <button type="submit" class="btn btn-sm">Connect</button>
+          </form>
+        )}
+      </div>
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="font-size:1.1rem; margin:0 0 1rem">Cloud Camera Accounts</h2>
+        <p style="font-size:0.85rem; color:#999">
+          {"Manage cloud camera integrations at "}
+          <a href="/admin/cloud-accounts">Cloud Cams</a>.
+        </p>
+      </div>
+    </Layout>
+  );
+}
+
 // ---- AbleSign Pages ---------------------------------------------------------
 
 interface AbleSignPageProps {

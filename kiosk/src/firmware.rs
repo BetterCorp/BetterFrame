@@ -18,8 +18,9 @@
 //! restore. For now this module only does forward updates.
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -38,11 +39,31 @@ pub const ARCH: &str = match option_env!("BF_BUILD_ARCH") {
 
 const DEFAULT_BIN_PATH: &str = "/opt/betterframe/kiosk/betterframe-kiosk";
 const FIRMWARE_MARKER: &str = "/var/lib/betterframe/kiosk/firmware-applying.json";
+static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 fn binary_path() -> PathBuf {
     std::env::var("BF_KIOSK_BINARY")
         .unwrap_or_else(|_| DEFAULT_BIN_PATH.to_string())
         .into()
+}
+
+pub fn request_cancel() {
+    CANCEL_REQUESTED.store(true, Ordering::SeqCst);
+    cleanup_partial_update();
+}
+
+pub fn clear_cancel() {
+    CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+}
+
+fn cancel_requested() -> bool {
+    CANCEL_REQUESTED.load(Ordering::SeqCst)
+}
+
+fn cleanup_partial_update() {
+    let bin = binary_path();
+    let _ = fs::remove_file(bin.with_extension("new"));
+    let _ = fs::remove_file(FIRMWARE_MARKER);
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,13 +217,30 @@ pub fn apply(
     if !resp.status().is_success() {
         return Err(format!("download HTTP {}", resp.status()));
     }
-    let bytes = resp.bytes().map_err(|e| format!("download body: {e}"))?;
+    let mut reader = resp;
+    let mut bytes = Vec::with_capacity(info.size_bytes.min(64 * 1024 * 1024) as usize);
+    let mut buf = [0u8; 256 * 1024];
+    loop {
+        if cancel_requested() {
+            cleanup_partial_update();
+            return Err("firmware update canceled after channel change".to_string());
+        }
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => bytes.extend_from_slice(&buf[..n]),
+            Err(e) => return Err(format!("download body: {e}")),
+        }
+    }
     if bytes.len() as u64 != info.size_bytes {
         return Err(format!(
             "size mismatch: expected {}, got {}",
             info.size_bytes,
             bytes.len()
         ));
+    }
+    if cancel_requested() {
+        cleanup_partial_update();
+        return Err("firmware update canceled after channel change".to_string());
     }
 
     on_progress("Verifying", 70);
@@ -218,6 +256,10 @@ pub fn apply(
     // 3. Ed25519 signature verify (sig is over the hex-encoded sha256 string)
     verify_signature(&info.public_key_pem, &info.sha256, &info.signature)
         .map_err(|e| format!("signature verify: {e}"))?;
+    if cancel_requested() {
+        cleanup_partial_update();
+        return Err("firmware update canceled after channel change".to_string());
+    }
 
     on_progress("Applying", 90);
     // 4. Atomic swap
@@ -236,6 +278,10 @@ pub fn apply(
         f.write_all(&bytes).map_err(|e| format!("write {}: {e}", new_path.display()))?;
         f.sync_all().ok();
     }
+    if cancel_requested() {
+        cleanup_partial_update();
+        return Err("firmware update canceled after channel change".to_string());
+    }
 
     // Drop a marker file the systemd ExecStartPre script reads to detect a
     // failed first boot of the new binary. We delete it after a clean boot
@@ -250,6 +296,10 @@ pub fn apply(
             "prev": prev_path.to_string_lossy(),
         });
         let _ = fs::write(&marker, payload.to_string());
+    }
+    if cancel_requested() {
+        cleanup_partial_update();
+        return Err("firmware update canceled after channel change".to_string());
     }
 
     // Save current binary as .prev so an out-of-band rollback can restore it.

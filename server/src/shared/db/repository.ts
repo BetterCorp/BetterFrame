@@ -254,8 +254,14 @@ export class Repository {
   // ===========================================================================
 
   async getSetupState(): Promise<SetupState> {
-    const r = await this._get("SELECT * FROM setup_state WHERE id = 1");
-    if (!r) throw new Error("setup_state row missing");
+    let r = await this._get("SELECT * FROM setup_state WHERE id = 1");
+    if (!r) {
+      await this._run(
+        "INSERT INTO setup_state (id, is_complete, extras) VALUES (1, false, '{}') ON CONFLICT (id) DO NOTHING",
+      );
+      r = await this._get("SELECT * FROM setup_state WHERE id = 1");
+      if (!r) throw new Error("setup_state row could not be created");
+    }
     return rowToSetupState(r as Record<string, unknown>);
   }
 

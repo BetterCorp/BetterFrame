@@ -229,10 +229,11 @@ export async function generateBundle(
             // Dashboard entities are surfaced to the kiosk as `web` cells
             // pointing at /dash/<dashboard_id> — kiosk WebKit handles them
             // identically to user-supplied web cells.
-            contentType = ent.type === "dashboard" ? "web" : ent.type;
+            contentType = (ent.type === "dashboard" || ent.type === "ablesign") ? "web" : ent.type;
             cameraId = ent.type === "camera" ? ent.camera_id : null;
             webUrl =
               ent.type === "web" ? ent.web_url :
+              ent.type === "ablesign" ? ent.web_url :
               ent.type === "dashboard" && ent.dashboard_id ? `/dash/${ent.dashboard_id}` :
               null;
             htmlContent = ent.type === "html" ? ent.html_content : null;

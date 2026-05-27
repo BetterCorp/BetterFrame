@@ -47,7 +47,15 @@ ARG BF_MQTT_TOPIC_PREFIX=betterframe
 RUN apk add --no-cache gettext ffmpeg
 
 RUN mkdir -p /var/lib/betterframe \
-    && printf '#!/bin/sh\nchown -R 1000:1000 /var/lib/betterframe 2>/dev/null || true\nexec /root/entrypoint.sh "$@"\n' > /usr/local/bin/bf-entrypoint.sh \
+    && { \
+      echo '#!/bin/sh'; \
+      echo 'chown -R 1000:1000 /var/lib/betterframe 2>/dev/null || true'; \
+      echo '# Find and exec the base image entrypoint or node directly'; \
+      echo 'if [ -f /root/entrypoint.sh ]; then exec /root/entrypoint.sh "$@"; fi'; \
+      echo 'if [ -f /usr/local/bin/entrypoint.sh ]; then exec /usr/local/bin/entrypoint.sh "$@"; fi'; \
+      echo 'if [ -f /home/bsb/entrypoint.sh ]; then exec /home/bsb/entrypoint.sh "$@"; fi'; \
+      echo 'exec node /home/bsb/lib/index.js "$@"'; \
+    } > /usr/local/bin/bf-entrypoint.sh \
     && chmod +x /usr/local/bin/bf-entrypoint.sh
 
 # Install plugin into BSB's node_modules (searched at /home/bsb/node_modules)

@@ -1212,6 +1212,18 @@ fn render_layout(display_id: &str, layout_id: &str) {
                             overlay.set_child(Some(&picture));
                             overlay.set_vexpand(true);
                             overlay.set_hexpand(true);
+                            // Camera name overlay — bottom-right
+                            let name_label = Label::new(Some(&cam.name));
+                            name_label.set_halign(gtk::Align::End);
+                            name_label.set_valign(gtk::Align::End);
+                            name_label.set_margin_end(6);
+                            name_label.set_margin_bottom(6);
+                            add_css(
+                                &name_label,
+                                "label { background: rgba(0,0,0,0.7); color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 3px; }",
+                            );
+                            overlay.add_overlay(&name_label);
+
                             if badge == 'M' || badge == 'S' {
                                 let label = Label::new(Some(&badge.to_string()));
                                 label.set_halign(gtk::Align::Start);

@@ -18,7 +18,7 @@
 //! Successful kiosk pairing resets all lockout state.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use base64::Engine;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::warn;
 
 const LOCKOUT_PATH: &str = "/var/lib/betterframe/kiosk/terminal-lockout.json";
 const MAX_ATTEMPTS_PER_BOOT: u32 = 3;

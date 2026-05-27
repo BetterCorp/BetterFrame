@@ -1988,11 +1988,11 @@ fn set_kiosk_cookie(webview: &webkit6::WebView, server_url: &str, kiosk_key: &st
     let ctx = webview.network_session();
     let Some(ctx) = ctx else { return };
     let cm = ctx.cookie_manager();
-    let Some(cm) = cm else { return };
+    let Some(_cm) = cm else { return };
 
     // Build a SoupCookie and add it.
     // soup3 crate provides Cookie API used by webkit6.
-    let cookie = webkit6::glib::GString::from(format!(
+    let _cookie = webkit6::glib::GString::from(format!(
         "betterframe_kiosk_key={key}; Domain={domain}; Path=/; {secure}HttpOnly; SameSite=Strict",
         key = kiosk_key,
         domain = domain,

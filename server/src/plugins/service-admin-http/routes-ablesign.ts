@@ -144,8 +144,12 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
       await deps.repo.updateAbleSignAccount(accountId, {
         screen_count: (account.screen_count ?? 0) + 1,
       });
-    } catch {
-      // redirect back — error handling TODO
+    } catch (err) {
+      const msg = (err as Error).message ?? "unknown error";
+      event.context.obs?.log.warn("ablesign screen creation failed: {msg}", { msg });
+      const screens = await deps.repo.listAbleSignScreens(accountId);
+      for (const s of screens) (s as any).has_entity = !!(await deps.repo.getEntityByAbleSignScreen(s.id));
+      return htmlPage(AbleSignScreensPage({ screens, accountId, error: `Screen creation failed: ${msg}` }));
     }
 
     return new Response(null, { status: 302, headers: { location: "/admin/ablesign/screens" } });

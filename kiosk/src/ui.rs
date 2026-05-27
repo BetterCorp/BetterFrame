@@ -8,6 +8,7 @@ use url::Url;
 
 static FIRMWARE_LOCK: Mutex<()> = Mutex::new(());
 static OS_UPDATE_LOCK: Mutex<()> = Mutex::new(());
+static FIRMWARE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static OS_UPDATE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 use gtk4::prelude::*;
@@ -622,49 +623,60 @@ fn maybe_apply_os_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sender<Wo
     if std::env::var("BF_ENABLE_OS_OTA").as_deref() != Ok("1") {
         return;
     }
-    let Ok(_lock) = OS_UPDATE_LOCK.try_lock() else {
+    if OS_UPDATE_ACTIVE
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         info!("os-update: another update already in progress, skipping");
         return;
-    };
-    let Some(info) = os_update::check(server_url, kiosk_key) else {
-        return;
-    };
-    OS_UPDATE_ACTIVE.store(true, Ordering::SeqCst);
-    info!("os-update: bundle {} available", info.version);
-    server::report_kiosk_log(
-        server_url,
-        kiosk_key,
-        "info",
-        "os update available",
-        serde_json::json!({
-            "target_version": &info.version,
-            "channel": &info.channel,
-            "release_id": &info.release_id,
-            "size_bytes": info.size_bytes,
-        }),
-    );
-    let version = info.version.clone();
-    let tx_cb = tx.clone();
-    let result = os_update::apply(server_url, kiosk_key, &info, move |phase, pct| {
-        let label = format!("OS Update {version}: {phase}");
-        let _ = tx_cb.send(WorkerMsg::UpdateProgress(Some((label, pct))));
-    });
-    if let Err(err) = result {
-        OS_UPDATE_ACTIVE.store(false, Ordering::SeqCst);
-        let _ = tx.send(WorkerMsg::UpdateProgress(None));
-        warn!("os-update: apply failed: {err}");
+    }
+    os_update::clear_cancel();
+
+    let server_url = server_url.to_string();
+    let kiosk_key = kiosk_key.to_string();
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        let _lock = OS_UPDATE_LOCK.lock().unwrap();
+        let Some(info) = os_update::check(&server_url, &kiosk_key) else {
+            OS_UPDATE_ACTIVE.store(false, Ordering::SeqCst);
+            return;
+        };
+        info!("os-update: bundle {} available", info.version);
         server::report_kiosk_log(
-            server_url,
-            kiosk_key,
-            "error",
-            "os update failed",
+            &server_url,
+            &kiosk_key,
+            "info",
+            "os update available",
             serde_json::json!({
                 "target_version": &info.version,
+                "channel": &info.channel,
                 "release_id": &info.release_id,
-                "error": &err,
+                "size_bytes": info.size_bytes,
             }),
         );
-    }
+        let version = info.version.clone();
+        let tx_cb = tx.clone();
+        let result = os_update::apply(&server_url, &kiosk_key, &info, move |phase, pct| {
+            let label = format!("OS Update {version}: {phase}");
+            let _ = tx_cb.send(WorkerMsg::UpdateProgress(Some((label, pct))));
+        });
+        OS_UPDATE_ACTIVE.store(false, Ordering::SeqCst);
+        if let Err(err) = result {
+            let _ = tx.send(WorkerMsg::UpdateProgress(None));
+            warn!("os-update: apply failed: {err}");
+            server::report_kiosk_log(
+                &server_url,
+                &kiosk_key,
+                "error",
+                "os update failed",
+                serde_json::json!({
+                    "target_version": &info.version,
+                    "release_id": &info.release_id,
+                    "error": &err,
+                }),
+            );
+        }
+    });
 }
 
 /// Ask the server whether an update is available. On hit, download + verify
@@ -678,18 +690,33 @@ fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sen
         info!("firmware: os update in progress, skipping");
         return;
     }
-    let Ok(_lock) = FIRMWARE_LOCK.try_lock() else {
+    if FIRMWARE_ACTIVE
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         info!("firmware: another update already in progress, skipping");
         return;
-    };
+    }
+    firmware::clear_cancel();
+    let server_url = server_url.to_string();
+    let kiosk_key = kiosk_key.to_string();
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        run_firmware_update_worker(server_url, kiosk_key, tx);
+    });
+}
+
+fn run_firmware_update_worker(server_url: String, kiosk_key: String, tx: mpsc::Sender<WorkerMsg>) {
+    let _lock = FIRMWARE_LOCK.lock().unwrap();
     let current = option_env!("BF_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
-    let Some(info) = firmware::check(server_url, kiosk_key, current) else {
+    let Some(info) = firmware::check(&server_url, &kiosk_key, current) else {
+        FIRMWARE_ACTIVE.store(false, Ordering::SeqCst);
         return;
     };
-    info!("firmware: update {} → {} available", current, info.version);
+    info!("firmware: update {} -> {} available", current, info.version);
     server::report_kiosk_log(
-        server_url,
-        kiosk_key,
+        &server_url,
+        &kiosk_key,
         "info",
         "firmware update available",
         serde_json::json!({
@@ -701,20 +728,22 @@ fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sen
     );
     if OS_UPDATE_ACTIVE.load(Ordering::SeqCst) {
         info!("firmware: os update started, skipping");
+        FIRMWARE_ACTIVE.store(false, Ordering::SeqCst);
         return;
     }
     let version = info.version.clone();
     let tx_cb = tx.clone();
-    let result = firmware::apply(server_url, kiosk_key, &info, move |phase, pct| {
+    let result = firmware::apply(&server_url, &kiosk_key, &info, move |phase, pct| {
         let label = format!("App Update {version}: {phase}");
         let _ = tx_cb.send(WorkerMsg::UpdateProgress(Some((label, pct))));
     });
+    FIRMWARE_ACTIVE.store(false, Ordering::SeqCst);
     if let Err(err) = result {
         let _ = tx.send(WorkerMsg::UpdateProgress(None));
         warn!("firmware: apply failed: {err}");
         server::report_kiosk_log(
-            server_url,
-            kiosk_key,
+            &server_url,
+            &kiosk_key,
             "error",
             "firmware update failed",
             serde_json::json!({

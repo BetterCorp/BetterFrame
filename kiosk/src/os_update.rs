@@ -30,7 +30,8 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -38,6 +39,7 @@ use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 pub const DEFAULT_COMPATIBILITY: &str = "betterframe-rpi5-aarch64";
+static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 fn compatibility() -> String {
     if let Ok(s) = fs::read_to_string("/etc/betterframe/os-compatibility") {
@@ -47,6 +49,32 @@ fn compatibility() -> String {
         }
     }
     std::env::var("BF_RAUC_COMPATIBILITY").unwrap_or_else(|_| DEFAULT_COMPATIBILITY.to_string())
+}
+
+pub fn request_cancel() {
+    CANCEL_REQUESTED.store(true, Ordering::SeqCst);
+    cleanup_partial_update();
+}
+
+pub fn clear_cancel() {
+    CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+}
+
+fn cancel_requested() -> bool {
+    CANCEL_REQUESTED.load(Ordering::SeqCst)
+}
+
+fn cleanup_partial_update() {
+    let staging = PathBuf::from("/var/lib/betterframe/tmp");
+    let Ok(entries) = fs::read_dir(staging) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("raucb") {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 pub fn current_os_version_public() -> String { current_os_version() }
@@ -199,6 +227,10 @@ pub fn apply(
         let mut stream_ok = true;
 
         loop {
+            if cancel_requested() {
+                let _ = fs::remove_file(&bundle_path);
+                return Err("os update canceled after channel change".to_string());
+            }
             match std::io::Read::read(&mut reader, &mut buf) {
                 Ok(0) => break, // EOF
                 Ok(n) => {
@@ -263,16 +295,44 @@ pub fn apply(
     }
 
     on_progress("Installing", 95);
+    if cancel_requested() {
+        let _ = fs::remove_file(&bundle_path);
+        return Err("os update canceled after channel change".to_string());
+    }
     // 4. Hand off to rauc. `rauc install` blocks until the bundle is fully
     // copied into the inactive slot and bootloader is flipped. Exit code 0
     // = success; anything else = leave current slot booted, no reboot.
-    let output = Command::new("rauc")
+    let mut child = Command::new("rauc")
         .args(["install", bundle_path.to_str().unwrap_or("")])
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| {
             let _ = report_applied(server, key, &info.version, Some(&format!("rauc spawn: {e}")));
             format!("rauc spawn: {e}")
         })?;
+    let output = loop {
+        if cancel_requested() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = report_applied(
+                server,
+                key,
+                &info.version,
+                Some("os update canceled after channel change"),
+            );
+            let _ = fs::remove_file(&bundle_path);
+            return Err("os update canceled after channel change".to_string());
+        }
+        match child.try_wait() {
+            Ok(Some(_)) => break child.wait_with_output().map_err(|e| format!("rauc wait: {e}"))?,
+            Ok(None) => std::thread::sleep(Duration::from_secs(1)),
+            Err(e) => {
+                let _ = fs::remove_file(&bundle_path);
+                return Err(format!("rauc wait: {e}"));
+            }
+        }
+    };
     if !output.status.success() {
         let msg = format_command_failure(
             "rauc install",

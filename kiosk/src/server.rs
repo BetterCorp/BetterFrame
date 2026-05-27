@@ -566,12 +566,9 @@ pub fn heartbeat(
                     }
                     tracing::info!("_check says key still valid, ignoring bf_kiosk_deleted from heartbeat");
                 }
-                if let Some(fc) = body.get("firmware_channel").and_then(|v| v.as_str()) {
-                    CACHED_FIRMWARE_CHANNEL.lock().unwrap().replace(fc.to_string());
-                }
-                if let Some(oc) = body.get("os_update_channel").and_then(|v| v.as_str()) {
-                    CACHED_OS_CHANNEL.lock().unwrap().replace(oc.to_string());
-                }
+                let fw = body.get("firmware_channel").and_then(|v| v.as_str());
+                let os = body.get("os_update_channel").and_then(|v| v.as_str());
+                update_cached_channels(fw, os);
             }
             Ok(true)
         })
@@ -581,6 +578,29 @@ pub fn heartbeat(
 use std::sync::Mutex as StdMutex;
 static CACHED_FIRMWARE_CHANNEL: StdMutex<Option<String>> = StdMutex::new(None);
 static CACHED_OS_CHANNEL: StdMutex<Option<String>> = StdMutex::new(None);
+
+pub fn update_cached_channels(firmware_channel: Option<&str>, os_channel: Option<&str>) {
+    let mut changed = false;
+    if let Some(next) = firmware_channel {
+        let mut cached = CACHED_FIRMWARE_CHANNEL.lock().unwrap();
+        if cached.as_deref().is_some_and(|old| old != next) {
+            changed = true;
+        }
+        cached.replace(next.to_string());
+    }
+    if let Some(next) = os_channel {
+        let mut cached = CACHED_OS_CHANNEL.lock().unwrap();
+        if cached.as_deref().is_some_and(|old| old != next) {
+            changed = true;
+        }
+        cached.replace(next.to_string());
+    }
+    if changed {
+        tracing::warn!("update channel changed; canceling active updates and cleaning partial artifacts");
+        crate::firmware::request_cancel();
+        crate::os_update::request_cancel();
+    }
+}
 
 pub fn cached_firmware_channel() -> String {
     CACHED_FIRMWARE_CHANNEL

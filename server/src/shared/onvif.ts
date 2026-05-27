@@ -60,8 +60,74 @@ interface EndpointParts {
 interface ServiceAddresses {
   mediaUrl: string;
   eventUrl: string;
+  ptzUrl: string | null;
+  imagingUrl: string | null;
+  deviceIoUrl: string | null;
   capabilitiesXml: string | null;
 }
+
+export type OnvifActionName =
+  | "ptz.get_status"
+  | "ptz.get_nodes"
+  | "ptz.get_configuration_options"
+  | "ptz.continuous_move"
+  | "ptz.relative_move"
+  | "ptz.absolute_move"
+  | "ptz.stop"
+  | "ptz.goto_preset"
+  | "ptz.set_preset"
+  | "ptz.remove_preset"
+  | "ptz.goto_home"
+  | "ptz.set_home"
+  | "ptz.send_auxiliary_command"
+  | "deviceio.set_relay_output_state"
+  | "imaging.get_settings"
+  | "imaging.get_options"
+  | "media.get_profiles"
+  | "media.get_stream_uri"
+  | "media.get_snapshot_uri";
+
+export interface OnvifActionRequest {
+  action: OnvifActionName;
+  params?: Record<string, unknown>;
+}
+
+export interface OnvifActionError {
+  code:
+    | "invalid_params"
+    | "unsupported_action"
+    | "unsupported_capability"
+    | "auth_failed"
+    | "soap_fault"
+    | "camera_unreachable"
+    | "timeout";
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface OnvifActionResult {
+  status: "ok";
+  action: OnvifActionName;
+  data?: Record<string, unknown>;
+  rawXml?: string;
+}
+
+export class OnvifActionException extends Error {
+  readonly error: OnvifActionError;
+
+  constructor(error: OnvifActionError) {
+    super(error.message);
+    this.name = "OnvifActionException";
+    this.error = error;
+  }
+}
+
+interface ProfileSummary {
+  token: string;
+  name: string | null;
+  ptzConfigurationToken: string | null;
+}
+
 
 type WssePasswordMode = "digest" | "text";
 
@@ -329,6 +395,37 @@ function pickFirstXAddr(parentXml: string, tagLocalName: string): string | null 
   return pickNested(block, "XAddr");
 }
 
+function previewXml(xml: string): string {
+  return xml.replace(/\s+/g, " ").trim().slice(0, 400);
+}
+
+function onvifError(
+  code: OnvifActionError["code"],
+  message: string,
+  details?: Record<string, unknown>,
+): OnvifActionException {
+  return new OnvifActionException({ code, message, details });
+}
+
+function classifySoapError(err: unknown): OnvifActionException {
+  if (err instanceof OnvifActionException) return err;
+  const message = err instanceof Error ? err.message : String(err);
+  const details: Record<string, unknown> = {};
+  const lower = message.toLowerCase();
+  const xmlStart = message.indexOf("<?xml");
+  if (xmlStart >= 0) details.responsePreview = message.slice(xmlStart, xmlStart + 400);
+  if (lower.includes("soap fault")) {
+    return onvifError("soap_fault", message, details);
+  }
+  if (lower.includes("unauthorized") || lower.includes("invalidsecurity") || lower.includes("invalidtoken")) {
+    return onvifError("auth_failed", message, details);
+  }
+  if (lower.includes("timed out")) {
+    return onvifError("timeout", message, details);
+  }
+  return onvifError("camera_unreachable", message, details);
+}
+
 function pathLooksLikeMediaService(path: string): boolean {
   return /\/(?:onvif\/)?(?:media_service|media)(?:\/)?$/i.test(path);
 }
@@ -367,6 +464,9 @@ async function discoverServices(
     return {
       mediaUrl: `${endpoint.origin}${input.mediaPath.startsWith("/") ? input.mediaPath : `/${input.mediaPath}`}`,
       eventUrl: `${endpoint.origin}/onvif/event_service`,
+      ptzUrl: null,
+      imagingUrl: null,
+      deviceIoUrl: null,
       capabilitiesXml: null,
     };
   }
@@ -375,6 +475,9 @@ async function discoverServices(
     return {
       mediaUrl: endpoint.explicitMediaUrl,
       eventUrl: `${endpoint.origin}/onvif/event_service`,
+      ptzUrl: null,
+      imagingUrl: null,
+      deviceIoUrl: null,
       capabilitiesXml: null,
     };
   }
@@ -395,6 +498,9 @@ async function discoverServices(
       ?? `${endpoint.origin}/onvif/media_service`,
     eventUrl: pickFirstXAddr(capabilitiesXml ?? "", "Events")
       ?? `${endpoint.origin}/onvif/event_service`,
+    ptzUrl: pickFirstXAddr(capabilitiesXml ?? "", "PTZ"),
+    imagingUrl: pickFirstXAddr(capabilitiesXml ?? "", "Imaging"),
+    deviceIoUrl: pickFirstXAddr(capabilitiesXml ?? "", "DeviceIO"),
     capabilitiesXml,
   };
 }
@@ -484,14 +590,16 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
   const endpoint = normalizeEndpoint(input);
   const services = await discoverServices(input, endpoint, timeoutMs, input.soapTransport);
   const mediaUrl = services.mediaUrl;
+  const header = wsseHeader(input.username, input.password);
 
   // ---- GetDeviceInformation (best-effort, for friendly device name) ---------
   let deviceName: string | null = null;
   try {
+    const devInfoEnv = buildEnvelope(header, `<tds:GetDeviceInformation xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>`);
     const devInfoXml = await soap(
       endpoint.deviceUrl,
       "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation",
-      `<tds:GetDeviceInformation xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>`,
+      devInfoEnv,
       timeoutMs,
       input.soapTransport,
       input.username,
@@ -513,7 +621,7 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
   const profilesXml = await soap(
     mediaUrl,
     "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
-    `<trt:GetProfiles/>`,
+    buildEnvelope(header, `<trt:GetProfiles/>`),
     timeoutMs,
     input.soapTransport,
     input.username,
@@ -555,12 +663,13 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
       </trt:StreamSetup>
       <trt:ProfileToken>${escapeXml(token)}</trt:ProfileToken>
     </trt:GetStreamUri>`;
+    const streamEnv = buildEnvelope(wsseHeader(input.username, input.password), streamBody);
     let streamXml: string;
     try {
       streamXml = await soap(
         mediaUrl,
         "http://www.onvif.org/ver10/media/wsdl/GetStreamUri",
-        streamBody,
+        streamEnv,
         timeoutMs,
         input.soapTransport,
         input.username,
@@ -574,12 +683,13 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
     const snapshotBody = `<trt:GetSnapshotUri>
       <trt:ProfileToken>${escapeXml(token)}</trt:ProfileToken>
     </trt:GetSnapshotUri>`;
+    const snapshotEnv = buildEnvelope(wsseHeader(input.username, input.password), snapshotBody);
     let snapshotUri: string | null = null;
     try {
       const snapshotXml = await soap(
         mediaUrl,
         "http://www.onvif.org/ver10/media/wsdl/GetSnapshotUri",
-        snapshotBody,
+        snapshotEnv,
         timeoutMs,
         input.soapTransport,
         input.username,
@@ -615,6 +725,406 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
       rawCapabilitiesXml: services.capabilitiesXml,
     },
   };
+}
+
+function soapEnvelopeWithNamespaces(headerXml: string, bodyXml: string, extraNamespaces: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+  xmlns:trt="http://www.onvif.org/ver10/media/wsdl"
+  xmlns:tt="http://www.onvif.org/ver10/schema"
+  ${extraNamespaces}>
+  ${headerXml}
+  <s:Body>${bodyXml}</s:Body>
+</s:Envelope>`;
+}
+
+async function getProfileSummaries(
+  input: DiscoverInput,
+  timeoutMs: number,
+  mediaUrl: string,
+): Promise<ProfileSummary[]> {
+  const xml = await soap(
+    mediaUrl,
+    "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
+    buildEnvelope(wsseHeader(input.username, input.password), "<trt:GetProfiles/>"),
+    timeoutMs,
+    input.soapTransport,
+    input.username,
+    input.password,
+  );
+  const blocks = splitProfiles(xml);
+  const tokens = pickAttr(xml, "Profiles", "token");
+  return blocks.map((block, idx) => ({
+    token: tokens[idx] ?? "",
+    name: pickNested(block, "Name"),
+    ptzConfigurationToken: pickAttr(block, "PTZConfiguration", "token")[0] ?? null,
+  })).filter((profile) => profile.token);
+}
+
+function asRecord(input: unknown): Record<string, unknown> {
+  return input && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : {};
+}
+
+function readString(params: Record<string, unknown>, key: string): string | null {
+  const value = params[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function readNumber(params: Record<string, unknown>, key: string): number | null {
+  const value = params[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function readBoolean(params: Record<string, unknown>, key: string): boolean | null {
+  const value = params[key];
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (value === "true" || value === "1") return true;
+    if (value === "false" || value === "0") return false;
+  }
+  return null;
+}
+
+function requireProfileToken(
+  action: OnvifActionName,
+  params: Record<string, unknown>,
+  profiles: ProfileSummary[],
+): string {
+  const explicit = readString(params, "profileToken");
+  if (explicit) return explicit;
+  if (profiles.length === 1) return profiles[0]!.token;
+  throw onvifError("invalid_params", `${action} requires profileToken when multiple profiles exist`, {
+    availableProfileTokens: profiles.map((profile) => profile.token),
+  });
+}
+
+function requirePtzConfigurationToken(profileToken: string, profiles: ProfileSummary[]): string {
+  const profile = profiles.find((entry) => entry.token === profileToken);
+  if (!profile?.ptzConfigurationToken) {
+    throw onvifError("unsupported_capability", `Profile ${profileToken} does not expose PTZ configuration`);
+  }
+  return profile.ptzConfigurationToken;
+}
+
+function resolveServiceUrl(serviceUrl: string | null, action: OnvifActionName): string {
+  if (!serviceUrl) {
+    throw onvifError("unsupported_capability", `${action} is not supported by this device`);
+  }
+  return serviceUrl;
+}
+
+async function execActionSoap(
+  input: DiscoverInput,
+  timeoutMs: number,
+  url: string,
+  action: string,
+  envelope: string,
+): Promise<string> {
+  try {
+    return await soap(url, action, envelope, timeoutMs, input.soapTransport, input.username, input.password);
+  } catch (err) {
+    throw classifySoapError(err);
+  }
+}
+
+function result(action: OnvifActionName, xml: string, data?: Record<string, unknown>): OnvifActionResult {
+  return {
+    status: "ok",
+    action,
+    data,
+    rawXml: previewXml(xml),
+  };
+}
+
+export async function performAction(
+  input: DiscoverInput & OnvifActionRequest,
+): Promise<OnvifActionResult> {
+  const timeoutMs = input.timeoutMs ?? 8000;
+  const endpoint = normalizeEndpoint(input);
+  const services = await discoverServices(input, endpoint, timeoutMs, input.soapTransport);
+  const header = wsseHeader(input.username, input.password);
+  const params = asRecord(input.params);
+  const action = input.action;
+
+  const needsProfiles = new Set<OnvifActionName>([
+    "ptz.get_status",
+    "ptz.get_configuration_options",
+    "ptz.continuous_move",
+    "ptz.relative_move",
+    "ptz.absolute_move",
+    "ptz.stop",
+    "ptz.goto_preset",
+    "ptz.set_preset",
+    "ptz.remove_preset",
+    "ptz.goto_home",
+    "ptz.set_home",
+    "ptz.send_auxiliary_command",
+    "media.get_stream_uri",
+    "media.get_snapshot_uri",
+  ]);
+  const profiles = needsProfiles.has(action) || action === "media.get_profiles"
+    ? await getProfileSummaries(input, timeoutMs, services.mediaUrl)
+    : [];
+
+  if (action === "media.get_profiles") {
+    return result(action, JSON.stringify(profiles), {
+      profiles: profiles.map((profile) => ({
+        token: profile.token,
+        name: profile.name,
+        ptzConfigurationToken: profile.ptzConfigurationToken,
+      })),
+    });
+  }
+
+  if (action === "media.get_stream_uri" || action === "media.get_snapshot_uri") {
+    const profileToken = requireProfileToken(action, params, profiles);
+    const body = action === "media.get_stream_uri"
+      ? `<trt:GetStreamUri>
+          <trt:StreamSetup>
+            <tt:Stream>RTP-Unicast</tt:Stream>
+            <tt:Transport><tt:Protocol>RTSP</tt:Protocol></tt:Transport>
+          </trt:StreamSetup>
+          <trt:ProfileToken>${escapeXml(profileToken)}</trt:ProfileToken>
+        </trt:GetStreamUri>`
+      : `<trt:GetSnapshotUri><trt:ProfileToken>${escapeXml(profileToken)}</trt:ProfileToken></trt:GetSnapshotUri>`;
+    const soapAction = action === "media.get_stream_uri"
+      ? "http://www.onvif.org/ver10/media/wsdl/GetStreamUri"
+      : "http://www.onvif.org/ver10/media/wsdl/GetSnapshotUri";
+    const xml = await execActionSoap(input, timeoutMs, services.mediaUrl, soapAction, buildEnvelope(header, body));
+    const uri = pickAll(xml, "Uri")[0] ?? null;
+    return result(action, xml, { profileToken, uri });
+  }
+
+  if (action.startsWith("ptz.")) {
+    const ptzUrl = resolveServiceUrl(services.ptzUrl, action);
+    if (action === "ptz.get_nodes") {
+      const xml = await execActionSoap(
+        input,
+        timeoutMs,
+        ptzUrl,
+        "http://www.onvif.org/ver20/ptz/wsdl/GetNodes",
+        soapEnvelopeWithNamespaces(header, "<tptz:GetNodes/>", `xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"`),
+      );
+      return result(action, xml, { nodes: pickAttr(xml, "PTZNode", "token") });
+    }
+
+    const profileToken = requireProfileToken(action, params, profiles);
+    const speedPan = readNumber(params, "pan");
+    const speedTilt = readNumber(params, "tilt");
+    const speedZoom = readNumber(params, "zoom");
+    const timeoutText = readString(params, "timeout") ?? (() => {
+      const timeoutMsValue = readNumber(params, "timeoutMs");
+      return timeoutMsValue != null ? `PT${Math.max(timeoutMsValue, 1) / 1000}S` : null;
+    })();
+
+    if (action === "ptz.get_status") {
+      const xml = await execActionSoap(
+        input,
+        timeoutMs,
+        ptzUrl,
+        "http://www.onvif.org/ver20/ptz/wsdl/GetStatus",
+        soapEnvelopeWithNamespaces(
+          header,
+          `<tptz:GetStatus><tptz:ProfileToken>${escapeXml(profileToken)}</tptz:ProfileToken></tptz:GetStatus>`,
+          `xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"`,
+        ),
+      );
+      return result(action, xml, {
+        profileToken,
+        pan: readNumber({ value: pickAttr(xml, "PanTilt", "x")[0] ?? null }, "value"),
+        tilt: readNumber({ value: pickAttr(xml, "PanTilt", "y")[0] ?? null }, "value"),
+        zoom: readNumber({ value: pickAttr(xml, "Zoom", "x")[0] ?? null }, "value"),
+      });
+    }
+
+    if (action === "ptz.get_configuration_options") {
+      const configurationToken = requirePtzConfigurationToken(profileToken, profiles);
+      const xml = await execActionSoap(
+        input,
+        timeoutMs,
+        ptzUrl,
+        "http://www.onvif.org/ver20/ptz/wsdl/GetConfigurationOptions",
+        soapEnvelopeWithNamespaces(
+          header,
+          `<tptz:GetConfigurationOptions><tptz:ConfigurationToken>${escapeXml(configurationToken)}</tptz:ConfigurationToken></tptz:GetConfigurationOptions>`,
+          `xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"`,
+        ),
+      );
+      return result(action, xml, { profileToken, configurationToken });
+    }
+
+    let body = "";
+    let soapAction = "";
+    if (action === "ptz.continuous_move") {
+      body = `<tptz:ContinuousMove>
+        <tptz:ProfileToken>${escapeXml(profileToken)}</tptz:ProfileToken>
+        <tptz:Velocity>
+          <tt:PanTilt x="${String(speedPan ?? 0)}" y="${String(speedTilt ?? 0)}"/>
+          <tt:Zoom x="${String(speedZoom ?? 0)}"/>
+        </tptz:Velocity>
+        ${timeoutText ? `<tptz:Timeout>${escapeXml(timeoutText)}</tptz:Timeout>` : ""}
+      </tptz:ContinuousMove>`;
+      soapAction = "http://www.onvif.org/ver20/ptz/wsdl/ContinuousMove";
+    } else if (action === "ptz.relative_move") {
+      const x = readNumber(params, "x");
+      const y = readNumber(params, "y");
+      const z = readNumber(params, "z");
+      if (x == null && y == null && z == null) {
+        throw onvifError("invalid_params", "ptz.relative_move requires x, y, or z");
+      }
+      body = `<tptz:RelativeMove>
+        <tptz:ProfileToken>${escapeXml(profileToken)}</tptz:ProfileToken>
+        <tptz:Translation>
+          <tt:PanTilt x="${String(x ?? 0)}" y="${String(y ?? 0)}"/>
+          <tt:Zoom x="${String(z ?? 0)}"/>
+        </tptz:Translation>
+        <tptz:Speed>
+          <tt:PanTilt x="${String(speedPan ?? 0)}" y="${String(speedTilt ?? 0)}"/>
+          <tt:Zoom x="${String(speedZoom ?? 0)}"/>
+        </tptz:Speed>
+      </tptz:RelativeMove>`;
+      soapAction = "http://www.onvif.org/ver20/ptz/wsdl/RelativeMove";
+    } else if (action === "ptz.absolute_move") {
+      const x = readNumber(params, "x");
+      const y = readNumber(params, "y");
+      const z = readNumber(params, "z");
+      if (x == null && y == null && z == null) {
+        throw onvifError("invalid_params", "ptz.absolute_move requires x, y, or z");
+      }
+      body = `<tptz:AbsoluteMove>
+        <tptz:ProfileToken>${escapeXml(profileToken)}</tptz:ProfileToken>
+        <tptz:Position>
+          <tt:PanTilt x="${String(x ?? 0)}" y="${String(y ?? 0)}"/>
+          <tt:Zoom x="${String(z ?? 0)}"/>
+        </tptz:Position>
+        <tptz:Speed>
+          <tt:PanTilt x="${String(speedPan ?? 0)}" y="${String(speedTilt ?? 0)}"/>
+          <tt:Zoom x="${String(speedZoom ?? 0)}"/>
+        </tptz:Speed>
+      </tptz:AbsoluteMove>`;
+      soapAction = "http://www.onvif.org/ver20/ptz/wsdl/AbsoluteMove";
+    } else if (action === "ptz.stop") {
+      const panTilt = readBoolean(params, "panTilt");
+      const zoom = readBoolean(params, "zoom");
+      body = `<tptz:Stop>
+        <tptz:ProfileToken>${escapeXml(profileToken)}</tptz:ProfileToken>
+        <tptz:PanTilt>${String(panTilt ?? true)}</tptz:PanTilt>
+        <tptz:Zoom>${String(zoom ?? true)}</tptz:Zoom>
+      </tptz:Stop>`;
+      soapAction = "http://www.onvif.org/ver20/ptz/wsdl/Stop";
+    } else if (action === "ptz.goto_preset") {
+      const presetToken = readString(params, "presetToken");
+      if (!presetToken) throw onvifError("invalid_params", "ptz.goto_preset requires presetToken");
+      body = `<tptz:GotoPreset>
+        <tptz:ProfileToken>${escapeXml(profileToken)}</tptz:ProfileToken>
+        <tptz:PresetToken>${escapeXml(presetToken)}</tptz:PresetToken>
+      </tptz:GotoPreset>`;
+      soapAction = "http://www.onvif.org/ver20/ptz/wsdl/GotoPreset";
+    } else if (action === "ptz.set_preset") {
+      const presetName = readString(params, "presetName");
+      const presetToken = readString(params, "presetToken");
+      body = `<tptz:SetPreset>
+        <tptz:ProfileToken>${escapeXml(profileToken)}</tptz:ProfileToken>
+        ${presetName ? `<tptz:PresetName>${escapeXml(presetName)}</tptz:PresetName>` : ""}
+        ${presetToken ? `<tptz:PresetToken>${escapeXml(presetToken)}</tptz:PresetToken>` : ""}
+      </tptz:SetPreset>`;
+      soapAction = "http://www.onvif.org/ver20/ptz/wsdl/SetPreset";
+    } else if (action === "ptz.remove_preset") {
+      const presetToken = readString(params, "presetToken");
+      if (!presetToken) throw onvifError("invalid_params", "ptz.remove_preset requires presetToken");
+      body = `<tptz:RemovePreset>
+        <tptz:ProfileToken>${escapeXml(profileToken)}</tptz:ProfileToken>
+        <tptz:PresetToken>${escapeXml(presetToken)}</tptz:PresetToken>
+      </tptz:RemovePreset>`;
+      soapAction = "http://www.onvif.org/ver20/ptz/wsdl/RemovePreset";
+    } else if (action === "ptz.goto_home") {
+      body = `<tptz:GotoHomePosition><tptz:ProfileToken>${escapeXml(profileToken)}</tptz:ProfileToken></tptz:GotoHomePosition>`;
+      soapAction = "http://www.onvif.org/ver20/ptz/wsdl/GotoHomePosition";
+    } else if (action === "ptz.set_home") {
+      body = `<tptz:SetHomePosition><tptz:ProfileToken>${escapeXml(profileToken)}</tptz:ProfileToken></tptz:SetHomePosition>`;
+      soapAction = "http://www.onvif.org/ver20/ptz/wsdl/SetHomePosition";
+    } else if (action === "ptz.send_auxiliary_command") {
+      const auxiliaryData = readString(params, "auxiliaryData");
+      if (!auxiliaryData) throw onvifError("invalid_params", "ptz.send_auxiliary_command requires auxiliaryData");
+      body = `<tptz:SendAuxiliaryCommand>
+        <tptz:ProfileToken>${escapeXml(profileToken)}</tptz:ProfileToken>
+        <tptz:AuxiliaryData>${escapeXml(auxiliaryData)}</tptz:AuxiliaryData>
+      </tptz:SendAuxiliaryCommand>`;
+      soapAction = "http://www.onvif.org/ver20/ptz/wsdl/SendAuxiliaryCommand";
+    } else {
+      throw onvifError("unsupported_action", `Unsupported ONVIF action: ${action}`);
+    }
+
+    const xml = await execActionSoap(
+      input,
+      timeoutMs,
+      ptzUrl,
+      soapAction,
+      soapEnvelopeWithNamespaces(header, body, `xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"`),
+    );
+    return result(action, xml, { profileToken });
+  }
+
+  if (action === "deviceio.set_relay_output_state") {
+    const deviceIoUrl = resolveServiceUrl(services.deviceIoUrl, action);
+    const relayToken = readString(params, "relayToken");
+    const logicalState = readString(params, "logicalState");
+    if (!relayToken || !logicalState) {
+      throw onvifError("invalid_params", "deviceio.set_relay_output_state requires relayToken and logicalState");
+    }
+    const xml = await execActionSoap(
+      input,
+      timeoutMs,
+      deviceIoUrl,
+      "http://www.onvif.org/ver10/deviceIO/wsdl/SetRelayOutputState",
+      soapEnvelopeWithNamespaces(
+        header,
+        `<tmd:SetRelayOutputState>
+          <tmd:RelayOutputToken>${escapeXml(relayToken)}</tmd:RelayOutputToken>
+          <tmd:LogicalState>${escapeXml(logicalState)}</tmd:LogicalState>
+        </tmd:SetRelayOutputState>`,
+        `xmlns:tmd="http://www.onvif.org/ver10/deviceIO/wsdl"`,
+      ),
+    );
+    return result(action, xml, { relayToken, logicalState });
+  }
+
+  if (action === "imaging.get_settings" || action === "imaging.get_options") {
+    const imagingUrl = resolveServiceUrl(services.imagingUrl, action);
+    const videoSourceToken = readString(params, "videoSourceToken")
+      ?? (() => {
+        const sourceToken = pickAll(services.capabilitiesXml ?? "", "SourceToken")[0];
+        return sourceToken || null;
+      })();
+    if (!videoSourceToken) {
+      throw onvifError("invalid_params", `${action} requires videoSourceToken`);
+    }
+    const soapAction = action === "imaging.get_settings"
+      ? "http://www.onvif.org/ver20/imaging/wsdl/GetImagingSettings"
+      : "http://www.onvif.org/ver20/imaging/wsdl/GetOptions";
+    const body = action === "imaging.get_settings"
+      ? `<timg:GetImagingSettings><timg:VideoSourceToken>${escapeXml(videoSourceToken)}</timg:VideoSourceToken></timg:GetImagingSettings>`
+      : `<timg:GetOptions><timg:VideoSourceToken>${escapeXml(videoSourceToken)}</timg:VideoSourceToken></timg:GetOptions>`;
+    const xml = await execActionSoap(
+      input,
+      timeoutMs,
+      imagingUrl,
+      soapAction,
+      soapEnvelopeWithNamespaces(header, body, `xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl"`),
+    );
+    return result(action, xml, { videoSourceToken });
+  }
+
+  throw onvifError("unsupported_action", `Unsupported ONVIF action: ${action}`);
 }
 
 /**

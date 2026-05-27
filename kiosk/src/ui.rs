@@ -1,12 +1,14 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 use url::Url;
 
 static FIRMWARE_LOCK: Mutex<()> = Mutex::new(());
 static OS_UPDATE_LOCK: Mutex<()> = Mutex::new(());
+static OS_UPDATE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 use gtk4::prelude::*;
 use gtk4::{
@@ -205,7 +207,7 @@ fn activate(app: &Application) {
         let local_key = server::load_or_create_local_key();
         info!("local-server: kiosk_local_key prefix={}…", &local_key[..8]);
         local_server::start(local_server::LocalServerState {
-            local_key,
+            local_key: std::sync::Arc::new(std::sync::Mutex::new(local_key)),
             server_url: server.clone(),
             kiosk_key: key.clone(),
             ui_tx: std::sync::Arc::new(std::sync::Mutex::new(Some(tx.clone()))),
@@ -628,6 +630,7 @@ fn maybe_apply_os_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sender<Wo
     let Some(info) = os_update::check(server_url, kiosk_key) else {
         return;
     };
+    OS_UPDATE_ACTIVE.store(true, Ordering::SeqCst);
     info!("os-update: bundle {} available", info.version);
     server::report_kiosk_log(
         server_url,
@@ -648,6 +651,7 @@ fn maybe_apply_os_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sender<Wo
         let _ = tx_cb.send(WorkerMsg::UpdateProgress(Some((label, pct))));
     });
     if let Err(err) = result {
+        OS_UPDATE_ACTIVE.store(false, Ordering::SeqCst);
         let _ = tx.send(WorkerMsg::UpdateProgress(None));
         warn!("os-update: apply failed: {err}");
         server::report_kiosk_log(
@@ -671,6 +675,10 @@ fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sen
     if std::env::var("BF_ENABLE_APP_OTA").as_deref() != Ok("1") {
         return;
     }
+    if OS_UPDATE_ACTIVE.load(Ordering::SeqCst) {
+        info!("firmware: os update in progress, skipping");
+        return;
+    }
     let Ok(_lock) = FIRMWARE_LOCK.try_lock() else {
         info!("firmware: another update already in progress, skipping");
         return;
@@ -692,6 +700,10 @@ fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sen
             "release_id": &info.release_id,
         }),
     );
+    if OS_UPDATE_ACTIVE.load(Ordering::SeqCst) {
+        info!("firmware: os update started, skipping");
+        return;
+    }
     let version = info.version.clone();
     let tx_cb = tx.clone();
     let result = firmware::apply(server_url, kiosk_key, &info, move |phase, pct| {

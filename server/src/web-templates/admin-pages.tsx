@@ -3612,9 +3612,15 @@ export function KioskLocalPanel(props: KioskLocalPanelProps) {
   const reportedInterfaces = parseReportedNetworkInterfaces(k.network_interfaces_json);
   const reportedIps = reportedInterfaces.flatMap((iface) => iface.ips);
   const primaryReportedIp = reportedIps.find(isUsableLanIp);
+  const hasConcreteIp = Boolean(primaryReportedIp || k.local_last_ip);
   const ip = primaryReportedIp ? ipWithoutCidr(primaryReportedIp) : (k.local_last_ip || "<kiosk-ip>");
   const base = `http://${ip}:${String(k.local_port)}`;
-  const sample = `${base}/local/layout/<layout_id>?key=${k.local_key}`;
+  const layoutSample = `${base}/local/layout/<layout_id>?key=${k.local_key}`;
+  const infoSample = `${base}/local/info?key=${k.local_key}`;
+  const snapshotSample = `${base}/local/snapshot/<camera_id>?key=${k.local_key}`;
+  const ptzStopSample = `${base}/local/onvif/<camera_id>/ptz/stop?key=${k.local_key}&profileToken=<profile_token>`;
+  const ptzPresetSample = `${base}/local/onvif/<camera_id>/ptz/preset/<preset_token>?key=${k.local_key}&profileToken=<profile_token>`;
+  const ptzMoveSample = `${base}/local/onvif/<camera_id>/ptz/move?key=${k.local_key}&profileToken=<profile_token>&dir=left&speed=0.5&timeoutMs=1000`;
   const proxy = `${base}/proxy/admin/...`;
   return (
     <div class="card" style="margin-bottom:1.5rem">
@@ -3623,9 +3629,36 @@ export function KioskLocalPanel(props: KioskLocalPanelProps) {
         Kiosk runs an HTTP listener on its own LAN address. Bookmark-friendly
         GET URLs trigger layout switches without needing an admin session.
       </p>
+      <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.75rem">
+        <strong style="font-size:0.8rem">Local key:</strong>
+        <code style="font-size:0.78rem; word-break:break-all">{k.local_key}</code>
+        <form method="post" action={`/admin/kiosks/${String(k.id)}/local-key/rotate`} style="margin:0">
+          <button type="submit" class="btn btn-sm btn-ghost">Rotate key</button>
+        </form>
+      </div>
+      <div style="font-size:0.8rem; margin-bottom:0.5rem">
+        <strong>Local info (GET):</strong>
+        <pre style="background:#fafafa; padding:0.5rem; margin:0.25rem 0; font-size:0.75rem; white-space:pre-wrap; word-break:break-all">{infoSample}</pre>
+      </div>
       <div style="font-size:0.8rem; margin-bottom:0.5rem">
         <strong>Layout switch (GET):</strong>
-        <pre style="background:#fafafa; padding:0.5rem; margin:0.25rem 0; font-size:0.75rem; white-space:pre-wrap; word-break:break-all">{sample}</pre>
+        <pre style="background:#fafafa; padding:0.5rem; margin:0.25rem 0; font-size:0.75rem; white-space:pre-wrap; word-break:break-all">{layoutSample}</pre>
+      </div>
+      <div style="font-size:0.8rem; margin-bottom:0.5rem">
+        <strong>Snapshot (GET):</strong>
+        <pre style="background:#fafafa; padding:0.5rem; margin:0.25rem 0; font-size:0.75rem; white-space:pre-wrap; word-break:break-all">{snapshotSample}</pre>
+      </div>
+      <div style="font-size:0.8rem; margin-bottom:0.5rem">
+        <strong>PTZ stop (GET):</strong>
+        <pre style="background:#fafafa; padding:0.5rem; margin:0.25rem 0; font-size:0.75rem; white-space:pre-wrap; word-break:break-all">{ptzStopSample}</pre>
+      </div>
+      <div style="font-size:0.8rem; margin-bottom:0.5rem">
+        <strong>PTZ preset goto (GET):</strong>
+        <pre style="background:#fafafa; padding:0.5rem; margin:0.25rem 0; font-size:0.75rem; white-space:pre-wrap; word-break:break-all">{ptzPresetSample}</pre>
+      </div>
+      <div style="font-size:0.8rem; margin-bottom:0.5rem">
+        <strong>PTZ move (GET):</strong>
+        <pre style="background:#fafafa; padding:0.5rem; margin:0.25rem 0; font-size:0.75rem; white-space:pre-wrap; word-break:break-all">{ptzMoveSample}</pre>
       </div>
       <div style="font-size:0.8rem; margin-bottom:0.5rem">
         <strong>Admin proxy (forwards your Bearer to server):</strong>
@@ -3656,9 +3689,13 @@ export function KioskLocalPanel(props: KioskLocalPanelProps) {
           ) : null}
         </div>
       ) : null}
+      {!hasConcreteIp ? (
+        <div style="font-size:0.78rem; color:#a16207; margin-bottom:0.5rem">
+          LAN IP has not been reported yet, so the examples above still contain a placeholder host.
+        </div>
+      ) : null}
       <div style="font-size:0.75rem; color:#999">
-        Heartbeat source IP: <code>{k.local_last_ip ?? "--"}</code>. Local key:
-        <code style="margin-left:0.25rem">{k.local_key.slice(0, 8)}…{k.local_key.slice(-4)}</code>
+        Heartbeat source IP: <code>{k.local_last_ip ?? "--"}</code>.
       </div>
     </div>
   );

@@ -19,7 +19,7 @@
 
 use std::net::SocketAddr;
 use std::sync::mpsc::Sender as StdSender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::{
     body::{Body, Bytes},
@@ -30,13 +30,16 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tracing::{info, warn};
 
 use crate::WorkerMsg;
 
+static ACTIVE_LOCAL_KEY: OnceLock<Arc<Mutex<String>>> = OnceLock::new();
+
 #[derive(Clone)]
 pub struct LocalServerState {
-    pub local_key: String,
+    pub local_key: Arc<Mutex<String>>,
     pub server_url: String,
     /// Held for future kiosk-auth proxy paths (currently the proxy forwards
     /// the caller's own Bearer, so kiosk_key isn't read on hot path).
@@ -60,6 +63,28 @@ pub struct LocalInfo {
     server_url: String,
 }
 
+#[derive(Deserialize)]
+struct LocalOnvifBody {
+    action: String,
+    #[serde(default)]
+    params: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct PtzMoveQuery {
+    key: String,
+    profileToken: Option<String>,
+    dir: String,
+    speed: Option<f64>,
+    timeoutMs: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct ProfileQuery {
+    key: String,
+    profileToken: Option<String>,
+}
+
 pub fn start(state: LocalServerState) {
     if std::env::var("BF_KIOSK_LOCAL_DISABLE").ok().as_deref() == Some("1") {
         info!("local-server: disabled by BF_KIOSK_LOCAL_DISABLE=1");
@@ -69,6 +94,7 @@ pub fn start(state: LocalServerState) {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(18090);
+    let _ = ACTIVE_LOCAL_KEY.set(state.local_key.clone());
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -81,6 +107,23 @@ pub fn start(state: LocalServerState) {
                 .route("/local/layout/:id", get(local_layout_handler))
                 .route("/local/snapshot/:camera_id", get(local_snapshot_handler))
                 .route("/oce/:tenant/:camera_id", post(onvif_event_callback))
+                .route("/local/onvif/:camera_id", post(local_onvif_handler))
+                .route(
+                    "/local/onvif/:camera_id/ptz/stop",
+                    get(local_onvif_ptz_stop_handler),
+                )
+                .route(
+                    "/local/onvif/:camera_id/ptz/home",
+                    get(local_onvif_ptz_home_handler),
+                )
+                .route(
+                    "/local/onvif/:camera_id/ptz/move",
+                    get(local_onvif_ptz_move_handler),
+                )
+                .route(
+                    "/local/onvif/:camera_id/ptz/preset/:preset_token",
+                    get(local_onvif_ptz_preset_handler),
+                )
                 .route("/proxy/*path", any(proxy_handler))
                 .with_state(state);
 
@@ -104,7 +147,7 @@ async fn local_info_handler(
     State(state): State<LocalServerState>,
     Query(auth): Query<LocalAuth>,
 ) -> Response {
-    if !constant_time_eq(&auth.key, &state.local_key) {
+    if !local_key_matches(&state, &auth.key) {
         return (StatusCode::UNAUTHORIZED, "bad key").into_response();
     }
     Json(LocalInfo {
@@ -119,7 +162,7 @@ async fn local_layout_handler(
     Path(id): Path<String>,
     Query(auth): Query<LocalAuth>,
 ) -> Response {
-    if !constant_time_eq(&auth.key, &state.local_key) {
+    if !local_key_matches(&state, &auth.key) {
         return (StatusCode::UNAUTHORIZED, "bad key").into_response();
     }
     let tx = state.ui_tx.lock().ok().and_then(|g| g.clone());
@@ -156,7 +199,7 @@ async fn local_snapshot_handler(
     Path(camera_id): Path<String>,
     Query(auth): Query<LocalAuth>,
 ) -> Response {
-    if !constant_time_eq(&auth.key, &state.local_key) {
+    if !local_key_matches(&state, &auth.key) {
         return (StatusCode::UNAUTHORIZED, "bad key").into_response();
     }
     let Some(bundle) = crate::server::load_cached_bundle() else {
@@ -200,6 +243,188 @@ async fn local_snapshot_handler(
         Err(e) => {
             warn!("local-server: snapshot task join failed: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, "task error").into_response()
+        }
+    }
+}
+
+async fn execute_local_onvif(
+    camera_id: String,
+    action: String,
+    params: serde_json::Value,
+) -> Response {
+    let result = tokio::task::spawn_blocking(move || {
+        let Some(bundle) = crate::server::load_cached_bundle() else {
+            return Err(crate::onvif_actions::OnvifActionError {
+                code: "executor_unavailable".to_string(),
+                message: "no bundle cached yet".to_string(),
+                details: None,
+            });
+        };
+        crate::onvif_actions::execute_bundle_action(&bundle, &camera_id, &action, &params, 8000)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(value)) => Json(serde_json::json!({ "ok": true, "result": value })).into_response(),
+        Ok(Err(err)) => (
+            if err.code == "invalid_params"
+                || err.code == "unsupported_action"
+                || err.code == "unsupported_capability"
+            {
+                StatusCode::BAD_REQUEST
+            } else if err.code == "camera_not_in_bundle" {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::BAD_GATEWAY
+            },
+            Json(serde_json::json!({ "ok": false, "error": err })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": {
+                    "code": "executor_unavailable",
+                    "message": format!("local ONVIF task failed: {err}"),
+                }
+            })),
+        )
+            .into_response(),
+    }
+}
+
+async fn local_onvif_handler(
+    State(state): State<LocalServerState>,
+    Path(camera_id): Path<String>,
+    Query(auth): Query<LocalAuth>,
+    Json(body): Json<LocalOnvifBody>,
+) -> Response {
+    if !local_key_matches(&state, &auth.key) {
+        return (StatusCode::UNAUTHORIZED, "bad key").into_response();
+    }
+    execute_local_onvif(camera_id, body.action, body.params).await
+}
+
+async fn local_onvif_ptz_stop_handler(
+    State(state): State<LocalServerState>,
+    Path(camera_id): Path<String>,
+    Query(query): Query<ProfileQuery>,
+) -> Response {
+    if !local_key_matches(&state, &query.key) {
+        return (StatusCode::UNAUTHORIZED, "bad key").into_response();
+    }
+    let params = json_object_with_profile(query.profileToken);
+    execute_local_onvif(camera_id, "ptz.stop".to_string(), params).await
+}
+
+async fn local_onvif_ptz_home_handler(
+    State(state): State<LocalServerState>,
+    Path(camera_id): Path<String>,
+    Query(query): Query<ProfileQuery>,
+) -> Response {
+    if !local_key_matches(&state, &query.key) {
+        return (StatusCode::UNAUTHORIZED, "bad key").into_response();
+    }
+    let params = json_object_with_profile(query.profileToken);
+    execute_local_onvif(camera_id, "ptz.goto_home".to_string(), params).await
+}
+
+async fn local_onvif_ptz_preset_handler(
+    State(state): State<LocalServerState>,
+    Path((camera_id, preset_token)): Path<(String, String)>,
+    Query(query): Query<ProfileQuery>,
+) -> Response {
+    if !local_key_matches(&state, &query.key) {
+        return (StatusCode::UNAUTHORIZED, "bad key").into_response();
+    }
+    let mut params = json_object_with_profile(query.profileToken);
+    params["presetToken"] = serde_json::Value::String(preset_token);
+    execute_local_onvif(camera_id, "ptz.goto_preset".to_string(), params).await
+}
+
+async fn local_onvif_ptz_move_handler(
+    State(state): State<LocalServerState>,
+    Path(camera_id): Path<String>,
+    Query(query): Query<PtzMoveQuery>,
+) -> Response {
+    if !local_key_matches(&state, &query.key) {
+        return (StatusCode::UNAUTHORIZED, "bad key").into_response();
+    }
+    let speed = query.speed.unwrap_or(0.5).clamp(0.0, 1.0);
+    let mut params = json_object_with_profile(query.profileToken);
+    params["timeoutMs"] =
+        serde_json::Value::Number(serde_json::Number::from(query.timeoutMs.unwrap_or(1000)));
+    match query.dir.as_str() {
+        "left" => {
+            params["pan"] = json!(0.0 - speed);
+        }
+        "right" => {
+            params["pan"] = json!(speed);
+        }
+        "up" => {
+            params["tilt"] = json!(speed);
+        }
+        "down" => {
+            params["tilt"] = json!(0.0 - speed);
+        }
+        "upleft" => {
+            params["pan"] = json!(0.0 - speed);
+            params["tilt"] = json!(speed);
+        }
+        "upright" => {
+            params["pan"] = json!(speed);
+            params["tilt"] = json!(speed);
+        }
+        "downleft" => {
+            params["pan"] = json!(0.0 - speed);
+            params["tilt"] = json!(0.0 - speed);
+        }
+        "downright" => {
+            params["pan"] = json!(speed);
+            params["tilt"] = json!(0.0 - speed);
+        }
+        "zoomin" => {
+            params["zoom"] = json!(speed);
+        }
+        "zoomout" => {
+            params["zoom"] = json!(0.0 - speed);
+        }
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "error": {
+                        "code": "invalid_params",
+                        "message": "dir must be one of left,right,up,down,upleft,upright,downleft,downright,zoomin,zoomout",
+                    }
+                })),
+            ).into_response();
+        }
+    }
+    execute_local_onvif(camera_id, "ptz.continuous_move".to_string(), params).await
+}
+
+fn json_object_with_profile(profile_token: Option<String>) -> serde_json::Value {
+    let mut value = serde_json::json!({});
+    if let Some(profile) = profile_token {
+        value["profileToken"] = serde_json::Value::String(profile);
+    }
+    value
+}
+
+fn local_key_matches(state: &LocalServerState, candidate: &str) -> bool {
+    let Some(current) = state.local_key.lock().ok().map(|guard| guard.clone()) else {
+        return false;
+    };
+    constant_time_eq(candidate, &current)
+}
+
+pub fn replace_local_key(new_key: String) {
+    if let Some(active) = ACTIVE_LOCAL_KEY.get() {
+        if let Ok(mut guard) = active.lock() {
+            *guard = new_key;
         }
     }
 }

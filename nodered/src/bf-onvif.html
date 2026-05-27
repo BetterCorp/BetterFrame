@@ -1,0 +1,138 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-onvif", {
+    category: "BetterFrame",
+    color: "#a6d4ff",
+    defaults: {
+      name: { value: "" },
+      config: { value: "", type: "bf-server-config", required: true },
+      camera_id: { value: "" },
+      action: { value: "ptz.stop", required: true },
+      profile_token: { value: "" },
+      preset_token: { value: "" },
+      preset_name: { value: "" },
+      video_source_token: { value: "" },
+      relay_token: { value: "" },
+      logical_state: { value: "" },
+      auxiliary_data: { value: "" },
+      pan: { value: "" },
+      tilt: { value: "" },
+      zoom: { value: "" },
+      x: { value: "" },
+      y: { value: "" },
+      z: { value: "" },
+      timeout_ms: { value: "1000" },
+      params_json: { value: "" }
+    },
+    inputs: 1,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      return this.name || "bf onvif";
+    },
+    paletteLabel: "bf onvif"
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-onvif">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-config"><i class="fa fa-cog"></i> BF</label>
+    <input type="text" id="node-input-config" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-camera_id"><i class="fa fa-camera"></i> Camera ID</label>
+    <input type="text" id="node-input-camera_id" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-action"><i class="fa fa-crosshairs"></i> Action</label>
+    <select id="node-input-action">
+      <option value="ptz.stop">ptz.stop</option>
+      <option value="ptz.continuous_move">ptz.continuous_move</option>
+      <option value="ptz.relative_move">ptz.relative_move</option>
+      <option value="ptz.absolute_move">ptz.absolute_move</option>
+      <option value="ptz.goto_preset">ptz.goto_preset</option>
+      <option value="ptz.set_preset">ptz.set_preset</option>
+      <option value="ptz.remove_preset">ptz.remove_preset</option>
+      <option value="ptz.goto_home">ptz.goto_home</option>
+      <option value="ptz.set_home">ptz.set_home</option>
+      <option value="ptz.get_status">ptz.get_status</option>
+      <option value="ptz.get_nodes">ptz.get_nodes</option>
+      <option value="ptz.get_configuration_options">ptz.get_configuration_options</option>
+      <option value="ptz.send_auxiliary_command">ptz.send_auxiliary_command</option>
+      <option value="deviceio.set_relay_output_state">deviceio.set_relay_output_state</option>
+      <option value="media.get_profiles">media.get_profiles</option>
+      <option value="media.get_stream_uri">media.get_stream_uri</option>
+      <option value="media.get_snapshot_uri">media.get_snapshot_uri</option>
+      <option value="imaging.get_settings">imaging.get_settings</option>
+      <option value="imaging.get_options">imaging.get_options</option>
+    </select>
+  </div>
+  <div class="form-row">
+    <label for="node-input-profile_token">Profile token</label>
+    <input type="text" id="node-input-profile_token" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-preset_token">Preset token</label>
+    <input type="text" id="node-input-preset_token" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-preset_name">Preset name</label>
+    <input type="text" id="node-input-preset_name" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-pan">Pan</label>
+    <input type="text" id="node-input-pan" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-tilt">Tilt</label>
+    <input type="text" id="node-input-tilt" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-zoom">Zoom</label>
+    <input type="text" id="node-input-zoom" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-x">X</label>
+    <input type="text" id="node-input-x" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-y">Y</label>
+    <input type="text" id="node-input-y" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-z">Z</label>
+    <input type="text" id="node-input-z" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-timeout_ms">Timeout ms</label>
+    <input type="text" id="node-input-timeout_ms" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-video_source_token">Video source token</label>
+    <input type="text" id="node-input-video_source_token" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-relay_token">Relay token</label>
+    <input type="text" id="node-input-relay_token" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-logical_state">Logical state</label>
+    <input type="text" id="node-input-logical_state" placeholder="active|inactive" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-auxiliary_data">Aux data</label>
+    <input type="text" id="node-input-auxiliary_data" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-params_json">Advanced params JSON</label>
+    <input type="text" id="node-input-params_json" placeholder='{"custom":"value"}' />
+  </div>
+  <div class="form-tips">
+    Calls BetterFrame ONVIF control via <code>POST /api/admin/cameras/:id/onvif</code>.
+    Override <code>camera_id</code>, <code>action</code>, or <code>params</code> per-message with
+    <code>msg.camera_id</code>, <code>msg.action</code>, and <code>msg.params</code>.
+  </div>
+</script>

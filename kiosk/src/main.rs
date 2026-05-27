@@ -1,20 +1,21 @@
 mod at_rest;
 mod audio;
 mod axiom;
-#[cfg(target_os = "linux")]
-mod tailscale;
 mod bundle;
 mod cec;
 mod firmware;
 mod gpio;
 mod hwmon;
 mod local_server;
-mod thermal;
+mod onvif_actions;
 mod onvif_events;
 mod os_update;
 mod pipeline;
 mod remote_debug;
 mod server;
+#[cfg(target_os = "linux")]
+mod tailscale;
+mod thermal;
 mod ui;
 mod ws_client;
 
@@ -53,8 +54,8 @@ use tracing::info;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 fn main() {
-    let env_filter = EnvFilter::from_default_env()
-        .add_directive("betterframe_kiosk=info".parse().unwrap());
+    let env_filter =
+        EnvFilter::from_default_env().add_directive("betterframe_kiosk=info".parse().unwrap());
 
     let registry = tracing_subscriber::registry()
         .with(env_filter)

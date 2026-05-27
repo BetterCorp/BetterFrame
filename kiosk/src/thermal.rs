@@ -1,9 +1,9 @@
 //! Automatic fan control based on CPU temperature thresholds.
 //!
 //! Runs a background thread that polls CPU temp every 5s and sets fan PWM:
-//!   - < 45°C  → fan off (PWM 0)
-//!   - ≥ 45°C  → 50% (PWM 128)
-//!   - ≥ 50°C  → 100% (PWM 255)
+//!   - < 45C  -> hardware auto mode
+//!   - >= 45C -> 50% (PWM 128)
+//!   - >= 50C -> 100% (PWM 255)
 //!
 //! Manual fan commands (from admin/Node-RED) override auto control for 60s,
 //! after which the thermal loop resumes.
@@ -38,14 +38,14 @@ fn is_manual_override_active() -> bool {
     until > 0 && now_epoch_secs() < until
 }
 
-/// Compute target PWM from CPU temperature.
-fn target_pwm(temp_c: f32) -> u32 {
+/// Compute target fan mode from CPU temperature.
+fn target_pwm(temp_c: f32) -> Option<u32> {
     if temp_c >= 50.0 {
-        255
+        Some(255)
     } else if temp_c >= 45.0 {
-        128
+        Some(128)
     } else {
-        0
+        None
     }
 }
 
@@ -58,7 +58,7 @@ pub fn start() {
     std::thread::Builder::new()
         .name("thermal".into())
         .spawn(|| {
-            info!("thermal: auto fan control started (45°C→50%, 50°C→100%)");
+            info!("thermal: auto fan control started (<45C auto, >=45C 50%, >=50C 100%)");
             let mut last_pwm: Option<u32> = None;
 
             loop {
@@ -74,14 +74,14 @@ pub fn start() {
                 };
 
                 let pwm = target_pwm(temp);
-                if last_pwm == Some(pwm) {
+                if last_pwm == pwm {
                     continue; // no change needed
                 }
 
-                if hwmon::set_fan(Some(pwm)) {
-                    last_pwm = Some(pwm);
+                if hwmon::set_fan(pwm) {
+                    last_pwm = pwm;
                 } else {
-                    warn!("thermal: failed to set fan PWM {pwm}");
+                    warn!("thermal: failed to set fan PWM {pwm:?}");
                 }
             }
         })

@@ -260,7 +260,24 @@ export class Repository {
   }
 
   async isSetupComplete(): Promise<boolean> {
-    return (await this.getSetupState()).is_complete && (await this.countUsers()) > 0;
+    const state = await this.getSetupState();
+    if (state.is_complete) return true;
+    if ((await this.countUsers()) > 0) return true;
+    // No local users — copy global admin into tenant if one exists.
+    const ga = await this._get<{ id: string; username: string; password_hash: string }>(
+      "SELECT id, username, password_hash FROM public.global_admins WHERE is_active = true LIMIT 1",
+    ).catch(() => undefined);
+    if (ga) {
+      await this._run(
+        `INSERT INTO users (id, username, password_hash, role, is_active)
+         VALUES (?, ?, ?, 'admin', true)
+         ON CONFLICT (id) DO NOTHING`,
+        [ga.id, ga.username, ga.password_hash],
+      );
+      await this.markSetupComplete();
+      return true;
+    }
+    return false;
   }
 
   async markSetupComplete(): Promise<void> {

@@ -193,8 +193,9 @@ async function soap(
   transport?: SoapTransport,
   username?: string,
   password?: string,
+  extraNamespaces?: string,
 ): Promise<string> {
-  const envelopes = buildAuthEnvelopes(username ?? "", password ?? "", bodyXml);
+  const envelopes = buildAuthEnvelopes(username ?? "", password ?? "", bodyXml, extraNamespaces);
 
   if (transport) {
     const errors: string[] = [];
@@ -347,22 +348,23 @@ function buildDigestAuthHeader(method: string, url: string, challengeHeader: str
   return parts.join(", ");
 }
 
-function buildEnvelope(headerXml: string, bodyXml: string): string {
+function buildEnvelope(headerXml: string, bodyXml: string, extraNamespaces?: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
   xmlns:trt="http://www.onvif.org/ver10/media/wsdl"
-  xmlns:tt="http://www.onvif.org/ver10/schema">
+  xmlns:tt="http://www.onvif.org/ver10/schema"
+  ${extraNamespaces ?? ""}>
   ${headerXml}
   <s:Body>${bodyXml}</s:Body>
 </s:Envelope>`;
 }
 
-function buildAuthEnvelopes(username: string, password: string, bodyXml: string): Array<{ kind: string; body: string }> {
-  if (!username) return [{ kind: "no-wsse", body: buildEnvelope("", bodyXml) }];
+function buildAuthEnvelopes(username: string, password: string, bodyXml: string, extraNamespaces?: string): Array<{ kind: string; body: string }> {
+  if (!username) return [{ kind: "no-wsse", body: buildEnvelope("", bodyXml, extraNamespaces) }];
   return [
-    { kind: "wsse-digest", body: buildEnvelope(wsseHeader(username, password, "digest"), bodyXml) },
-    { kind: "wsse-text", body: buildEnvelope(wsseHeader(username, password, "text"), bodyXml) },
-    { kind: "no-wsse", body: buildEnvelope("", bodyXml) },
+    { kind: "wsse-digest", body: buildEnvelope(wsseHeader(username, password, "digest"), bodyXml, extraNamespaces) },
+    { kind: "wsse-text", body: buildEnvelope(wsseHeader(username, password, "text"), bodyXml, extraNamespaces) },
+    { kind: "no-wsse", body: buildEnvelope("", bodyXml, extraNamespaces) },
   ];
 }
 
@@ -590,16 +592,14 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
   const endpoint = normalizeEndpoint(input);
   const services = await discoverServices(input, endpoint, timeoutMs, input.soapTransport);
   const mediaUrl = services.mediaUrl;
-  const header = wsseHeader(input.username, input.password);
 
   // ---- GetDeviceInformation (best-effort, for friendly device name) ---------
   let deviceName: string | null = null;
   try {
-    const devInfoEnv = buildEnvelope(header, `<tds:GetDeviceInformation xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>`);
     const devInfoXml = await soap(
       endpoint.deviceUrl,
       "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation",
-      devInfoEnv,
+      `<tds:GetDeviceInformation xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>`,
       timeoutMs,
       input.soapTransport,
       input.username,
@@ -621,7 +621,7 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
   const profilesXml = await soap(
     mediaUrl,
     "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
-    buildEnvelope(header, `<trt:GetProfiles/>`),
+    `<trt:GetProfiles/>`,
     timeoutMs,
     input.soapTransport,
     input.username,
@@ -663,13 +663,12 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
       </trt:StreamSetup>
       <trt:ProfileToken>${escapeXml(token)}</trt:ProfileToken>
     </trt:GetStreamUri>`;
-    const streamEnv = buildEnvelope(wsseHeader(input.username, input.password), streamBody);
     let streamXml: string;
     try {
       streamXml = await soap(
         mediaUrl,
         "http://www.onvif.org/ver10/media/wsdl/GetStreamUri",
-        streamEnv,
+        streamBody,
         timeoutMs,
         input.soapTransport,
         input.username,
@@ -683,13 +682,12 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
     const snapshotBody = `<trt:GetSnapshotUri>
       <trt:ProfileToken>${escapeXml(token)}</trt:ProfileToken>
     </trt:GetSnapshotUri>`;
-    const snapshotEnv = buildEnvelope(wsseHeader(input.username, input.password), snapshotBody);
     let snapshotUri: string | null = null;
     try {
       const snapshotXml = await soap(
         mediaUrl,
         "http://www.onvif.org/ver10/media/wsdl/GetSnapshotUri",
-        snapshotEnv,
+        snapshotBody,
         timeoutMs,
         input.soapTransport,
         input.username,
@@ -727,16 +725,6 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
   };
 }
 
-function soapEnvelopeWithNamespaces(headerXml: string, bodyXml: string, extraNamespaces: string): string {
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
-  xmlns:trt="http://www.onvif.org/ver10/media/wsdl"
-  xmlns:tt="http://www.onvif.org/ver10/schema"
-  ${extraNamespaces}>
-  ${headerXml}
-  <s:Body>${bodyXml}</s:Body>
-</s:Envelope>`;
-}
 
 async function getProfileSummaries(
   input: DiscoverInput,
@@ -746,7 +734,7 @@ async function getProfileSummaries(
   const xml = await soap(
     mediaUrl,
     "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
-    buildEnvelope(wsseHeader(input.username, input.password), "<trt:GetProfiles/>"),
+    "<trt:GetProfiles/>",
     timeoutMs,
     input.soapTransport,
     input.username,
@@ -827,10 +815,11 @@ async function execActionSoap(
   timeoutMs: number,
   url: string,
   action: string,
-  envelope: string,
+  bodyXml: string,
+  extraNamespaces?: string,
 ): Promise<string> {
   try {
-    return await soap(url, action, envelope, timeoutMs, input.soapTransport, input.username, input.password);
+    return await soap(url, action, bodyXml, timeoutMs, input.soapTransport, input.username, input.password, extraNamespaces);
   } catch (err) {
     throw classifySoapError(err);
   }
@@ -851,7 +840,6 @@ export async function performAction(
   const timeoutMs = input.timeoutMs ?? 8000;
   const endpoint = normalizeEndpoint(input);
   const services = await discoverServices(input, endpoint, timeoutMs, input.soapTransport);
-  const header = wsseHeader(input.username, input.password);
   const params = asRecord(input.params);
   const action = input.action;
 
@@ -899,7 +887,7 @@ export async function performAction(
     const soapAction = action === "media.get_stream_uri"
       ? "http://www.onvif.org/ver10/media/wsdl/GetStreamUri"
       : "http://www.onvif.org/ver10/media/wsdl/GetSnapshotUri";
-    const xml = await execActionSoap(input, timeoutMs, services.mediaUrl, soapAction, buildEnvelope(header, body));
+    const xml = await execActionSoap(input, timeoutMs, services.mediaUrl, soapAction, body);
     const uri = pickAll(xml, "Uri")[0] ?? null;
     return result(action, xml, { profileToken, uri });
   }
@@ -912,7 +900,8 @@ export async function performAction(
         timeoutMs,
         ptzUrl,
         "http://www.onvif.org/ver20/ptz/wsdl/GetNodes",
-        soapEnvelopeWithNamespaces(header, "<tptz:GetNodes/>", `xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"`),
+        "<tptz:GetNodes/>",
+        `xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"`,
       );
       return result(action, xml, { nodes: pickAttr(xml, "PTZNode", "token") });
     }
@@ -932,11 +921,8 @@ export async function performAction(
         timeoutMs,
         ptzUrl,
         "http://www.onvif.org/ver20/ptz/wsdl/GetStatus",
-        soapEnvelopeWithNamespaces(
-          header,
-          `<tptz:GetStatus><tptz:ProfileToken>${escapeXml(profileToken)}</tptz:ProfileToken></tptz:GetStatus>`,
-          `xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"`,
-        ),
+        `<tptz:GetStatus><tptz:ProfileToken>${escapeXml(profileToken)}</tptz:ProfileToken></tptz:GetStatus>`,
+        `xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"`,
       );
       return result(action, xml, {
         profileToken,
@@ -953,11 +939,8 @@ export async function performAction(
         timeoutMs,
         ptzUrl,
         "http://www.onvif.org/ver20/ptz/wsdl/GetConfigurationOptions",
-        soapEnvelopeWithNamespaces(
-          header,
-          `<tptz:GetConfigurationOptions><tptz:ConfigurationToken>${escapeXml(configurationToken)}</tptz:ConfigurationToken></tptz:GetConfigurationOptions>`,
-          `xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"`,
-        ),
+        `<tptz:GetConfigurationOptions><tptz:ConfigurationToken>${escapeXml(configurationToken)}</tptz:ConfigurationToken></tptz:GetConfigurationOptions>`,
+        `xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"`,
       );
       return result(action, xml, { profileToken, configurationToken });
     }
@@ -1069,7 +1052,8 @@ export async function performAction(
       timeoutMs,
       ptzUrl,
       soapAction,
-      soapEnvelopeWithNamespaces(header, body, `xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"`),
+      body,
+      `xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"`,
     );
     return result(action, xml, { profileToken });
   }
@@ -1086,14 +1070,11 @@ export async function performAction(
       timeoutMs,
       deviceIoUrl,
       "http://www.onvif.org/ver10/deviceIO/wsdl/SetRelayOutputState",
-      soapEnvelopeWithNamespaces(
-        header,
-        `<tmd:SetRelayOutputState>
+      `<tmd:SetRelayOutputState>
           <tmd:RelayOutputToken>${escapeXml(relayToken)}</tmd:RelayOutputToken>
           <tmd:LogicalState>${escapeXml(logicalState)}</tmd:LogicalState>
         </tmd:SetRelayOutputState>`,
-        `xmlns:tmd="http://www.onvif.org/ver10/deviceIO/wsdl"`,
-      ),
+      `xmlns:tmd="http://www.onvif.org/ver10/deviceIO/wsdl"`,
     );
     return result(action, xml, { relayToken, logicalState });
   }
@@ -1119,7 +1100,8 @@ export async function performAction(
       timeoutMs,
       imagingUrl,
       soapAction,
-      soapEnvelopeWithNamespaces(header, body, `xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl"`),
+      body,
+      `xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl"`,
     );
     return result(action, xml, { videoSourceToken });
   }

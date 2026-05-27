@@ -1193,7 +1193,7 @@ fn render_layout(display_id: &str, layout_id: &str) {
                     none_cell()
                 } else {
                     let key = html_key(html);
-                    ensure_web(key, WebSource::Html(html), server_url, kiosk_key).upcast()
+                    ensure_web(key, WebSource::Html(html), server_url, kiosk_key, None).upcast()
                 }
             }
             "web" => {
@@ -1202,7 +1202,7 @@ fn render_layout(display_id: &str, layout_id: &str) {
                     none_cell()
                 } else {
                     let key = format!("web:{url}");
-                    let wv = ensure_web(key, WebSource::Url(url), server_url, kiosk_key);
+                    let wv = ensure_web(key, WebSource::Url(url), server_url, kiosk_key, cell.local_storage.as_ref());
                     // Smart URL: execute login/navigation steps after page loads.
                     if let Some(ref smart) = cell.smart_url {
                         let decrypt_key = server::load_encrypt_key()
@@ -1924,6 +1924,7 @@ fn ensure_web(
     source: WebSource<'_>,
     server_url: &str,
     kiosk_key: &str,
+    local_storage: Option<&std::collections::HashMap<String, String>>,
 ) -> webkit6::WebView {
     let cached = WARM_WEBVIEWS.with(|m| m.borrow().get(&key).map(|e| e.webview.clone()));
     if let Some(wv) = cached {
@@ -1964,6 +1965,26 @@ fn ensure_web(
                 &[],
             );
             ucm.add_style_sheet(&style);
+        }
+    }
+
+    if let Some(ls) = local_storage {
+        if !ls.is_empty() {
+            let mut js = String::from("(function(){");
+            for (k, v) in ls {
+                js.push_str(&format!("localStorage.setItem({},{});", js_string_lit(k), js_string_lit(v)));
+            }
+            js.push_str("})();");
+            let script = webkit6::UserScript::new(
+                &js,
+                webkit6::UserContentInjectedFrames::TopFrame,
+                webkit6::UserScriptInjectionTime::Start,
+                &[],
+                &[],
+            );
+            if let Some(ucm) = webkit6::prelude::WebViewExt::user_content_manager(&wv) {
+                ucm.add_script(&script);
+            }
         }
     }
 

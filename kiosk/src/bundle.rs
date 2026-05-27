@@ -138,6 +138,8 @@ pub struct BundleCell {
     pub fit: String,
     #[serde(default)]
     pub smart_url: Option<SmartUrlConfig>,
+    #[serde(default)]
+    pub local_storage: Option<std::collections::HashMap<String, String>>,
 }
 
 fn default_fit() -> String { "cover".to_string() }

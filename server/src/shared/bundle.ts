@@ -91,6 +91,8 @@ export interface BundleCell {
     login_detect_url?: string;
     session_check_interval_ms?: number;
   };
+  /** Key→value pairs injected into WebView localStorage before page load. */
+  local_storage?: Record<string, string>;
 }
 
 export interface BundleLayout {
@@ -220,6 +222,7 @@ export async function generateBundle(
         // bundle still ships the legacy camera_id/web_url/html_content shape
         // so the existing Rust kiosk consumes it unchanged.
         let contentType = c.content_type;
+        let cellLocalStorage: Record<string, string> | undefined;
         let cameraId = c.camera_id;
         let webUrl = c.web_url;
         let htmlContent = c.html_content;
@@ -237,6 +240,21 @@ export async function generateBundle(
               ent.type === "dashboard" && ent.dashboard_id ? `/dash/${ent.dashboard_id}` :
               null;
             htmlContent = ent.type === "html" ? ent.html_content : null;
+            // AbleSign: inject screenToken + screenId into localStorage
+            if (ent.type === "ablesign" && ent.ablesign_screen_id) {
+              const screen = await repo.getAbleSignScreen(ent.ablesign_screen_id);
+              if (screen) {
+                const ls: Record<string, string> = {
+                  screenId: screen.ablesign_screen_id,
+                };
+                if (screen.ablesign_screen_token_encrypted) {
+                  try {
+                    ls["screenToken"] = secrets.decryptString(screen.ablesign_screen_token_encrypted, "ablesign-token");
+                  } catch { /* token decrypt failed — player will show pairing */ }
+                }
+                cellLocalStorage = ls;
+              }
+            }
           }
         }
         bundleCells.push({
@@ -271,6 +289,7 @@ export async function generateBundle(
               session_check_interval_ms: raw.session_check_interval_ms,
             };
           })() : undefined,
+          local_storage: cellLocalStorage,
         });
       }
       result.push({

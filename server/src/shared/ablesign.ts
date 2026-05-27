@@ -1,8 +1,9 @@
 /**
- * AbleSign API client — screen registration, playlist management.
+ * AbleSign API client — full CMS management.
  *
  * Base URL: https://api.ablesign.tv/api/v1
  * Auth: Bearer ak_... (API key from AbleSign CMS)
+ * Docs: https://apidocs.ablesign.tv/
  *
  * The player at player.ablesign.tv uses an internal registration API
  * (POST /api/screens/registration) that doesn't need auth. We use the
@@ -12,6 +13,8 @@
 
 const API_BASE = "https://api.ablesign.tv/api/v1";
 const PLAYER_API = "https://api.ablesign.tv/api";
+
+// ---- Interfaces ---------------------------------------------------------------
 
 export interface AbleSignScreen {
   id: number;
@@ -30,12 +33,15 @@ export interface AbleSignPlaylistItem {
   sequenceNumber?: number;
   transition?: string;
   transitionSpeedLabel?: string;
+  scheduleEnabled?: boolean;
+  periodicScheduleEnabled?: boolean;
 }
 
 export interface AbleSignPlaylist {
   defaultTransition?: string;
   defaultTransitionSpeedLabel?: string;
   shufflePlay?: boolean;
+  enableImageTransitions?: boolean;
   items: AbleSignPlaylistItem[];
 }
 
@@ -45,7 +51,49 @@ export interface AbleSignRegistration {
   screenId: number;
 }
 
-interface ApiOpts {
+export interface AbleSignWebApp {
+  id: string;
+  title: string;
+  description?: string;
+  url?: string;
+  html?: string;
+  zoom?: number;
+  startDate?: string;
+  expirationDate?: string;
+  tags?: string[];
+}
+
+export interface AbleSignMediaFile {
+  id: string;
+  title: string;
+  description?: string;
+  fileType: string;
+  thumbnailURL?: string;
+  accessUrl?: string;
+  folderId?: string;
+  startDate?: string;
+  expirationDate?: string;
+  tags?: string[];
+}
+
+export interface AbleSignFolder {
+  id: string;
+  title: string;
+  parentFolderId?: string;
+}
+
+export interface AbleSignScreenGroup {
+  id: number;
+  title: string;
+  description?: string;
+}
+
+export interface AbleSignUploadInit {
+  uploadId: string;
+  uploadUrl: string;
+}
+
+export interface ApiOpts {
   apiKey: string;
   workspaceId?: string;
   timeoutMs?: number;
@@ -144,20 +192,152 @@ export async function addPlaylistItems(
   await apiFetch("POST", `/screens/${screenId}/playlist_items`, opts, { items, position });
 }
 
-export async function listWebApps(opts: ApiOpts): Promise<{ data: Array<{ id: string; title: string; url?: string }> }> {
+// ---- Web Apps -----------------------------------------------------------------
+
+export async function listWebApps(opts: ApiOpts): Promise<{ data: AbleSignWebApp[] }> {
   return apiFetch("GET", "/web_apps?limit=200", opts);
+}
+
+export async function getWebApp(opts: ApiOpts, id: string): Promise<AbleSignWebApp> {
+  return apiFetch("GET", `/web_apps/${id}`, opts);
 }
 
 export async function createWebApp(
   opts: ApiOpts,
   title: string,
   url: string,
-): Promise<{ id: string; title: string }> {
-  return apiFetch("POST", "/web_apps", opts, { title, url });
+  description?: string,
+): Promise<AbleSignWebApp> {
+  return apiFetch("POST", "/web_apps", opts, { title, url, description });
 }
 
-export async function listMediaFiles(opts: ApiOpts): Promise<{ data: Array<{ id: string; title: string; fileType: string; thumbnailURL?: string }> }> {
+export async function updateWebApp(
+  opts: ApiOpts,
+  id: string,
+  patch: { title?: string; description?: string; url?: string; zoom?: number; tags?: string[]; startDate?: string; expirationDate?: string },
+): Promise<void> {
+  await apiFetch("PUT", `/web_apps/${id}`, opts, patch);
+}
+
+export async function deleteWebApp(opts: ApiOpts, id: string): Promise<void> {
+  await apiFetch("DELETE", `/web_apps/${id}`, opts);
+}
+
+// ---- Media Files --------------------------------------------------------------
+
+export async function listMediaFiles(opts: ApiOpts): Promise<{ data: AbleSignMediaFile[] }> {
   return apiFetch("GET", "/media_files?limit=200", opts);
+}
+
+export async function getMediaFile(opts: ApiOpts, id: string): Promise<AbleSignMediaFile> {
+  return apiFetch("GET", `/media_files/${id}`, opts);
+}
+
+export async function updateMediaFile(
+  opts: ApiOpts,
+  id: string,
+  patch: { title?: string; description?: string; tags?: string[]; startDate?: string; expirationDate?: string },
+): Promise<void> {
+  await apiFetch("PUT", `/media_files/${id}`, opts, patch);
+}
+
+export async function deleteMediaFile(opts: ApiOpts, id: string): Promise<void> {
+  await apiFetch("DELETE", `/media_files/${id}`, opts);
+}
+
+export async function initMediaUpload(
+  opts: ApiOpts,
+  filename: string,
+  mimeType: string,
+  size: number,
+  folderId?: string,
+): Promise<AbleSignUploadInit> {
+  return apiFetch("POST", "/media_files/init_upload", opts, { filename, mimeType, size, folderId });
+}
+
+export async function finishMediaUpload(opts: ApiOpts, uploadId: string): Promise<AbleSignMediaFile> {
+  return apiFetch("POST", "/media_files/finish_upload", opts, { uploadId });
+}
+
+// ---- Folders ------------------------------------------------------------------
+
+export async function listFolders(opts: ApiOpts, folderId?: string): Promise<{ data: AbleSignFolder[] }> {
+  const qs = folderId ? `?limit=200&folderId=${folderId}` : "?limit=200";
+  return apiFetch("GET", `/folders${qs}`, opts);
+}
+
+export async function createFolder(opts: ApiOpts, title: string, parentFolderId?: string): Promise<AbleSignFolder> {
+  return apiFetch("POST", "/folders", opts, { title, parentFolderId });
+}
+
+export async function updateFolder(opts: ApiOpts, id: string, title: string): Promise<void> {
+  await apiFetch("PUT", `/folders/${id}`, opts, { title });
+}
+
+export async function deleteFolder(opts: ApiOpts, id: string): Promise<void> {
+  await apiFetch("DELETE", `/folders/${id}`, opts);
+}
+
+// ---- Screen Groups ------------------------------------------------------------
+
+export async function listScreenGroups(opts: ApiOpts): Promise<{ data: AbleSignScreenGroup[] }> {
+  return apiFetch("GET", "/screen_groups?limit=200", opts);
+}
+
+export async function createScreenGroup(opts: ApiOpts, title: string, description?: string): Promise<AbleSignScreenGroup> {
+  return apiFetch("POST", "/screen_groups", opts, { title, description });
+}
+
+export async function getScreenGroup(opts: ApiOpts, id: number): Promise<AbleSignScreenGroup> {
+  return apiFetch("GET", `/screen_groups/${id}`, opts);
+}
+
+export async function updateScreenGroup(
+  opts: ApiOpts,
+  id: number,
+  patch: { title?: string; description?: string },
+): Promise<void> {
+  await apiFetch("PUT", `/screen_groups/${id}`, opts, patch);
+}
+
+export async function deleteScreenGroup(opts: ApiOpts, id: number): Promise<void> {
+  await apiFetch("DELETE", `/screen_groups/${id}`, opts);
+}
+
+export async function getScreenGroupPlaylist(opts: ApiOpts, id: number): Promise<AbleSignPlaylist> {
+  return apiFetch("GET", `/screen_groups/${id}/playlist`, opts);
+}
+
+export async function saveScreenGroupPlaylist(opts: ApiOpts, id: number, playlist: AbleSignPlaylist): Promise<void> {
+  await apiFetch("PUT", `/screen_groups/${id}/playlist`, opts, playlist);
+}
+
+export async function addScreenGroupPlaylistItems(
+  opts: ApiOpts,
+  id: number,
+  items: AbleSignPlaylistItem[],
+  position: "start" | "end" = "end",
+): Promise<void> {
+  await apiFetch("POST", `/screen_groups/${id}/playlist_items`, opts, { items, position });
+}
+
+export async function getScreenGroupMembers(opts: ApiOpts, id: number): Promise<{ data: AbleSignScreen[] }> {
+  return apiFetch("GET", `/screen_groups/${id}/screens`, opts);
+}
+
+export async function setScreenGroupMembers(opts: ApiOpts, id: number, screenIds: number[]): Promise<void> {
+  await apiFetch("PUT", `/screen_groups/${id}/screens`, opts, { screens: screenIds });
+}
+
+// ---- Playlist Item (per-item PATCH) -------------------------------------------
+
+export async function updatePlaylistItem(
+  opts: ApiOpts,
+  screenId: number,
+  itemId: string,
+  patch: { displayDuration?: number; transition?: string; scheduleEnabled?: boolean; periodicScheduleEnabled?: boolean },
+): Promise<void> {
+  await apiFetch("PATCH", `/screens/${screenId}/playlist_items/${itemId}`, opts, patch);
 }
 
 /**

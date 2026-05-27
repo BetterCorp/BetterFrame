@@ -4576,6 +4576,8 @@ export function AbleSignPage(props: AbleSignPageProps) {
   );
 }
 
+// ---- AbleSign Screens -------------------------------------------------------
+
 interface AbleSignScreensPageProps {
   screens: any[];
   accountId: string | null;
@@ -4620,60 +4622,73 @@ export function AbleSignScreensPage(props: AbleSignScreensPageProps) {
           ) : ""}
         </div>
 
-        {props.screens.length === 0 ? (
-          <p style="color:#999; font-size:0.85rem">No screens yet. Create one above or sync from AbleSign.</p>
-        ) : (
-          <div class="table-wrap">
-            <table>
-              <thead><tr>
-                <th>Title</th>
-                <th>Orientation</th>
-                <th>Status</th>
-                <th>Source</th>
-                <th>Actions</th>
-              </tr></thead>
-              <tbody>
-                {props.screens.map((s: any) => (
-                  <tr>
-                    <td><a href={`/admin/ablesign/screens/${String(s.id)}`}>{s.title}</a></td>
-                    <td style="font-size:0.85rem">{s.orientation}</td>
-                    <td>
-                      {s.online
-                        ? <span class="badge badge-green">Online</span>
-                        : <span class="badge badge-gray">Offline</span>}
-                    </td>
-                    <td>
-                      {s.has_entity
-                        ? <span class="badge badge-blue">Internal</span>
-                        : <span class="badge badge-gray">External</span>}
-                    </td>
-                    <td>
-                      <form method="POST" action={`/admin/ablesign/screens/${String(s.id)}/delete`} style="display:inline">
-                        <button type="submit" class="btn btn-sm btn-ghost" style="color:#c00">Delete</button>
-                      </form>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <div id="screens-table" hx-get="/admin/ablesign/screens/fragment" hx-trigger="every 5s" hx-swap="innerHTML">
+          {renderScreensTableInner(props)}
+        </div>
       </div>
     </Layout>
   );
 }
 
-// ---- AbleSign Screen Detail Page ---------------------------------------------
+export function renderScreensTable(props: { screens: any[]; accountId: string | null }): string {
+  return String(renderScreensTableInner(props));
+}
+
+function renderScreensTableInner(props: { screens: any[]; accountId: string | null }) {
+  if (props.screens.length === 0) {
+    return <p style="color:#999; font-size:0.85rem">No screens yet. Create one above or sync from AbleSign.</p>;
+  }
+  return (
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Title</th>
+          <th>Orientation</th>
+          <th>Status</th>
+          <th>Source</th>
+          <th>Actions</th>
+        </tr></thead>
+        <tbody>
+          {props.screens.map((s: any) => (
+            <tr>
+              <td><a href={`/admin/ablesign/screens/${String(s.id)}`}>{s.title}</a></td>
+              <td style="font-size:0.85rem">{s.orientation}</td>
+              <td>
+                {s.online
+                  ? <span class="badge badge-green">Online</span>
+                  : <span class="badge badge-gray">Offline</span>}
+              </td>
+              <td>
+                {s.has_entity
+                  ? <span class="badge badge-blue">Internal</span>
+                  : <span class="badge badge-gray">External</span>}
+              </td>
+              <td>
+                <form method="POST" action={`/admin/ablesign/screens/${String(s.id)}/delete`} style="display:inline">
+                  <button type="submit" class="btn btn-sm btn-ghost" style="color:#c00">Delete</button>
+                </form>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---- AbleSign Screen Detail -------------------------------------------------
 
 interface AbleSignScreenDetailPageProps {
   screen: any;
   remoteScreen: any | null;
   entity: any | null;
+  playlist?: any | null;
 }
 
 export function AbleSignScreenDetailPage(props: AbleSignScreenDetailPageProps) {
   const s = props.screen;
   const r = props.remoteScreen;
+  const pl = props.playlist;
   return (
     <Layout title={`AbleSign — ${String(s.title)}`} activeNav="ablesign-screens">
       <h1 style="font-size:1.5rem; margin:0 0 1.5rem">{s.title}</h1>
@@ -4714,6 +4729,37 @@ export function AbleSignScreenDetailPage(props: AbleSignScreenDetailPageProps) {
         </div>
       </div>
 
+      {pl ? (
+        <div class="card" style="margin-bottom:1.5rem">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem">
+            <h2 style="font-size:1rem; margin:0">Playlist</h2>
+            <a href={`/admin/ablesign/screens/${String(s.id)}/playlist`} class="btn btn-sm">Manage Playlist</a>
+          </div>
+          <p style="font-size:0.85rem; color:#666; margin:0 0 0.5rem">
+            {String(pl.items?.length ?? 0)}{" items"}
+            {pl.shufflePlay ? " · Shuffle on" : ""}
+            {pl.defaultTransition ? ` · Transition: ${String(pl.defaultTransition)}` : ""}
+          </p>
+          {Array.isArray(pl.items) && pl.items.length > 0 ? (
+            <div class="table-wrap">
+              <table style="font-size:0.85rem">
+                <thead><tr><th>#</th><th>Type</th><th>Duration</th></tr></thead>
+                <tbody>
+                  {pl.items.slice(0, 5).map((item: any, idx: number) => (
+                    <tr>
+                      <td>{String(idx + 1)}</td>
+                      <td>{item.mediafileId ? "Media" : item.webAppId ? "Website" : "Unknown"}</td>
+                      <td>{item.displayDuration ? `${String(item.displayDuration)}s` : "—"}</td>
+                    </tr>
+                  ))}
+                  {pl.items.length > 5 ? <tr><td colspan="3" style="color:#999; font-style:italic">{"... and "}{String(pl.items.length - 5)}{" more"}</td></tr> : ""}
+                </tbody>
+              </table>
+            </div>
+          ) : ""}
+        </div>
+      ) : ""}
+
       <div style="display:flex; gap:0.5rem">
         <a href="/admin/ablesign/screens" class="btn btn-sm btn-ghost">Back to Screens</a>
       </div>
@@ -4721,58 +4767,542 @@ export function AbleSignScreenDetailPage(props: AbleSignScreenDetailPageProps) {
   );
 }
 
-interface AbleSignContentPageProps { content: any[]; accounts: any[]; }
+// ---- AbleSign Playlist Editor -----------------------------------------------
+
+const TRANSITIONS = ["none", "fade", "slide_left", "slide_right", "slide_up", "slide_down", "dissolve"];
+const SPEEDS = ["slow", "medium", "fast"];
+
+interface AbleSignPlaylistEditPageProps {
+  screen: any;
+  playlist: any;
+  content: Array<{ id: string; title: string; kind: "media" | "webapp"; fileType?: string }>;
+  error?: string;
+  isGroup?: boolean;
+  accountId?: string;
+}
+
+export function AbleSignPlaylistEditPage(props: AbleSignPlaylistEditPageProps) {
+  const s = props.screen;
+  const pl = props.playlist;
+  const isGroup = props.isGroup ?? false;
+  const baseUrl = isGroup
+    ? `/admin/ablesign/groups/${String(s.id).replace("group-", "")}/playlist`
+    : `/admin/ablesign/screens/${String(s.id)}/playlist`;
+  const backUrl = isGroup
+    ? `/admin/ablesign/groups/${String(s.id).replace("group-", "")}?account_id=${props.accountId ?? ""}`
+    : `/admin/ablesign/screens/${String(s.id)}`;
+  const hiddenAccountField = isGroup && props.accountId
+    ? `<input type="hidden" name="account_id" value="${props.accountId}" />`
+    : "";
+
+  return (
+    <Layout title={`Playlist — ${String(s.title)}`} activeNav={isGroup ? "ablesign-groups" : "ablesign-screens"}>
+      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">{"Playlist: "}{s.title}</h1>
+
+      {props.error ? <div class="alert alert-error" style="margin-bottom:1rem">{props.error}</div> : ""}
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="font-size:1rem; margin:0 0 0.75rem">Settings</h2>
+        <form method="POST" action={`${baseUrl}/settings`} style="display:flex; gap:1rem; flex-wrap:wrap; align-items:end">
+          {hiddenAccountField}
+          <label style="font-size:0.85rem; display:flex; align-items:center; gap:0.25rem">
+            <input type="checkbox" name="shufflePlay" checked={!!pl.shufflePlay} />
+            {" Shuffle"}
+          </label>
+          <label style="font-size:0.85rem; display:flex; align-items:center; gap:0.25rem">
+            <input type="checkbox" name="enableImageTransitions" checked={!!pl.enableImageTransitions} />
+            {" Image Transitions"}
+          </label>
+          <label style="font-size:0.85rem">
+            {"Transition"}<br/>
+            <select name="defaultTransition" style="font-size:0.85rem">
+              {TRANSITIONS.map((t) => <option value={t} selected={pl.defaultTransition === t}>{t}</option>)}
+            </select>
+          </label>
+          <label style="font-size:0.85rem">
+            {"Speed"}<br/>
+            <select name="defaultTransitionSpeedLabel" style="font-size:0.85rem">
+              {SPEEDS.map((sp) => <option value={sp} selected={pl.defaultTransitionSpeedLabel === sp}>{sp}</option>)}
+            </select>
+          </label>
+          <button type="submit" class="btn btn-sm">Save Settings</button>
+        </form>
+      </div>
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="font-size:1rem; margin:0 0 0.75rem">Items ({String(pl.items?.length ?? 0)})</h2>
+        <div id="playlist-items">
+          {renderPlaylistItemsInner(String(s.id), pl, baseUrl, hiddenAccountField)}
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="font-size:1rem; margin:0 0 0.75rem">Add Content</h2>
+        {props.content.length === 0
+          ? <p style="color:#999; font-size:0.85rem">No content available. Add media or websites in the Content page first.</p>
+          : (
+            <form method="POST" action={`${baseUrl}/add-items`}>
+              {hiddenAccountField}
+              <div style="display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:1rem">
+                <label style="font-size:0.85rem">
+                  {"Duration (s)"}<br/>
+                  <input type="number" name="duration" value="10" min="1" style="width:5rem" />
+                </label>
+                <label style="font-size:0.85rem">
+                  {"Position"}<br/>
+                  <select name="position" style="font-size:0.85rem">
+                    <option value="end">End</option>
+                    <option value="start">Start</option>
+                  </select>
+                </label>
+              </div>
+              <div class="table-wrap" style="max-height:20rem; overflow-y:auto">
+                <table style="font-size:0.85rem">
+                  <thead><tr><th style="width:2rem"></th><th>Title</th><th>Type</th></tr></thead>
+                  <tbody>
+                    {props.content.map((c) => (
+                      <tr>
+                        <td><input type="checkbox" name="items" value={`${c.kind}:${c.id}`} /></td>
+                        <td>{c.title}</td>
+                        <td>{c.kind === "media" ? String(c.fileType || "media") : "website"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <button type="submit" class="btn btn-sm" style="margin-top:0.75rem">Add Selected</button>
+            </form>
+          )}
+      </div>
+
+      <a href={backUrl} class="btn btn-sm btn-ghost">{isGroup ? "Back to Group" : "Back to Screen"}</a>
+    </Layout>
+  );
+}
+
+export function renderPlaylistItems(screenSid: string, playlist: any): string {
+  const isGroup = screenSid.startsWith("group-");
+  const baseUrl = isGroup
+    ? `/admin/ablesign/groups/${screenSid.replace("group-", "")}/playlist`
+    : `/admin/ablesign/screens/${screenSid}/playlist`;
+  return String(renderPlaylistItemsInner(screenSid, playlist, baseUrl, ""));
+}
+
+function renderPlaylistItemsInner(screenSid: string, playlist: any, baseUrl: string, hiddenAccountField: string) {
+  const items: any[] = playlist.items ?? [];
+  if (items.length === 0) {
+    return <p style="color:#999; font-size:0.85rem">Playlist is empty. Add content below.</p>;
+  }
+  return (
+    <div class="table-wrap">
+      <table style="font-size:0.85rem">
+        <thead><tr>
+          <th>#</th>
+          <th>Type</th>
+          <th>Duration</th>
+          <th>Transition</th>
+          <th style="width:10rem">Actions</th>
+        </tr></thead>
+        <tbody>
+          {items.map((item: any, idx: number) => (
+            <tr>
+              <td>{String(idx + 1)}</td>
+              <td>{item.mediafileId ? "Media" : item.webAppId ? "Website" : "Unknown"}</td>
+              <td>{item.displayDuration ? `${String(item.displayDuration)}s` : "—"}</td>
+              <td style="font-size:0.8rem; color:#666">{item.transition ?? "—"}</td>
+              <td style="display:flex; gap:0.25rem; flex-wrap:nowrap">
+                {idx > 0 ? (
+                  <button class="btn btn-sm btn-ghost" hx-post={`${baseUrl}/reorder`} hx-target="#playlist-items" hx-swap="innerHTML" hx-vals={JSON.stringify({ index: idx, direction: "up" })}>{"↑"}</button>
+                ) : ""}
+                {idx < items.length - 1 ? (
+                  <button class="btn btn-sm btn-ghost" hx-post={`${baseUrl}/reorder`} hx-target="#playlist-items" hx-swap="innerHTML" hx-vals={JSON.stringify({ index: idx, direction: "down" })}>{"↓"}</button>
+                ) : ""}
+                <button class="btn btn-sm btn-ghost" style="color:#c00" hx-post={`${baseUrl}/remove-item`} hx-target="#playlist-items" hx-swap="innerHTML" hx-vals={JSON.stringify({ index: idx })} hx-confirm="Remove this item?">{"×"}</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---- AbleSign Content Page --------------------------------------------------
+
+interface AbleSignContentPageProps {
+  content: any[];
+  accounts: any[];
+  folders?: any[];
+  error?: string;
+}
 
 export function AbleSignContentPage(props: AbleSignContentPageProps) {
+  const firstAccountId = props.accounts[0]?.id ?? "";
   return (
     <Layout title="AbleSign — Content" activeNav="ablesign-content">
       <h1 style="font-size:1.5rem; margin:0 0 1.5rem">AbleSign Content</h1>
+
+      {props.error ? <div class="alert alert-error" style="margin-bottom:1rem">{props.error}</div> : ""}
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="font-size:1rem; margin:0 0 0.75rem">Add Content</h2>
+        <div style="display:flex; gap:2rem; flex-wrap:wrap">
+          <div style="flex:1; min-width:16rem">
+            <h3 style="font-size:0.9rem; margin:0 0 0.5rem; color:#666">Website</h3>
+            <form method="POST" action="/admin/ablesign/content/websites/add" style="display:flex; flex-direction:column; gap:0.5rem">
+              {props.accounts.length > 1 ? (
+                <label style="font-size:0.85rem">
+                  {"Account"}<br/>
+                  <select name="account_id" style="font-size:0.85rem">
+                    {props.accounts.map((a: any) => <option value={a.id}>{a.name}</option>)}
+                  </select>
+                </label>
+              ) : <input type="hidden" name="account_id" value={firstAccountId} />}
+              <label style="font-size:0.85rem">
+                {"Title"}<br/>
+                <input type="text" name="title" required placeholder="Dashboard" style="width:100%" />
+              </label>
+              <label style="font-size:0.85rem">
+                {"URL"}<br/>
+                <input type="url" name="url" required placeholder="https://example.com" style="width:100%" />
+              </label>
+              <label style="font-size:0.85rem">
+                {"Description (optional)"}<br/>
+                <input type="text" name="description" placeholder="" style="width:100%" />
+              </label>
+              <button type="submit" class="btn btn-sm" style="align-self:flex-start">Create Website</button>
+            </form>
+          </div>
+          <div style="flex:1; min-width:16rem">
+            <h3 style="font-size:0.9rem; margin:0 0 0.5rem; color:#666">Upload Media</h3>
+            <form method="POST" action="/admin/ablesign/content/media/upload" id="upload-form" style="display:flex; flex-direction:column; gap:0.5rem">
+              {props.accounts.length > 1 ? (
+                <label style="font-size:0.85rem">
+                  {"Account"}<br/>
+                  <select name="account_id" style="font-size:0.85rem">
+                    {props.accounts.map((a: any) => <option value={a.id}>{a.name}</option>)}
+                  </select>
+                </label>
+              ) : <input type="hidden" name="account_id" value={firstAccountId} />}
+              <label style="font-size:0.85rem">
+                {"File"}<br/>
+                <input type="file" id="upload-file" accept="image/*,video/*" style="font-size:0.85rem" />
+              </label>
+              <input type="hidden" name="filename" id="upload-filename" />
+              <input type="hidden" name="mimeType" id="upload-mimetype" />
+              <input type="hidden" name="fileData" id="upload-filedata" />
+              {js(`
+                document.getElementById('upload-file').addEventListener('change', function(e) {
+                  var f = e.target.files[0];
+                  if (!f) return;
+                  document.getElementById('upload-filename').value = f.name;
+                  document.getElementById('upload-mimetype').value = f.type || 'application/octet-stream';
+                  var reader = new FileReader();
+                  reader.onload = function() {
+                    document.getElementById('upload-filedata').value = reader.result.split(',')[1];
+                  };
+                  reader.readAsDataURL(f);
+                });
+              `)}
+              <button type="submit" class="btn btn-sm" style="align-self:flex-start">Upload</button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      {(props.folders ?? []).length > 0 ? (
+        <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="font-size:1rem; margin:0 0 0.75rem">Folders</h2>
+          <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.75rem">
+            {(props.folders ?? []).map((f: any) => (
+              <span class="badge badge-gray" style="display:inline-flex; align-items:center; gap:0.25rem">
+                {f.title}
+                <form method="POST" action={`/admin/ablesign/content/folders/${String(f.id)}/delete`} style="display:inline">
+                  <input type="hidden" name="account_id" value={f.account_id} />
+                  <button type="submit" style="background:none; border:none; color:#c00; cursor:pointer; font-size:0.8rem; padding:0">{"×"}</button>
+                </form>
+              </span>
+            ))}
+          </div>
+          <form method="POST" action="/admin/ablesign/content/folders/add" style="display:flex; gap:0.5rem; align-items:end">
+            <input type="hidden" name="account_id" value={firstAccountId} />
+            <label style="font-size:0.85rem">
+              {"New Folder"}<br/>
+              <input type="text" name="title" required placeholder="Folder name" style="width:12rem" />
+            </label>
+            <button type="submit" class="btn btn-sm">Create</button>
+          </form>
+        </div>
+      ) : ""}
+
       <div class="card">
-        {props.content.length === 0
-          ? <p style="color:#999; font-size:0.85rem">No content found. Add media or web apps in AbleSign CMS.</p>
-          : <div class="table-wrap">
-              <table>
-                <thead><tr><th>Title</th><th>Type</th><th>Account</th></tr></thead>
-                <tbody>
-                  {props.content.map((c: any) => (
-                    <tr>
-                      <td>{c.title}</td>
-                      <td style="font-size:0.85rem">{c.kind === "media" ? String(c.fileType || "media") : "web app"}</td>
-                      <td style="font-size:0.85rem; color:#999">{c.account_name}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>}
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem">
+          <h2 style="font-size:1rem; margin:0">Content Library</h2>
+          <div style="display:flex; gap:0.25rem">
+            <button class="btn btn-sm btn-ghost" id="view-grid" onclick="document.getElementById('content-grid').style.display='grid';document.getElementById('content-list').style.display='none';localStorage.setItem('as-view','grid')">Grid</button>
+            <button class="btn btn-sm btn-ghost" id="view-list" onclick="document.getElementById('content-grid').style.display='none';document.getElementById('content-list').style.display='block';localStorage.setItem('as-view','list')">List</button>
+          </div>
+        </div>
+        {renderContentGridInner({ content: props.content })}
+        {js(`
+          var pref = localStorage.getItem('as-view') || 'grid';
+          if (pref === 'list') {
+            var g = document.getElementById('content-grid');
+            var l = document.getElementById('content-list');
+            if (g) g.style.display = 'none';
+            if (l) l.style.display = 'block';
+          }
+        `)}
       </div>
     </Layout>
   );
 }
 
+export function renderContentGrid(props: { content: any[] }): string {
+  return String(renderContentGridInner(props));
+}
+
+function renderContentGridInner(props: { content: any[] }) {
+  if (props.content.length === 0) {
+    return <p style="color:#999; font-size:0.85rem">No content found.</p>;
+  }
+  return (
+    <div>
+      <div id="content-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:1rem">
+        {props.content.map((c: any) => (
+          <div style="border:1px solid #333; border-radius:6px; overflow:hidden; background:#1a1a1a">
+            <div style="height:100px; background:#222; display:flex; align-items:center; justify-content:center; overflow:hidden">
+              {c.thumbnailURL
+                ? <img src={c.thumbnailURL} alt="" style="width:100%; height:100%; object-fit:cover" />
+                : <span style="color:#666; font-size:2rem">{c.kind === "media" ? "🖼" : "🌐"}</span>}
+            </div>
+            <div style="padding:0.5rem">
+              <div style="font-size:0.85rem; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis" title={c.title}>{c.title}</div>
+              <div style="font-size:0.75rem; color:#999; margin-top:0.25rem">
+                {c.kind === "media" ? String(c.fileType || "media") : "website"}
+                {" · "}{c.account_name}
+              </div>
+              <div style="display:flex; gap:0.25rem; margin-top:0.5rem">
+                <div data-edit-target="" style="flex:1">
+                  <button class="btn btn-sm btn-ghost" style="font-size:0.75rem; padding:0.15rem 0.35rem"
+                    hx-get={c.kind === "webapp" ? `/admin/ablesign/content/websites/${String(c.id)}/edit?account_id=${String(c.account_id)}` : `/admin/ablesign/content/media/${String(c.id)}/edit?account_id=${String(c.account_id)}`}
+                    hx-target="closest [data-edit-target]" hx-swap="innerHTML">Edit</button>
+                </div>
+                <form method="POST" action={c.kind === "webapp" ? `/admin/ablesign/content/websites/${String(c.id)}/delete` : `/admin/ablesign/content/media/${String(c.id)}/delete`} style="display:inline">
+                  <input type="hidden" name="account_id" value={c.account_id} />
+                  <button type="submit" class="btn btn-sm btn-ghost" style="color:#c00; font-size:0.75rem; padding:0.15rem 0.35rem">{"×"}</button>
+                </form>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div id="content-list" style="display:none">
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th style="width:40px"></th>
+              <th>Title</th>
+              <th>Type</th>
+              <th>Account</th>
+              <th>Actions</th>
+            </tr></thead>
+            <tbody>
+              {props.content.map((c: any) => (
+                <tr>
+                  <td style="padding:0.25rem">
+                    {c.thumbnailURL
+                      ? <img src={c.thumbnailURL} alt="" style="width:40px; height:30px; object-fit:cover; border-radius:3px" />
+                      : <span style="font-size:1.2rem">{c.kind === "media" ? "🖼" : "🌐"}</span>}
+                  </td>
+                  <td>{c.title}</td>
+                  <td style="font-size:0.85rem">{c.kind === "media" ? String(c.fileType || "media") : "website"}</td>
+                  <td style="font-size:0.85rem; color:#999">{c.account_name}</td>
+                  <td style="display:flex; gap:0.25rem">
+                    <div data-edit-target="">
+                      <button class="btn btn-sm btn-ghost" style="font-size:0.8rem"
+                        hx-get={c.kind === "webapp" ? `/admin/ablesign/content/websites/${String(c.id)}/edit?account_id=${String(c.account_id)}` : `/admin/ablesign/content/media/${String(c.id)}/edit?account_id=${String(c.account_id)}`}
+                        hx-target="closest [data-edit-target]" hx-swap="innerHTML">Edit</button>
+                    </div>
+                    <form method="POST" action={c.kind === "webapp" ? `/admin/ablesign/content/websites/${String(c.id)}/delete` : `/admin/ablesign/content/media/${String(c.id)}/delete`} style="display:inline">
+                      <input type="hidden" name="account_id" value={c.account_id} />
+                      <button type="submit" class="btn btn-sm btn-ghost" style="color:#c00">Delete</button>
+                    </form>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- AbleSign Playlists Overview --------------------------------------------
+
 interface AbleSignPlaylistsPageProps { playlists: any[]; }
 
 export function AbleSignPlaylistsPage(props: AbleSignPlaylistsPageProps) {
-  const cards = props.playlists.map((pl: any) =>
-    `<div class="card" style="margin-bottom:1rem">
-      <h2 style="font-size:1rem; margin:0 0 0.5rem">${pl.screen_title as string}</h2>
-      <p style="font-size:0.8rem; color:#999; margin:0 0 0.5rem">
-        Account: ${pl.account_name as string} · ${String(pl.items?.length ?? 0)} items${pl.shufflePlay ? " · Shuffle" : ""}
-      </p>
-      ${Array.isArray(pl.items) && pl.items.length > 0
-        ? `<table style="font-size:0.85rem; width:100%"><thead><tr><th>#</th><th>Type</th><th>Duration</th></tr></thead><tbody>${
-            (pl.items as any[]).map((item: any, idx: number) =>
-              `<tr><td>${String(idx + 1)}</td><td>${item.mediafileId ? "Media" : item.webAppId ? "Web App" : "Unknown"}</td><td>${item.displayDuration ? `${String(item.displayDuration)}s` : "—"}</td></tr>`
-            ).join("")
-          }</tbody></table>`
-        : ""}
-    </div>`
-  ).join("");
   return (
     <Layout title="AbleSign — Playlists" activeNav="ablesign-playlists">
       <h1 style="font-size:1.5rem; margin:0 0 1.5rem">AbleSign Playlists</h1>
       {props.playlists.length === 0
         ? <div class="card"><p style="color:#999; font-size:0.85rem">No playlists found.</p></div>
-        : cards}
+        : props.playlists.map((pl: any) =>
+            `<div class="card" style="margin-bottom:1rem">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem">
+                <h2 style="font-size:1rem; margin:0">${pl.screen_title as string}</h2>
+                ${pl.screen_sid ? `<a href="/admin/ablesign/screens/${pl.screen_sid as string}/playlist" class="btn btn-sm">Manage</a>` : ""}
+              </div>
+              <p style="font-size:0.8rem; color:#999; margin:0 0 0.5rem">
+                Account: ${pl.account_name as string} · ${String(pl.items?.length ?? 0)} items${pl.shufflePlay ? " · Shuffle" : ""}
+              </p>
+              ${Array.isArray(pl.items) && pl.items.length > 0
+                ? `<div class="table-wrap"><table style="font-size:0.85rem; width:100%"><thead><tr><th>#</th><th>Type</th><th>Duration</th></tr></thead><tbody>${
+                    (pl.items as any[]).map((item: any, idx: number) =>
+                      `<tr><td>${String(idx + 1)}</td><td>${item.mediafileId ? "Media" : item.webAppId ? "Website" : "Unknown"}</td><td>${item.displayDuration ? `${String(item.displayDuration)}s` : "—"}</td></tr>`
+                    ).join("")
+                  }</tbody></table></div>`
+                : ""}
+            </div>`
+          ).join("")}
+    </Layout>
+  );
+}
+
+// ---- AbleSign Groups --------------------------------------------------------
+
+interface AbleSignGroupsPageProps {
+  groups: any[];
+  accounts: any[];
+}
+
+export function AbleSignGroupsPage(props: AbleSignGroupsPageProps) {
+  const firstAccountId = props.accounts[0]?.id ?? "";
+  return (
+    <Layout title="AbleSign — Groups" activeNav="ablesign-groups">
+      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">Screen Groups</h1>
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="font-size:1rem; margin:0 0 0.75rem">Create Group</h2>
+        <form method="POST" action="/admin/ablesign/groups/add" style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:end">
+          {props.accounts.length > 1 ? (
+            <label style="font-size:0.85rem">
+              {"Account"}<br/>
+              <select name="account_id" style="font-size:0.85rem">
+                {props.accounts.map((a: any) => <option value={a.id}>{a.name}</option>)}
+              </select>
+            </label>
+          ) : <input type="hidden" name="account_id" value={firstAccountId} />}
+          <label style="font-size:0.85rem">
+            {"Title"}<br/>
+            <input type="text" name="title" required placeholder="Lobby Screens" style="width:16rem" />
+          </label>
+          <label style="font-size:0.85rem">
+            {"Description"}<br/>
+            <input type="text" name="description" placeholder="Optional" style="width:16rem" />
+          </label>
+          <button type="submit" class="btn btn-sm">Create</button>
+        </form>
+      </div>
+
+      <div class="card">
+        {props.groups.length === 0
+          ? <p style="color:#999; font-size:0.85rem">No screen groups yet.</p>
+          : (
+            <div class="table-wrap">
+              <table>
+                <thead><tr>
+                  <th>Title</th>
+                  <th>Description</th>
+                  <th>Account</th>
+                  <th>Actions</th>
+                </tr></thead>
+                <tbody>
+                  {props.groups.map((g: any) => (
+                    <tr>
+                      <td><a href={`/admin/ablesign/groups/${String(g.id)}?account_id=${String(g.account_id)}`}>{g.title}</a></td>
+                      <td style="font-size:0.85rem; color:#999">{g.description ?? "—"}</td>
+                      <td style="font-size:0.85rem">{g.account_name}</td>
+                      <td style="display:flex; gap:0.25rem">
+                        <a href={`/admin/ablesign/groups/${String(g.id)}?account_id=${String(g.account_id)}`} class="btn btn-sm btn-ghost">Edit</a>
+                        <a href={`/admin/ablesign/groups/${String(g.id)}/playlist?account_id=${String(g.account_id)}`} class="btn btn-sm btn-ghost">Playlist</a>
+                        <form method="POST" action={`/admin/ablesign/groups/${String(g.id)}/delete`} style="display:inline">
+                          <input type="hidden" name="account_id" value={g.account_id} />
+                          <button type="submit" class="btn btn-sm btn-ghost" style="color:#c00">Delete</button>
+                        </form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+      </div>
+    </Layout>
+  );
+}
+
+// ---- AbleSign Group Detail --------------------------------------------------
+
+interface AbleSignGroupDetailPageProps {
+  group: any;
+  members: any[];
+  allScreens: any[];
+  accountId: string;
+}
+
+export function AbleSignGroupDetailPage(props: AbleSignGroupDetailPageProps) {
+  const g = props.group;
+  const memberIds = new Set(props.members.map((m: any) => m.id));
+  return (
+    <Layout title={`AbleSign — ${String(g.title)}`} activeNav="ablesign-groups">
+      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">{g.title}</h1>
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="font-size:1rem; margin:0 0 0.75rem">Group Settings</h2>
+        <form method="POST" action={`/admin/ablesign/groups/${String(g.id)}`} style="display:flex; gap:1rem; flex-wrap:wrap; align-items:end">
+          <input type="hidden" name="account_id" value={props.accountId} />
+          <label style="font-size:0.85rem">
+            {"Title"}<br/>
+            <input type="text" name="title" value={g.title} style="width:16rem" />
+          </label>
+          <label style="font-size:0.85rem">
+            {"Description"}<br/>
+            <input type="text" name="description" value={g.description ?? ""} style="width:20rem" />
+          </label>
+          <button type="submit" class="btn btn-sm">Save</button>
+        </form>
+      </div>
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="font-size:1rem; margin:0 0 0.75rem">Members ({String(props.members.length)})</h2>
+        <form method="POST" action={`/admin/ablesign/groups/${String(g.id)}/members`}>
+          <input type="hidden" name="account_id" value={props.accountId} />
+          <div class="table-wrap" style="max-height:15rem; overflow-y:auto">
+            <table style="font-size:0.85rem">
+              <thead><tr><th style="width:2rem"></th><th>Screen</th><th>Status</th></tr></thead>
+              <tbody>
+                {props.allScreens.map((s: any) => (
+                  <tr>
+                    <td><input type="checkbox" name="screen_ids" value={String(s.id)} checked={memberIds.has(s.id)} /></td>
+                    <td>{s.title}</td>
+                    <td>{s.heartbeatTime ? <span class="badge badge-green">Online</span> : <span class="badge badge-gray">Offline</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <button type="submit" class="btn btn-sm" style="margin-top:0.75rem">Save Members</button>
+        </form>
+      </div>
+
+      <div style="display:flex; gap:0.5rem">
+        <a href={`/admin/ablesign/groups/${String(g.id)}/playlist?account_id=${props.accountId}`} class="btn btn-sm">Manage Playlist</a>
+        <a href="/admin/ablesign/groups" class="btn btn-sm btn-ghost">Back to Groups</a>
+      </div>
     </Layout>
   );
 }

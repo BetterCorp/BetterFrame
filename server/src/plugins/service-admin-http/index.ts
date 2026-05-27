@@ -132,6 +132,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   private purgeTimer?: ReturnType<typeof setInterval>;
   private cameraHealthChecker?: { stop: () => void };
   private artifactCleanup?: { stop: () => void };
+  private _deps?: AdminDeps;
 
   constructor(cfg: BSBServiceConstructor<InstanceType<typeof Config>, typeof EventSchemas>) {
     super(cfg);
@@ -323,6 +324,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
     // Startup purge (inherited from old service-store)
     this._repo = repo;
+    this._deps = deps;
     void this.runPurge(obs);
   }
 
@@ -340,8 +342,27 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   }
 
   async run(obs: Observable): Promise<void> {
-    // Purge every 6 hours (inherited from old service-store).
     this.purgeTimer = setInterval(() => this.runPurge(obs), 6 * 60 * 60 * 1000);
+    void this.syncAllAbleSignAccounts(obs);
+  }
+
+  private async syncAllAbleSignAccounts(obs: Observable): Promise<void> {
+    if (!this._deps) return;
+    const { syncAbleSignAccount } = await import("../../shared/ablesign-sync.js");
+    const accounts = await this._deps.repo.listAbleSignAccounts();
+    if (accounts.length === 0) return;
+    obs.log.info("ablesign: background sync starting for {n} accounts", { n: accounts.length });
+    for (const acct of accounts) {
+      try {
+        await syncAbleSignAccount(acct, this._deps.repo, this._deps.secrets);
+      } catch (err) {
+        obs.log.warn("ablesign: sync failed for account {name}: {err}", {
+          name: acct.name,
+          err: (err as Error).message,
+        });
+      }
+    }
+    obs.log.info("ablesign: background sync complete");
   }
 
   private async provisionNoderedBridge(

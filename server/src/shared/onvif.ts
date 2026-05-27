@@ -310,7 +310,18 @@ function groupProfiles(host: string, deviceName: string | null, profiles: Discov
  * Throws on transport error. Profile fields default to null if the camera
  * omits them.
  */
-export async function discover(input: DiscoverInput): Promise<DiscoveredCamera[]> {
+export interface DiscoverResult {
+  cameras: DiscoveredCamera[];
+  debug: {
+    mediaUrl: string;
+    deviceName: string | null;
+    profileCount: number;
+    rawProfilesXml: string;
+    rawCapabilitiesXml: string | null;
+  };
+}
+
+export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
   const timeoutMs = input.timeoutMs ?? 8000;
   const endpoint = normalizeEndpoint(input);
   const mediaUrl = await discoverMediaUrl(input, endpoint, timeoutMs, input.soapTransport);
@@ -432,7 +443,17 @@ export async function discover(input: DiscoverInput): Promise<DiscoveredCamera[]
     });
   }
 
-  return groupProfiles(input.host, deviceName, out);
+  const cameras = groupProfiles(input.host, deviceName, out);
+  return {
+    cameras,
+    debug: {
+      mediaUrl,
+      deviceName,
+      profileCount: profileBlocks.length,
+      rawProfilesXml: profilesXml,
+      rawCapabilitiesXml: null,
+    },
+  };
 }
 
 /**

@@ -332,6 +332,13 @@ interface CameraDiscoverResultsProps {
   cameras: DiscoveredCameraRow[];
   error?: string;
   success?: string;
+  debug?: {
+    mediaUrl: string;
+    deviceName: string | null;
+    profileCount: number;
+    rawProfilesXml: string;
+    rawCapabilitiesXml: string | null;
+  };
 }
 
 function discoverResultsScript(rootId: string): string {
@@ -528,6 +535,20 @@ export function CameraDiscoverResultsPage(props: CameraDiscoverResultsProps) {
         <a href="/admin/cameras/discover" class="btn btn-ghost">Discover Another</a>
         <a href="/admin/cameras" class="btn btn-ghost" style="margin-left:0.5rem">Back to Cameras</a>
       </div>
+
+      {props.debug ? (
+        <details style="margin-top:1.5rem">
+          <summary style="cursor:pointer; font-size:0.85rem; color:#666">ONVIF Debug Response</summary>
+          <div style="margin-top:0.5rem; padding:1rem; background:#f8f8f8; border-radius:4px; overflow-x:auto">
+            <div style="font-size:0.8rem; margin-bottom:0.5rem; color:#999">
+              {"Media URL: "}{props.debug.mediaUrl}
+              {" · Device: "}{String(props.debug.deviceName ?? "unknown")}
+              {" · Profiles: "}{String(props.debug.profileCount)}
+            </div>
+            <pre style="font-size:0.75rem; white-space:pre-wrap; word-break:break-all; max-height:30rem; overflow-y:auto; margin:0">{props.debug.rawProfilesXml}</pre>
+          </div>
+        </details>
+      ) : ""}
     </Layout>
   );
 }

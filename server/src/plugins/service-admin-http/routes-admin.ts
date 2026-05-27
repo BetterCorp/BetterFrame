@@ -646,21 +646,33 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       const soapTransport = runner.startsWith("kiosk:")
         ? kioskOnvifSoapTransport(runner.slice("kiosk:".length))
         : undefined;
-      const cameras = await onvifDiscover({ host, port, username, password, soapTransport });
+      const result = await onvifDiscover({ host, port, username, password, soapTransport });
       return htmlPage(CameraDiscoverResultsPage({
         user: user.username,
         host,
         port,
         username,
         password,
-        cameras,
+        cameras: result.cameras,
+        debug: result.debug,
       }));
     } catch (err) {
-      return htmlPage(CameraDiscoverPage({
+      const msg = (err as Error).message ?? "unknown error";
+      return htmlPage(CameraDiscoverResultsPage({
         user: user.username,
-        kiosks: await deps.repo.listKiosks(),
-        error: `Discovery failed: ${(err as Error).message}`,
-        values: body,
+        host,
+        port,
+        username,
+        password,
+        cameras: [],
+        error: `Discovery failed: ${msg}`,
+        debug: msg.includes("response preview:") ? {
+          mediaUrl: msg.split("mediaUrl=")[1]?.split(" ")[0] ?? "unknown",
+          deviceName: null,
+          profileCount: 0,
+          rawProfilesXml: msg.split("response preview: ")[1] ?? msg,
+          rawCapabilitiesXml: null,
+        } : undefined,
       }));
     }
   });

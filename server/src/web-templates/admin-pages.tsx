@@ -2004,10 +2004,18 @@ export function KioskEditPage(props: KioskEditProps) {
 
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Remote Debug</h2>
-          <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
-            <a href={`/admin/kiosks/${k.id}/logs`} class="btn btn-sm" target="_blank">Journal Logs</a>
-            <a href={`/admin/kiosks/${k.id}/terminal`} class="btn btn-sm" target="_blank">Terminal (dev only)</a>
-          </div>
+          {k.firmware_channel === "dev" ? (
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
+              <a href={`/admin/kiosks/${String(k.id)}/logs`} class="btn btn-sm" target="_blank">Journal Logs</a>
+              <a href={`/admin/kiosks/${String(k.id)}/terminal`} class="btn btn-sm" target="_blank">Terminal</a>
+            </div>
+          ) : (
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center">
+              <button type="button" class="btn btn-sm" disabled title="Requires firmware channel set to dev">Journal Logs</button>
+              <button type="button" class="btn btn-sm" disabled title="Requires firmware channel set to dev">Terminal</button>
+              <span style="font-size:0.8rem; color:#999">{"Set firmware channel to 'dev' to enable remote debug"}</span>
+            </div>
+          )}
         </div>
 
         {/* GPIO bindings */}

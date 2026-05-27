@@ -2133,6 +2133,8 @@ fn expire_cooling_webviews() {
 /// some GTK/Wayland stacks render it as a small square in the top-left corner.
 fn hide_cursor_on(window: &ApplicationWindow) {
     window.add_css_class("kiosk-hidden-cursor");
+    let blank = gtk::gdk::Cursor::from_name("none", None);
+    window.set_cursor(blank.as_ref());
 }
 
 fn show_logo(window: &ApplicationWindow) {

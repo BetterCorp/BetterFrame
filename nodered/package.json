@@ -26,6 +26,7 @@
       "bf-status": "src/bf-status.js",
       "bf-snapshot": "src/bf-snapshot.js",
       "bf-camera-proxy-request": "src/bf-camera-proxy-request.js",
+      "bf-onvif": "src/bf-onvif.js",
       "bf-trigger-motion": "src/bf-trigger-motion.js",
       "bf-trigger-anpr": "src/bf-trigger-anpr.js",
       "bf-trigger-event": "src/bf-trigger-event.js"

@@ -36,7 +36,13 @@ import {
   renderDefaultLayoutSelect,
   SettingsPage,
 } from "../../web-templates/admin-pages.js";
-import { discover as onvifDiscover, getEventProperties as onvifGetEventProperties } from "../../shared/onvif.js";
+import {
+  discover as onvifDiscover,
+  getEventProperties as onvifGetEventProperties,
+  performAction as onvifPerformAction,
+  OnvifActionException,
+  type OnvifActionRequest,
+} from "../../shared/onvif.js";
 import { generateBundle } from "../../shared/bundle.js";
 import { captureSnapshot } from "../../shared/snapshot.js";
 import { stripSecrets } from "../../shared/strip-secrets.js";
@@ -178,6 +184,30 @@ function kioskOnvifSoapTransport(kioskId: string) {
       throw new Error(`ONVIF ${action} via kiosk ${String(kioskId)} HTTP ${String(status)} response body: ${text.slice(0, 4000)}`);
     }
     return text;
+  };
+}
+
+function kioskOnvifActionRequest(kioskId: string) {
+  return async (cameraId: string, request: OnvifActionRequest, timeoutMs: number) => {
+    if (!kioskId) {
+      throw new Error("invalid kiosk selected for ONVIF action");
+    }
+    return getCoordinator().requestKiosk<{
+      type?: string;
+      ok?: boolean;
+      result?: unknown;
+      error?: {
+        code?: string;
+        message?: string;
+        details?: Record<string, unknown>;
+      };
+    }>(kioskId, {
+      type: "onvif-action-request",
+      camera_id: cameraId,
+      action: request.action,
+      params: request.params ?? {},
+      timeout_ms: timeoutMs,
+    }, timeoutMs + 3000);
   };
 }
 
@@ -2289,6 +2319,22 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
+  app.post("/admin/kiosks/:id/local-key/rotate", async (event) => {
+    const id = (getRouterParam(event, "id") ?? "");
+    try {
+      const response = await getCoordinator().requestKiosk<{
+        ok?: boolean;
+        local_key?: string;
+      }>(id, { type: "rotate-local-key" }, 10_000);
+      if (response.ok && response.local_key) {
+        await deps.repo.updateKiosk(id, { local_key: response.local_key } as any);
+      }
+    } catch {
+      // Kiosk offline or rotation failed; leave the existing key untouched.
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+  });
+
   app.post("/admin/kiosks/:id/volume", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
@@ -2537,6 +2583,88 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const camera = await deps.repo.getCameraById(id);
     if (!camera) return jsonResponse({ error: "not_found" }, 404);
     return jsonResponse({ camera });
+  });
+
+  app.post("/api/admin/cameras/:id/onvif", async (event) => {
+    const id = (getRouterParam(event, "id") ?? "");
+    const camera = await deps.repo.getCameraById(id);
+    if (!camera) {
+      return jsonResponse({ ok: false, error: { code: "not_found", message: "camera not found" } }, 404);
+    }
+    if (!camera.onvif_host) {
+      return jsonResponse({
+        ok: false,
+        error: { code: "invalid_camera", message: "camera does not have ONVIF connection details" },
+      }, 400);
+    }
+
+    const bodyRaw = (await readBody<Record<string, unknown>>(event)) ?? {};
+    const body = bodyRaw as Partial<OnvifActionRequest>;
+    const action = typeof body.action === "string" ? body.action : null;
+    if (!action) {
+      return jsonResponse({ ok: false, error: { code: "invalid_params", message: "action is required" } }, 400);
+    }
+
+    const ownerKioskId = (await deps.repo.getActiveOnvifOwners()).get(id) ?? null;
+    const executor = ownerKioskId ? { kind: "kiosk", id: ownerKioskId } : { kind: "server" };
+
+    try {
+      const result = ownerKioskId
+        ? await (async () => {
+          const response = await kioskOnvifActionRequest(ownerKioskId)(id, {
+            action: action as any,
+            params: body.params ?? {},
+          }, 8000);
+          if (!response.ok) {
+            return jsonResponse({
+              ok: false,
+              error: {
+                code: response.error?.code ?? "executor_unavailable",
+                message: response.error?.message ?? "kiosk ONVIF action failed",
+                details: {
+                  executorTried: `kiosk:${ownerKioskId}`,
+                  ...(response.error?.details ?? {}),
+                },
+              },
+            }, response.error?.code === "invalid_params" || response.error?.code === "unsupported_action" || response.error?.code === "unsupported_capability" ? 400 : 502);
+          }
+          return response.result;
+        })()
+        : await onvifPerformAction({
+          host: camera.onvif_host,
+          port: camera.onvif_port ?? 80,
+          username: camera.onvif_username ?? "",
+          password: camera.onvif_password ?? "",
+          action: action as any,
+          params: body.params ?? {},
+        });
+
+      if (result instanceof Response) return result;
+      return jsonResponse({ ok: true, executor, action, result });
+    } catch (err) {
+      if (err instanceof OnvifActionException) {
+        return jsonResponse({
+          ok: false,
+          error: {
+            ...err.error,
+            details: {
+              executorTried: ownerKioskId ? `kiosk:${ownerKioskId}` : "server",
+              ...(err.error.details ?? {}),
+            },
+          },
+        }, err.error.code === "invalid_params" || err.error.code === "unsupported_action" || err.error.code === "unsupported_capability" ? 400 : 502);
+      }
+      return jsonResponse({
+        ok: false,
+        error: {
+          code: ownerKioskId ? "executor_unavailable" : "camera_unreachable",
+          message: err instanceof Error ? err.message : String(err),
+          details: {
+            executorTried: ownerKioskId ? `kiosk:${ownerKioskId}` : "server",
+          },
+        },
+      }, 502);
+    }
   });
 
   app.post("/api/admin/layouts/:id/priority", async (event) => {

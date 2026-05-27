@@ -30,6 +30,16 @@ struct CameraProxyRequest {
     timeout_ms: Option<u64>,
 }
 
+#[derive(Deserialize)]
+struct OnvifActionRequest {
+    request_id: String,
+    camera_id: String,
+    action: String,
+    #[serde(default)]
+    params: serde_json::Value,
+    timeout_ms: Option<u64>,
+}
+
 /// Run the WebSocket client in a tokio runtime. Blocks the calling thread.
 /// Reconnects on disconnect with exponential backoff.
 pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
@@ -58,7 +68,8 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
                     let (mut writer, mut reader) = ws_stream.split();
 
                     // Channel for sync threads (journal, terminal) to send WS messages.
-                    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                    let (outbound_tx, mut outbound_rx) =
+                        tokio::sync::mpsc::unbounded_channel::<String>();
 
                     // State for journal streaming + terminal session.
                     let journal_stream: Arc<Mutex<Option<remote_debug::JournalStream>>> =
@@ -123,9 +134,7 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
 }
 
 type WsWriter = futures_util::stream::SplitSink<
-    tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     Message,
 >;
 
@@ -143,7 +152,42 @@ async fn handle_message(
     pending_code: &Arc<Mutex<Option<String>>>,
 ) {
     if text.contains("\"type\":\"ping\"") {
-        let _ = writer.send(Message::Text(r#"{"type":"pong"}"#.to_string())).await;
+        let _ = writer
+            .send(Message::Text(r#"{"type":"pong"}"#.to_string()))
+            .await;
+    } else if text.contains("\"type\":\"onvif-action-request\"") {
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
+            warn!("ws: onvif action request was not valid JSON");
+            return;
+        };
+        let Ok(req) = serde_json::from_value::<OnvifActionRequest>(msg) else {
+            warn!("ws: onvif action request missing fields");
+            return;
+        };
+        let response = perform_onvif_action(req).await;
+        let _ = writer.send(Message::Text(response)).await;
+    } else if text.contains("\"type\":\"rotate-local-key\"") {
+        let request_id = serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .and_then(|m| {
+                m.get("request_id")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string())
+            })
+            .unwrap_or_default();
+        let new_key = crate::server::rotate_local_key();
+        crate::local_server::replace_local_key(new_key.clone());
+        let _ = writer
+            .send(Message::Text(
+                serde_json::json!({
+                    "type": "rotate-local-key-response",
+                    "request_id": request_id,
+                    "ok": true,
+                    "local_key": new_key,
+                })
+                .to_string(),
+            ))
+            .await;
     } else if text.contains("\"type\":\"onvif-soap-request\"") {
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
             warn!("ws: onvif request was not valid JSON");
@@ -181,17 +225,24 @@ async fn handle_message(
         let _ = tx.send(ServerMsg::Wake(display_id));
     } else if text.contains("\"type\":\"layout-switch\"") {
         let msg = serde_json::from_str::<serde_json::Value>(text).ok();
-        let layout_id = msg.as_ref()
+        let layout_id = msg
+            .as_ref()
             .and_then(|m| m.get("layout_id"))
             .and_then(flexible_id_from_value);
-        let display_id = msg.as_ref()
+        let display_id = msg
+            .as_ref()
             .and_then(|m| m.get("display_id"))
             .and_then(flexible_id_from_value);
         if let Some(layout_id) = layout_id {
-            let _ = tx.send(ServerMsg::SwitchLayout { display_id, layout_id });
+            let _ = tx.send(ServerMsg::SwitchLayout {
+                display_id,
+                layout_id,
+            });
         }
     } else if text.contains("\"type\":\"tailscale-auth\"") {
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else { return };
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
+            return;
+        };
         if let Some(key) = msg.get("auth_key").and_then(|v| v.as_str()) {
             let _ = tx.send(ServerMsg::TailscaleAuth(key.to_string()));
         }
@@ -202,7 +253,9 @@ async fn handle_message(
     } else if text.contains("\"type\":\"os_check\"") {
         let _ = tx.send(ServerMsg::OsCheck);
     } else if text.contains("\"type\":\"fan\"") {
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else { return };
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
+            return;
+        };
         let pwm = if msg.get("mode").and_then(|v| v.as_str()) == Some("auto") {
             None
         } else if let Some(value) = msg.get("pwm").and_then(|v| v.as_u64()) {
@@ -212,16 +265,22 @@ async fn handle_message(
         };
         let _ = tx.send(ServerMsg::Fan(pwm));
     } else if text.contains("\"type\":\"volume-set\"") {
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else { return };
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
+            return;
+        };
         if let Some(vol) = msg.get("volume").and_then(|v| v.as_u64()) {
             let _ = tx.send(ServerMsg::VolumeSet(vol.min(100) as u32));
         }
     } else if text.contains("\"type\":\"volume-mute\"") {
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else { return };
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
+            return;
+        };
         let muted = msg.get("muted").and_then(|v| v.as_bool()).unwrap_or(true);
         let _ = tx.send(ServerMsg::VolumeMute(muted));
     } else if text.contains("\"type\":\"audio-output\"") {
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else { return };
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
+            return;
+        };
         if let Some(id) = msg.get("output_id").and_then(|v| v.as_str()) {
             let _ = tx.send(ServerMsg::AudioOutputSet(id.to_string()));
         }
@@ -248,7 +307,11 @@ async fn handle_message(
     } else if text.contains("\"type\":\"terminal-request\"") {
         info!("ws: terminal-request");
         if let Err(reason) = remote_debug::check_terminal_access() {
-            ws_send(writer, serde_json::json!({ "type": "terminal-denied", "reason": reason })).await;
+            ws_send(
+                writer,
+                serde_json::json!({ "type": "terminal-denied", "reason": reason }),
+            )
+            .await;
         } else {
             match remote_debug::create_terminal_challenge() {
                 Ok(code) => {
@@ -267,7 +330,11 @@ async fn handle_message(
                     ws_send(writer, serde_json::json!({ "type": "terminal-challenge" })).await;
                 }
                 Err(e) => {
-                    ws_send(writer, serde_json::json!({ "type": "terminal-denied", "reason": e })).await;
+                    ws_send(
+                        writer,
+                        serde_json::json!({ "type": "terminal-denied", "reason": e }),
+                    )
+                    .await;
                 }
             }
         }
@@ -290,20 +357,36 @@ async fn handle_message(
                         ws_send(writer, serde_json::json!({ "type": "terminal-granted" })).await;
                     }
                     Err(e) => {
-                        ws_send(writer, serde_json::json!({
-                            "type": "terminal-denied", "reason": format!("spawn: {e}")
-                        })).await;
+                        ws_send(
+                            writer,
+                            serde_json::json!({
+                                "type": "terminal-denied", "reason": format!("spawn: {e}")
+                            }),
+                        )
+                        .await;
                     }
                 }
             } else {
                 warn!("ws: terminal auth failed");
-                let reason = if remote_debug::is_locked_public() { "locked" } else { "wrong code" };
-                ws_send(writer, serde_json::json!({ "type": "terminal-denied", "reason": reason })).await;
+                let reason = if remote_debug::is_locked_public() {
+                    "locked"
+                } else {
+                    "wrong code"
+                };
+                ws_send(
+                    writer,
+                    serde_json::json!({ "type": "terminal-denied", "reason": reason }),
+                )
+                .await;
             }
         } else {
-            ws_send(writer, serde_json::json!({
-                "type": "terminal-denied", "reason": "no pending challenge"
-            })).await;
+            ws_send(
+                writer,
+                serde_json::json!({
+                    "type": "terminal-denied", "reason": "no pending challenge"
+                }),
+            )
+            .await;
         }
     } else if text.contains("\"type\":\"terminal-data\"") {
         let msg: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
@@ -332,7 +415,9 @@ fn pipe_output<R: Read>(mut reader: R, tx: tokio::sync::mpsc::UnboundedSender<St
             Ok(n) => {
                 let b64 = remote_debug::b64_encode(&buf[..n]);
                 let msg = serde_json::json!({ "type": "terminal-data", "data": b64 }).to_string();
-                if tx.send(msg).is_err() { break; }
+                if tx.send(msg).is_err() {
+                    break;
+                }
             }
             Err(_) => break,
         }
@@ -350,7 +435,8 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
                 "type": "onvif-soap-response",
                 "request_id": req.request_id,
                 "error": format!("kiosk ONVIF client init failed: {err}"),
-            }).to_string();
+            })
+            .to_string();
         }
     };
 
@@ -361,7 +447,8 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
                 "type": "onvif-soap-response",
                 "request_id": req.request_id,
                 "error": format!("invalid ONVIF URL: {err}"),
-            }).to_string();
+            })
+            .to_string();
         }
     };
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
@@ -369,7 +456,8 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
             "type": "onvif-soap-response",
             "request_id": req.request_id,
             "error": "ONVIF URL must use http or https",
-        }).to_string();
+        })
+        .to_string();
     }
 
     let username = req.username.as_deref().unwrap_or("");
@@ -395,9 +483,13 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
 
         let mut request = client
             .post(parsed.clone())
-            .header("Content-Type", format!(
-                "application/soap+xml; charset=utf-8; action=\"{}\"", req.action
-            ))
+            .header(
+                "Content-Type",
+                format!(
+                    "application/soap+xml; charset=utf-8; action=\"{}\"",
+                    req.action
+                ),
+            )
             .header("SOAPAction", &req.action)
             .body(req.body.clone());
         if let Some(auth) = auth_header.clone() {
@@ -408,7 +500,8 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
             Ok(resp) => {
                 last_status = resp.status().as_u16();
                 if digest_challenge.is_none() {
-                    digest_challenge = resp.headers()
+                    digest_challenge = resp
+                        .headers()
                         .get("www-authenticate")
                         .and_then(|v| v.to_str().ok())
                         .map(|v| v.to_string());
@@ -421,7 +514,8 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
                                 "request_id": req.request_id,
                                 "status": last_status,
                                 "body": body,
-                            }).to_string();
+                            })
+                            .to_string();
                         }
                         last_body = body;
                         last_error = format!("kiosk ONVIF {kind} HTTP {last_status}");
@@ -439,12 +533,18 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
 
     if !username.is_empty() {
         if let Some(challenge) = digest_challenge.as_deref() {
-            if let Some(auth) = digest_auth_header_for("POST", parsed.as_str(), challenge, username, password) {
+            if let Some(auth) =
+                digest_auth_header_for("POST", parsed.as_str(), challenge, username, password)
+            {
                 match client
                     .post(parsed.clone())
-                    .header("Content-Type", format!(
-                        "application/soap+xml; charset=utf-8; action=\"{}\"", req.action
-                    ))
+                    .header(
+                        "Content-Type",
+                        format!(
+                            "application/soap+xml; charset=utf-8; action=\"{}\"",
+                            req.action
+                        ),
+                    )
                     .header("SOAPAction", &req.action)
                     .header("Authorization", auth)
                     .body(req.body.clone())
@@ -461,7 +561,8 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
                                         "request_id": req.request_id,
                                         "status": last_status,
                                         "body": body,
-                                    }).to_string();
+                                    })
+                                    .to_string();
                                 }
                                 last_body = body;
                                 last_error = format!("kiosk ONVIF digest HTTP {last_status}");
@@ -485,7 +586,8 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
         "status": last_status,
         "error": last_error,
         "body": last_body,
-    }).to_string()
+    })
+    .to_string()
 }
 
 async fn perform_camera_proxy_request(req: CameraProxyRequest) -> String {
@@ -496,7 +598,8 @@ async fn perform_camera_proxy_request(req: CameraProxyRequest) -> String {
             "request_id": req.request_id,
             "status": 503,
             "error": "no bundle cached yet",
-        }).to_string();
+        })
+        .to_string();
     };
     let Some(cam) = bundle.cameras.iter().find(|c| c.id == req.camera_id) else {
         return serde_json::json!({
@@ -504,7 +607,8 @@ async fn perform_camera_proxy_request(req: CameraProxyRequest) -> String {
             "request_id": req.request_id,
             "status": 404,
             "error": "camera not in bundle",
-        }).to_string();
+        })
+        .to_string();
     };
     let Some(host) = cam.onvif_host.as_deref().filter(|v| !v.trim().is_empty()) else {
         return serde_json::json!({
@@ -512,15 +616,23 @@ async fn perform_camera_proxy_request(req: CameraProxyRequest) -> String {
             "request_id": req.request_id,
             "status": 400,
             "error": "camera has no ONVIF host",
-        }).to_string();
+        })
+        .to_string();
     };
 
     let path = normalize_camera_proxy_path(&req.path);
     let url = format!("http://{}:{}{}", host, cam.onvif_port.unwrap_or(80), path);
-    let decrypt_key = crate::server::load_encrypt_key().or_else(|| crate::server::load_cluster_key());
+    let decrypt_key =
+        crate::server::load_encrypt_key().or_else(|| crate::server::load_cluster_key());
     let username = cam.onvif_username.as_deref().unwrap_or("");
-    let password = cam.onvif_password_encrypted.as_ref()
-        .and_then(|enc| decrypt_key.as_deref().and_then(|k| crate::onvif_events::decrypt_cluster_public(enc, k)))
+    let password = cam
+        .onvif_password_encrypted
+        .as_ref()
+        .and_then(|enc| {
+            decrypt_key
+                .as_deref()
+                .and_then(|k| crate::onvif_events::decrypt_cluster_public(enc, k))
+        })
         .unwrap_or_default();
 
     let client = match reqwest::Client::builder().timeout(timeout).build() {
@@ -531,7 +643,8 @@ async fn perform_camera_proxy_request(req: CameraProxyRequest) -> String {
                 "request_id": req.request_id,
                 "status": 500,
                 "error": format!("camera proxy client init failed: {err}"),
-            }).to_string();
+            })
+            .to_string();
         }
     };
 
@@ -544,7 +657,8 @@ async fn perform_camera_proxy_request(req: CameraProxyRequest) -> String {
     match first.send().await {
         Ok(resp) => {
             status = resp.status().as_u16();
-            challenge = resp.headers()
+            challenge = resp
+                .headers()
                 .get("www-authenticate")
                 .and_then(|v| v.to_str().ok())
                 .map(|v| v.to_string());
@@ -558,13 +672,16 @@ async fn perform_camera_proxy_request(req: CameraProxyRequest) -> String {
                 "request_id": req.request_id,
                 "status": 502,
                 "error": format!("camera proxy request failed: {err}"),
-            }).to_string();
+            })
+            .to_string();
         }
     }
 
     if !username.is_empty() {
         if let Some(challenge) = challenge.as_deref() {
-            if let Some(auth) = digest_auth_header_for("GET", &url, challenge, username, password.as_str()) {
+            if let Some(auth) =
+                digest_auth_header_for("GET", &url, challenge, username, password.as_str())
+            {
                 match client.get(&url).header("Authorization", auth).send().await {
                     Ok(resp) => {
                         status = resp.status().as_u16();
@@ -578,7 +695,8 @@ async fn perform_camera_proxy_request(req: CameraProxyRequest) -> String {
                             "request_id": req.request_id,
                             "status": 502,
                             "error": format!("camera proxy digest request failed: {err}"),
-                        }).to_string();
+                        })
+                        .to_string();
                     }
                 }
             }
@@ -590,7 +708,8 @@ async fn perform_camera_proxy_request(req: CameraProxyRequest) -> String {
         "request_id": req.request_id,
         "status": status,
         "error": format!("camera proxy HTTP {status}"),
-    }).to_string()
+    })
+    .to_string()
 }
 
 fn normalize_camera_proxy_path(raw: &str) -> String {
@@ -617,7 +736,8 @@ async fn camera_proxy_response(request_id: String, resp: reqwest::Response) -> S
     use base64::Engine;
 
     let status = resp.status().as_u16();
-    let content_type = resp.headers()
+    let content_type = resp
+        .headers()
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream")
@@ -630,7 +750,8 @@ async fn camera_proxy_response(request_id: String, resp: reqwest::Response) -> S
                     "request_id": request_id,
                     "status": 413,
                     "error": "camera proxy response too large",
-                }).to_string();
+                })
+                .to_string();
             }
             serde_json::json!({
                 "type": "camera-proxy-response",
@@ -638,18 +759,75 @@ async fn camera_proxy_response(request_id: String, resp: reqwest::Response) -> S
                 "status": status,
                 "content_type": content_type,
                 "body_b64": base64::engine::general_purpose::STANDARD.encode(&bytes),
-            }).to_string()
+            })
+            .to_string()
         }
         Err(err) => serde_json::json!({
             "type": "camera-proxy-response",
             "request_id": request_id,
             "status": 502,
             "error": format!("camera proxy body read failed: {err}"),
-        }).to_string(),
+        })
+        .to_string(),
     }
 }
 
-fn digest_auth_header_for(method: &str, url: &str, challenge_header: &str, user: &str, pass: &str) -> Option<String> {
+async fn perform_onvif_action(req: OnvifActionRequest) -> String {
+    let timeout_ms = req.timeout_ms.unwrap_or(8000).clamp(1000, 30000);
+    let request_id = req.request_id.clone();
+    let camera_id = req.camera_id.clone();
+    let action = req.action.clone();
+    let params = req.params.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let Some(bundle) = crate::server::load_cached_bundle() else {
+            return Err(crate::onvif_actions::OnvifActionError {
+                code: "executor_unavailable".to_string(),
+                message: "no bundle cached yet".to_string(),
+                details: None,
+            });
+        };
+        crate::onvif_actions::execute_bundle_action(
+            &bundle, &camera_id, &action, &params, timeout_ms,
+        )
+    })
+    .await;
+
+    match result {
+        Ok(Ok(value)) => serde_json::json!({
+            "type": "onvif-action-response",
+            "request_id": request_id,
+            "ok": true,
+            "result": value,
+        })
+        .to_string(),
+        Ok(Err(err)) => serde_json::json!({
+            "type": "onvif-action-response",
+            "request_id": request_id,
+            "ok": false,
+            "error": err,
+        })
+        .to_string(),
+        Err(err) => serde_json::json!({
+            "type": "onvif-action-response",
+            "request_id": request_id,
+            "ok": false,
+            "error": {
+                "code": "executor_unavailable",
+                "message": format!("kiosk ONVIF action task failed: {err}"),
+            },
+        })
+        .to_string(),
+    }
+}
+
+fn digest_auth_header_for(
+    method: &str,
+    url: &str,
+    challenge_header: &str,
+    user: &str,
+    pass: &str,
+) -> Option<String> {
     if !challenge_header.to_lowercase().starts_with("digest ") {
         return None;
     }
@@ -658,7 +836,8 @@ fn digest_auth_header_for(method: &str, url: &str, challenge_header: &str, user:
     let qop = extract_digest_field(challenge_header, "qop").unwrap_or_default();
     let opaque = extract_digest_field(challenge_header, "opaque");
     let algorithm = extract_digest_field(challenge_header, "algorithm");
-    let uri = url::Url::parse(url).ok()
+    let uri = url::Url::parse(url)
+        .ok()
         .map(|u| {
             if let Some(q) = u.query() {
                 format!("{}?{}", u.path(), q)

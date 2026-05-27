@@ -134,6 +134,15 @@ pub fn load_or_create_local_key() -> String {
     hex_key
 }
 
+pub fn rotate_local_key() -> String {
+    use rand::RngCore;
+    let mut buf = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut buf);
+    let hex_key = hex::encode(buf);
+    let _ = crate::at_rest::write_encrypted(&local_key_file(), hex_key.as_bytes());
+    hex_key
+}
+
 /// Persist the latest bundle to disk for offline boot. Encrypted at rest
 /// because the bundle contains camera playback credentials and other
 /// kiosk-side secrets.

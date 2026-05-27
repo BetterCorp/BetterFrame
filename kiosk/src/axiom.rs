@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tracing_subscriber::Layer;
 use tracing::Subscriber;
@@ -12,12 +12,15 @@ pub struct AxiomLayer {
     dataset: String,
     buffer: Arc<Mutex<Vec<serde_json::Value>>>,
     hostname: String,
-    kiosk_id: Arc<Mutex<Option<String>>>,
 }
 
 static GLOBAL_KIOSK_ID: Mutex<Option<String>> = Mutex::new(None);
 static FLUSH_ACTIVE: AtomicBool = AtomicBool::new(false);
+static FLUSH_COUNT: AtomicU64 = AtomicU64::new(0);
+static ERROR_COUNT: AtomicU64 = AtomicU64::new(0);
+static EVENTS_RECEIVED: AtomicU64 = AtomicU64::new(0);
 static LAST_FLUSH: Mutex<Option<String>> = Mutex::new(None);
+static LAST_ATTEMPT: Mutex<Option<String>> = Mutex::new(None);
 static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
 pub fn set_kiosk_id(id: String) {
@@ -33,28 +36,42 @@ pub fn active() -> bool {
     FLUSH_ACTIVE.load(Ordering::Relaxed)
 }
 
+fn iso_now() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| String::from("1970-01-01T00:00:00Z"))
+}
+
 pub fn status() -> serde_json::Value {
     let last_flush = LAST_FLUSH.lock().ok().and_then(|g| g.clone());
+    let last_attempt = LAST_ATTEMPT.lock().ok().and_then(|g| g.clone());
     let last_error = LAST_ERROR.lock().ok().and_then(|g| g.clone());
     serde_json::json!({
         "enabled": enabled(),
         "active": active(),
+        "flush_count": FLUSH_COUNT.load(Ordering::Relaxed),
+        "error_count": ERROR_COUNT.load(Ordering::Relaxed),
+        "events_received": EVENTS_RECEIVED.load(Ordering::Relaxed),
         "last_flush_at": last_flush,
+        "last_attempt_at": last_attempt,
         "last_error": last_error,
     })
 }
 
+fn mark_attempt() {
+    *LAST_ATTEMPT.lock().unwrap() = Some(iso_now());
+}
+
 fn mark_success() {
     FLUSH_ACTIVE.store(true, Ordering::Relaxed);
-    let now = time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default();
-    *LAST_FLUSH.lock().unwrap() = Some(now);
+    FLUSH_COUNT.fetch_add(1, Ordering::Relaxed);
+    *LAST_FLUSH.lock().unwrap() = Some(iso_now());
     *LAST_ERROR.lock().unwrap() = None;
 }
 
 fn mark_failure(err: &str) {
     FLUSH_ACTIVE.store(false, Ordering::Relaxed);
+    ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
     *LAST_ERROR.lock().unwrap() = Some(err.to_string());
 }
 
@@ -76,7 +93,6 @@ impl AxiomLayer {
             dataset,
             buffer: Arc::new(Mutex::new(Vec::with_capacity(BATCH_SIZE))),
             hostname,
-            kiosk_id: Arc::new(Mutex::new(None)),
         };
 
         let flush_buffer = layer.buffer.clone();
@@ -108,6 +124,7 @@ impl AxiomLayer {
     }
 
     fn push(&self, entry: serde_json::Value) {
+        EVENTS_RECEIVED.fetch_add(1, Ordering::Relaxed);
         let mut buf = self.buffer.lock().unwrap();
         buf.push(entry);
         if buf.len() >= BATCH_SIZE {
@@ -128,6 +145,7 @@ impl AxiomLayer {
 }
 
 async fn flush_and_track(api_key: &str, dataset: &str, entries: &[serde_json::Value]) {
+    mark_attempt();
     match flush_to_axiom(api_key, dataset, entries).await {
         Ok(()) => mark_success(),
         Err(e) => mark_failure(&e.to_string()),

@@ -71,18 +71,20 @@ struct LocalOnvifBody {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PtzMoveQuery {
     key: String,
-    profileToken: Option<String>,
+    profile_token: Option<String>,
     dir: String,
     speed: Option<f64>,
-    timeoutMs: Option<u64>,
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProfileQuery {
     key: String,
-    profileToken: Option<String>,
+    profile_token: Option<String>,
 }
 
 pub fn start(state: LocalServerState) {
@@ -314,7 +316,7 @@ async fn local_onvif_ptz_stop_handler(
     if !local_key_matches(&state, &query.key) {
         return (StatusCode::UNAUTHORIZED, "bad key").into_response();
     }
-    let params = json_object_with_profile(query.profileToken);
+    let params = json_object_with_profile(query.profile_token);
     execute_local_onvif(camera_id, "ptz.stop".to_string(), params).await
 }
 
@@ -326,7 +328,7 @@ async fn local_onvif_ptz_home_handler(
     if !local_key_matches(&state, &query.key) {
         return (StatusCode::UNAUTHORIZED, "bad key").into_response();
     }
-    let params = json_object_with_profile(query.profileToken);
+    let params = json_object_with_profile(query.profile_token);
     execute_local_onvif(camera_id, "ptz.goto_home".to_string(), params).await
 }
 
@@ -338,7 +340,7 @@ async fn local_onvif_ptz_preset_handler(
     if !local_key_matches(&state, &query.key) {
         return (StatusCode::UNAUTHORIZED, "bad key").into_response();
     }
-    let mut params = json_object_with_profile(query.profileToken);
+    let mut params = json_object_with_profile(query.profile_token);
     params["presetToken"] = serde_json::Value::String(preset_token);
     execute_local_onvif(camera_id, "ptz.goto_preset".to_string(), params).await
 }
@@ -352,9 +354,9 @@ async fn local_onvif_ptz_move_handler(
         return (StatusCode::UNAUTHORIZED, "bad key").into_response();
     }
     let speed = query.speed.unwrap_or(0.5).clamp(0.0, 1.0);
-    let mut params = json_object_with_profile(query.profileToken);
+    let mut params = json_object_with_profile(query.profile_token);
     params["timeoutMs"] =
-        serde_json::Value::Number(serde_json::Number::from(query.timeoutMs.unwrap_or(1000)));
+        serde_json::Value::Number(serde_json::Number::from(query.timeout_ms.unwrap_or(1000)));
     match query.dir.as_str() {
         "left" => {
             params["pan"] = json!(0.0 - speed);

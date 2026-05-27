@@ -649,7 +649,7 @@ async fn perform_camera_proxy_request(req: CameraProxyRequest) -> String {
     };
 
     let mut status;
-    let mut challenge: Option<String>;
+    let challenge: Option<String>;
     let mut first = client.get(&url);
     if !username.is_empty() {
         first = first.basic_auth(username, Some(password.as_str()));

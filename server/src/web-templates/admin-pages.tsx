@@ -1591,24 +1591,39 @@ interface KioskEditProps {
   success?: string;
 }
 
-function parseKioskLogging(raw: string | null): {
+interface AxiomStatus {
   axiomEnabled: boolean | null;
   axiomActive: boolean | null;
+  axiomFlushCount: number | null;
+  axiomErrorCount: number | null;
+  axiomEventsReceived: number | null;
   axiomLastFlush: string | null;
+  axiomLastAttempt: string | null;
   axiomLastError: string | null;
-} {
-  if (!raw) return { axiomEnabled: null, axiomActive: null, axiomLastFlush: null, axiomLastError: null };
+}
+const EMPTY_AXIOM: AxiomStatus = {
+  axiomEnabled: null, axiomActive: null, axiomFlushCount: null,
+  axiomErrorCount: null, axiomEventsReceived: null,
+  axiomLastFlush: null, axiomLastAttempt: null, axiomLastError: null,
+};
+function parseKioskLogging(raw: string | null): AxiomStatus {
+  if (!raw) return EMPTY_AXIOM;
   try {
     const parsed = JSON.parse(raw);
     const a = parsed?.axiom;
+    if (!a) return EMPTY_AXIOM;
     return {
-      axiomEnabled: typeof a?.enabled === "boolean" ? a.enabled : null,
-      axiomActive: typeof a?.active === "boolean" ? a.active : null,
-      axiomLastFlush: typeof a?.last_flush_at === "string" ? a.last_flush_at : null,
-      axiomLastError: typeof a?.last_error === "string" ? a.last_error : null,
+      axiomEnabled: typeof a.enabled === "boolean" ? a.enabled : null,
+      axiomActive: typeof a.active === "boolean" ? a.active : null,
+      axiomFlushCount: typeof a.flush_count === "number" ? a.flush_count : null,
+      axiomErrorCount: typeof a.error_count === "number" ? a.error_count : null,
+      axiomEventsReceived: typeof a.events_received === "number" ? a.events_received : null,
+      axiomLastFlush: typeof a.last_flush_at === "string" ? a.last_flush_at : null,
+      axiomLastAttempt: typeof a.last_attempt_at === "string" ? a.last_attempt_at : null,
+      axiomLastError: typeof a.last_error === "string" ? a.last_error : null,
     };
   } catch {
-    return { axiomEnabled: null, axiomActive: null, axiomLastFlush: null, axiomLastError: null };
+    return EMPTY_AXIOM;
   }
 }
 
@@ -1837,12 +1852,18 @@ export function KioskEditPage(props: KioskEditProps) {
                         : "Enabled"
               }
               {logging.axiomLastError ? (
-                <span style="color:#c00; margin-left:0.5rem" title={logging.axiomLastError}>⚠ {logging.axiomLastError}</span>
-              ) : null}
-              {logging.axiomLastFlush ? (
-                <span style="color:#999; margin-left:0.5rem">Last flush: {formatTime(logging.axiomLastFlush)}</span>
+                <span style="color:#c00; margin-left:0.5rem">Error: {logging.axiomLastError}</span>
               ) : null}
             </div>
+            {logging.axiomEnabled ? (
+              <div style="margin-top:0.25rem; font-size:0.8rem; color:#888">
+                {logging.axiomEventsReceived != null ? `Events: ${logging.axiomEventsReceived}` : null}
+                {logging.axiomFlushCount != null ? ` · Flushes: ${logging.axiomFlushCount}` : null}
+                {logging.axiomErrorCount ? ` · Errors: ${logging.axiomErrorCount}` : null}
+                {logging.axiomLastFlush ? ` · Last flush: ${formatTime(logging.axiomLastFlush)}` : null}
+                {logging.axiomLastAttempt ? ` · Last attempt: ${formatTime(logging.axiomLastAttempt)}` : null}
+              </div>
+            ) : null}
           </div>
           <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
             <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Display Power</div>

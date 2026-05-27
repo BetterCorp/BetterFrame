@@ -55,6 +55,12 @@ interface EndpointParts {
   explicitMediaUrl: string | null;
 }
 
+interface ServiceAddresses {
+  mediaUrl: string;
+  eventUrl: string;
+  capabilitiesXml: string | null;
+}
+
 function wsseHeader(username: string, password: string): string {
   // WS-Security UsernameToken with PasswordDigest (the ONVIF-standard form).
   // PasswordDigest = Base64( SHA1( nonce + created + password ) )
@@ -90,6 +96,21 @@ function escapeXml(s: string): string {
     .replace(/'/g, "&apos;");
 }
 
+function extractSoapFault(xml: string): string | null {
+  if (!/<(?:[\w-]+:)?Fault\b/.test(xml)) return null;
+
+  const reason = pickAll(xml, "Text")[0] ?? pickAll(xml, "faultstring")[0] ?? "";
+  const subcode = pickAll(xml, "Subcode")[0] ?? "";
+  const value = pickAll(xml, "Value")[0] ?? "";
+
+  const parts = [reason, subcode, value]
+    .map((part) => part.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  if (parts.length > 0) return parts.join(" | ").slice(0, 300);
+  return xml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300) || "unknown SOAP fault";
+}
+
 async function soap(
   url: string,
   action: string,
@@ -112,6 +133,10 @@ async function soap(
       signal: controller.signal,
     });
     const text = await res.text();
+    const fault = extractSoapFault(text);
+    if (fault) {
+      throw new Error(`ONVIF ${action} SOAP fault: ${fault}`);
+    }
     if (!res.ok) {
       throw new Error(`ONVIF ${action} HTTP ${String(res.status)}: ${text.slice(0, 300)}`);
     }
@@ -179,6 +204,10 @@ function pickFirstXAddr(parentXml: string, tagLocalName: string): string | null 
   return pickNested(block, "XAddr");
 }
 
+function pathLooksLikeMediaService(path: string): boolean {
+  return /\/(?:onvif\/)?(?:media_service|media)(?:\/)?$/i.test(path);
+}
+
 function normalizeEndpoint(input: DiscoverInput): EndpointParts {
   const raw = input.host.trim();
   const port = input.port || 80;
@@ -190,8 +219,8 @@ function normalizeEndpoint(input: DiscoverInput): EndpointParts {
     const path = u.pathname && u.pathname !== "/" ? u.pathname : "";
     return {
       origin,
-      deviceUrl: path ? `${origin}${path}` : `${origin}/onvif/device_service`,
-      explicitMediaUrl: path ? `${origin}${path}` : null,
+      deviceUrl: path && !pathLooksLikeMediaService(path) ? `${origin}${path}` : `${origin}/onvif/device_service`,
+      explicitMediaUrl: path && pathLooksLikeMediaService(path) ? `${origin}${path}` : null,
     };
   }
 
@@ -203,18 +232,26 @@ function normalizeEndpoint(input: DiscoverInput): EndpointParts {
   };
 }
 
-async function discoverMediaUrl(
+async function discoverServices(
   input: DiscoverInput,
   endpoint: EndpointParts,
   timeoutMs: number,
   transport?: SoapTransport,
-): Promise<string> {
+): Promise<ServiceAddresses> {
   if (input.mediaPath) {
-    return `${endpoint.origin}${input.mediaPath.startsWith("/") ? input.mediaPath : `/${input.mediaPath}`}`;
+    return {
+      mediaUrl: `${endpoint.origin}${input.mediaPath.startsWith("/") ? input.mediaPath : `/${input.mediaPath}`}`,
+      eventUrl: `${endpoint.origin}/onvif/event_service`,
+      capabilitiesXml: null,
+    };
   }
 
   if (endpoint.explicitMediaUrl) {
-    return endpoint.explicitMediaUrl;
+    return {
+      mediaUrl: endpoint.explicitMediaUrl,
+      eventUrl: `${endpoint.origin}/onvif/event_service`,
+      capabilitiesXml: null,
+    };
   }
 
   const capabilitiesEnv = buildEnvelope(
@@ -231,14 +268,15 @@ async function discoverMediaUrl(
     timeoutMs,
     transport,
   );
-  if (capabilitiesXml) {
-    const mediaXAddr = pickFirstXAddr(capabilitiesXml, "Media");
-    if (mediaXAddr) return mediaXAddr;
-  }
-
-  // Common vendor endpoints. Prefer lower-case media_service because many NVRs
-  // advertise that path and return 404 for /onvif/Media.
-  return `${endpoint.origin}/onvif/media_service`;
+  return {
+    mediaUrl: pickFirstXAddr(capabilitiesXml ?? "", "Media")
+      // Common vendor endpoints. Prefer lower-case media_service because many NVRs
+      // advertise that path and return 404 for /onvif/Media.
+      ?? `${endpoint.origin}/onvif/media_service`,
+    eventUrl: pickFirstXAddr(capabilitiesXml ?? "", "Events")
+      ?? `${endpoint.origin}/onvif/event_service`,
+    capabilitiesXml,
+  };
 }
 
 // Pull a single nested value from a parent element block.
@@ -324,7 +362,8 @@ export interface DiscoverResult {
 export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
   const timeoutMs = input.timeoutMs ?? 8000;
   const endpoint = normalizeEndpoint(input);
-  const mediaUrl = await discoverMediaUrl(input, endpoint, timeoutMs, input.soapTransport);
+  const services = await discoverServices(input, endpoint, timeoutMs, input.soapTransport);
+  const mediaUrl = services.mediaUrl;
 
   const header = wsseHeader(input.username, input.password);
 
@@ -451,7 +490,7 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
       deviceName,
       profileCount: profileBlocks.length,
       rawProfilesXml: profilesXml,
-      rawCapabilitiesXml: null,
+      rawCapabilitiesXml: services.capabilitiesXml,
     },
   };
 }
@@ -469,7 +508,8 @@ export async function getEventProperties(input: DiscoverInput): Promise<string[]
   const timeoutMs = input.timeoutMs ?? 8000;
   const endpoint = normalizeEndpoint(input);
   const header = wsseHeader(input.username, input.password);
-  const eventUrl = `${endpoint.origin}/onvif/event_service`;
+  const services = await discoverServices(input, endpoint, timeoutMs, input.soapTransport);
+  const eventUrl = services.eventUrl;
 
   const body = buildEnvelope(header,
     `<tev:GetEventProperties xmlns:tev="http://www.onvif.org/ver10/events/wsdl"/>`);

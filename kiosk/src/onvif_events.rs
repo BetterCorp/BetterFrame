@@ -177,7 +177,8 @@ fn run_subscription(
     let port = cam.onvif_port.unwrap_or(80);
     let user = cam.onvif_username.as_deref().unwrap_or("");
     let pass = password.unwrap_or("");
-    let event_url = format!("http://{host}:{port}/onvif/event_service");
+    let event_url = resolve_event_service_url(host, port, user, pass)
+        .unwrap_or_else(|| format!("http://{host}:{port}/onvif/event_service"));
 
     let has_pass = !pass.is_empty();
     info!("onvif-events: cam {} ({}) subscribing at {event_url} user={user} has_pass={has_pass}", cam.id, cam.name);
@@ -369,6 +370,25 @@ fn create_pullpoint(url: &str, user: &str, pass: &str) -> Result<Subscription, S
             format!("no Address in CreatePullPoint response: {preview}")
         })?;
     Ok(Subscription { address })
+}
+
+fn resolve_event_service_url(host: &str, port: u16, user: &str, pass: &str) -> Option<String> {
+    let device_url = format!("http://{host}:{port}/onvif/device_service");
+    let header = wsse_header(user, pass);
+    let body = soap_envelope(
+        &header,
+        r#"<tds:GetCapabilities xmlns:tds="http://www.onvif.org/ver10/device/wsdl">
+  <tds:Category>All</tds:Category>
+</tds:GetCapabilities>"#,
+    );
+    let xml = soap_post(&device_url, "http://www.onvif.org/ver10/device/wsdl/GetCapabilities", &body).ok()?;
+    let events = extract_section(&xml, "Events")?;
+    let xaddr = extract_tag_ns(&events, "XAddr")?;
+    if xaddr.starts_with("http://") || xaddr.starts_with("https://") {
+        Some(xaddr)
+    } else {
+        None
+    }
 }
 
 /// Extract tag content, trying with and without namespace prefixes.

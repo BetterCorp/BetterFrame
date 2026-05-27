@@ -122,18 +122,19 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
         screenToken = poll.screenToken;
       } catch { /* token may not be ready yet — kiosk can work without it initially */ }
 
+      const screenTitle = screen.title || title;
       const screenRowId = await deps.repo.createAbleSignScreen({
         account_id: accountId,
         ablesign_screen_id: String(screen.id),
         ablesign_screen_token_encrypted: screenToken
           ? deps.secrets.encryptString(screenToken, "ablesign-token")
           : undefined,
-        title: screen.title,
-        orientation: screen.orientation,
+        title: screenTitle,
+        orientation: screen.orientation || "landscape",
       });
 
       await deps.repo.createEntity({
-        name: `AbleSign: ${screen.title}`,
+        name: `AbleSign: ${screenTitle}`,
         type: "ablesign",
         description: `AbleSign screen (ID: ${String(screen.id)})`,
         web_url: "https://player.ablesign.tv",

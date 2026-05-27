@@ -1,12 +1,18 @@
-//! ONVIF PullPoint event subscription for each ONVIF camera in the bundle.
+//! ONVIF event subscription for each ONVIF camera in the bundle.
 //!
 //! For every camera with cam_type=="onvif" and ONVIF credentials, we:
-//!   1. CreatePullPointSubscription (SOAP to the camera's event service)
-//!   2. PullMessages in a loop (every 3s)
+//!   1. Try push subscription first (WS-BaseNotification Subscribe with
+//!      callback URL on the kiosk's local HTTP server, port 18090).
+//!      Camera must be on the same subnet for the callback to be reachable.
+//!   2. If push fails or camera is on a different subnet, fall back to
+//!      PullPoint polling at 5s intervals.
 //!   3. Parse each NotificationMessage → topic + source + data key/value
 //!   4. POST to /api/kiosk/event with source_type="onvif"
 //!   5. Renew subscription before it times out
 //!   6. Unsubscribe on shutdown / bundle change
+//!
+//! Push callback endpoint: POST /onvif/events/:camera_id on the kiosk's
+//! local Axum server. Cameras POST SOAP Notify envelopes there.
 //!
 //! Forwards ALL event topics the camera produces: motion, ANPR, line
 //! crossing, intrusion, digital input, analytics, tamper — everything.
@@ -42,6 +48,8 @@ pub struct SubStatus {
     pub last_event_at: Option<String>,
     pub subscribed_at: Option<String>,
     pub error: Option<String>,
+    /// How events are received: "push:kiosk", "push:server", or "poll".
+    pub resolved_sink: Option<String>,
 }
 
 fn epoch_now() -> String {
@@ -60,6 +68,15 @@ fn epoch_now_secs() -> u64 {
 }
 
 fn set_status(cam_id: &str, state: &'static str, error: Option<String>) {
+    set_status_with_sink(cam_id, state, error, None);
+}
+
+fn set_status_with_sink(
+    cam_id: &str,
+    state: &'static str,
+    error: Option<String>,
+    resolved_sink: Option<String>,
+) {
     let mut map = STATUS.lock().unwrap();
     let map = map.get_or_insert_with(HashMap::new);
     let entry = map.entry(cam_id.to_string()).or_insert_with(|| SubStatus {
@@ -67,15 +84,19 @@ fn set_status(cam_id: &str, state: &'static str, error: Option<String>) {
         last_event_at: None,
         subscribed_at: None,
         error: None,
+        resolved_sink: None,
     });
     entry.state = state;
     entry.error = error;
+    if let Some(sink) = resolved_sink {
+        entry.resolved_sink = Some(sink);
+    }
     if state == "active" {
         entry.subscribed_at = Some(epoch_now());
     }
 }
 
-fn mark_event_received(cam_id: &str) {
+pub fn mark_event_received(cam_id: &str) {
     let mut map = STATUS.lock().unwrap();
     if let Some(map) = map.as_mut() {
         if let Some(entry) = map.get_mut(cam_id) {
@@ -170,6 +191,139 @@ pub fn start(
     }
 }
 
+// ---- Subnet detection for push callback URL ----------------------------------
+
+/// Read the kiosk's own IPv4 addresses with prefix lengths from `ip -j addr show`.
+fn read_local_interfaces() -> Vec<(std::net::Ipv4Addr, u32)> {
+    let out = match std::process::Command::new("ip")
+        .args(["-j", "addr", "show"])
+        .output()
+    {
+        Ok(out) if out.status.success() => out,
+        _ => return Vec::new(),
+    };
+    let parsed: serde_json::Value = match serde_json::from_slice(&out.stdout) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let Some(items) = parsed.as_array() else {
+        return Vec::new();
+    };
+    let mut result = Vec::new();
+    for item in items {
+        // Skip loopback
+        if item.get("ifname").and_then(|v| v.as_str()) == Some("lo") {
+            continue;
+        }
+        if let Some(addrs) = item.get("addr_info").and_then(|v| v.as_array()) {
+            for addr in addrs {
+                if addr.get("family").and_then(|v| v.as_str()) != Some("inet") {
+                    continue;
+                }
+                let Some(local) = addr.get("local").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let prefix = addr.get("prefixlen").and_then(|v| v.as_u64()).unwrap_or(24) as u32;
+                if let Ok(ip) = local.parse::<std::net::Ipv4Addr>() {
+                    result.push((ip, prefix));
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Check if a camera IP is on the same subnet as any kiosk interface.
+/// Returns the kiosk IP on the matching interface if found.
+fn is_same_subnet(
+    camera_host: &str,
+    kiosk_interfaces: &[(std::net::Ipv4Addr, u32)],
+) -> Option<std::net::Ipv4Addr> {
+    let cam_ip: std::net::Ipv4Addr = camera_host.parse().ok()?;
+    let cam_bits = u32::from(cam_ip);
+    for &(iface_ip, prefix_len) in kiosk_interfaces {
+        let mask = if prefix_len >= 32 {
+            u32::MAX
+        } else {
+            u32::MAX << (32 - prefix_len)
+        };
+        let iface_bits = u32::from(iface_ip);
+        if (cam_bits & mask) == (iface_bits & mask) {
+            return Some(iface_ip);
+        }
+    }
+    None
+}
+
+// ---- Push subscription (WS-BaseNotification) ---------------------------------
+
+struct PushSubscription {
+    subscription_reference: String,
+    resolved_sink: String,
+}
+
+fn create_push_subscription(
+    event_url: &str,
+    callback_url: &str,
+    user: &str,
+    pass: &str,
+) -> Result<PushSubscription, String> {
+    let xml = soap_post_authed(
+        event_url,
+        "http://docs.oasis-open.org/wsn/bw-2/NotificationProducer/SubscribeRequest",
+        &format!(
+            r#"<wsnt:Subscribe>
+  <wsnt:ConsumerReference>
+    <wsa:Address>{callback_url}</wsa:Address>
+  </wsnt:ConsumerReference>
+  <wsnt:InitialTerminationTime>PT300S</wsnt:InitialTerminationTime>
+</wsnt:Subscribe>"#
+        ),
+        user,
+        pass,
+    )?;
+
+    let address = extract_tag_ns(&xml, "Address")
+        .filter(|a| !a.is_empty() && a.starts_with("http"))
+        .ok_or_else(|| {
+            let preview: String = xml.chars().take(300).collect();
+            format!("no SubscriptionReference in Subscribe response: {preview}")
+        })?;
+
+    let resolved_sink = if callback_url.contains(":18090") {
+        "push:kiosk".to_string()
+    } else {
+        "push:server".to_string()
+    };
+
+    Ok(PushSubscription {
+        subscription_reference: address,
+        resolved_sink,
+    })
+}
+
+fn renew_push(sub_ref: &str, user: &str, pass: &str) -> Result<(), String> {
+    soap_post_authed(
+        sub_ref,
+        "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest",
+        r#"<wsnt:Renew><wsnt:TerminationTime>PT300S</wsnt:TerminationTime></wsnt:Renew>"#,
+        user,
+        pass,
+    )?;
+    Ok(())
+}
+
+fn unsubscribe_push(sub_ref: &str, user: &str, pass: &str) -> Result<(), String> {
+    let _ = soap_post_authed(
+        sub_ref,
+        "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest",
+        "<wsnt:Unsubscribe/>",
+        user,
+        pass,
+    );
+    Ok(())
+}
+
 fn run_subscription(
     cam: BundleCamera,
     password: Option<&str>,
@@ -190,6 +344,27 @@ fn run_subscription(
         cam.id, cam.name
     );
 
+    // Determine callback URL for push subscription.
+    // If camera is on the same subnet as the kiosk, use direct kiosk callback.
+    // Otherwise fall back to PullPoint polling.
+    let local_port: u16 = std::env::var("BF_KIOSK_LOCAL_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(18090);
+    let callback_url = {
+        let interfaces = read_local_interfaces();
+        if let Some(kiosk_ip) = is_same_subnet(host, &interfaces) {
+            Some(format!(
+                "http://{}:{}/onvif/events/{}",
+                kiosk_ip, local_port, cam.id
+            ))
+        } else {
+            // Camera not on same subnet — no reachable callback URL.
+            // Future: could use server callback URL from bundle if available.
+            None
+        }
+    };
+
     let mut backoff_secs: u64 = 60;
     loop {
         if generation.upgrade().is_none() {
@@ -197,6 +372,82 @@ fn run_subscription(
             return;
         }
 
+        set_status(&cam.id, "subscribing", None);
+
+        // ---- Try push subscription first ----
+        if let Some(ref cb_url) = callback_url {
+            info!(
+                "onvif-events: cam {} trying push subscription, callback={cb_url}",
+                cam.id
+            );
+            match create_push_subscription(&event_url, cb_url, user, pass) {
+                Ok(push_sub) => {
+                    info!(
+                        "onvif-events: cam {} push subscription active, ref={}, sink={}",
+                        cam.id, push_sub.subscription_reference, push_sub.resolved_sink
+                    );
+                    set_status_with_sink(
+                        &cam.id,
+                        "active",
+                        None,
+                        Some(push_sub.resolved_sink.clone()),
+                    );
+                    backoff_secs = 30;
+
+                    // Push mode: just renew periodically. Events arrive via HTTP callback.
+                    let renew_interval = Duration::from_secs(240); // renew well before 300s timeout
+                    let mut since_renew = std::time::Instant::now();
+                    let mut consecutive_errors: u32 = 0;
+
+                    loop {
+                        if generation.upgrade().is_none() {
+                            let _ = unsubscribe_push(&push_sub.subscription_reference, user, pass);
+                            return;
+                        }
+
+                        std::thread::sleep(Duration::from_secs(30));
+
+                        if since_renew.elapsed() > renew_interval {
+                            match renew_push(&push_sub.subscription_reference, user, pass) {
+                                Ok(()) => {
+                                    since_renew = std::time::Instant::now();
+                                    consecutive_errors = 0;
+                                }
+                                Err(e) => {
+                                    consecutive_errors += 1;
+                                    warn!(
+                                        "onvif-events: cam {} push renew failed ({consecutive_errors}x): {e}",
+                                        cam.id
+                                    );
+                                    if consecutive_errors >= 3 {
+                                        warn!(
+                                            "onvif-events: cam {} push renew failed too many times, falling through to poll",
+                                            cam.id
+                                        );
+                                        let _ = unsubscribe_push(
+                                            &push_sub.subscription_reference,
+                                            user,
+                                            pass,
+                                        );
+                                        break; // fall through to PullPoint below
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // If we broke out of push renew loop, fall through to PullPoint
+                }
+                Err(e) => {
+                    info!(
+                        "onvif-events: cam {} push subscription failed: {e}, falling back to poll",
+                        cam.id
+                    );
+                    // Fall through to PullPoint below
+                }
+            }
+        }
+
+        // ---- PullPoint fallback ----
         set_status(&cam.id, "subscribing", None);
         let sub = match create_pullpoint(&event_url, user, pass) {
             Ok(s) => s,
@@ -213,12 +464,12 @@ fn run_subscription(
         };
         backoff_secs = 30;
         info!(
-            "onvif-events: cam {} subscribed, address={}",
+            "onvif-events: cam {} pullpoint subscribed, address={}",
             cam.id, sub.address
         );
-        set_status(&cam.id, "active", None);
+        set_status_with_sink(&cam.id, "active", None, Some("poll".to_string()));
 
-        let poll_interval = Duration::from_secs(10);
+        let poll_interval = Duration::from_secs(5);
         let renew_interval = Duration::from_secs(55);
         let mut since_renew = std::time::Instant::now();
         let mut consecutive_errors: u32 = 0;
@@ -580,14 +831,16 @@ fn unsubscribe(sub_url: &str, user: &str, pass: &str) -> Result<(), String> {
 // ---- Event parsing ---------------------------------------------------------
 
 #[derive(Debug)]
-struct OnvifEvent {
-    topic: String,
-    source: HashMap<String, String>,
-    data: HashMap<String, String>,
-    timestamp: Option<String>,
+pub struct OnvifEvent {
+    pub topic: String,
+    pub source: HashMap<String, String>,
+    pub data: HashMap<String, String>,
+    pub timestamp: Option<String>,
 }
 
-fn parse_notification_messages(xml: &str) -> Vec<OnvifEvent> {
+/// Parse ONVIF NotificationMessage blocks from SOAP XML. Public so the push
+/// callback endpoint in `local_server` can parse incoming Notify envelopes.
+pub fn parse_notification_messages(xml: &str) -> Vec<OnvifEvent> {
     let mut events = Vec::new();
     // Split on NotificationMessage blocks
     for block in xml.split("<wsnt:NotificationMessage") {
@@ -752,7 +1005,9 @@ fn extract_attr_inline(xml: &str, attr: &str) -> Option<String> {
 
 // ---- Forward to BF server --------------------------------------------------
 
-fn forward_event(server: &str, kiosk_key: &str, camera_id: &str, evt: &OnvifEvent) {
+/// Forward an ONVIF event to the BF server. Public so the push callback
+/// endpoint in `local_server` can reuse the same forwarding logic.
+pub fn forward_event(server: &str, kiosk_key: &str, camera_id: &str, evt: &OnvifEvent) {
     let (data, camera_proxy_paths) = camera_proxy_event_data(&evt.data);
     let mut payload = serde_json::json!({
         "source": evt.source,
@@ -788,7 +1043,8 @@ fn camera_proxy_event_data(
             continue;
         }
         let lower = value.to_lowercase();
-        let image_like_key = key.to_lowercase().contains("picture") || key.to_lowercase().contains("image");
+        let image_like_key =
+            key.to_lowercase().contains("picture") || key.to_lowercase().contains("image");
         if !image_like_key && !image_exts.iter().any(|ext| lower.contains(ext)) {
             continue;
         }
@@ -889,8 +1145,8 @@ pub fn decrypt_cluster_public(ciphertext: &str, key: &str) -> Option<String> {
 
 fn decrypt_cluster(ciphertext: &str, cluster_key_b64u: &str) -> Option<String> {
     use aes_gcm::{
-        Aes256Gcm, Key, Nonce,
         aead::{Aead, KeyInit},
+        Aes256Gcm, Key, Nonce,
     };
     use base64::Engine;
 

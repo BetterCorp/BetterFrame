@@ -2459,7 +2459,6 @@ export class Repository {
       await this._run(`DELETE FROM displays WHERE kiosk_id = ?`, [id]);
       await this._run(`DELETE FROM kiosk_labels WHERE kiosk_id = ?`, [id]);
       await this._run(`DELETE FROM kiosk_gpio_bindings WHERE kiosk_id = ?`, [id]);
-      await this._run(`UPDATE cameras SET event_source = 'auto' WHERE event_source = ?`, [`kiosk:${id}`]);
       await this._run(`DELETE FROM kiosks WHERE id = ?`, [id]);
     });
     for (const display of displays) {
@@ -2630,7 +2629,7 @@ export class Repository {
    */
   async syncKioskSubscriptions(
     kioskId: string,
-    subs: Record<string, { state: string; last_event_at?: string | null; subscribed_at?: string | null; error?: string | null }>,
+    subs: Record<string, { state: string; last_event_at?: string | null; subscribed_at?: string | null; error?: string | null; resolved_sink?: string | null }>,
   ): Promise<void> {
     const now = isoNow();
     for (const [cameraId, info] of Object.entries(subs)) {
@@ -2639,17 +2638,18 @@ export class Repository {
           : info.state === "subscribing" ? "pending"
             : "inactive";
       await this._run(
-        `INSERT INTO camera_event_subscriptions (id, camera_id, topic, status, subscribed_by_kiosk_id, event_source, subscribed_at, error_message)
-         VALUES (?, ?, 'onvif', ?, ?, ?, ?, ?)
+        `INSERT INTO camera_event_subscriptions (id, camera_id, topic, status, subscribed_by_kiosk_id, event_source, event_sink, subscribed_at, error_message)
+         VALUES (?, ?, 'onvif', ?, ?, ?, ?, ?, ?)
          ON CONFLICT (camera_id, topic) DO UPDATE
            SET status = ?,
                subscribed_by_kiosk_id = ?,
                event_source = ?,
+               event_sink = ?,
                subscribed_at = COALESCE(?, camera_event_subscriptions.subscribed_at),
                error_message = ?`,
         [
-          uuidv7(), cameraId, status, kioskId, `kiosk:${kioskId}`, info.subscribed_at ?? now, info.error ?? null,
-          status, kioskId, `kiosk:${kioskId}`, info.subscribed_at ?? now, info.error ?? null,
+          uuidv7(), cameraId, status, kioskId, `kiosk:${kioskId}`, info.resolved_sink ?? null, info.subscribed_at ?? now, info.error ?? null,
+          status, kioskId, `kiosk:${kioskId}`, info.resolved_sink ?? null, info.subscribed_at ?? now, info.error ?? null,
         ],
       );
     }
@@ -2663,19 +2663,9 @@ export class Repository {
    */
   async releaseStaleEventOwnership(maxAgeHours: number = 24): Promise<number> {
     const cutoff = new Date(Date.now() - maxAgeHours * 3600_000).toISOString();
+    // Mark subscriptions as inactive for kiosks that haven't been seen recently.
+    // We no longer mutate cameras.event_source — it stays as the admin set it.
     const result = await this._run(
-      `UPDATE cameras
-          SET event_source = 'auto'
-        WHERE event_source LIKE 'kiosk:%'
-          AND id IN (
-            SELECT c.id FROM cameras c
-            JOIN kiosks k ON k.id = SUBSTRING(c.event_source FROM 7)
-            WHERE k.last_seen_at < ? OR k.last_seen_at IS NULL
-          )`,
-      [cutoff],
-    );
-    // Also mark corresponding subscriptions as inactive
-    await this._run(
       `UPDATE camera_event_subscriptions
           SET status = 'inactive'
         WHERE subscribed_by_kiosk_id IN (

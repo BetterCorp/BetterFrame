@@ -327,12 +327,10 @@ export async function generateBundle(
   await repo.releaseStaleEventOwnership(24);
 
   // ONVIF event ownership: for "auto" cameras, first kiosk to fetch bundle
-  // takes ownership. Server writes "kiosk:<id>" into event_source so
-  // subsequent kiosks see it's taken and skip. If a camera is already owned
-  // by THIS kiosk, leave it — allows clean re-subscribe after reboot.
+  // claims ownership in the bundle output so the kiosk knows to subscribe.
+  // We do NOT persist this to the cameras table — the DB stays "auto".
   for (const cam of cameras) {
     if (cam.type === "onvif" && cam.event_source === "auto") {
-      await repo.updateCamera(cam.id, { event_source: `kiosk:${kioskId}` } as any);
       cam.event_source = `kiosk:${kioskId}`;
     }
   }

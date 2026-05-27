@@ -22,12 +22,12 @@ use std::sync::mpsc::Sender as StdSender;
 use std::sync::{Arc, Mutex};
 
 use axum::{
-    Json, Router,
     body::{Body, Bytes},
     extract::{Path, Query, Request, State},
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::{any, get},
+    routing::{any, get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -80,6 +80,7 @@ pub fn start(state: LocalServerState) {
                 .route("/local/info", get(local_info_handler))
                 .route("/local/layout/:id", get(local_layout_handler))
                 .route("/local/snapshot/:camera_id", get(local_snapshot_handler))
+                .route("/onvif/events/:camera_id", post(onvif_event_callback))
                 .route("/proxy/*path", any(proxy_handler))
                 .with_state(state);
 
@@ -263,6 +264,41 @@ fn capture_jpeg_blocking(
             Ok(bytes)
         }
     })
+}
+
+/// Receives ONVIF push notification (WS-BaseNotification Notify) from cameras.
+/// The camera POSTs a SOAP envelope containing one or more NotificationMessage
+/// blocks. We parse them with the same logic used by the PullPoint path and
+/// forward each event to the BF server.
+///
+/// No auth on this endpoint — cameras cannot send Bearer tokens. The route is
+/// only reachable from the LAN (same subnet check done when creating the
+/// subscription) and the camera was told the callback URL by the kiosk.
+async fn onvif_event_callback(
+    State(state): State<LocalServerState>,
+    Path(camera_id): Path<String>,
+    body: String,
+) -> Response {
+    let events = crate::onvif_events::parse_notification_messages(&body);
+    if events.is_empty() {
+        // Could be a subscription confirmation or an empty notify — just ACK.
+        return StatusCode::OK.into_response();
+    }
+    let count = events.len();
+    info!("onvif-push: received {count} event(s) for camera {camera_id}");
+    // forward_event uses reqwest::blocking — run on a blocking thread to avoid
+    // stalling the single-threaded tokio reactor that serves the local server.
+    let server_url = state.server_url.clone();
+    let kiosk_key = state.kiosk_key.clone();
+    let cam_id = camera_id.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        for evt in &events {
+            crate::onvif_events::forward_event(&server_url, &kiosk_key, &cam_id, evt);
+            crate::onvif_events::mark_event_received(&cam_id);
+        }
+    })
+    .await;
+    StatusCode::OK.into_response()
 }
 
 /// Forward any request under /proxy/* to the BF server. Method, query

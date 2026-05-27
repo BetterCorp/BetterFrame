@@ -2648,8 +2648,8 @@ export class Repository {
                subscribed_at = COALESCE(?, camera_event_subscriptions.subscribed_at),
                error_message = ?`,
         [
-          uuidv7(), cameraId, status, kioskId, `kiosk:${kioskId}`, info.resolved_sink ?? (status === "active" ? "poll" : null), info.subscribed_at ?? now, info.error ?? null,
-          status, kioskId, `kiosk:${kioskId}`, info.resolved_sink ?? (status === "active" ? "poll" : null), info.subscribed_at ?? now, info.error ?? null,
+          uuidv7(), cameraId, status, kioskId, `kiosk:${kioskId}`, info.resolved_sink ?? null, info.subscribed_at ?? now, info.error ?? null,
+          status, kioskId, `kiosk:${kioskId}`, info.resolved_sink ?? null, info.subscribed_at ?? now, info.error ?? null,
         ],
       );
     }

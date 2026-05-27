@@ -88,7 +88,9 @@ fn mark_event_received(cam_id: &str) {
 /// or currently in failed/stopped state).
 pub fn needs_refresh() -> bool {
     let map = STATUS.lock().unwrap();
-    let Some(map) = map.as_ref() else { return false };
+    let Some(map) = map.as_ref() else {
+        return false;
+    };
     let now = epoch_now_secs();
     for status in map.values() {
         if status.state == "failed" || status.state == "stopped" {
@@ -122,7 +124,9 @@ pub fn start(
     let onvif_cams: Vec<_> = cameras
         .iter()
         .filter(|c| {
-            if c.cam_type != "onvif" || c.onvif_host.is_none() { return false; }
+            if c.cam_type != "onvif" || c.onvif_host.is_none() {
+                return false;
+            }
             match c.event_source.as_deref() {
                 Some("server") => false,
                 Some("none") | Some("disabled") => false,
@@ -181,7 +185,10 @@ fn run_subscription(
         .unwrap_or_else(|| format!("http://{host}:{port}/onvif/event_service"));
 
     let has_pass = !pass.is_empty();
-    info!("onvif-events: cam {} ({}) subscribing at {event_url} user={user} has_pass={has_pass}", cam.id, cam.name);
+    info!(
+        "onvif-events: cam {} ({}) subscribing at {event_url} user={user} has_pass={has_pass}",
+        cam.id, cam.name
+    );
 
     let mut backoff_secs: u64 = 60;
     loop {
@@ -194,7 +201,10 @@ fn run_subscription(
         let sub = match create_pullpoint(&event_url, user, pass) {
             Ok(s) => s,
             Err(e) => {
-                warn!("onvif-events: cam {} CreatePullPoint failed: {e} (backoff {backoff_secs}s)", cam.id);
+                warn!(
+                    "onvif-events: cam {} CreatePullPoint failed: {e} (backoff {backoff_secs}s)",
+                    cam.id
+                );
                 set_status(&cam.id, "failed", Some(e));
                 std::thread::sleep(Duration::from_secs(backoff_secs));
                 backoff_secs = (backoff_secs * 2).min(900);
@@ -202,7 +212,10 @@ fn run_subscription(
             }
         };
         backoff_secs = 30;
-        info!("onvif-events: cam {} subscribed, address={}", cam.id, sub.address);
+        info!(
+            "onvif-events: cam {} subscribed, address={}",
+            cam.id, sub.address
+        );
         set_status(&cam.id, "active", None);
 
         let poll_interval = Duration::from_secs(10);
@@ -221,7 +234,10 @@ fn run_subscription(
                 match renew(&sub.address, user, pass) {
                     Ok(()) => since_renew = std::time::Instant::now(),
                     Err(e) => {
-                        warn!("onvif-events: cam {} renew failed: {e}, resubscribing", cam.id);
+                        warn!(
+                            "onvif-events: cam {} renew failed: {e}, resubscribing",
+                            cam.id
+                        );
                         break; // outer loop will re-create
                     }
                 }
@@ -238,7 +254,10 @@ fn run_subscription(
                 Err(e) => {
                     consecutive_errors += 1;
                     let error_backoff = (15 * consecutive_errors as u64).min(300);
-                    warn!("onvif-events: cam {} pull failed ({consecutive_errors}x): {e}, backoff {error_backoff}s", cam.id);
+                    warn!(
+                        "onvif-events: cam {} pull failed ({consecutive_errors}x): {e}, backoff {error_backoff}s",
+                        cam.id
+                    );
                     set_status(&cam.id, "failed", Some(e));
                     if consecutive_errors >= 5 {
                         break; // resubscribe from scratch
@@ -259,10 +278,19 @@ struct Subscription {
     address: String,
 }
 
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 fn wsse_header(user: &str, pass: &str) -> String {
-    use sha1::{Digest, Sha1};
     use base64::Engine;
     use rand::RngCore;
+    use sha1::{Digest, Sha1};
 
     let mut nonce = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut nonce);
@@ -277,49 +305,142 @@ fn wsse_header(user: &str, pass: &str) -> String {
     format!(
         r#"<Security xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" s:mustUnderstand="1">
   <UsernameToken>
-    <Username>{user}</Username>
+    <Username>{}</Username>
     <Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">{digest_b64}</Password>
     <Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">{nonce_b64}</Nonce>
     <Created xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">{created}</Created>
   </UsernameToken>
-</Security>"#
+</Security>"#,
+        escape_xml(user)
     )
 }
 
-fn soap_envelope(header_inner: &str, body_inner: &str) -> String {
+fn wsse_text_header(user: &str, pass: &str) -> String {
+    format!(
+        r#"<Security xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" s:mustUnderstand="1">
+  <UsernameToken>
+    <Username>{}</Username>
+    <Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText">{}</Password>
+  </UsernameToken>
+</Security>"#,
+        escape_xml(user),
+        escape_xml(pass)
+    )
+}
+
+fn soap_envelope(header_inner: Option<&str>, body_inner: &str) -> String {
+    let header = header_inner
+        .map(|h| format!("<s:Header>{h}</s:Header>"))
+        .unwrap_or_default();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
             xmlns:tev="http://www.onvif.org/ver10/events/wsdl"
             xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2"
             xmlns:wsa="http://www.w3.org/2005/08/addressing">
-  <s:Header>{header_inner}</s:Header>
+  {header}
   <s:Body>{body_inner}</s:Body>
 </s:Envelope>"#
     )
 }
 
-fn soap_post(url: &str, action: &str, body: &str) -> Result<String, String> {
-    let client = reqwest::blocking::Client::new();
-    let resp = client
+fn soap_post_body(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    action: &str,
+    body: &str,
+    auth: Option<String>,
+) -> Result<(reqwest::StatusCode, String, Option<String>), String> {
+    let mut request = client
         .post(url)
         .header("Content-Type", "application/soap+xml; charset=utf-8")
         .header("SOAPAction", action)
         .body(body.to_string())
-        .timeout(Duration::from_secs(10))
-        .send()
-        .map_err(|e| format!("soap: {e}"))?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().unwrap_or_default();
-        let fault = extract_soap_fault(&body);
-        return Err(format!("soap HTTP {status}: {fault}"));
+        .timeout(Duration::from_secs(10));
+    if let Some(auth) = auth {
+        request = request.header("Authorization", auth);
     }
-    resp.text().map_err(|e| format!("soap body: {e}"))
+    let resp = request.send().map_err(|e| format!("soap: {e}"))?;
+    let status = resp.status();
+    let challenge = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_string());
+    let text = resp.text().map_err(|e| format!("soap body: {e}"))?;
+    Ok((status, text, challenge))
+}
+
+fn soap_post_authed(
+    url: &str,
+    action: &str,
+    body_inner: &str,
+    user: &str,
+    pass: &str,
+) -> Result<String, String> {
+    use base64::Engine;
+
+    let client = reqwest::blocking::Client::new();
+    let mut last_error = String::from("unknown ONVIF SOAP error");
+    let mut digest_challenge: Option<String> = None;
+    let attempts = [
+        (
+            "wsse-digest",
+            soap_envelope(Some(&wsse_header(user, pass)), body_inner),
+            None,
+        ),
+        (
+            "wsse-text",
+            soap_envelope(Some(&wsse_text_header(user, pass)), body_inner),
+            None,
+        ),
+        (
+            "basic",
+            soap_envelope(None, body_inner),
+            Some(format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"))
+            )),
+        ),
+        ("challenge", soap_envelope(None, body_inner), None),
+    ];
+
+    for (kind, body, auth) in attempts {
+        match soap_post_body(&client, url, action, &body, auth) {
+            Ok((status, text, challenge)) => {
+                if digest_challenge.is_none() {
+                    digest_challenge = challenge;
+                }
+                let fault = extract_soap_fault(&text);
+                if status.is_success() && fault.is_empty() {
+                    return Ok(text);
+                }
+                last_error = format!("soap {kind} HTTP {status}: {fault}");
+            }
+            Err(err) => last_error = format!("soap {kind}: {err}"),
+        }
+    }
+
+    if let Some(challenge) = digest_challenge.as_deref() {
+        if let Some(auth) = digest_auth_header_from_challenge("POST", url, challenge, user, pass) {
+            let body = soap_envelope(None, body_inner);
+            let (status, text, _) = soap_post_body(&client, url, action, &body, Some(auth))?;
+            let fault = extract_soap_fault(&text);
+            if status.is_success() && fault.is_empty() {
+                return Ok(text);
+            }
+            last_error = format!("soap digest HTTP {status}: {fault}");
+        }
+    }
+
+    Err(last_error)
 }
 
 /// Extract a human-readable fault reason from SOAP XML, stripping envelope noise.
 fn extract_soap_fault(xml: &str) -> String {
+    if !xml.contains(":Fault") && !xml.contains("<Fault") {
+        return String::new();
+    }
     // Try common SOAP fault tags
     for tag in &["Reason", "Text", "faultstring", "Detail", "Subcode"] {
         if let Some(val) = extract_tag_ns(xml, tag) {
@@ -337,7 +458,8 @@ fn extract_soap_fault(xml: &str) -> String {
         }
     }
     // Fallback: first 300 chars stripped of XML tags
-    let stripped: String = xml.replace(|c: char| c == '<', "\n<")
+    let stripped: String = xml
+        .replace(|c: char| c == '<', "\n<")
         .lines()
         .filter(|l| !l.trim_start().starts_with('<'))
         .map(|l| l.trim())
@@ -352,14 +474,15 @@ fn extract_soap_fault(xml: &str) -> String {
 }
 
 fn create_pullpoint(url: &str, user: &str, pass: &str) -> Result<Subscription, String> {
-    let header = wsse_header(user, pass);
-    let body = soap_envelope(
-        &header,
+    let xml = soap_post_authed(
+        url,
+        "http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest",
         r#"<tev:CreatePullPointSubscription>
   <tev:InitialTerminationTime>PT60S</tev:InitialTerminationTime>
 </tev:CreatePullPointSubscription>"#,
-    );
-    let xml = soap_post(url, "http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest", &body)?;
+        user,
+        pass,
+    )?;
     // Camera may use namespaced Address: <wsa5:Address>, <a:Address>,
     // <wsa:Address>, or plain <Address>. Try all.
     let address = extract_tag_ns(&xml, "Address")
@@ -374,14 +497,16 @@ fn create_pullpoint(url: &str, user: &str, pass: &str) -> Result<Subscription, S
 
 fn resolve_event_service_url(host: &str, port: u16, user: &str, pass: &str) -> Option<String> {
     let device_url = format!("http://{host}:{port}/onvif/device_service");
-    let header = wsse_header(user, pass);
-    let body = soap_envelope(
-        &header,
+    let xml = soap_post_authed(
+        &device_url,
+        "http://www.onvif.org/ver10/device/wsdl/GetCapabilities",
         r#"<tds:GetCapabilities xmlns:tds="http://www.onvif.org/ver10/device/wsdl">
   <tds:Category>All</tds:Category>
 </tds:GetCapabilities>"#,
-    );
-    let xml = soap_post(&device_url, "http://www.onvif.org/ver10/device/wsdl/GetCapabilities", &body).ok()?;
+        user,
+        pass,
+    )
+    .ok()?;
     let events = extract_section(&xml, "Events")?;
     let xaddr = extract_tag_ns(&events, "XAddr")?;
     if xaddr.starts_with("http://") || xaddr.starts_with("https://") {
@@ -397,7 +522,9 @@ fn extract_tag_ns(xml: &str, tag: &str) -> Option<String> {
     for prefix in &["", "wsa5:", "wsa:", "a:", "wsnt:", "tev:", "tt:"] {
         let full = format!("{prefix}{tag}");
         if let Some(val) = extract_tag(xml, &full) {
-            if !val.is_empty() { return Some(val); }
+            if !val.is_empty() {
+                return Some(val);
+            }
         }
     }
     // Fallback: regex-style scan for any :Address> content.
@@ -406,39 +533,47 @@ fn extract_tag_ns(xml: &str, tag: &str) -> Option<String> {
         let after = &xml[pos + pattern.len()..];
         if let Some(end) = after.find('<') {
             let val = after[..end].trim();
-            if !val.is_empty() { return Some(val.to_string()); }
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
         }
     }
     None
 }
 
 fn pull_messages(sub_url: &str, user: &str, pass: &str) -> Result<Vec<OnvifEvent>, String> {
-    let header = wsse_header(user, pass);
-    let body = soap_envelope(
-        &header,
+    let xml = soap_post_authed(
+        sub_url,
+        "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest",
         r#"<tev:PullMessages>
   <tev:Timeout>PT5S</tev:Timeout>
   <tev:MessageLimit>100</tev:MessageLimit>
 </tev:PullMessages>"#,
-    );
-    let xml = soap_post(sub_url, "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest", &body)?;
+        user,
+        pass,
+    )?;
     Ok(parse_notification_messages(&xml))
 }
 
 fn renew(sub_url: &str, user: &str, pass: &str) -> Result<(), String> {
-    let header = wsse_header(user, pass);
-    let body = soap_envelope(
-        &header,
+    soap_post_authed(
+        sub_url,
+        "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest",
         r#"<wsnt:Renew><wsnt:TerminationTime>PT60S</wsnt:TerminationTime></wsnt:Renew>"#,
-    );
-    soap_post(sub_url, "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest", &body)?;
+        user,
+        pass,
+    )?;
     Ok(())
 }
 
 fn unsubscribe(sub_url: &str, user: &str, pass: &str) -> Result<(), String> {
-    let header = wsse_header(user, pass);
-    let body = soap_envelope(&header, "<wsnt:Unsubscribe/>");
-    let _ = soap_post(sub_url, "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest", &body);
+    let _ = soap_post_authed(
+        sub_url,
+        "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest",
+        "<wsnt:Unsubscribe/>",
+        user,
+        pass,
+    );
     Ok(())
 }
 
@@ -460,10 +595,12 @@ fn parse_notification_messages(xml: &str) -> Vec<OnvifEvent> {
             continue;
         }
         let topic = extract_tag(block, "Topic")
-            .or_else(|| extract_attr_value(block, "Topic", "Dialect").map(|_| {
-                // Topic might be inline text
-                extract_inner_text(block, "Topic").unwrap_or_default()
-            }))
+            .or_else(|| {
+                extract_attr_value(block, "Topic", "Dialect").map(|_| {
+                    // Topic might be inline text
+                    extract_inner_text(block, "Topic").unwrap_or_default()
+                })
+            })
             .unwrap_or_default();
         if topic.is_empty() {
             continue;
@@ -518,10 +655,7 @@ fn parse_simple_items(xml: &str) -> Vec<(String, String)> {
 
 fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     // Handles both <ns:Tag>value</ns:Tag> and <Tag>value</Tag>
-    let patterns = [
-        format!("<{tag}>"),
-        format!("<{tag} "),
-    ];
+    let patterns = [format!("<{tag}>"), format!("<{tag} ")];
     for pat in &patterns {
         if let Some(start) = xml.find(pat.as_str()) {
             let after = &xml[start + pat.len()..];
@@ -553,7 +687,12 @@ fn extract_tag(xml: &str, tag: &str) -> Option<String> {
             let idx = part.find('>')?;
             Some(&part[..idx])
         }) {
-            if rest.contains(':') && rest.ends_with(tag) || rest.split_whitespace().next()?.ends_with(&format!(":{tag}")) {
+            if rest.contains(':') && rest.ends_with(tag)
+                || rest
+                    .split_whitespace()
+                    .next()?
+                    .ends_with(&format!(":{tag}"))
+            {
                 // Found opening tag with namespace
                 let after_close = &xml[xml.find(part)? + part.len()..];
                 if let Some(_end_idx) = after_close.find(&format!(":{tag}>")) {
@@ -578,17 +717,11 @@ fn extract_inner_text(xml: &str, tag: &str) -> Option<String> {
 }
 
 fn extract_section(xml: &str, section: &str) -> Option<String> {
-    let patterns = [
-        format!("<tt:{section}"),
-        format!("<{section}"),
-    ];
+    let patterns = [format!("<tt:{section}"), format!("<{section}")];
     for pat in &patterns {
         if let Some(start) = xml.find(pat.as_str()) {
             let rest = &xml[start..];
-            let end_patterns = [
-                format!("</tt:{section}>"),
-                format!("</{section}>"),
-            ];
+            let end_patterns = [format!("</tt:{section}>"), format!("</{section}>")];
             for end_pat in &end_patterns {
                 if let Some(end) = rest.find(end_pat.as_str()) {
                     return Some(rest[..end + end_pat.len()].to_string());
@@ -731,20 +864,43 @@ fn fetch_image_b64_digest(url: &str, user: &str, pass: &str) -> Option<String> {
 
 fn digest_auth_header(url: &str, user: &str, pass: &str) -> Option<String> {
     let client = reqwest::blocking::Client::new();
-    let resp = client.get(url).timeout(Duration::from_secs(3)).send().ok()?;
+    let resp = client
+        .get(url)
+        .timeout(Duration::from_secs(3))
+        .send()
+        .ok()?;
     if resp.status().as_u16() != 401 {
         return None;
     }
     let www_auth = resp.headers().get("www-authenticate")?.to_str().ok()?;
+    digest_auth_header_from_challenge("GET", url, www_auth, user, pass)
+}
+
+fn digest_auth_header_from_challenge(
+    method: &str,
+    url: &str,
+    www_auth: &str,
+    user: &str,
+    pass: &str,
+) -> Option<String> {
     if !www_auth.to_lowercase().starts_with("digest ") {
         return None;
     }
     let realm = extract_digest_field(www_auth, "realm")?;
     let nonce = extract_digest_field(www_auth, "nonce")?;
     let qop = extract_digest_field(www_auth, "qop").unwrap_or_default();
-    let uri = url::Url::parse(url).ok().map(|u| u.path().to_string()).unwrap_or_else(|| "/".to_string());
+    let uri = url::Url::parse(url)
+        .ok()
+        .map(|u| {
+            if let Some(query) = u.query() {
+                format!("{}?{}", u.path(), query)
+            } else {
+                u.path().to_string()
+            }
+        })
+        .unwrap_or_else(|| "/".to_string());
     let ha1 = md5_hex(&format!("{user}:{realm}:{pass}"));
-    let ha2 = md5_hex(&format!("GET:{uri}"));
+    let ha2 = md5_hex(&format!("{method}:{uri}"));
     let cnonce = format!("{:08x}", rand::random::<u32>());
     let nc = "00000001";
     let response = if qop.contains("auth") {
@@ -795,14 +951,20 @@ pub fn decrypt_cluster_public(ciphertext: &str, key: &str) -> Option<String> {
 }
 
 fn decrypt_cluster(ciphertext: &str, cluster_key_b64u: &str) -> Option<String> {
-    use aes_gcm::{Aes256Gcm, Key, Nonce, aead::{Aead, KeyInit}};
+    use aes_gcm::{
+        aead::{Aead, KeyInit},
+        Aes256Gcm, Key, Nonce,
+    };
     use base64::Engine;
 
     let b64u = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     let parts: Vec<&str> = ciphertext.split('.').collect();
     if parts.len() != 4 || parts[0] != "v1" {
-        warn!("decrypt_cluster: bad format: {}", ciphertext.chars().take(20).collect::<String>());
+        warn!(
+            "decrypt_cluster: bad format: {}",
+            ciphertext.chars().take(20).collect::<String>()
+        );
         return None;
     }
     let iv = b64u.decode(parts[1]).ok()?;
@@ -810,7 +972,12 @@ fn decrypt_cluster(ciphertext: &str, cluster_key_b64u: &str) -> Option<String> {
     let ct = b64u.decode(parts[3]).ok()?;
     let key_bytes = b64u.decode(cluster_key_b64u).ok()?;
     if key_bytes.len() != 32 || iv.len() != 12 || tag.len() != 16 {
-        warn!("decrypt_cluster: bad lengths key={} iv={} tag={}", key_bytes.len(), iv.len(), tag.len());
+        warn!(
+            "decrypt_cluster: bad lengths key={} iv={} tag={}",
+            key_bytes.len(),
+            iv.len(),
+            tag.len()
+        );
         return None;
     }
 
@@ -842,9 +1009,7 @@ fn chrono_now() -> String {
     // Rough year/month/day — good enough for WSSE nonce timestamp.
     // This is NOT used for display, only SOAP auth.
     let (year, month, day) = epoch_days_to_ymd(days);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
 fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {

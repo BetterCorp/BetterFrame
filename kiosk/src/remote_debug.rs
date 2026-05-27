@@ -170,8 +170,8 @@ pub fn check_terminal_access() -> Result<(), String> {
     // in server.rs. No env var, no build-time check.
     let fw = crate::server::cached_firmware_channel();
     let os = crate::server::cached_os_channel();
-    if fw != "dev" && os != "dev" {
-        return Err("terminal access requires dev channel".to_string());
+    if fw != "dev" || os != "dev" {
+        return Err("terminal access requires both firmware and OS channels set to dev".to_string());
     }
     Ok(())
 }

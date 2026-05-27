@@ -1904,7 +1904,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = (getRouterParam(event, "id") ?? "");
     const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
-    if (kiosk.firmware_channel !== "dev") {
+    if (kiosk.firmware_channel !== "dev" && kiosk.os_update_channel !== "dev") {
       return htmlPage(`<html><body style="font-family:sans-serif;padding:2rem"><h2>Journal Logs Unavailable</h2><p>Remote debug requires firmware channel set to <strong>dev</strong>. Current channel: <strong>${kiosk.firmware_channel}</strong></p><a href="/admin/kiosks/${String(id)}">Back to kiosk</a></body></html>`);
     }
     const user = event.context.user!;
@@ -1955,7 +1955,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = (getRouterParam(event, "id") ?? "");
     const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
-    if (kiosk.firmware_channel !== "dev") {
+    if (kiosk.firmware_channel !== "dev" && kiosk.os_update_channel !== "dev") {
       return htmlPage(`<html><body style="font-family:sans-serif;padding:2rem"><h2>Terminal Unavailable</h2><p>Remote terminal requires firmware channel set to <strong>dev</strong>. Current channel: <strong>${kiosk.firmware_channel}</strong></p><a href="/admin/kiosks/${String(id)}">Back to kiosk</a></body></html>`);
     }
     // WS auth: browser sends session cookie automatically on WS upgrade.

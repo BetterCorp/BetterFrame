@@ -2004,7 +2004,7 @@ export function KioskEditPage(props: KioskEditProps) {
 
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Remote Debug</h2>
-          {k.firmware_channel === "dev" ? (
+          {k.firmware_channel === "dev" && (k as any).os_update_channel === "dev" ? (
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
               <a href={`/admin/kiosks/${String(k.id)}/logs`} class="btn btn-sm" target="_blank">Journal Logs</a>
               <a href={`/admin/kiosks/${String(k.id)}/terminal`} class="btn btn-sm" target="_blank">Terminal</a>

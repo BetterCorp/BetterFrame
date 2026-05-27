@@ -173,10 +173,61 @@ function kioskOnvifSoapTransport(kioskId: string) {
     const status = Number(response.status ?? 0);
     const text = response.body ?? "";
     if (status < 200 || status >= 300) {
-      throw new Error(`ONVIF ${action} via kiosk ${String(kioskId)} HTTP ${String(status)}: ${text.slice(0, 300)}`);
+      throw new Error(`ONVIF ${action} via kiosk ${String(kioskId)} HTTP ${String(status)} response body: ${text.slice(0, 4000)}`);
     }
     return text;
   };
+}
+
+function extractOnvifErrorDebug(msg: string): {
+  mediaUrl: string;
+  deviceName: string | null;
+  profileCount: number;
+  rawProfilesXml: string;
+  rawCapabilitiesXml: string | null;
+} | undefined {
+  if (msg.includes("response preview:")) {
+    return {
+      mediaUrl: msg.split("mediaUrl=")[1]?.split(" ")[0] ?? "unknown",
+      deviceName: null,
+      profileCount: 0,
+      rawProfilesXml: msg.split("response preview: ")[1] ?? msg,
+      rawCapabilitiesXml: null,
+    };
+  }
+
+  const bodyMarker = "response body:";
+  const bodyIndex = msg.indexOf(bodyMarker);
+  if (bodyIndex >= 0) {
+    const rawBody = msg.slice(bodyIndex + bodyMarker.length).trim();
+    if (rawBody.startsWith("<")) {
+      return {
+        mediaUrl: "unknown",
+        deviceName: null,
+        profileCount: 0,
+        rawProfilesXml: rawBody,
+        rawCapabilitiesXml: null,
+      };
+    }
+  }
+
+  const firstXml = msg.indexOf("<?xml");
+  const firstTag = msg.indexOf("<");
+  const start = firstXml >= 0 ? firstXml : firstTag;
+  if (start >= 0) {
+    const rawXml = msg.slice(start).trim();
+    if (rawXml.startsWith("<")) {
+      return {
+        mediaUrl: "unknown",
+        deviceName: null,
+        profileCount: 0,
+        rawProfilesXml: rawXml,
+        rawCapabilitiesXml: null,
+      };
+    }
+  }
+
+  return undefined;
 }
 
 function parseDiscoveredStreams(raw: string): DiscoverAddStream[] {
@@ -638,13 +689,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         password,
         cameras: [],
         error: `Discovery failed: ${msg}`,
-        debug: msg.includes("response preview:") ? {
-          mediaUrl: msg.split("mediaUrl=")[1]?.split(" ")[0] ?? "unknown",
-          deviceName: null,
-          profileCount: 0,
-          rawProfilesXml: msg.split("response preview: ")[1] ?? msg,
-          rawCapabilitiesXml: null,
-        } : undefined,
+        debug: extractOnvifErrorDebug(msg),
       }));
     }
   });

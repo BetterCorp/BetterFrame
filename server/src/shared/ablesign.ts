@@ -210,10 +210,37 @@ export async function headlessPairScreen(
   opts: ApiOpts,
   title: string,
   orientation: string = "landscape",
-): Promise<{ screen: AbleSignScreen; registrationCode: number }> {
+): Promise<{ screenId: string; screenToken?: string; title: string; orientation: string; registrationCode: number }> {
+  // 1. Initiate player-side registration → get code
   const reg = await initiatePlayerRegistration();
+
+  // 2. Pair via admin API — consumes the code
   const screen = await registerScreen(opts, String(reg.code), title, orientation);
-  return { screen, registrationCode: reg.code };
+
+  // 3. Poll registration endpoint with retries to get screenId + token.
+  // The admin API pairing is async — token may not be ready immediately.
+  let screenId = screen?.id ? String(screen.id) : undefined;
+  let screenToken: string | undefined;
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await new Promise((r) => setTimeout(r, 1500));
+    try {
+      const poll = await pollRegistration(reg.code);
+      if (poll.screenId > 0) {
+        screenId = String(poll.screenId);
+        screenToken = poll.screenToken;
+        break;
+      }
+    } catch { /* retry */ }
+  }
+
+  return {
+    screenId: screenId ?? String(reg.code),
+    screenToken,
+    title: screen?.title || title,
+    orientation: screen?.orientation || orientation,
+    registrationCode: reg.code,
+  };
 }
 
 export async function testApiKey(apiKey: string, workspaceId?: string): Promise<{ ok: boolean; error?: string }> {

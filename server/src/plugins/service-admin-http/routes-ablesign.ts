@@ -113,30 +113,22 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
     try {
       const apiKey = deps.secrets.decryptString(account.api_key_encrypted, "ablesign-key");
       const opts = { apiKey, workspaceId: account.workspace_id || undefined };
-      const { screen, registrationCode } = await ablesign.headlessPairScreen(opts, title);
+      const result = await ablesign.headlessPairScreen(opts, title);
 
-      // Poll once for token (may not be available immediately).
-      let screenToken: string | undefined;
-      try {
-        const poll = await ablesign.pollRegistration(registrationCode);
-        screenToken = poll.screenToken;
-      } catch { /* token may not be ready yet — kiosk can work without it initially */ }
-
-      const screenTitle = screen.title || title;
       const screenRowId = await deps.repo.createAbleSignScreen({
         account_id: accountId,
-        ablesign_screen_id: String(screen.id),
-        ablesign_screen_token_encrypted: screenToken
-          ? deps.secrets.encryptString(screenToken, "ablesign-token")
+        ablesign_screen_id: result.screenId,
+        ablesign_screen_token_encrypted: result.screenToken
+          ? deps.secrets.encryptString(result.screenToken, "ablesign-token")
           : undefined,
-        title: screenTitle,
-        orientation: screen.orientation || "landscape",
+        title: result.title,
+        orientation: result.orientation,
       });
 
       await deps.repo.createEntity({
-        name: `AbleSign: ${screenTitle}`,
+        name: `AbleSign: ${result.title}`,
         type: "ablesign",
-        description: `AbleSign screen (ID: ${String(screen.id)})`,
+        description: `AbleSign screen (ID: ${result.screenId})`,
         web_url: "https://player.ablesign.tv",
         ablesign_screen_id: screenRowId,
         managed: true,

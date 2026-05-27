@@ -506,6 +506,9 @@ function registerKioskRoutes(
       network_interfaces_json: Array.isArray(body.network_interfaces)
         ? JSON.stringify(body.network_interfaces)
         : null,
+      logging_json: body.logging && typeof body.logging === "object"
+        ? JSON.stringify(body.logging)
+        : null,
       partitions_json: Array.isArray(body.partitions)
         ? JSON.stringify(body.partitions)
         : null,

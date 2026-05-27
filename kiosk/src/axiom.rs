@@ -28,6 +28,11 @@ pub fn set_kiosk_id(id: String) {
     *GLOBAL_KIOSK_ID.lock().unwrap() = Some(id);
 }
 
+pub fn enabled() -> bool {
+    !option_env!("BF_AXIOM_KEY").unwrap_or("").is_empty()
+        && !option_env!("BF_AXIOM_DATASET").unwrap_or("").is_empty()
+}
+
 impl AxiomLayer {
     pub fn new() -> Option<Self> {
         let api_key = option_env!("BF_AXIOM_KEY").unwrap_or("").to_string();

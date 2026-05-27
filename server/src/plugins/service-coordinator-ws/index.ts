@@ -270,7 +270,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       if (url.pathname.startsWith("/ws/admin/debug/")) {
         const kioskIdStr = url.pathname.split("/").pop() ?? "";
         const kioskId = String(kioskIdStr);
-        if (!Number.isInteger(kioskId) || kioskId === "") {
+        if (kioskId === "") {
           socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
           socket.destroy();
           return;

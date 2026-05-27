@@ -18,6 +18,8 @@ struct OnvifSoapRequest {
     action: String,
     body: String,
     timeout_ms: Option<u64>,
+    username: Option<String>,
+    password: Option<String>,
 }
 
 /// Run the WebSocket client in a tokio runtime. Blocks the calling thread.
@@ -319,6 +321,8 @@ fn pipe_output<R: Read>(mut reader: R, tx: tokio::sync::mpsc::UnboundedSender<St
 }
 
 async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
+    use base64::Engine;
+
     let timeout = Duration::from_millis(req.timeout_ms.unwrap_or(8000).clamp(1000, 30000));
     let client = match reqwest::Client::builder().timeout(timeout).build() {
         Ok(client) => client,
@@ -349,40 +353,184 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
         }).to_string();
     }
 
-    let result = client
-        .post(parsed)
-        .header("Content-Type", format!(
-            "application/soap+xml; charset=utf-8; action=\"{}\"", req.action
+    let username = req.username.as_deref().unwrap_or("");
+    let password = req.password.as_deref().unwrap_or("");
+    let basic_auth = if username.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"))
         ))
-        .header("SOAPAction", &req.action)
-        .body(req.body)
-        .send()
-        .await;
+    };
 
-    match result {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            match resp.text().await {
-                Ok(body) => serde_json::json!({
-                    "type": "onvif-soap-response",
-                    "request_id": req.request_id,
-                    "status": status,
-                    "body": body,
-                }).to_string(),
-                Err(err) => serde_json::json!({
-                    "type": "onvif-soap-response",
-                    "request_id": req.request_id,
-                    "status": status,
-                    "error": format!("kiosk ONVIF response read failed: {err}"),
-                }).to_string(),
+    let mut digest_challenge: Option<String> = None;
+    let mut last_status = 0u16;
+    let mut last_body = String::new();
+    let mut last_error = String::new();
+
+    for (kind, auth_header) in [("wsse", None), ("basic", basic_auth)] {
+        if kind == "basic" && auth_header.is_none() {
+            continue;
+        }
+
+        let mut request = client
+            .post(parsed.clone())
+            .header("Content-Type", format!(
+                "application/soap+xml; charset=utf-8; action=\"{}\"", req.action
+            ))
+            .header("SOAPAction", &req.action)
+            .body(req.body.clone());
+        if let Some(auth) = auth_header.clone() {
+            request = request.header("Authorization", auth);
+        }
+
+        match request.send().await {
+            Ok(resp) => {
+                last_status = resp.status().as_u16();
+                if digest_challenge.is_none() {
+                    digest_challenge = resp.headers()
+                        .get("www-authenticate")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|v| v.to_string());
+                }
+                match resp.text().await {
+                    Ok(body) => {
+                        if (200..300).contains(&last_status) {
+                            return serde_json::json!({
+                                "type": "onvif-soap-response",
+                                "request_id": req.request_id,
+                                "status": last_status,
+                                "body": body,
+                            }).to_string();
+                        }
+                        last_body = body;
+                        last_error = format!("kiosk ONVIF {kind} HTTP {last_status}");
+                    }
+                    Err(err) => {
+                        last_error = format!("kiosk ONVIF response read failed: {err}");
+                    }
+                }
+            }
+            Err(err) => {
+                last_error = format!("kiosk ONVIF request failed ({kind}): {err}");
             }
         }
-        Err(err) => serde_json::json!({
-            "type": "onvif-soap-response",
-            "request_id": req.request_id,
-            "error": format!("kiosk ONVIF request failed: {err}"),
-        }).to_string(),
     }
+
+    if !username.is_empty() {
+        if let Some(challenge) = digest_challenge.as_deref() {
+            if let Some(auth) = digest_auth_header_for("POST", parsed.as_str(), challenge, username, password) {
+                match client
+                    .post(parsed.clone())
+                    .header("Content-Type", format!(
+                        "application/soap+xml; charset=utf-8; action=\"{}\"", req.action
+                    ))
+                    .header("SOAPAction", &req.action)
+                    .header("Authorization", auth)
+                    .body(req.body.clone())
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        last_status = resp.status().as_u16();
+                        match resp.text().await {
+                            Ok(body) => {
+                                if (200..300).contains(&last_status) {
+                                    return serde_json::json!({
+                                        "type": "onvif-soap-response",
+                                        "request_id": req.request_id,
+                                        "status": last_status,
+                                        "body": body,
+                                    }).to_string();
+                                }
+                                last_body = body;
+                                last_error = format!("kiosk ONVIF digest HTTP {last_status}");
+                            }
+                            Err(err) => {
+                                last_error = format!("kiosk ONVIF response read failed: {err}");
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        last_error = format!("kiosk ONVIF request failed (digest): {err}");
+                    }
+                }
+            }
+        }
+    }
+
+    serde_json::json!({
+        "type": "onvif-soap-response",
+        "request_id": req.request_id,
+        "status": last_status,
+        "error": last_error,
+        "body": last_body,
+    }).to_string()
+}
+
+fn digest_auth_header_for(method: &str, url: &str, challenge_header: &str, user: &str, pass: &str) -> Option<String> {
+    if !challenge_header.to_lowercase().starts_with("digest ") {
+        return None;
+    }
+    let realm = extract_digest_field(challenge_header, "realm")?;
+    let nonce = extract_digest_field(challenge_header, "nonce")?;
+    let qop = extract_digest_field(challenge_header, "qop").unwrap_or_default();
+    let opaque = extract_digest_field(challenge_header, "opaque");
+    let algorithm = extract_digest_field(challenge_header, "algorithm");
+    let uri = url::Url::parse(url).ok()
+        .map(|u| {
+            if let Some(q) = u.query() {
+                format!("{}?{}", u.path(), q)
+            } else {
+                u.path().to_string()
+            }
+        })
+        .unwrap_or_else(|| "/".to_string());
+    let ha1 = md5_hex(&format!("{user}:{realm}:{pass}"));
+    let ha2 = md5_hex(&format!("{method}:{uri}"));
+    let cnonce = format!("{:08x}", rand::random::<u32>());
+    let nc = "00000001";
+    let response = if qop.contains("auth") {
+        md5_hex(&format!("{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}"))
+    } else {
+        md5_hex(&format!("{ha1}:{nonce}:{ha2}"))
+    };
+    let mut parts = vec![
+        format!(r#"Digest username="{user}""#),
+        format!(r#"realm="{realm}""#),
+        format!(r#"nonce="{nonce}""#),
+        format!(r#"uri="{uri}""#),
+        format!(r#"response="{response}""#),
+    ];
+    if let Some(opaque) = opaque {
+        parts.push(format!(r#"opaque="{opaque}""#));
+    }
+    if let Some(algorithm) = algorithm {
+        parts.push(format!("algorithm={algorithm}"));
+    }
+    if qop.contains("auth") {
+        parts.push("qop=auth".to_string());
+        parts.push(format!("nc={nc}"));
+        parts.push(format!(r#"cnonce="{cnonce}""#));
+    }
+    Some(parts.join(", "))
+}
+
+fn extract_digest_field(header: &str, field: &str) -> Option<String> {
+    let pat = format!("{field}=\"");
+    let start = header.find(&pat)? + pat.len();
+    let end = header[start..].find('"')?;
+    Some(header[start..start + end].to_string())
+}
+
+fn md5_hex(input: &str) -> String {
+    let digest = md5::compute(input.as_bytes());
+    let mut out = String::with_capacity(digest.0.len() * 2);
+    for byte in digest.0 {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 /// Extract an ID from a JSON value that may be a string or a number.

@@ -151,7 +151,7 @@ function formValues(v: FormValue): string[] {
 }
 
 function kioskOnvifSoapTransport(kioskId: string) {
-  return async (url: string, action: string, body: string, timeoutMs: number): Promise<string> => {
+  return async (url: string, action: string, body: string, timeoutMs: number, username?: string, password?: string): Promise<string> => {
     if (!kioskId) {
       throw new Error("invalid kiosk selected for discovery");
     }
@@ -167,6 +167,8 @@ function kioskOnvifSoapTransport(kioskId: string) {
       action,
       body,
       timeout_ms: timeoutMs,
+      username,
+      password,
     }, timeoutMs + 3000);
 
     if (response.error) throw new Error(response.error);

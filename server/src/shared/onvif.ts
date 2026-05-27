@@ -47,6 +47,8 @@ export type SoapTransport = (
   action: string,
   body: string,
   timeoutMs: number,
+  username?: string,
+  password?: string,
 ) => Promise<string>;
 
 interface EndpointParts {
@@ -117,30 +119,70 @@ async function soap(
   body: string,
   timeoutMs: number,
   transport?: SoapTransport,
+  username?: string,
+  password?: string,
 ): Promise<string> {
-  if (transport) return transport(url, action, body, timeoutMs);
+  if (transport) return transport(url, action, body, timeoutMs, username, password);
 
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": `application/soap+xml; charset=utf-8; action="${action}"`,
-        "SOAPAction": action,
-      },
-      body,
-      signal: controller.signal,
-    });
-    const text = await res.text();
-    const fault = extractSoapFault(text);
-    if (fault) {
-      throw new Error(`ONVIF ${action} SOAP fault: ${fault}`);
+    const attempts = [
+      { kind: "wsse", auth: "" },
+      ...(username ? [{ kind: "basic", auth: `Basic ${Buffer.from(`${username}:${password ?? ""}`, "utf8").toString("base64")}` }] : []),
+    ];
+
+    let digestChallenge: string | null = null;
+    let lastError = "unknown ONVIF failure";
+
+    for (const attempt of attempts) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": `application/soap+xml; charset=utf-8; action="${action}"`,
+          "SOAPAction": action,
+          ...(attempt.auth ? { Authorization: attempt.auth } : {}),
+        },
+        body,
+        signal: controller.signal,
+      });
+      const text = await res.text();
+      if (!digestChallenge) {
+        digestChallenge = res.headers.get("www-authenticate");
+      }
+      const fault = extractSoapFault(text);
+      if (res.ok && !fault) {
+        return text;
+      }
+      lastError = fault
+        ? `ONVIF ${action} SOAP fault (${attempt.kind}): ${fault}`
+        : `ONVIF ${action} HTTP ${String(res.status)} (${attempt.kind}): ${text.slice(0, 300)}`;
     }
-    if (!res.ok) {
-      throw new Error(`ONVIF ${action} HTTP ${String(res.status)}: ${text.slice(0, 300)}`);
+
+    if (username && digestChallenge?.toLowerCase().includes("digest")) {
+      const digestAuth = buildDigestAuthHeader("POST", url, digestChallenge, username, password ?? "");
+      if (digestAuth) {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": `application/soap+xml; charset=utf-8; action="${action}"`,
+            "SOAPAction": action,
+            Authorization: digestAuth,
+          },
+          body,
+          signal: controller.signal,
+        });
+        const text = await res.text();
+        const fault = extractSoapFault(text);
+        if (res.ok && !fault) {
+          return text;
+        }
+        lastError = fault
+          ? `ONVIF ${action} SOAP fault (digest): ${fault}`
+          : `ONVIF ${action} HTTP ${String(res.status)} (digest): ${text.slice(0, 300)}`;
+      }
     }
-    return text;
+    throw new Error(lastError);
   } catch (err) {
     if ((err as Error).name === "AbortError") {
       throw new Error(`ONVIF ${action} timed out after ${String(timeoutMs)}ms`);
@@ -157,12 +199,61 @@ async function trySoap(
   body: string,
   timeoutMs: number,
   transport?: SoapTransport,
+  username?: string,
+  password?: string,
 ): Promise<string | null> {
   try {
-    return await soap(url, action, body, timeoutMs, transport);
+    return await soap(url, action, body, timeoutMs, transport, username, password);
   } catch {
     return null;
   }
+}
+
+function parseDigestChallenge(header: string): Record<string, string> | null {
+  if (!header.toLowerCase().startsWith("digest ")) return null;
+  const values: Record<string, string> = {};
+  for (const part of header.slice(7).split(",")) {
+    const idx = part.indexOf("=");
+    if (idx < 0) continue;
+    const key = part.slice(0, idx).trim().toLowerCase();
+    const raw = part.slice(idx + 1).trim();
+    values[key] = raw.replace(/^"|"$/g, "");
+  }
+  return values;
+}
+
+function md5Hex(input: string): string {
+  return createHash("md5").update(input, "utf8").digest("hex");
+}
+
+function buildDigestAuthHeader(method: string, url: string, challengeHeader: string, username: string, password: string): string | null {
+  const params = parseDigestChallenge(challengeHeader);
+  if (!params?.realm || !params.nonce) return null;
+  const parsed = new URL(url);
+  const uri = `${parsed.pathname}${parsed.search}`;
+  const qop = params.qop?.split(",").map((v) => v.trim()).find((v) => v === "auth") ?? "";
+  const cnonce = randomBytes(8).toString("hex");
+  const nc = "00000001";
+  const ha1 = md5Hex(`${username}:${params.realm}:${password}`);
+  const ha2 = md5Hex(`${method}:${uri}`);
+  const response = qop
+    ? md5Hex(`${ha1}:${params.nonce}:${nc}:${cnonce}:${qop}:${ha2}`)
+    : md5Hex(`${ha1}:${params.nonce}:${ha2}`);
+  const parts = [
+    `Digest username="${username}"`,
+    `realm="${params.realm}"`,
+    `nonce="${params.nonce}"`,
+    `uri="${uri}"`,
+    `response="${response}"`,
+  ];
+  if (params.opaque) parts.push(`opaque="${params.opaque}"`);
+  if (params.algorithm) parts.push(`algorithm=${params.algorithm}`);
+  if (qop) {
+    parts.push(`qop=${qop}`);
+    parts.push(`nc=${nc}`);
+    parts.push(`cnonce="${cnonce}"`);
+  }
+  return parts.join(", ");
 }
 
 function buildEnvelope(headerXml: string, bodyXml: string): string {
@@ -267,6 +358,8 @@ async function discoverServices(
     capabilitiesEnv,
     timeoutMs,
     transport,
+    input.username,
+    input.password,
   );
   return {
     mediaUrl: pickFirstXAddr(capabilitiesXml ?? "", "Media")
@@ -377,6 +470,8 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
       devInfoEnv,
       timeoutMs,
       input.soapTransport,
+      input.username,
+      input.password,
     );
     // Try Manufacturer + Model as combined name (e.g. "Hikvision DS-2CD2146G2")
     const manufacturer = pickAll(devInfoXml, "Manufacturer")[0]?.trim() ?? null;
@@ -398,6 +493,8 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
     profilesEnv,
     timeoutMs,
     input.soapTransport,
+    input.username,
+    input.password,
   );
 
   const profileBlocks = splitProfiles(profilesXml);
@@ -444,6 +541,8 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
         streamEnv,
         timeoutMs,
         input.soapTransport,
+        input.username,
+        input.password,
       );
     } catch {
       continue; // skip profiles we can't get a stream uri for
@@ -462,6 +561,8 @@ export async function discover(input: DiscoverInput): Promise<DiscoverResult> {
         snapshotEnv,
         timeoutMs,
         input.soapTransport,
+        input.username,
+        input.password,
       );
       snapshotUri = pickAll(snapshotXml, "Uri")[0] ?? null;
     } catch {
@@ -518,7 +619,7 @@ export async function getEventProperties(input: DiscoverInput): Promise<string[]
   try {
     xml = await soap(eventUrl,
       "http://www.onvif.org/ver10/events/wsdl/EventPortType/GetEventPropertiesRequest",
-      body, timeoutMs, input.soapTransport);
+      body, timeoutMs, input.soapTransport, input.username, input.password);
   } catch {
     return [];
   }

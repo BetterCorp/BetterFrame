@@ -222,13 +222,17 @@ fn activate(app: &Application) {
         });
 
         // Background retry thread: if we couldn't fetch a live bundle on boot,
-        // try again every 30s until we get one. Once fetched, send a render.
+        // retry with exponential backoff. After 30 minutes of failures, reboot
+        // the host to recover from potential stuck state.
         let retry_tx = tx.clone();
         let retry_server = server.clone();
         let retry_key = key.clone();
         std::thread::spawn(move || {
+            let mut backoff_secs: u64 = 10;
+            let start = std::time::Instant::now();
+            let max_wait = Duration::from_secs(30 * 60);
             loop {
-                std::thread::sleep(Duration::from_secs(30));
+                std::thread::sleep(Duration::from_secs(backoff_secs));
                 if let Some(b) = server::fetch_bundle(&retry_server, &retry_key) {
                     info!("offline-retry: fresh bundle fetched, rendering");
                     let _ = retry_tx.send(WorkerMsg::RenderBundle(
@@ -238,6 +242,13 @@ fn activate(app: &Application) {
                     ));
                     return;
                 }
+                if start.elapsed() > max_wait {
+                    warn!("offline-retry: 30 minutes without bundle, rebooting");
+                    let _ = std::process::Command::new("systemctl").arg("reboot").status();
+                    std::thread::sleep(Duration::from_secs(30));
+                    std::process::exit(1);
+                }
+                backoff_secs = (backoff_secs * 2).min(300);
             }
         });
 

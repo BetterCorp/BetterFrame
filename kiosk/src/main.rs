@@ -9,6 +9,7 @@ mod firmware;
 mod gpio;
 mod hwmon;
 mod local_server;
+mod thermal;
 mod onvif_events;
 mod os_update;
 mod pipeline;

@@ -83,6 +83,10 @@ pub fn set_fan(pwm: Option<u32>) -> bool {
     }
 }
 
+pub fn read_temp_c() -> Option<f32> {
+    read_temp()
+}
+
 fn read_temp() -> Option<f32> {
     let raw = fs::read_to_string("/sys/class/thermal/thermal_zone0/temp").ok()?;
     let m: i64 = raw.trim().parse().ok()?;

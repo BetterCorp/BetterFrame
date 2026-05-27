@@ -210,6 +210,9 @@ fn activate(app: &Application) {
             ui_tx: std::sync::Arc::new(std::sync::Mutex::new(Some(tx.clone()))),
         });
 
+        // Automatic fan control based on CPU temperature thresholds.
+        thermal::start();
+
         // Spawn WS client in a separate thread for live updates
         let server_ws = server.clone();
         let key_ws = key.clone();
@@ -279,6 +282,7 @@ fn activate(app: &Application) {
                         let _ = tx_for_reload.send(WorkerMsg::Wake(display_id));
                     }
                     ServerMsg::Fan(pwm) => {
+                        thermal::set_manual_override();
                         if !hwmon::set_fan(pwm) {
                             warn!("fan command failed");
                         }

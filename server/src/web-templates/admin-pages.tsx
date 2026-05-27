@@ -1189,7 +1189,7 @@ interface CameraEditProps {
   camera: Camera;
   labels: Array<{ label_id: string; name: string }>;
   allLabels: Label[];
-  streams: Array<{ id: string; role: string; name: string; rtsp_uri: string; rtsp_host: string | null; rtsp_port: number | null; rtsp_path: string | null }>;
+  streams: Array<{ id: string; role: string; name: string; rtsp_uri: string }>;
   subscriptions: CameraSubscription[];
   eventSubscriptions?: CameraEventSubscription[];
   error?: string;
@@ -1301,17 +1301,21 @@ export function CameraEditPage(props: CameraEditProps) {
               <input id="name" name="name" type="text" class="form-input" value={cam.name} required maxlength="128" />
             </div>
             {cam.type === "rtsp" && (() => {
-              const parts = parseRtspUrl(cam.rtsp_url ?? "");
+              const mainStream = props.streams.find((s) => s.role === "main") ?? props.streams[0];
+              const parts = parseRtspUrl(mainStream?.rtsp_uri ?? cam.rtsp_url ?? "");
+              const host = cam.onvif_host ?? parts.host;
+              const port = cam.onvif_port != null ? String(cam.onvif_port) : parts.port;
+              const username = cam.onvif_username ?? parts.username;
               return (
                 <div>
                   <div class="form-group">
                     <label for="rtsp_host">Host</label>
-                    <input id="rtsp_host" name="rtsp_host" type="text" class="form-input" value={parts.host} />
+                    <input id="rtsp_host" name="rtsp_host" type="text" class="form-input" value={host} />
                   </div>
                   <div style="display:grid; grid-template-columns:1fr 2fr; gap:0.75rem">
                     <div class="form-group">
                       <label for="rtsp_port">Port</label>
-                      <input id="rtsp_port" name="rtsp_port" type="number" class="form-input" value={parts.port} />
+                      <input id="rtsp_port" name="rtsp_port" type="number" class="form-input" value={port} />
                     </div>
                     <div class="form-group">
                       <label for="rtsp_path">Path</label>
@@ -1321,7 +1325,7 @@ export function CameraEditPage(props: CameraEditProps) {
                   <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem">
                     <div class="form-group">
                       <label for="rtsp_username">Username</label>
-                      <input id="rtsp_username" name="rtsp_username" type="text" class="form-input" value={parts.username} />
+                      <input id="rtsp_username" name="rtsp_username" type="text" class="form-input" value={username} />
                     </div>
                     <div class="form-group">
                       <label for="rtsp_password">Password (leave blank to keep)</label>
@@ -1476,16 +1480,13 @@ export function CameraEditPage(props: CameraEditProps) {
           {props.streams.length > 0 ? (
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Role</th><th>Name</th><th>URI</th><th>Host</th><th>Port</th><th>Path</th></tr></thead>
+                <thead><tr><th>Role</th><th>Name</th><th>URI</th></tr></thead>
                 <tbody>
                   {props.streams.map((s) => (
                     <tr>
                       <td><span class="badge badge-gray">{s.role}</span></td>
                       <td>{s.name}</td>
                       <td style="font-size:0.8rem; word-break:break-all">{maskRtspPassword(s.rtsp_uri)}</td>
-                      <td style="font-size:0.8rem">{s.rtsp_host ?? ""}</td>
-                      <td style="font-size:0.8rem">{s.rtsp_port != null ? String(s.rtsp_port) : ""}</td>
-                      <td style="font-size:0.8rem; word-break:break-all">{s.rtsp_path ?? ""}</td>
                     </tr>
                   ))}
                 </tbody>

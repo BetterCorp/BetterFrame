@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs;
-use std::sync::{mpsc, Mutex};
+use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -23,8 +23,8 @@ use crate::hwmon;
 use crate::local_server;
 use crate::onvif_events;
 use crate::os_update;
-use crate::remote_debug;
 use crate::pipeline;
+use crate::remote_debug;
 use crate::server;
 use crate::ws_client;
 
@@ -245,7 +245,9 @@ fn activate(app: &Application) {
                 }
                 if start.elapsed() > max_wait {
                     warn!("offline-retry: 30 minutes without bundle, rebooting");
-                    let _ = std::process::Command::new("systemctl").arg("reboot").status();
+                    let _ = std::process::Command::new("systemctl")
+                        .arg("reboot")
+                        .status();
                     std::thread::sleep(Duration::from_secs(30));
                     std::process::exit(1);
                 }
@@ -314,10 +316,16 @@ fn activate(app: &Application) {
                     ServerMsg::TailscaleAuth(_) => {}
                     ServerMsg::Reboot => {
                         info!("reboot requested by admin");
-                        let _ = std::process::Command::new("systemctl").arg("reboot").status();
+                        let _ = std::process::Command::new("systemctl")
+                            .arg("reboot")
+                            .status();
                     }
                     ServerMsg::FirmwareCheck => {
-                        maybe_apply_firmware_update(&server_for_reload, &key_for_reload, &tx_for_reload);
+                        maybe_apply_firmware_update(
+                            &server_for_reload,
+                            &key_for_reload,
+                            &tx_for_reload,
+                        );
                     }
                     ServerMsg::OsCheck => {
                         maybe_apply_os_update(&server_for_reload, &key_for_reload, &tx_for_reload);
@@ -494,12 +502,15 @@ fn send_heartbeat_now(server_url: &str, kiosk_key: &str) -> bool {
             let bundle_id = bundle_displays
                 .get(index)
                 .map(|d| d.id.clone())
-                .or_else(|| bundle_displays.iter().find(|d| d.name == name).map(|d| d.id.clone()));
+                .or_else(|| {
+                    bundle_displays
+                        .iter()
+                        .find(|d| d.name == name)
+                        .map(|d| d.id.clone())
+                });
             let power_state = bundle_id
                 .as_deref()
-                .and_then(|id| {
-                    DISPLAYS.with(|ds| ds.borrow().get(id).map(|st| st.is_asleep))
-                })
+                .and_then(|id| DISPLAYS.with(|ds| ds.borrow().get(id).map(|st| st.is_asleep)))
                 .map(|is_asleep| if is_asleep { "standby" } else { "awake" })
                 .unwrap_or("unknown")
                 .to_string();
@@ -539,14 +550,28 @@ fn mark_rauc_slot_good() {
 }
 
 fn set_hostname_from_name(name: &str) {
-    let hostname: String = name.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '-' })
+    let hostname: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .trim_matches('-')
         .to_string();
-    if hostname.is_empty() { return; }
-    let current = hostname::get().ok().and_then(|h| h.into_string().ok()).unwrap_or_default();
-    if current == hostname { return; }
+    if hostname.is_empty() {
+        return;
+    }
+    let current = hostname::get()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .unwrap_or_default();
+    if current == hostname {
+        return;
+    }
     info!("setting hostname to {hostname}");
     let _ = std::process::Command::new("hostnamectl")
         .args(["set-hostname", &hostname])
@@ -563,7 +588,10 @@ fn cleanup_stale_files() {
                 let Ok(meta) = entry.metadata() else { continue };
                 let old = meta.modified().map(|m| m < cutoff).unwrap_or(false);
                 if old {
-                    info!("cleanup: removing stale staging file {}", entry.path().display());
+                    info!(
+                        "cleanup: removing stale staging file {}",
+                        entry.path().display()
+                    );
                     let _ = fs::remove_file(entry.path());
                 }
             }
@@ -688,7 +716,8 @@ fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sen
     }
 }
 
-static LAST_ONVIF_REFRESH: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+static LAST_ONVIF_REFRESH: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
 
 fn maybe_refresh_onvif(server_url: &str, kiosk_key: &str) {
     if !onvif_events::needs_refresh() {
@@ -716,12 +745,19 @@ fn maybe_refresh_onvif(server_url: &str, kiosk_key: &str) {
         .flat_map(|l| l.cells.iter())
         .filter_map(|c| c.camera_id.clone())
         .collect();
-    let layout_cameras: Vec<_> = bundle.cameras.iter()
+    let layout_cameras: Vec<_> = bundle
+        .cameras
+        .iter()
         .filter(|c| layout_cam_ids.contains(&c.id))
         .cloned()
         .collect();
     let decrypt_key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
-    onvif_events::start(&layout_cameras, decrypt_key.as_deref(), server_url, kiosk_key);
+    onvif_events::start(
+        &layout_cameras,
+        decrypt_key.as_deref(),
+        server_url,
+        kiosk_key,
+    );
 }
 
 /// Install the once-per-second watchdog that enforces idle/sleep timeouts
@@ -800,10 +836,7 @@ fn install_idle_watchdog() {
                 render_layout(&a.display_id, &layout_id);
             }
             if a.sleep {
-                info!(
-                    "sleep timeout reached on display {}",
-                    a.display_id
-                );
+                info!("sleep timeout reached on display {}", a.display_id);
                 let output_name = bundle
                     .normalized_displays()
                     .into_iter()
@@ -887,11 +920,14 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
     vbox.append(&hint);
 
     let fw_ver = server::kiosk_app_version();
-    let os_ver = std::fs::read_to_string("/etc/betterframe/os-version")
-        .unwrap_or_else(|_| "unknown".into());
+    let os_ver =
+        std::fs::read_to_string("/etc/betterframe/os-version").unwrap_or_else(|_| "unknown".into());
     let ver_text = format!("FW: {}  OS: {}", fw_ver, os_ver.trim());
     let ver_label = Label::new(Some(&ver_text));
-    add_css(&ver_label, ".ver { font-size: 11px; color: #555; margin: 8px; }");
+    add_css(
+        &ver_label,
+        ".ver { font-size: 11px; color: #555; margin: 8px; }",
+    );
     ver_label.add_css_class("ver");
     ver_label.set_halign(gtk::Align::Start);
     ver_label.set_valign(gtk::Align::End);
@@ -928,12 +964,19 @@ fn render_bundle(
         .collect();
 
     // Only subscribe to ONVIF events for cameras in layouts (not all bundle cameras).
-    let layout_cameras: Vec<_> = bundle.cameras.iter()
+    let layout_cameras: Vec<_> = bundle
+        .cameras
+        .iter()
         .filter(|c| layout_cam_ids.contains(&c.id))
         .cloned()
         .collect();
     let decrypt_key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
-    onvif_events::start(&layout_cameras, decrypt_key.as_deref(), server_url, kiosk_key);
+    onvif_events::start(
+        &layout_cameras,
+        decrypt_key.as_deref(),
+        server_url,
+        kiosk_key,
+    );
 
     // Purge warm camera pool entries for cameras no longer in the bundle at all.
     purge_removed_cameras(&bundle.cameras);
@@ -955,7 +998,8 @@ fn render_bundle(
         .collect();
 
     // Tear down any previous per-display windows we no longer need.
-    let keep_ids: std::collections::HashSet<&str> = displays.iter().map(|d| d.id.as_str()).collect();
+    let keep_ids: std::collections::HashSet<&str> =
+        displays.iter().map(|d| d.id.as_str()).collect();
     let to_remove: Vec<String> = DISPLAYS.with(|ds| {
         ds.borrow()
             .keys()
@@ -1036,8 +1080,14 @@ fn render_bundle(
 }
 
 fn pick_initial_layout(bd: &BundleDisplayWithLayouts) -> Option<String> {
-    bd.default_layout_id.clone()
-        .or_else(|| bd.layouts.iter().find(|l| l.is_default).map(|l| l.id.clone()))
+    bd.default_layout_id
+        .clone()
+        .or_else(|| {
+            bd.layouts
+                .iter()
+                .find(|l| l.is_default)
+                .map(|l| l.id.clone())
+        })
         .or_else(|| bd.layouts.first().map(|l| l.id.clone()))
 }
 
@@ -1080,7 +1130,8 @@ fn render_layout(display_id: &str, layout_id: &str) {
         warn!(
             "render_layout: layout {layout_id} not on display {display_id}, falling back to default"
         );
-        bd.default_layout_id.as_deref()
+        bd.default_layout_id
+            .as_deref()
             .and_then(|did| bd.layouts.iter().find(|l| l.id == did))
             .or_else(|| bd.layouts.iter().find(|l| l.is_default))
     });
@@ -1262,11 +1313,17 @@ fn render_layout(display_id: &str, layout_id: &str) {
                     none_cell()
                 } else {
                     let key = format!("web:{url}");
-                    let wv = ensure_web(key, WebSource::Url(url), server_url, kiosk_key, cell.local_storage.as_ref());
+                    let wv = ensure_web(
+                        key,
+                        WebSource::Url(url),
+                        server_url,
+                        kiosk_key,
+                        cell.local_storage.as_ref(),
+                    );
                     // Smart URL: execute login/navigation steps after page loads.
                     if let Some(ref smart) = cell.smart_url {
-                        let decrypt_key = server::load_encrypt_key()
-                            .or_else(|| server::load_cluster_key());
+                        let decrypt_key =
+                            server::load_encrypt_key().or_else(|| server::load_cluster_key());
                         execute_smart_url_steps(&wv, smart, decrypt_key.as_deref());
                     }
                     wv.upcast()
@@ -1694,7 +1751,8 @@ fn recompute_pool_states(
 /// Remove warm camera entries for cameras no longer in the bundle.
 /// Immediately stops pipelines — no cooling period.
 fn purge_removed_cameras(bundle_cameras: &[crate::bundle::BundleCamera]) {
-    let valid_ids: std::collections::HashSet<&str> = bundle_cameras.iter().map(|c| c.id.as_str()).collect();
+    let valid_ids: std::collections::HashSet<&str> =
+        bundle_cameras.iter().map(|c| c.id.as_str()).collect();
     let mut to_remove: Vec<PoolKey> = Vec::new();
     let mut to_stop: Vec<gstreamer::Pipeline> = Vec::new();
 
@@ -1715,7 +1773,10 @@ fn purge_removed_cameras(bundle_cameras: &[crate::bundle::BundleCamera]) {
         pipeline::stop(pipe);
     }
     if !to_remove.is_empty() {
-        info!("purged {} camera pipelines no longer in bundle", to_remove.len());
+        info!(
+            "purged {} camera pipelines no longer in bundle",
+            to_remove.len()
+        );
     }
 }
 
@@ -1789,13 +1850,17 @@ fn execute_smart_url_steps(
             }
             "fill" => {
                 if let Some(sel) = &step.selector {
-                    let value = step.value.clone().or_else(|| {
-                        step.value_encrypted.as_ref().and_then(|enc| {
-                            decrypt_key.and_then(|k| {
-                                crate::onvif_events::decrypt_cluster_public(enc, k)
+                    let value = step
+                        .value
+                        .clone()
+                        .or_else(|| {
+                            step.value_encrypted.as_ref().and_then(|enc| {
+                                decrypt_key.and_then(|k| {
+                                    crate::onvif_events::decrypt_cluster_public(enc, k)
+                                })
                             })
                         })
-                    }).unwrap_or_default();
+                        .unwrap_or_default();
                     js_parts.push(format!(
                         "{{ var el = document.querySelector({}); if (el) {{ el.value = {}; el.dispatchEvent(new Event('input', {{bubbles:true}})); }} }}",
                         js_string_lit(sel), js_string_lit(&value)
@@ -1832,7 +1897,9 @@ fn execute_smart_url_steps(
         }
     }
 
-    if js_parts.is_empty() { return; }
+    if js_parts.is_empty() {
+        return;
+    }
 
     let full_js = format!("(async () => {{ {} }})();", js_parts.join("\n"));
     let wv = webview.clone();
@@ -1848,7 +1915,12 @@ fn execute_smart_url_steps(
 }
 
 fn js_string_lit(s: &str) -> String {
-    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n"))
+    format!(
+        "'{}'",
+        s.replace('\\', "\\\\")
+            .replace('\'', "\\'")
+            .replace('\n', "\\n")
+    )
 }
 
 /// Set a cookie in WebKit's cookie jar so all requests to the server
@@ -1857,7 +1929,9 @@ fn js_string_lit(s: &str) -> String {
 fn set_kiosk_cookie(webview: &webkit6::WebView, server_url: &str, kiosk_key: &str) {
     use webkit6::prelude::*;
 
-    let Ok(server) = url::Url::parse(server_url) else { return };
+    let Ok(server) = url::Url::parse(server_url) else {
+        return;
+    };
     let domain = server.host_str().unwrap_or("localhost");
     let secure = server.scheme() == "https";
 
@@ -1920,6 +1994,12 @@ fn ensure_warm(
     area_fraction: f32,
 ) -> Option<(gtk::gdk::Paintable, char)> {
     let (uri, desired_badge) = cam.pick_stream(selector, area_fraction)?;
+    let decrypt_key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
+    let playback_password = cam.playback_password_encrypted.as_ref().and_then(|enc| {
+        decrypt_key
+            .as_deref()
+            .and_then(|k| crate::onvif_events::decrypt_cluster_public(enc, k))
+    });
     let key: PoolKey = (cam_id.to_string(), desired_badge);
 
     let cached = WARM_CAMERAS.with(|w| {
@@ -1944,7 +2024,12 @@ fn ensure_warm(
         return Some((paintable, desired_badge));
     }
 
-    let (pipe, sink) = pipeline::create_camera_pipeline(&cam.name, &uri)?;
+    let (pipe, sink) = pipeline::create_camera_pipeline(
+        &cam.name,
+        &uri,
+        cam.playback_username.as_deref(),
+        playback_password.as_deref(),
+    )?;
     let paintable = sink.property::<gtk::gdk::Paintable>("paintable");
     pipeline::play(&pipe);
     WARM_CAMERAS.with(|w| {
@@ -2015,7 +2100,10 @@ fn ensure_web(
     let wv = webkit6::WebView::new();
     wv.set_vexpand(true);
     wv.set_hexpand(true);
-    webkit6::prelude::WebViewExt::set_background_color(&wv, &gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 1.0));
+    webkit6::prelude::WebViewExt::set_background_color(
+        &wv,
+        &gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 1.0),
+    );
 
     // Hide the pointer inside every WebKit page. The default GTK CSS cursor:
     // none we set on top-level windows doesn't propagate into the WebView's
@@ -2041,7 +2129,11 @@ fn ensure_web(
         if !ls.is_empty() {
             let mut js = String::from("(function(){");
             for (k, v) in ls {
-                js.push_str(&format!("localStorage.setItem({},{});", js_string_lit(k), js_string_lit(v)));
+                js.push_str(&format!(
+                    "localStorage.setItem({},{});",
+                    js_string_lit(k),
+                    js_string_lit(v)
+                ));
             }
             js.push_str("})();");
             let script = webkit6::UserScript::new(
@@ -2193,11 +2285,14 @@ fn show_logo(window: &ApplicationWindow) {
     vbox.append(&spinner(36));
 
     let fw_ver = server::kiosk_app_version();
-    let os_ver = std::fs::read_to_string("/etc/betterframe/os-version")
-        .unwrap_or_else(|_| "unknown".into());
+    let os_ver =
+        std::fs::read_to_string("/etc/betterframe/os-version").unwrap_or_else(|_| "unknown".into());
     let ver_text = format!("FW: {}  OS: {}", fw_ver, os_ver.trim());
     let ver_label = Label::new(Some(&ver_text));
-    add_css(&ver_label, ".ver { font-size: 11px; color: #555; margin: 8px; }");
+    add_css(
+        &ver_label,
+        ".ver { font-size: 11px; color: #555; margin: 8px; }",
+    );
     ver_label.add_css_class("ver");
     ver_label.set_halign(gtk::Align::Start);
     ver_label.set_valign(gtk::Align::End);
@@ -2279,15 +2374,24 @@ fn camera_error_cell(name: &str, reason: &str) -> gtk::Widget {
     vbox.append(&icon);
 
     let name_label = Label::new(Some(name));
-    add_css(&name_label, "label { font-size: 14px; color: #c33; font-weight: 600; }");
+    add_css(
+        &name_label,
+        "label { font-size: 14px; color: #c33; font-weight: 600; }",
+    );
     vbox.append(&name_label);
 
     let reason_label = Label::new(Some(reason));
-    add_css(&reason_label, "label { font-size: 12px; color: #666; margin-top: 4px; }");
+    add_css(
+        &reason_label,
+        "label { font-size: 12px; color: #666; margin-top: 4px; }",
+    );
     vbox.append(&reason_label);
 
     let retry_label = Label::new(Some("Retries on next layout render"));
-    add_css(&retry_label, "label { font-size: 10px; color: #444; margin-top: 8px; }");
+    add_css(
+        &retry_label,
+        "label { font-size: 10px; color: #444; margin-top: 8px; }",
+    );
     vbox.append(&retry_label);
 
     vbox.upcast()
@@ -2363,9 +2467,7 @@ fn show_terminal_code_overlay(code: &str) {
     // Cage is a single-window compositor. We can't open a new window.
     // Instead, replace the first display window's child with the code
     // overlay and restore it when dismissed.
-    let display_id = DISPLAYS.with(|ds| {
-        ds.borrow().keys().next().cloned()
-    });
+    let display_id = DISPLAYS.with(|ds| ds.borrow().keys().next().cloned());
     let Some(display_id) = display_id else { return };
 
     DISPLAYS.with(|ds| {
@@ -2429,7 +2531,9 @@ fn show_terminal_code_overlay(code: &str) {
 fn dismiss_terminal_code_overlay() {
     // Restore previous content.
     TERMINAL_CODE_WIDGET.with(|w| {
-        if w.borrow().is_none() { return; }
+        if w.borrow().is_none() {
+            return;
+        }
         *w.borrow_mut() = None;
     });
     TERMINAL_CODE_SAVED_CHILD.with(|s| {

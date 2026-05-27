@@ -43,6 +43,7 @@ import { stripSecrets } from "../../shared/strip-secrets.js";
 import { audit } from "../../shared/audit.js";
 import { createBackup, restoreBackup } from "../../shared/backup.js";
 import { pickKioskLanIp } from "../../shared/kiosk-lan.js";
+import { buildRtspUri, buildRtspUriFromParts, stripRtspCredentials } from "../../shared/rtsp.js";
 
 interface DiscoverAddStream {
   profile_name: string;
@@ -117,42 +118,20 @@ function decodeXmlEntities(raw: string): string {
   return raw.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
 }
 
-/**
- * Build a playable RTSP URL by injecting credentials into a raw URI.
- * Used for the legacy `rtsp_uri` column (display / backward compat).
- * For ONVIF-discovered streams the NEW path is: store components separately
- * and build the final URL at bundle time. This function is still used for
- * the camera row's `rtsp_url` and the stream's display-only `rtsp_uri`.
- */
-function rtspWithCredentials(raw: string, username: string, password: string): string {
-  const clean = decodeXmlEntities(raw);
-  if (!username) return clean;
-  try {
-    const url = new URL(clean);
-    if (url.protocol !== "rtsp:" || url.username) return clean;
-    url.username = username;
-    url.password = password;
-    return url.toString();
-  } catch {
-    return clean;
+function resolveCameraRtspAccess(
+  cam: { onvif_username: string | null; onvif_password: string | null; rtsp_url: string | null },
+  streamUri: string | null,
+): { rtspUrl: string | null; cleanRtspUrl: string | null } {
+  const cleanRtspUrl = stripRtspCredentials(streamUri ?? cam.rtsp_url);
+  const primary = buildRtspUri(cleanRtspUrl, cam.onvif_username, cam.onvif_password);
+  if (primary) {
+    return { rtspUrl: primary, cleanRtspUrl };
   }
-}
-
-/** Parse an RTSP URI into host / port / path components. */
-function parseRtspComponents(raw: string): { host: string | null; port: number | null; path: string | null } {
-  const clean = decodeXmlEntities(raw);
-  try {
-    const url = new URL(clean);
-    if (url.protocol !== "rtsp:") return { host: null, port: null, path: null };
-    const host = url.hostname || null;
-    const port = url.port ? Number(url.port) : 554;
-    // path + decoded query string (no hash — RTSP doesn't use fragments)
-    let path = url.pathname || "/";
-    if (url.search) path += url.search;
-    return { host, port, path };
-  } catch {
-    return { host: null, port: null, path: null };
-  }
+  // Legacy fallback for cameras that still only have credential-bearing URLs.
+  return {
+    rtspUrl: cam.rtsp_url,
+    cleanRtspUrl: stripRtspCredentials(cam.rtsp_url),
+  };
 }
 
 function formValue(v: FormValue): string {
@@ -212,15 +191,12 @@ async function importDiscoveredCamera(
   streams: DiscoverAddStream[],
 ): Promise<string | null> {
   if (streams.length === 0) return null;
-  const main = streams.find((s) => s.role === "main") ?? streams[0]!;
-  // Camera row's rtsp_url: full URL with credentials for display / backward compat.
-  const mainRtspUrl = rtspWithCredentials(main.stream_uri, username, password);
   const name = await uniqueCameraName(deps, rawName || "ONVIF camera");
 
   const cam = await deps.repo.createCamera({
     name,
     type: "onvif",
-    rtsp_url: mainRtspUrl,
+    rtsp_url: null,
     onvif_host: onvifHost,
     onvif_port: onvifPort,
     onvif_username: username,
@@ -231,31 +207,14 @@ async function importDiscoveredCamera(
     const height = stream.height == null ? null : Number(stream.height);
     const framerate = stream.framerate == null ? null : Number(stream.framerate);
 
-    // Parse RTSP URI into components. Credentials come from the camera row
-    // at bundle time — do NOT bake them into the stream's rtsp_uri.
     const cleanUri = decodeXmlEntities(stream.stream_uri);
-    const components = parseRtspComponents(stream.stream_uri);
-
-    // Stream rtsp_uri: store the XML-decoded URI WITHOUT credentials for
-    // display / backward compat. Bundle generation builds the final
-    // playable URL from components + camera credentials.
-    let displayUri = cleanUri;
-    try {
-      const parsed = new URL(cleanUri);
-      // Strip any credentials the ONVIF device may have embedded
-      parsed.username = "";
-      parsed.password = "";
-      displayUri = parsed.toString();
-    } catch { /* keep cleanUri as-is */ }
+    const displayUri = stripRtspCredentials(cleanUri) ?? cleanUri;
 
     await deps.repo.createCameraStream({
       camera_id: cam.id,
       role: stream.role === "main" || stream.role === "sub" ? stream.role : "other",
       name: stream.profile_name || stream.role,
       rtsp_uri: displayUri,
-      rtsp_host: components.host ?? onvifHost,
-      rtsp_port: components.port ?? 554,
-      rtsp_path: components.path ?? null,
       profile_token: stream.profile_token || null,
       width: Number.isFinite(width) ? width : null,
       height: Number.isFinite(height) ? height : null,
@@ -574,13 +533,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const path = (body?.["rtsp_path"] ?? "").trim();
     const username = (body?.["rtsp_username"] ?? "").trim();
     const pass = body?.["rtsp_password"] ?? "";
-    let rtspUrl: string | undefined;
+    let cleanRtspUrl: string | undefined;
     if (!host) {
       errors.push("RTSP host required.");
     } else {
-      const userPart = username ? `${encodeURIComponent(username)}:${encodeURIComponent(pass)}@` : "";
-      const pathPart = path.startsWith("/") ? path : `/${path}`;
-      rtspUrl = `rtsp://${userPart}${host}:${port}${pathPart}`;
+      cleanRtspUrl = buildRtspUriFromParts(host, Number(port || "554"), path || "/");
     }
 
     if (errors.length > 0) {
@@ -594,15 +551,19 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const cam = await deps.repo.createCamera({
       name,
       type: "rtsp",
-      rtsp_url: rtspUrl ?? null,
+      rtsp_url: null,
+      onvif_host: host || null,
+      onvif_port: port ? Number(port) : 554,
+      onvif_username: username || null,
+      onvif_password: pass || null,
     });
 
-    if (rtspUrl) {
+    if (cleanRtspUrl) {
       await deps.repo.createCameraStream({
         camera_id: cam.id,
         role: "main",
         name: "Main",
-        rtsp_uri: rtspUrl,
+        rtsp_uri: cleanRtspUrl,
       });
     }
     notifyKiosks();
@@ -884,7 +845,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const streams = await deps.repo.listCameraStreams(cameraId);
     const main = streams.find((s) => s.role === "main") ?? streams[0];
     const cam = await deps.repo.getCameraById(cameraId);
-    const rtsp = main?.rtsp_uri ?? cam?.rtsp_url ?? null;
+    const rtsp = cam ? resolveCameraRtspAccess(cam, main?.rtsp_uri ?? null).rtspUrl : null;
     if (!rtsp) return new Response("No RTSP URL", { status: 404 });
 
     const jpeg = await captureSnapshot(rtsp, { timeoutMs: 8000 });
@@ -1487,7 +1448,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
     const body = await readBody<Record<string, string>>(event);
 
-    let rtspUrl: string | null = null;
+    let cleanRtspUrl: string | null = null;
     if (cam?.type === "rtsp") {
       const host = (body?.["rtsp_host"] ?? "").trim();
       const port = (body?.["rtsp_port"] ?? "554").trim();
@@ -1495,18 +1456,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       const user = (body?.["rtsp_username"] ?? "").trim();
       const pass = body?.["rtsp_password"] ?? "";
       if (host) {
-        // If password blank, keep old URL (password unchanged)
-        if (!pass && cam.rtsp_url) {
-          const oldParts = cam.rtsp_url.match(/^rtsp:\/\/(?:([^@]+)@)?/);
-          const oldUserinfo = oldParts?.[1] ?? "";
-          const userPart = oldUserinfo ? `${oldUserinfo}@` : "";
-          const pathPart = path.startsWith("/") ? path : `/${path}`;
-          rtspUrl = `rtsp://${userPart}${host}:${port}${pathPart}`;
-        } else {
-          const userPart = user ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : "";
-          const pathPart = path.startsWith("/") ? path : `/${path}`;
-          rtspUrl = `rtsp://${userPart}${host}:${port}${pathPart}`;
-        }
+        cleanRtspUrl = buildRtspUriFromParts(host, Number(port || "554"), path || "/");
       }
     }
 
@@ -1514,8 +1464,12 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       name: body?.["name"],
       enabled: body?.["enabled"] === "1",
     };
-    if (cam?.type === "rtsp" && rtspUrl) {
-      patch["rtsp_url"] = rtspUrl;
+    if (cam?.type === "rtsp") {
+      patch["rtsp_url"] = null;
+      patch["onvif_host"] = body?.["rtsp_host"] || null;
+      patch["onvif_port"] = body?.["rtsp_port"] ? Number(body["rtsp_port"]) : 554;
+      patch["onvif_username"] = body?.["rtsp_username"] || null;
+      if (body?.["rtsp_password"]) patch["onvif_password"] = body["rtsp_password"];
     } else if (cam?.type === "onvif") {
       patch["onvif_host"] = body?.["onvif_host"] || null;
       patch["onvif_port"] = body?.["onvif_port"] ? Number(body["onvif_port"]) : null;
@@ -1528,17 +1482,17 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     await deps.repo.updateCamera(id, patch as any);
 
     // Also update main stream URI for RTSP cameras
-    if (cam?.type === "rtsp" && rtspUrl) {
+    if (cam?.type === "rtsp" && cleanRtspUrl) {
       const streams = await deps.repo.listCameraStreams(id);
       const mainStream = streams.find((s) => s.role === "main");
       if (mainStream) {
-        await deps.repo.updateCameraStream(mainStream.id, { rtsp_uri: rtspUrl });
+        await deps.repo.updateCameraStream(mainStream.id, { rtsp_uri: cleanRtspUrl });
       } else {
         await deps.repo.createCameraStream({
           camera_id: id,
           role: "main",
           name: "Main",
-          rtsp_uri: rtspUrl,
+          rtsp_uri: cleanRtspUrl,
         });
       }
     }

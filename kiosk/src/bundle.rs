@@ -9,7 +9,9 @@ fn de_flexible_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, 
     }
 }
 
-fn de_flexible_id_opt<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+fn de_flexible_id_opt<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
     let v = Option::<serde_json::Value>::deserialize(deserializer)?;
     match v {
         None | Some(serde_json::Value::Null) => Ok(None),
@@ -26,7 +28,9 @@ fn de_flexible_id_vec<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<
         .map(|item| match item {
             serde_json::Value::String(s) => Ok(s),
             serde_json::Value::Number(n) => Ok(n.to_string()),
-            _ => Err(serde::de::Error::custom("expected string or number in id array")),
+            _ => Err(serde::de::Error::custom(
+                "expected string or number in id array",
+            )),
         })
         .collect()
 }
@@ -142,7 +146,9 @@ pub struct BundleCell {
     pub local_storage: Option<std::collections::HashMap<String, String>>,
 }
 
-fn default_fit() -> String { "cover".to_string() }
+fn default_fit() -> String {
+    "cover".to_string()
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SmartUrlConfig {
@@ -180,9 +186,14 @@ pub struct BundleCamera {
     pub name: String,
     #[serde(rename = "type")]
     pub cam_type: String,
+    #[serde(default)]
     pub rtsp_url: Option<String>,
     pub stream_policy: String,
     pub streams: Vec<BundleStream>,
+    #[serde(default)]
+    pub playback_username: Option<String>,
+    #[serde(default)]
+    pub playback_password_encrypted: Option<String>,
     // ONVIF fields — present when cam_type=="onvif". Password is encrypted
     // with the cluster key; kiosk decrypts for ONVIF SOAP auth.
     #[serde(default)]
@@ -228,7 +239,11 @@ impl BundleCamera {
     /// Pick stream URI + role tag for this camera given selector and cell area fraction.
     /// Heuristic: when selector=auto, cell ≥20% of grid → main, else sub.
     /// Returns (uri, role_letter) where role_letter is 'M' or 'S' (or empty if single stream).
-    pub fn pick_stream(&self, selector: Option<&str>, area_fraction: f32) -> Option<(String, char)> {
+    pub fn pick_stream(
+        &self,
+        selector: Option<&str>,
+        area_fraction: f32,
+    ) -> Option<(String, char)> {
         let has_main = self.streams.iter().any(|s| s.role == "main");
         let has_sub = self.streams.iter().any(|s| s.role == "sub");
         let multi = has_main && has_sub;
@@ -237,14 +252,24 @@ impl BundleCamera {
         let role_pref = match sel {
             "main" => "main",
             "sub" => "sub",
-            _ => if area_fraction >= 0.2 { "main" } else { "sub" },
+            _ => {
+                if area_fraction >= 0.2 {
+                    "main"
+                } else {
+                    "sub"
+                }
+            }
         };
 
-        let stream = self.streams.iter().find(|s| s.role == role_pref)
+        let stream = self
+            .streams
+            .iter()
+            .find(|s| s.role == role_pref)
             .or_else(|| self.streams.iter().find(|s| s.role == "main"))
             .or_else(|| self.streams.first());
 
-        let uri = stream.map(|s| s.rtsp_uri.clone())
+        let uri = stream
+            .map(|s| s.rtsp_uri.clone())
             .or_else(|| self.rtsp_url.clone())?;
         let badge = if !multi {
             ' '
@@ -255,5 +280,4 @@ impl BundleCamera {
         };
         Some((uri, badge))
     }
-
 }

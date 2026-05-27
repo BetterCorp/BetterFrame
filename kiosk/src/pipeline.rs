@@ -2,22 +2,26 @@ use gstreamer::prelude::*;
 use gstreamer::{self as gst, Element, Pipeline};
 use tracing::{error, info, warn};
 
-pub fn create_camera_pipeline(name: &str, rtsp_uri: &str) -> Option<(Pipeline, Element)> {
+pub fn create_camera_pipeline(
+    name: &str,
+    rtsp_uri: &str,
+    username: Option<&str>,
+    password: Option<&str>,
+) -> Option<(Pipeline, Element)> {
     let pipeline_name = format!("cam-{name}");
     let pipeline = Pipeline::with_name(&pipeline_name);
 
-    // Parse user:pass from RTSP URL and set as properties so rtspsrc
-    // does proper digest auth negotiation (embedding in URL can skip it).
-    let (location, user, pass) = extract_rtsp_creds(rtsp_uri);
+    // Credentials are supplied separately so the cached bundle can avoid
+    // storing playback secrets directly in the RTSP URL.
     let mut builder = gst::ElementFactory::make("rtspsrc")
-        .property("location", &location)
+        .property("location", &rtsp_uri)
         .property("latency", 300u32)
         .property_from_str("protocols", "tcp");
-    if let Some(ref u) = user {
-        builder = builder.property("user-id", u.as_str());
+    if let Some(u) = username.filter(|v| !v.is_empty()) {
+        builder = builder.property("user-id", u);
     }
-    if let Some(ref p) = pass {
-        builder = builder.property("user-pw", p.as_str());
+    if let Some(p) = password.filter(|v| !v.is_empty()) {
+        builder = builder.property("user-pw", p);
     }
     let src = builder
         .build()
@@ -54,12 +58,16 @@ pub fn create_camera_pipeline(name: &str, rtsp_uri: &str) -> Option<(Pipeline, E
         // Only link video pads — check caps for application/x-rtp with video media
         let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
         let caps_str = caps.to_string();
-        if !caps_str.contains("media=(string)video") && !caps_str.contains("encoding-name=(string)H26") {
+        if !caps_str.contains("media=(string)video")
+            && !caps_str.contains("encoding-name=(string)H26")
+        {
             info!("[{pn}] skipping non-video pad: {caps_str}");
             return;
         }
 
-        let Some(decode) = decode_weak.upgrade() else { return };
+        let Some(decode) = decode_weak.upgrade() else {
+            return;
+        };
         let sink_pad = decode.static_pad("sink").unwrap();
         if !sink_pad.is_linked() {
             match pad.link(&sink_pad) {
@@ -83,7 +91,9 @@ pub fn create_camera_pipeline(name: &str, rtsp_uri: &str) -> Option<(Pipeline, E
             return;
         }
 
-        let Some(convert) = convert_weak.upgrade() else { return };
+        let Some(convert) = convert_weak.upgrade() else {
+            return;
+        };
         let sink_pad = convert.static_pad("sink").unwrap();
         if !sink_pad.is_linked() {
             match pad.link(&sink_pad) {
@@ -96,25 +106,30 @@ pub fn create_camera_pipeline(name: &str, rtsp_uri: &str) -> Option<(Pipeline, E
     // Watch bus for errors
     let pn3 = pipeline_name.clone();
     let bus = pipeline.bus().unwrap();
-    let _guard = bus.add_watch_local(move |_bus, msg| {
-        use gst::MessageView;
-        match msg.view() {
-            MessageView::Error(err) => {
-                error!("[{pn3}] pipeline error: {} ({:?})", err.error(), err.debug());
-            }
-            MessageView::Warning(w) => {
-                warn!("[{pn3}] pipeline warning: {} ({:?})", w.error(), w.debug());
-            }
-            MessageView::StateChanged(sc) => {
-                if sc.src().map(|s| s.name().as_str() == pn3).unwrap_or(false) {
-                    info!("[{pn3}] state: {:?} → {:?}", sc.old(), sc.current());
+    let _guard = bus
+        .add_watch_local(move |_bus, msg| {
+            use gst::MessageView;
+            match msg.view() {
+                MessageView::Error(err) => {
+                    error!(
+                        "[{pn3}] pipeline error: {} ({:?})",
+                        err.error(),
+                        err.debug()
+                    );
                 }
+                MessageView::Warning(w) => {
+                    warn!("[{pn3}] pipeline warning: {} ({:?})", w.error(), w.debug());
+                }
+                MessageView::StateChanged(sc) => {
+                    if sc.src().map(|s| s.name().as_str() == pn3).unwrap_or(false) {
+                        info!("[{pn3}] state: {:?} → {:?}", sc.old(), sc.current());
+                    }
+                }
+                _ => {}
             }
-            _ => {}
-        }
-        gst::glib::ControlFlow::Continue
-    })
-    .ok()?;
+            gst::glib::ControlFlow::Continue
+        })
+        .ok()?;
 
     // Leak the guard so it lives as long as the pipeline
     std::mem::forget(_guard);
@@ -132,26 +147,4 @@ pub fn play(pipeline: &Pipeline) {
 
 pub fn stop(pipeline: &Pipeline) {
     let _ = pipeline.set_state(gst::State::Null);
-}
-
-/// Extract user:pass from rtsp://user:pass@host/... URL.
-/// Returns (url_without_creds, Option<user>, Option<pass>).
-fn extract_rtsp_creds(uri: &str) -> (String, Option<String>, Option<String>) {
-    if let Some(after_scheme) = uri.strip_prefix("rtsp://") {
-        if let Some(at_pos) = after_scheme.find('@') {
-            let creds = &after_scheme[..at_pos];
-            let rest = &after_scheme[at_pos + 1..];
-            let clean_url = format!("rtsp://{rest}");
-            let (user, pass) = match creds.find(':') {
-                Some(colon) => {
-                    let u = urlencoding::decode(&creds[..colon]).unwrap_or_default().to_string();
-                    let p = urlencoding::decode(&creds[colon + 1..]).unwrap_or_default().to_string();
-                    (Some(u), Some(p))
-                }
-                None => (Some(creds.to_string()), None),
-            };
-            return (clean_url, user, pass);
-        }
-    }
-    (uri.to_string(), None, None)
 }

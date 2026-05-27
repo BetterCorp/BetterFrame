@@ -9,45 +9,45 @@ import type { Observable } from "@bsb/base";
 import type { Repository } from "./db/repository.js";
 import type { SecretsApi } from "./secrets.js";
 import type { Camera, CameraStream } from "./types.js";
+import { parseRtspUri, stripRtspCredentials } from "./rtsp.js";
 
-/**
- * Build a playable RTSP URL from stream component columns + camera credentials.
- * If the stream has rtsp_host/rtsp_path set (ONVIF-discovered), constructs the
- * URL from components with properly URL-encoded username and password from the
- * camera row. Otherwise falls back to the stream's rtsp_uri as-is (backward
- * compat for RTSP-type cameras and legacy data).
- */
-function buildStreamRtspUri(stream: CameraStream, cam: Camera): string {
-  // Only build from components if both host and path are present
-  if (stream.rtsp_host && stream.rtsp_path != null) {
-    const host = stream.rtsp_host;
-    const port = stream.rtsp_port ?? 554;
-    const path = stream.rtsp_path.startsWith("/") ? stream.rtsp_path : `/${stream.rtsp_path}`;
-
-    // Inject credentials from the camera row
-    let userinfo = "";
-    if (cam.onvif_username) {
-      const user = encodeURIComponent(cam.onvif_username);
-      const pass = cam.onvif_password ? encodeURIComponent(cam.onvif_password) : "";
-      userinfo = pass ? `${user}:${pass}@` : `${user}@`;
-    }
-
-    const portSuffix = port === 554 ? "" : `:${String(port)}`;
-    return `rtsp://${userinfo}${host}${portSuffix}${path}`;
+function resolvePlaybackCredentials(
+  cam: Camera,
+  streams: Array<Pick<CameraStream, "rtsp_uri">>,
+): { username: string | null; password: string | null } {
+  if (cam.onvif_username || cam.onvif_password) {
+    return {
+      username: cam.onvif_username ?? null,
+      password: cam.onvif_password ?? null,
+    };
   }
-  // Backward compat: use the stored rtsp_uri as-is
-  return stream.rtsp_uri;
+
+  const candidates = [
+    cam.rtsp_url,
+    ...streams.map((s) => s.rtsp_uri),
+  ];
+  for (const raw of candidates) {
+    const parsed = parseRtspUri(raw);
+    if (parsed.username || parsed.password) {
+      return {
+        username: parsed.username,
+        password: parsed.password,
+      };
+    }
+  }
+  return { username: null, password: null };
 }
 
 export interface BundleCamera {
   id: string;
   name: string;
   type: string;
-  rtsp_url: string | null;
   onvif_host: string | null;
   onvif_port: number | null;
   onvif_username: string | null;
   onvif_password_encrypted: string | null;
+  playback_username: string | null;
+  playback_password_encrypted: string | null;
   event_source: string;
   event_sink: string;
   stream_policy: string;
@@ -341,7 +341,7 @@ export async function generateBundle(
           id: "",
           role: "main" as const,
           name: "Main",
-          rtsp_uri: cam.rtsp_url,
+          rtsp_uri: stripRtspCredentials(cam.rtsp_url) ?? cam.rtsp_url,
           width: null,
           height: null,
           encoding: null,
@@ -349,6 +349,7 @@ export async function generateBundle(
         }]
         : []
     );
+    const playbackCreds = resolvePlaybackCredentials(cam, effectiveStreams);
     // Encrypt camera password with per-kiosk key if available (stronger
     // isolation — compromised SD only exposes this kiosk's cameras). Falls
     // back to shared cluster_key for kiosks that paired before per-kiosk
@@ -358,15 +359,20 @@ export async function generateBundle(
     if (cam.onvif_password && encryptKey) {
       onvifPwEncrypted = secrets.encryptForCluster(cam.onvif_password, encryptKey);
     }
+    let playbackPwEncrypted: string | null = null;
+    if (playbackCreds.password && encryptKey) {
+      playbackPwEncrypted = secrets.encryptForCluster(playbackCreds.password, encryptKey);
+    }
     bundleCameras.push({
       id: cam.id,
       name: cam.name,
       type: cam.type,
-      rtsp_url: cam.rtsp_url,
       onvif_host: cam.onvif_host,
       onvif_port: cam.onvif_port,
       onvif_username: cam.onvif_username,
       onvif_password_encrypted: onvifPwEncrypted,
+      playback_username: playbackCreds.username,
+      playback_password_encrypted: playbackPwEncrypted,
       event_source: cam.event_source,
       event_sink: cam.event_sink,
       stream_policy: cam.stream_policy,
@@ -374,9 +380,9 @@ export async function generateBundle(
         id: s.id,
         role: s.role,
         name: s.name,
-        // Build final playable URL from components + camera credentials
-        // when available; falls back to stored rtsp_uri for backward compat.
-        rtsp_uri: "rtsp_host" in s ? buildStreamRtspUri(s as CameraStream, cam) : s.rtsp_uri,
+        // Bundle ships credential-free RTSP endpoints; kiosk injects
+        // playback credentials locally when starting the pipeline.
+        rtsp_uri: stripRtspCredentials(s.rtsp_uri) ?? s.rtsp_uri,
         width: s.width,
         height: s.height,
         encoding: s.encoding,

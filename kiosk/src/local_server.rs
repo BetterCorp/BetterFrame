@@ -165,13 +165,26 @@ async fn local_snapshot_handler(
         return (StatusCode::NOT_FOUND, "camera not in bundle").into_response();
     };
     // Use sub stream when present (lower-bandwidth snapshot), else main.
-    let Some((uri, _)) = cam.pick_stream(Some("sub"), 0.0)
-        .or_else(|| cam.pick_stream(Some("main"), 1.0)) else {
+    let Some((uri, _)) = cam
+        .pick_stream(Some("sub"), 0.0)
+        .or_else(|| cam.pick_stream(Some("main"), 1.0))
+    else {
         return (StatusCode::NOT_FOUND, "no stream for camera").into_response();
     };
+    let decrypt_key =
+        crate::server::load_encrypt_key().or_else(|| crate::server::load_cluster_key());
+    let playback_password = cam.playback_password_encrypted.as_ref().and_then(|enc| {
+        decrypt_key
+            .as_deref()
+            .and_then(|k| crate::onvif_events::decrypt_cluster_public(enc, k))
+    });
 
     // Blocking gst-launch on a worker thread so we don't block axum's reactor.
-    let jpeg = tokio::task::spawn_blocking(move || capture_jpeg_blocking(&uri)).await;
+    let playback_user = cam.playback_username.clone();
+    let jpeg = tokio::task::spawn_blocking(move || {
+        capture_jpeg_blocking(&uri, playback_user.as_deref(), playback_password.as_deref())
+    })
+    .await;
     match jpeg {
         Ok(Ok(bytes)) => Response::builder()
             .status(StatusCode::OK)
@@ -190,7 +203,11 @@ async fn local_snapshot_handler(
     }
 }
 
-fn capture_jpeg_blocking(rtsp_uri: &str) -> Result<Vec<u8>, String> {
+fn capture_jpeg_blocking(
+    rtsp_uri: &str,
+    username: Option<&str>,
+    password: Option<&str>,
+) -> Result<Vec<u8>, String> {
     use std::process::Command;
     let tmp = std::env::temp_dir().join(format!(
         "bf-snap-{}.jpg",
@@ -202,24 +219,33 @@ fn capture_jpeg_blocking(rtsp_uri: &str) -> Result<Vec<u8>, String> {
     // 5s ceiling: rtspsrc handshake + a couple of decoded frames. jpegenc
     // emits one JPEG, filesink writes it. num-buffers=1 on filesink stops
     // the pipeline after the first sample so we don't dangle.
+    let mut args = vec![
+        "-q".to_string(),
+        "rtspsrc".to_string(),
+        format!("location={rtsp_uri}"),
+        "latency=200".to_string(),
+        "protocols=tcp".to_string(),
+    ];
+    if let Some(user) = username.filter(|v| !v.is_empty()) {
+        args.push(format!("user-id={user}"));
+    }
+    if let Some(pass) = password.filter(|v| !v.is_empty()) {
+        args.push(format!("user-pw={pass}"));
+    }
+    args.extend([
+        "!".to_string(),
+        "decodebin".to_string(),
+        "!".to_string(),
+        "videoconvert".to_string(),
+        "!".to_string(),
+        "jpegenc".to_string(),
+        "!".to_string(),
+        "filesink".to_string(),
+        "num-buffers=1".to_string(),
+        format!("location={}", tmp.display()),
+    ]);
     let status = Command::new("gst-launch-1.0")
-        .args([
-            "-q",
-            "rtspsrc",
-            &format!("location={rtsp_uri}"),
-            "latency=200",
-            "protocols=tcp",
-            "!",
-            "decodebin",
-            "!",
-            "videoconvert",
-            "!",
-            "jpegenc",
-            "!",
-            "filesink",
-            "num-buffers=1",
-            &format!("location={}", tmp.display()),
-        ])
+        .args(&args)
         .stderr(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .status()

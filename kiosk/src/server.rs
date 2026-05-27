@@ -135,8 +135,8 @@ pub fn load_or_create_local_key() -> String {
 }
 
 /// Persist the latest bundle to disk for offline boot. Encrypted at rest
-/// because the bundle contains camera RTSP URIs with credentials in URL
-/// form (rtsp://user:pass@host/...).
+/// because the bundle contains camera playback credentials and other
+/// kiosk-side secrets.
 pub fn save_bundle(bundle: &KioskBundle) {
     match serde_json::to_vec(bundle) {
         Ok(bytes) => {
@@ -398,7 +398,10 @@ pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
 
     let text = match resp.text() {
         Ok(t) => t,
-        Err(e) => { tracing::warn!("bundle read failed: {e}"); return None; }
+        Err(e) => {
+            tracing::warn!("bundle read failed: {e}");
+            return None;
+        }
     };
 
     // Server signals kiosk was deleted — double-verify via _check before wiping
@@ -488,15 +491,18 @@ pub fn heartbeat(
     hw: &crate::hwmon::HwInfo,
 ) -> bool {
     let client = reqwest::blocking::Client::new();
-    let display_info: Vec<_> = displays.iter().map(|d| {
-        serde_json::json!({
-            "index": d.index,
-            "name": &d.name,
-            "width_px": d.width_px,
-            "height_px": d.height_px,
-            "power_state": &d.power_state,
+    let display_info: Vec<_> = displays
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "index": d.index,
+                "name": &d.name,
+                "width_px": d.width_px,
+                "height_px": d.height_px,
+                "power_state": &d.power_state,
+            })
         })
-    }).collect();
+        .collect();
     // Surface the LAN-side local key + port to admin so the UI can show a
     // copy-paste URL for bookmark-style layout switches.
     let local_key = load_or_create_local_key();
@@ -563,8 +569,16 @@ static CACHED_FIRMWARE_CHANNEL: StdMutex<Option<String>> = StdMutex::new(None);
 static CACHED_OS_CHANNEL: StdMutex<Option<String>> = StdMutex::new(None);
 
 pub fn cached_firmware_channel() -> String {
-    CACHED_FIRMWARE_CHANNEL.lock().unwrap().clone().unwrap_or_else(|| "stable".to_string())
+    CACHED_FIRMWARE_CHANNEL
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "stable".to_string())
 }
 pub fn cached_os_channel() -> String {
-    CACHED_OS_CHANNEL.lock().unwrap().clone().unwrap_or_else(|| "stable".to_string())
+    CACHED_OS_CHANNEL
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "stable".to_string())
 }

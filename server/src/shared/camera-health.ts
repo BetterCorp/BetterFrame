@@ -11,6 +11,7 @@
  */
 import { createConnection, type Socket } from "node:net";
 import type { Repository } from "./db/repository.js";
+import { parseRtspUri } from "./rtsp.js";
 
 export interface CameraHealthConfig {
   intervalMs: number;
@@ -33,12 +34,15 @@ export function startCameraHealthChecker(
   async function checkAll(): Promise<void> {
     const cameras = (await repo.listCameras()).filter((c) => c.enabled);
     for (const cam of cameras) {
+      const streams = cam.type === "rtsp" ? await repo.listCameraStreams(cam.id) : [];
+      const main = streams.find((s) => s.role === "main") ?? streams[0];
+      const parsedRtsp = parseRtspUri(main?.rtsp_uri ?? cam.rtsp_url);
       const host = cam.type === "onvif"
         ? cam.onvif_host
-        : parseRtspHost(cam.rtsp_url);
+        : (parsedRtsp.host ?? cam.onvif_host);
       const port = cam.type === "onvif"
         ? (cam.onvif_port ?? 80)
-        : parseRtspPort(cam.rtsp_url);
+        : (parsedRtsp.port ?? cam.onvif_port ?? 554);
 
       if (!host) continue;
 
@@ -101,28 +105,4 @@ function tcpProbe(host: string, port: number, timeoutMs: number): Promise<boolea
     sock.on("timeout", () => done(false));
     setTimeout(() => done(false), timeoutMs + 500);
   });
-}
-
-function parseRtspHost(url: string | null): string | null {
-  if (!url) return null;
-  try {
-    const match = url.match(/@([^:/]+)/);
-    if (match) return match[1]!;
-    const u = new URL(url.replace("rtsp://", "http://"));
-    return u.hostname || null;
-  } catch {
-    return null;
-  }
-}
-
-function parseRtspPort(url: string | null): number {
-  if (!url) return 554;
-  try {
-    const match = url.match(/@[^:]+:(\d+)/);
-    if (match) return Number(match[1]);
-    const u = new URL(url.replace("rtsp://", "http://"));
-    return u.port ? Number(u.port) : 554;
-  } catch {
-    return 554;
-  }
 }

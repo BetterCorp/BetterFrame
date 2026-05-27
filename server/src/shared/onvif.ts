@@ -353,6 +353,11 @@ export async function discover(input: DiscoverInput): Promise<DiscoveredCamera[]
   const profileBlocks = splitProfiles(profilesXml);
   const tokenAttrs = pickAttr(profilesXml, "Profiles", "token");
 
+  if (profileBlocks.length === 0) {
+    const preview = profilesXml.slice(0, 500);
+    throw new Error(`GetProfiles returned 0 profiles. mediaUrl=${mediaUrl} response preview: ${preview}`);
+  }
+
   const out: DiscoveredProfile[] = [];
   for (let i = 0; i < profileBlocks.length; i += 1) {
     const block = profileBlocks[i] ?? "";

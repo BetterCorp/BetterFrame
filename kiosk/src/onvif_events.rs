@@ -52,20 +52,12 @@ pub struct SubStatus {
     pub resolved_sink: Option<String>,
 }
 
-fn epoch_now() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("{secs}")
+fn iso_now() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| String::from("1970-01-01T00:00:00Z"))
 }
 
-fn epoch_now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
 
 fn set_status(cam_id: &str, state: &'static str, error: Option<String>) {
     set_status_with_sink(cam_id, state, error, None);
@@ -92,7 +84,7 @@ fn set_status_with_sink(
         entry.resolved_sink = Some(sink);
     }
     if state == "active" {
-        entry.subscribed_at = Some(epoch_now());
+        entry.subscribed_at = Some(iso_now());
     }
 }
 
@@ -100,7 +92,7 @@ pub fn mark_event_received(cam_id: &str) {
     let mut map = STATUS.lock().unwrap();
     if let Some(map) = map.as_mut() {
         if let Some(entry) = map.get_mut(cam_id) {
-            entry.last_event_at = Some(epoch_now());
+            entry.last_event_at = Some(iso_now());
         }
     }
 }
@@ -112,14 +104,14 @@ pub fn needs_refresh() -> bool {
     let Some(map) = map.as_ref() else {
         return false;
     };
-    let now = epoch_now_secs();
+    let now = time::OffsetDateTime::now_utc();
     for status in map.values() {
         if status.state == "failed" || status.state == "stopped" {
             return true;
         }
         if let Some(ref sub_at) = status.subscribed_at {
-            if let Ok(ts) = sub_at.parse::<u64>() {
-                if now.saturating_sub(ts) > 24 * 3600 {
+            if let Ok(ts) = time::OffsetDateTime::parse(sub_at, &time::format_description::well_known::Rfc3339) {
+                if (now - ts).whole_seconds() > 24 * 3600 {
                     return true;
                 }
             }

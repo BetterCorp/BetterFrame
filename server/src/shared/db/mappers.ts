@@ -64,6 +64,7 @@ type Row = Record<string, unknown>;
 
 const s = (v: unknown): string => (typeof v === "string" ? v : v instanceof Date ? v.toISOString() : String(v ?? ""));
 const sn = (v: unknown): string | null => (v == null ? null : typeof v === "string" ? v : v instanceof Date ? v.toISOString() : null);
+const jsn = (v: unknown): string | null => (v == null ? null : typeof v === "string" ? v : typeof v === "object" ? JSON.stringify(v) : null);
 const n = (v: unknown): number => (typeof v === "number" ? v : Number(v) || 0);
 const nn = (v: unknown): number | null =>
   v === null || v === undefined ? null : typeof v === "number" ? v : Number(v) || null;
@@ -304,10 +305,10 @@ export function rowToKiosk(r: Row): Kiosk {
     local_last_ip: sn(r["local_last_ip"]),
     encrypt_key_encrypted: sn(r["encrypt_key_encrypted"]),
     reported_hostname: sn(r["reported_hostname"]),
-    network_interfaces_json: sn(r["network_interfaces_json"]),
-    logging_json: sn(r["logging_json"]),
+    network_interfaces_json: jsn(r["network_interfaces_json"]),
+    logging_json: jsn(r["logging_json"]),
     managed_image: b(r["managed_image"]),
-    managed_config_json: sn(r["managed_config_json"]),
+    managed_config_json: jsn(r["managed_config_json"]),
     managed_config_version: n(r["managed_config_version"] ?? 0),
     managed_config_applied_version: n(r["managed_config_applied_version"] ?? 0),
     managed_config_applied_at: sn(r["managed_config_applied_at"]),

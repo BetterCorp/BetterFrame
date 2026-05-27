@@ -1,18 +1,11 @@
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tracing_subscriber::Layer;
 use tracing::Subscriber;
 
 const BATCH_SIZE: usize = 50;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(10);
-
-struct LogEntry {
-    timestamp: String,
-    level: String,
-    message: String,
-    target: String,
-    fields: serde_json::Value,
-}
 
 pub struct AxiomLayer {
     api_key: String,
@@ -23,6 +16,9 @@ pub struct AxiomLayer {
 }
 
 static GLOBAL_KIOSK_ID: Mutex<Option<String>> = Mutex::new(None);
+static FLUSH_ACTIVE: AtomicBool = AtomicBool::new(false);
+static LAST_FLUSH: Mutex<Option<String>> = Mutex::new(None);
+static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
 pub fn set_kiosk_id(id: String) {
     *GLOBAL_KIOSK_ID.lock().unwrap() = Some(id);
@@ -31,6 +27,35 @@ pub fn set_kiosk_id(id: String) {
 pub fn enabled() -> bool {
     !option_env!("BF_AXIOM_KEY").unwrap_or("").is_empty()
         && !option_env!("BF_AXIOM_DATASET").unwrap_or("").is_empty()
+}
+
+pub fn active() -> bool {
+    FLUSH_ACTIVE.load(Ordering::Relaxed)
+}
+
+pub fn status() -> serde_json::Value {
+    let last_flush = LAST_FLUSH.lock().ok().and_then(|g| g.clone());
+    let last_error = LAST_ERROR.lock().ok().and_then(|g| g.clone());
+    serde_json::json!({
+        "enabled": enabled(),
+        "active": active(),
+        "last_flush_at": last_flush,
+        "last_error": last_error,
+    })
+}
+
+fn mark_success() {
+    FLUSH_ACTIVE.store(true, Ordering::Relaxed);
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    *LAST_FLUSH.lock().unwrap() = Some(now);
+    *LAST_ERROR.lock().unwrap() = None;
+}
+
+fn mark_failure(err: &str) {
+    FLUSH_ACTIVE.store(false, Ordering::Relaxed);
+    *LAST_ERROR.lock().unwrap() = Some(err.to_string());
 }
 
 impl AxiomLayer {
@@ -74,7 +99,7 @@ impl AxiomLayer {
                 let key = flush_key.clone();
                 let ds = flush_dataset.clone();
                 rt.block_on(async {
-                    let _ = flush_to_axiom(&key, &ds, &entries).await;
+                    flush_and_track(&key, &ds, &entries).await;
                 });
             }
         });
@@ -95,10 +120,17 @@ impl AxiomLayer {
                     .build()
                     .unwrap();
                 rt.block_on(async {
-                    let _ = flush_to_axiom(&key, &ds, &entries).await;
+                    flush_and_track(&key, &ds, &entries).await;
                 });
             });
         }
+    }
+}
+
+async fn flush_and_track(api_key: &str, dataset: &str, entries: &[serde_json::Value]) {
+    match flush_to_axiom(api_key, dataset, entries).await {
+        Ok(()) => mark_success(),
+        Err(e) => mark_failure(&e.to_string()),
     }
 }
 
@@ -109,7 +141,7 @@ async fn flush_to_axiom(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let url = format!("https://api.axiom.co/v1/datasets/{dataset}/ingest");
     let client = reqwest::Client::new();
-    client
+    let resp = client
         .post(&url)
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
@@ -117,6 +149,9 @@ async fn flush_to_axiom(
         .timeout(Duration::from_secs(5))
         .send()
         .await?;
+    if !resp.status().is_success() {
+        return Err(format!("axiom returned {}", resp.status()).into());
+    }
     Ok(())
 }
 

@@ -37,6 +37,16 @@ export function isoIn(seconds: number): string {
   return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
+/** Accept epoch seconds, epoch millis, or ISO string → ISO string. */
+export function normalizeTimestamp(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  if (/^\d{1,13}$/.test(v)) {
+    const n = Number(v);
+    return new Date(n < 1e12 ? n * 1000 : n).toISOString();
+  }
+  return v;
+}
+
 /** Compare two ISO strings as UTC datetimes. -1, 0, 1. */
 export function isoCmp(a: string, b: string): -1 | 0 | 1 {
   if (a < b) return -1;

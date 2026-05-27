@@ -88,7 +88,7 @@ import {
   rowToTenant,
   rowToUser,
 } from "./mappers.js";
-import { J, isoIn, isoNow, j } from "./util.js";
+import { J, isoIn, isoNow, j, normalizeTimestamp } from "./util.js";
 
 type NotifyFn = (
   table: string,
@@ -2640,6 +2640,7 @@ export class Repository {
         : info.state === "failed" ? "failed"
           : info.state === "subscribing" ? "pending"
             : "inactive";
+      const subscribedAt = normalizeTimestamp(info.subscribed_at) ?? now;
       await this._run(
         `INSERT INTO camera_event_subscriptions (id, camera_id, topic, status, subscribed_by_kiosk_id, event_source, event_sink, subscribed_at, error_message)
          VALUES (?, ?, 'onvif', ?, ?, ?, ?, ?, ?)
@@ -2651,8 +2652,8 @@ export class Repository {
                subscribed_at = COALESCE(?, camera_event_subscriptions.subscribed_at),
                error_message = ?`,
         [
-          uuidv7(), cameraId, status, kioskId, `kiosk:${kioskId}`, info.resolved_sink ?? null, info.subscribed_at ?? now, info.error ?? null,
-          status, kioskId, `kiosk:${kioskId}`, info.resolved_sink ?? null, info.subscribed_at ?? now, info.error ?? null,
+          uuidv7(), cameraId, status, kioskId, `kiosk:${kioskId}`, info.resolved_sink ?? null, subscribedAt, info.error ?? null,
+          status, kioskId, `kiosk:${kioskId}`, info.resolved_sink ?? null, subscribedAt, info.error ?? null,
         ],
       );
     }

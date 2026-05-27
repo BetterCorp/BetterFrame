@@ -1591,14 +1591,24 @@ interface KioskEditProps {
   success?: string;
 }
 
-function parseKioskLogging(raw: string | null): { axiomEnabled: boolean | null } {
-  if (!raw) return { axiomEnabled: null };
+function parseKioskLogging(raw: string | null): {
+  axiomEnabled: boolean | null;
+  axiomActive: boolean | null;
+  axiomLastFlush: string | null;
+  axiomLastError: string | null;
+} {
+  if (!raw) return { axiomEnabled: null, axiomActive: null, axiomLastFlush: null, axiomLastError: null };
   try {
     const parsed = JSON.parse(raw);
-    const enabled = parsed?.axiom?.enabled;
-    return { axiomEnabled: typeof enabled === "boolean" ? enabled : null };
+    const a = parsed?.axiom;
+    return {
+      axiomEnabled: typeof a?.enabled === "boolean" ? a.enabled : null,
+      axiomActive: typeof a?.active === "boolean" ? a.active : null,
+      axiomLastFlush: typeof a?.last_flush_at === "string" ? a.last_flush_at : null,
+      axiomLastError: typeof a?.last_error === "string" ? a.last_error : null,
+    };
   } catch {
-    return { axiomEnabled: null };
+    return { axiomEnabled: null, axiomActive: null, axiomLastFlush: null, axiomLastError: null };
   }
 }
 
@@ -1815,13 +1825,23 @@ export function KioskEditPage(props: KioskEditProps) {
             <div>Paired: {k.paired_at ? formatTime(k.paired_at) : "—"}</div>
             <div>Last seen: {k.last_seen_at ? formatTime(k.last_seen_at) : "Never"}</div>
             <div>
-              Axiom logging: {
+              Axiom: {
                 logging.axiomEnabled == null
                   ? "Unknown"
-                  : logging.axiomEnabled
-                    ? "Enabled"
-                    : "Disabled"
+                  : !logging.axiomEnabled
+                    ? "Disabled"
+                    : logging.axiomActive
+                      ? "Active"
+                      : logging.axiomActive === false
+                        ? "Enabled (not sending)"
+                        : "Enabled"
               }
+              {logging.axiomLastError ? (
+                <span style="color:#c00; margin-left:0.5rem" title={logging.axiomLastError}>⚠ {logging.axiomLastError}</span>
+              ) : null}
+              {logging.axiomLastFlush ? (
+                <span style="color:#999; margin-left:0.5rem">Last flush: {formatTime(logging.axiomLastFlush)}</span>
+              ) : null}
             </div>
           </div>
           <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">

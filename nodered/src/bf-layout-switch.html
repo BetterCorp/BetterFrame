@@ -29,11 +29,11 @@
   </div>
   <div class="form-row">
     <label for="node-input-display_id"><i class="fa fa-tv"></i> Display ID</label>
-    <input type="number" id="node-input-display_id" />
+    <input type="text" id="node-input-display_id" pattern="[0-9a-f-]+" placeholder="UUID" />
   </div>
   <div class="form-row">
     <label for="node-input-layout_id"><i class="fa fa-th"></i> Layout ID</label>
-    <input type="number" id="node-input-layout_id" />
+    <input type="text" id="node-input-layout_id" pattern="[0-9a-f-]+" placeholder="UUID" />
   </div>
   <div class="form-tips">
     Either field can be overridden by <code>msg.display_id</code> / <code>msg.layout_id</code>.

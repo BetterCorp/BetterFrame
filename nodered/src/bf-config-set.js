@@ -38,8 +38,8 @@ module.exports = function (RED) {
     }
     if (type === "display.default-layout") {
       if (raw === null || raw === undefined || raw === "") return null;
-      const n = Number(raw);
-      return Number.isFinite(n) ? n : null;
+      const s = String(raw).trim();
+      return s || null;
     }
     return raw;
   }

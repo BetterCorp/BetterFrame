@@ -25,8 +25,7 @@ module.exports = function (RED) {
     RED.nodes.createNode(this, config);
     const node = this;
     const cfg = RED.nodes.getNode(config.config);
-    const filterIdRaw = (config.kiosk_id || "").toString().trim();
-    const filterId = filterIdRaw && !isNaN(Number(filterIdRaw)) ? Number(filterIdRaw) : null;
+    const filterId = String(config.kiosk_id || "").trim() || null;
 
     async function handler(req, res) {
       if (!cfg || !cfg.tenant_slug) {
@@ -37,8 +36,8 @@ module.exports = function (RED) {
       if (!tenantMatchesBody(cfg, body, node)) {
         return res.status(200).end();
       }
-      const kioskId = body.kiosk_id !== undefined ? body.kiosk_id : null;
-      if (filterId !== null && Number(kioskId) !== filterId) {
+      const kioskId = body.kiosk_id !== undefined ? String(body.kiosk_id) : null;
+      if (filterId !== null && kioskId !== filterId) {
         return res.status(200).end();
       }
       const out = {

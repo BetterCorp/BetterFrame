@@ -45,7 +45,7 @@ module.exports = function (RED) {
         });
         if (!r.ok && r.status !== 302) throw new Error("HTTP " + r.status);
         node.status({ fill: "green", shape: "dot", text: "fan " + label });
-        msg.bf_result = { kiosk_id: Number(kioskId), mode, status: r.status };
+        msg.bf_result = { kiosk_id: String(kioskId), mode, status: r.status };
         send(msg);
         done();
       } catch (err) {

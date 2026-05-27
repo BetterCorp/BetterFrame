@@ -39,7 +39,7 @@ module.exports = function (RED) {
           throw new Error("HTTP " + r.status);
         }
         node.status({ fill: "green", shape: "dot", text: "switched " + displayId + "→" + layoutId });
-        msg.bf_result = { display_id: Number(displayId), layout_id: Number(layoutId), status: r.status };
+        msg.bf_result = { display_id: String(displayId), layout_id: String(layoutId), status: r.status };
         send(msg);
         done();
       } catch (err) {

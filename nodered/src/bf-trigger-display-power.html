@@ -28,7 +28,7 @@
   </div>
   <div class="form-row">
     <label for="node-input-display_id"><i class="fa fa-desktop"></i> Display ID</label>
-    <input type="number" id="node-input-display_id" placeholder="(blank = all displays)" />
+    <input type="text" id="node-input-display_id" pattern="[0-9a-f-]+" placeholder="(blank = all displays)" />
   </div>
   <div class="form-tips">
     Fires on <code>display.power.changed</code> (wake/standby).

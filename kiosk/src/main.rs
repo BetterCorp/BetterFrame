@@ -1,6 +1,8 @@
 mod at_rest;
 mod audio;
 mod axiom;
+#[cfg(target_os = "linux")]
+mod tailscale;
 mod bundle;
 mod cec;
 mod firmware;
@@ -33,6 +35,7 @@ pub enum ServerMsg {
     VolumeMute(bool),
     AudioOutputSet(String),
     Reboot,
+    TailscaleAuth(String),
     /// Server-pushed "go check for a firmware update now".
     FirmwareCheck,
     /// Server-pushed "go check for an OS update now".

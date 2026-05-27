@@ -175,6 +175,7 @@ fn activate(app: &Application) {
         let initial = match server::fetch_bundle(&server, &key) {
             Some(b) => {
                 crate::axiom::set_kiosk_id(b.kiosk_id.clone());
+                set_hostname_from_name(&b.kiosk_name);
                 info!(
                     "bundle: {} cameras, {} display(s)",
                     b.cameras.len(),
@@ -302,6 +303,15 @@ fn activate(app: &Application) {
                             layout_id,
                         });
                     }
+                    #[cfg(target_os = "linux")]
+                    ServerMsg::TailscaleAuth(key) => {
+                        if let Err(e) = crate::tailscale::authenticate(&key) {
+                            warn!("tailscale auth failed: {e}");
+                        }
+                        send_heartbeat_now(&server_for_reload, &key_for_reload);
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    ServerMsg::TailscaleAuth(_) => {}
                     ServerMsg::Reboot => {
                         info!("reboot requested by admin");
                         let _ = std::process::Command::new("systemctl").arg("reboot").status();
@@ -525,6 +535,21 @@ fn mark_rauc_slot_good() {
         .args(["status", "mark-good"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .status();
+}
+
+fn set_hostname_from_name(name: &str) {
+    let hostname: String = name.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if hostname.is_empty() { return; }
+    let current = hostname::get().ok().and_then(|h| h.into_string().ok()).unwrap_or_default();
+    if current == hostname { return; }
+    info!("setting hostname to {hostname}");
+    let _ = std::process::Command::new("hostnamectl")
+        .args(["set-hostname", &hostname])
         .status();
 }
 
@@ -1978,7 +2003,7 @@ fn ensure_web(
     let wv = webkit6::WebView::new();
     wv.set_vexpand(true);
     wv.set_hexpand(true);
-    wv.set_background_color(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 1.0));
+    webkit6::prelude::WebViewExt::set_background_color(&wv, &gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 1.0));
 
     // Hide the pointer inside every WebKit page. The default GTK CSS cursor:
     // none we set on top-level windows doesn't propagate into the WebView's

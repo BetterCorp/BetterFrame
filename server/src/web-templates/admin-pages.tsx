@@ -2003,6 +2003,33 @@ export function KioskEditPage(props: KioskEditProps) {
         {(props.kiosk.local_key && props.kiosk.local_port) && KioskLocalPanel({ kiosk: props.kiosk })}
 
         <div class="card" style="margin-bottom:1.5rem">
+          <h2 style="margin:0 0 1rem; font-size:1.1rem">Tailscale VPN</h2>
+          {(() => {
+            const ts = (k as any).tailscale;
+            if (!ts || !ts.installed) return <p style="color:#999; font-size:0.85rem">Tailscale not installed on this kiosk.</p>;
+            if (ts.logged_in) return (
+              <div style="font-size:0.85rem">
+                <div style="display:flex; gap:1rem; flex-wrap:wrap; color:#666; margin-bottom:0.5rem">
+                  <div><span class="badge badge-green">Connected</span></div>
+                  {ts.ip ? <div>{"IP: "}{String(ts.ip)}</div> : ""}
+                  {ts.hostname ? <div>{"Host: "}{String(ts.hostname)}</div> : ""}
+                </div>
+              </div>
+            );
+            return (
+              <form method="POST" action={`/admin/kiosks/${String(k.id)}/tailscale`}
+                style="display:flex; gap:0.5rem; align-items:end">
+                <label style="font-size:0.85rem">
+                  {"Auth Key"}<br/>
+                  <input type="password" name="auth_key" required style="width:20rem" placeholder="tskey-auth-..." />
+                </label>
+                <button type="submit" class="btn btn-sm">Connect</button>
+              </form>
+            );
+          })()}
+        </div>
+
+        <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Remote Debug</h2>
           {k.firmware_channel === "dev" && (k as any).os_update_channel === "dev" ? (
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap">

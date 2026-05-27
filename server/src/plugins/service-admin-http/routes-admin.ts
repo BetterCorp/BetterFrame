@@ -2203,6 +2203,16 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
+  app.post("/admin/kiosks/:id/tailscale", async (event) => {
+    const id = (getRouterParam(event, "id") ?? "");
+    const body = await readBody<Record<string, string>>(event);
+    const authKey = (body?.["auth_key"] ?? "").trim();
+    if (authKey) {
+      getCoordinator().sendToKiosk(id, { type: "tailscale-auth", auth_key: authKey });
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+  });
+
   app.post("/admin/kiosks/:id/reboot", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
     getCoordinator().sendToKiosk(id, { type: "reboot" });

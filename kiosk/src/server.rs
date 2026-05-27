@@ -519,6 +519,12 @@ pub fn heartbeat(
             "onvif_subscriptions": serde_json::to_value(crate::onvif_events::get_statuses()).unwrap_or_default(),
             "partitions": serde_json::to_value(&hw.partitions).unwrap_or_default(),
             "audio": serde_json::to_value(crate::audio::get_state()).unwrap_or_default(),
+            "tailscale": {
+                #[cfg(target_os = "linux")]
+                { serde_json::to_value(crate::tailscale::get_status()).unwrap_or_default() }
+                #[cfg(not(target_os = "linux"))]
+                { serde_json::Value::Null }
+            },
         }))
         .timeout(Duration::from_secs(5))
         .send()

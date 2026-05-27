@@ -169,6 +169,11 @@ async fn handle_message(
         if let Some(layout_id) = layout_id {
             let _ = tx.send(ServerMsg::SwitchLayout { display_id, layout_id });
         }
+    } else if text.contains("\"type\":\"tailscale-auth\"") {
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else { return };
+        if let Some(key) = msg.get("auth_key").and_then(|v| v.as_str()) {
+            let _ = tx.send(ServerMsg::TailscaleAuth(key.to_string()));
+        }
     } else if text.contains("\"type\":\"reboot\"") {
         let _ = tx.send(ServerMsg::Reboot);
     } else if text.contains("\"type\":\"firmware_check\"") {

@@ -25,6 +25,13 @@ done
 # --- Deps for first-boot partition expansion ---
 apt-get -y install cloud-guest-utils e2fsprogs 2>/dev/null || true
 
+# --- Tailscale VPN ---
+curl -fsSL https://tailscale.com/install.sh | sh
+systemctl enable tailscaled
+systemctl disable tailscaled.service 2>/dev/null || true
+# Tailscale auth is triggered from the admin UI, not on boot.
+# tailscaled runs but doesn't auto-connect until auth key is provided.
+
 # --- Binary ---
 install -d -o bfkiosk -g bfkiosk -m 755 /opt/betterframe/kiosk
 install -m 755 /tmp/bf-files/betterframe-kiosk /opt/betterframe/kiosk/betterframe-kiosk

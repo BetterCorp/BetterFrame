@@ -4,6 +4,7 @@
     color: "#ccddaa",
     defaults: {
       name: { value: "" },
+      config: { value: "", type: "bf-server-config", required: true },
       camera_id: { value: "" },
       topic_filter: { value: "" },
     },
@@ -25,6 +26,10 @@
     <input type="text" id="node-input-name" placeholder="(optional)" />
   </div>
   <div class="form-row">
+    <label for="node-input-config"><i class="fa fa-cog"></i> BF</label>
+    <input type="text" id="node-input-config" />
+  </div>
+  <div class="form-row">
     <label for="node-input-camera_id"><i class="fa fa-video-camera"></i> Camera ID</label>
     <input type="number" id="node-input-camera_id" placeholder="(blank = all cameras)" />
   </div>
@@ -38,6 +43,7 @@
     <code>DigitalInput</code>, <code>Tamper</code>). Leave blank for all events.
     Outputs <code>msg.source</code> (source SimpleItems) and <code>msg.data</code>
     (data SimpleItems) as key-value objects.
+    Only emits for the selected tenant.
   </div>
 </script>
 
@@ -52,5 +58,6 @@
     <li><code>Tamper</code> — camera tamper detection</li>
     <li><code>AudioDetection</code> — audio analytics</li>
   </ul>
-  <p>Leave filter blank to receive ALL events from ALL cameras.</p>
+  <p>Select a <b>BF</b> config to scope this trigger to one tenant.</p>
+  <p>Leave filter blank to receive all matching events from that tenant.</p>
 </script>

@@ -4,6 +4,7 @@
     color: "#99ccff",
     defaults: {
       name: { value: "" },
+      config: { value: "", type: "bf-server-config", required: true },
       camera_id: { value: "" },
     },
     inputs: 0,
@@ -22,6 +23,10 @@
     <input type="text" id="node-input-name" placeholder="(optional)" />
   </div>
   <div class="form-row">
+    <label for="node-input-config"><i class="fa fa-cog"></i> BF</label>
+    <input type="text" id="node-input-config" />
+  </div>
+  <div class="form-row">
     <label for="node-input-camera_id"><i class="fa fa-video-camera"></i> Camera ID</label>
     <input type="number" id="node-input-camera_id" placeholder="(blank = all cameras)" />
   </div>
@@ -29,13 +34,14 @@
     Fires on ONVIF license plate recognition events. Outputs
     <code>msg.plate</code> (string) and <code>msg.confidence</code> (number).
     Works with Hikvision ANPR cameras (PlateNumber field), Dahua (plateNumber),
-    and other ONVIF-compliant vendors.
+    and other ONVIF-compliant vendors in the selected tenant.
   </div>
 </script>
 
 <script type="text/html" data-help-name="bf-trigger-anpr">
   <p>Triggers on ONVIF ANPR (Automatic Number Plate Recognition) events.</p>
   <p>Matches topics containing: LicensePlateRecognition, Plate, ANPR, LPR, NumberPlate.</p>
+  <p>Select a <b>BF</b> config to scope this trigger to one tenant.</p>
   <p><b>msg.plate</b> contains the recognized plate string (or null if not parsed).
   <b>msg.confidence</b> is the recognition confidence score (or null).</p>
   <p>Use downstream nodes for plate allowlist/blocklist matching, logging, or gate control.</p>

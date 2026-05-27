@@ -207,7 +207,10 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       if (!kiosk) return new Response(null, { status: 401 });
       return new Response(null, {
         status: 200,
-        headers: { "x-betterframe-kiosk-id": String(kiosk.id) },
+        headers: {
+          "x-betterframe-kiosk-id": String(kiosk.id),
+          "x-betterframe-tenant": kiosk.tenant_slug,
+        },
       });
     });
 
@@ -265,6 +268,24 @@ function extractBearerToken(event: any): string | null {
     }
   }
   return null;
+}
+
+async function requireKiosk(
+  event: any,
+  repo: Repository,
+  auth: AuthApi,
+): Promise<{
+  id: string;
+  tenant_slug: string;
+  tenant_name: string | null;
+  schema_name: string;
+}> {
+  const token = extractBearerToken(event);
+  if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
+  const kiosk = await auth.verifyKioskKey(token);
+  if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+  await repo.adapter.setSearchPath(kiosk.schema_name);
+  return kiosk;
 }
 
 async function getClusterKey(repo: Repository, secrets: SecretsApi): Promise<string | undefined> {
@@ -419,9 +440,9 @@ function registerKioskRoutes(
   app.get("/api/kiosk/bundle", async (event) => {
     const token = extractBearerToken(event);
     if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-
     const kiosk = await auth.verifyKioskKey(token);
     if (!kiosk) return { bf_kiosk_deleted: true };
+    await repo.adapter.setSearchPath(kiosk.schema_name);
 
     event.context.obs?.log.info("bundle fetch for kiosk {id}", { id: String(kiosk.id) });
     const clusterKey = await getClusterKey(repo, secrets);
@@ -452,9 +473,9 @@ function registerKioskRoutes(
   app.post("/api/kiosk/heartbeat", async (event) => {
     const token = extractBearerToken(event);
     if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-
     const kiosk = await auth.verifyKioskKey(token);
     if (!kiosk) return { bf_kiosk_deleted: true };
+    await repo.adapter.setSearchPath(kiosk.schema_name);
     event.context.obs?.log.info("heartbeat from kiosk {id}", { id: String(kiosk.id) });
 
     const body = validateBody(HeartbeatBody, await readBody(event));
@@ -620,11 +641,7 @@ function registerKioskRoutes(
 
   // Event forwarding
   app.post("/api/kiosk/event", async (event) => {
-    const token = extractBearerToken(event);
-    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-
-    const kiosk = await auth.verifyKioskKey(token);
-    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    const kiosk = await requireKiosk(event, repo, auth);
 
     const raw = await readBody(event);
     let body: ReturnType<typeof EventBody["parse"]>;
@@ -716,9 +733,10 @@ function registerKioskRoutes(
       "camera.changed",
     ]);
     const markForwarded = () => { repo.markEventForwarded(eventId); };
+    const tenantInfo = { tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name };
     if (flatTopics.has(body.topic)) {
       const out = { kiosk_id: kiosk.id, ...(body.payload ?? {}), source: "kiosk" };
-      nodered.forward(body.topic, out, markForwarded);
+      nodered.forward(body.topic, out, tenantInfo, markForwarded);
       mqtt.publishEvent(kiosk.id, body.topic, out);
     } else {
       const out = {
@@ -732,14 +750,14 @@ function registerKioskRoutes(
         timestamp: new Date().toISOString(),
         source: "kiosk",
       };
-      nodered.forward(body.topic, out, markForwarded);
+      nodered.forward(body.topic, out, tenantInfo, markForwarded);
       mqtt.publishEvent(kiosk.id, body.topic, out);
 
-      nodered.forward("camera.event", out);
+      nodered.forward("camera.event", out, tenantInfo);
       if (body.source_type === "onvif") {
-        nodered.forward("onvif.event", out);
-        nodered.forward("onvif.motion", out);
-        nodered.forward("onvif.anpr", out);
+        nodered.forward("onvif.event", out, tenantInfo);
+        nodered.forward("onvif.motion", out, tenantInfo);
+        nodered.forward("onvif.anpr", out, tenantInfo);
       }
     }
 
@@ -748,11 +766,7 @@ function registerKioskRoutes(
 
   // ---- Kiosk log ingestion (batch) -----------------------------------------
   app.post("/api/kiosk/logs", async (event) => {
-    const token = extractBearerToken(event);
-    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-
-    const kiosk = await auth.verifyKioskKey(token);
-    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    const kiosk = await requireKiosk(event, repo, auth);
 
     const body = validateBody(KioskLogsBody, await readBody(event));
     if (body.entries.length === 0) {
@@ -788,10 +802,7 @@ function registerKioskRoutes(
    * know which build target the kiosk was built against.
    */
   app.get("/api/kiosk/firmware/check", async (event) => {
-    const token = extractBearerToken(event);
-    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-    const verified = await auth.verifyKioskKey(token);
-    if (!verified) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    const verified = await requireKiosk(event, repo, auth);
     event.context.obs?.log.info("firmware check for kiosk {id}", { id: String(verified.id) });
     const kiosk = await repo.getKioskById(verified.id);
     if (!kiosk) throw createError({ statusCode: 404, statusMessage: "kiosk not found" });
@@ -852,10 +863,7 @@ function registerKioskRoutes(
    * kiosk-key location block.
    */
   app.get("/api/kiosk/firmware/download/:id", async (event) => {
-    const token = extractBearerToken(event);
-    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-    const kiosk = await auth.verifyKioskKey(token);
-    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    const kiosk = await requireKiosk(event, repo, auth);
 
     const id = (event.context as any).params?.id as string | undefined
       ?? new URL(event.req.url).pathname.split("/").pop();
@@ -885,10 +893,7 @@ function registerKioskRoutes(
    * the error string is surfaced on the admin kiosk page.
    */
   app.post("/api/kiosk/firmware/applied", async (event) => {
-    const token = extractBearerToken(event);
-    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-    const kiosk = await auth.verifyKioskKey(token);
-    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    const kiosk = await requireKiosk(event, repo, auth);
 
     const body = validateBody(FirmwareAppliedBody, await readBody(event));
     await repo.recordKioskFirmwareAttempt(kiosk.id, body.version, body.error ?? null);
@@ -914,10 +919,7 @@ function registerKioskRoutes(
    * will hand the downloaded bundle to `rauc install`.
    */
   app.get("/api/kiosk/os/check", async (event) => {
-    const token = extractBearerToken(event);
-    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-    const verified = await auth.verifyKioskKey(token);
-    if (!verified) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    const verified = await requireKiosk(event, repo, auth);
     event.context.obs?.log.info("os update check for kiosk {id}", { id: String(verified.id) });
     const kiosk = await repo.getKioskById(verified.id);
     if (!kiosk) throw createError({ statusCode: 404, statusMessage: "kiosk not found" });
@@ -970,10 +972,7 @@ function registerKioskRoutes(
   });
 
   app.get("/api/kiosk/os/download/:id", async (event) => {
-    const token = extractBearerToken(event);
-    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-    const kiosk = await auth.verifyKioskKey(token);
-    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    const kiosk = await requireKiosk(event, repo, auth);
 
     const id = (event.context as any).params?.id as string | undefined
       ?? new URL(event.req.url).pathname.split("/").pop();
@@ -1026,10 +1025,7 @@ function registerKioskRoutes(
   });
 
   app.post("/api/kiosk/os/applied", async (event) => {
-    const token = extractBearerToken(event);
-    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-    const kiosk = await auth.verifyKioskKey(token);
-    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    const kiosk = await requireKiosk(event, repo, auth);
 
     const body = validateBody(OsAppliedBody, await readBody(event));
     await repo.recordKioskOsUpdateAttempt(kiosk.id, body.version, body.error ?? null);
@@ -1050,10 +1046,7 @@ function registerKioskRoutes(
   });
 
   app.get("/api/kiosk/cameras/:id/stream", async (event) => {
-    const token = extractBearerToken(event);
-    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-    const kiosk = await auth.verifyKioskKey(token);
-    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    await requireKiosk(event, repo, auth);
 
     const cameraId = (getRouterParam(event, "id") ?? "");
     const camera = await repo.getCameraById(cameraId);

@@ -4,6 +4,7 @@
     color: "#a6d4ff",
     defaults: {
       name: { value: "" },
+      config: { value: "", type: "bf-server-config", required: true },
       kiosk_id: { value: "" },
     },
     inputs: 0,
@@ -22,6 +23,10 @@
     <input type="text" id="node-input-name" placeholder="(optional)" />
   </div>
   <div class="form-row">
+    <label for="node-input-config"><i class="fa fa-cog"></i> BF</label>
+    <input type="text" id="node-input-config" />
+  </div>
+  <div class="form-row">
     <label for="node-input-kiosk_id"><i class="fa fa-tv"></i> Kiosk ID</label>
     <input type="number" id="node-input-kiosk_id" placeholder="(blank = all kiosks)" />
   </div>
@@ -29,7 +34,7 @@
     Fires on <code>kiosk.status</code> heartbeats with hardware telemetry.
     Listens on <code>POST /in/kiosk.status</code> internally — no upstream
     <code>http in</code> node required.
-    Emits <code>msg.payload = {kiosk_id, kiosk_name, cpu_temp_c, fan_rpm, fan_pwm}</code>.
+    Emits <code>msg.payload = {kiosk_id, kiosk_name, cpu_temp_c, fan_rpm, fan_pwm}</code> for the selected tenant.
     Leave Kiosk ID blank to receive heartbeats from all kiosks.
   </div>
 </script>
@@ -39,5 +44,6 @@
   connect/disconnect envelope on <code>kiosk.changed</code>.</p>
   <p>Listens on <code>POST /in/kiosk.status</code> internally — no upstream
   <code>http in</code> node needed.</p>
+  <p>Select a <b>BF</b> config to scope this trigger to one tenant.</p>
   <p>Optional <b>Kiosk ID</b> filter limits this node to a single kiosk.</p>
 </script>

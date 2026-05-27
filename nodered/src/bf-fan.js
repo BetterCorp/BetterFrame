@@ -5,6 +5,8 @@
  * mode=pwm: pwm (0..255) is sent directly. Use msg.pwm or msg.mode to
  * override the configured values.
  */
+const { adminHeaders } = require("./_tenant.js");
+
 module.exports = function (RED) {
   function BfFanNode(config) {
     RED.nodes.createNode(this, config);
@@ -37,10 +39,7 @@ module.exports = function (RED) {
       try {
         const r = await fetch(url, {
           method: "POST",
-          headers: {
-            authorization: "Bearer " + cfg.api_key,
-            "content-type": "application/x-www-form-urlencoded",
-          },
+          headers: adminHeaders(cfg, { "content-type": "application/x-www-form-urlencoded" }),
           body: formBody,
           redirect: "manual",
         });

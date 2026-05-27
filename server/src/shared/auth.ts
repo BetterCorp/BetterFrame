@@ -52,7 +52,12 @@ export interface AuthApi {
     expiresAt: string | null;
   }): Promise<{ apiKey: ApiKey; plaintext: string }>;
   verifyApiKey(plaintext: string, ip: string | null): Promise<ApiKey | null>;
-  verifyKioskKey(plaintext: string): Promise<{ id: string } | null>;
+  verifyKioskKey(plaintext: string): Promise<{
+    id: string;
+    tenant_slug: string;
+    tenant_name: string | null;
+    schema_name: string;
+  } | null>;
 }
 
 // ---- Constants --------------------------------------------------------------
@@ -274,15 +279,47 @@ export function createAuth(
     return null;
   }
 
-  async function verifyKioskKey(plaintext: string): Promise<{ id: string } | null> {
+  async function verifyKioskKey(plaintext: string): Promise<{
+    id: string;
+    tenant_slug: string;
+    tenant_name: string | null;
+    schema_name: string;
+  } | null> {
     if (plaintext.length < 8) return null;
     const prefix = plaintext.slice(0, 8);
-    const candidates = await repo.listKiosksByKeyPrefix(prefix);
-    for (const cand of candidates) {
-      if (await verifyPassword(plaintext, cand.key_hash)) {
-        return { id: cand.id };
+
+    const tenants = await repo.listTenants();
+    if (tenants.length === 0) {
+      await repo.adapter.setSearchPath("public");
+      const candidates = await repo.listKiosksByKeyPrefix(prefix);
+      for (const cand of candidates) {
+        if (await verifyPassword(plaintext, cand.key_hash)) {
+          return {
+            id: cand.id,
+            tenant_slug: "default",
+            tenant_name: "Default",
+            schema_name: "public",
+          };
+        }
+      }
+      return null;
+    }
+    for (const tenant of tenants) {
+      if (!tenant.is_active) continue;
+      await repo.adapter.setSearchPath(tenant.schema_name);
+      const candidates = await repo.listKiosksByKeyPrefix(prefix);
+      for (const cand of candidates) {
+        if (await verifyPassword(plaintext, cand.key_hash)) {
+          return {
+            id: cand.id,
+            tenant_slug: tenant.slug,
+            tenant_name: tenant.name,
+            schema_name: tenant.schema_name,
+          };
+        }
       }
     }
+    await repo.adapter.setSearchPath("public");
     return null;
   }
 

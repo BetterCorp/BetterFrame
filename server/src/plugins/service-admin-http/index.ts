@@ -1,5 +1,5 @@
 /**
- * service-admin-http — h3 listener for admin UI and admin API.
+ * service-admin-http - h3 listener for admin UI and admin API.
  *
  * Port 18080 behind Angie proxy. Initializes secrets + auth as
  * shared modules (not BSB plugins).
@@ -12,7 +12,7 @@ import {
   createEventSchemas,
   type Observable,
 } from "@bsb/base";
-import { H3, serve } from "h3";
+import { H3, getRequestHeader, serve } from "h3";
 import type { Server } from "srvx";
 
 import type { DbConfig } from "../../shared/db/config.js";
@@ -20,7 +20,11 @@ import { initDb } from "../../shared/db/init.js";
 import type { Repository } from "../../shared/db/repository.js";
 import { initSecrets, type SecretsApi } from "../../shared/secrets.js";
 import { createAuth, type AuthApi } from "../../shared/auth.js";
-import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
+import {
+  initNoderedBridge,
+  type NoderedBridge,
+  type NoderedTenantConfig,
+} from "../../shared/nodered-bridge.js";
 import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
 import { initOsUpdates, type OsUpdateApi } from "../../shared/os-updates.js";
 import { serverVersion } from "../../shared/version.js";
@@ -36,8 +40,6 @@ import { registerStaticRoutes } from "./routes-static.js";
 import { registerCloudRoutes } from "./routes-cloud.js";
 import { registerTenantRoutes } from "./routes-tenants.js";
 import { registerAbleSignRoutes } from "./routes-ablesign.js";
-
-// ---- Config -----------------------------------------------------------------
 
 const ConfigSchema = av.object(
   {
@@ -55,10 +57,8 @@ const ConfigSchema = av.object(
     ),
     host: av.string().default("127.0.0.1"),
     port: av.int().min(1).max(65535).default(18080),
-    // Secrets config (was service-secrets)
     dataDir: av.string().minLength(1).default("/var/lib/betterframe"),
     systemdCredsName: av.string().default("betterframe-secret"),
-    // Auth config (was service-auth)
     sessionIdleSeconds: av.int().min(60).default(43200),
     sessionMaxSeconds: av.int().min(3600).default(2592000),
     loginLockoutThreshold: av.int().min(1).default(8),
@@ -69,15 +69,10 @@ const ConfigSchema = av.object(
     totpIssuer: av.string().minLength(1).default("BetterFrame"),
     cookieName: av.string().minLength(1).default("betterframe_session"),
     noderedUrl: av.string().minLength(1).default("http://127.0.0.1:1880"),
-    // URL Node-RED uses to reach this server. Native: localhost. Docker: container name.
     selfUrl: av.string().minLength(1).default("http://127.0.0.1:18080"),
-    /** Systemd credentials directory. */
     systemdCredsDir: av.string().default(""),
-    /** PEM-encoded Ed25519 private key for firmware signing (cloud deploys). */
     firmwareSigningKey: av.string().default(""),
-    /** Bearer token for CI firmware import endpoint. */
     firmwareImportApiKey: av.string().default(""),
-    /** Bearer token for CI OTA import endpoint. */
     otaImportApiKey: av.string().default(""),
   },
   { unknownKeys: "strip" },
@@ -101,8 +96,6 @@ export const EventSchemas = createEventSchemas({
   onBroadcast: {},
 });
 
-// ---- Deps interface shared with route modules -------------------------------
-
 export interface AdminDeps {
   repo: Repository;
   auth: AuthApi;
@@ -114,9 +107,8 @@ export interface AdminDeps {
   dataDir: string;
   firmwareImportApiKey?: string;
   otaImportApiKey?: string;
+  scheduleNoderedReconcile: () => void;
 }
-
-// ---- Plugin -----------------------------------------------------------------
 
 export class Plugin extends BSBService<InstanceType<typeof Config>, typeof EventSchemas> {
   static override Config = Config;
@@ -133,13 +125,14 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   private cameraHealthChecker?: { stop: () => void };
   private artifactCleanup?: { stop: () => void };
   private _deps?: AdminDeps;
+  private noderedReconcilePromise: Promise<void> = Promise.resolve();
+  private _repo?: Repository;
 
   constructor(cfg: BSBServiceConstructor<InstanceType<typeof Config>, typeof EventSchemas>) {
     super(cfg);
   }
 
   async init(obs: Observable): Promise<void> {
-    // Init shared modules — no inter-plugin wiring needed.
     const dataDir = this.config.dataDir;
     const noderedUrl = this.config.noderedUrl;
     const selfUrl = this.config.selfUrl;
@@ -157,7 +150,11 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     this.dbClose = dbResult.close;
 
     const secrets = initSecrets(
-      { dataDir, systemdCredsName: this.config.systemdCredsName, systemdCredsDir: this.config.systemdCredsDir || undefined },
+      {
+        dataDir,
+        systemdCredsName: this.config.systemdCredsName,
+        systemdCredsDir: this.config.systemdCredsDir || undefined,
+      },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
     const auth = createAuth(repo, secrets, {
@@ -194,6 +191,9 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       dataDir,
       firmwareImportApiKey: this.config.firmwareImportApiKey || undefined,
       otaImportApiKey: this.config.otaImportApiKey || undefined,
+      scheduleNoderedReconcile: () => {
+        void this.scheduleNoderedReconcile(repo, secrets, auth, nodered, selfUrl, obs);
+      },
     };
 
     const self = this;
@@ -242,9 +242,17 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     registerTenantRoutes(app, deps);
     registerAbleSignRoutes(app, deps);
 
-    // Auth-check endpoint for Angie auth_request subrequest.
-    // Returns 200 if session cookie is valid + admin role, 401 otherwise.
     app.get("/api/admin/_check", async (event) => {
+      const tenantHeader = (event.req.headers.get("x-betterframe-tenant") ?? "").trim().toLowerCase();
+      if (tenantHeader) {
+        const tenant = await deps.repo.getTenantBySlug(tenantHeader);
+        if (!tenant) return new Response("unknown tenant", { status: 401 });
+        if (!tenant.is_active) return new Response("inactive tenant", { status: 401 });
+        await deps.repo.adapter.setSearchPath(tenant.schema_name);
+      } else {
+        await deps.repo.adapter.setSearchPath("public");
+      }
+
       const authz = event.req.headers.get("authorization");
       if (authz?.startsWith("Bearer ")) {
         return deps.auth.verifyApiKey(authz.slice(7), event.req.headers.get("x-real-ip")).then((key) => {
@@ -286,8 +294,8 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       version: serverVersion(),
       now: new Date().toISOString(),
     }));
-    app.get("/", () => {
-      if (!deps.repo.isSetupComplete()) {
+    app.get("/", async () => {
+      if (!(await deps.repo.isSetupComplete())) {
         return new Response(null, { status: 302, headers: { location: "/setup" } });
       }
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
@@ -303,32 +311,24 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       port: this.config.port,
     });
 
-    // Camera health checker — periodic TCP probe to mark cameras online/offline.
     const { startCameraHealthChecker } = await import("../../shared/camera-health.js");
     this.cameraHealthChecker = startCameraHealthChecker(repo, {}, {
       info: (m) => obs.log.info(m as any, {}),
       warn: (m) => obs.log.warn(m as any, {}),
     });
 
-    // Artifact cleanup — prune yanked + old firmware/OS files every 6h.
     const { startArtifactCleanup } = await import("../../shared/artifact-cleanup.js");
     this.artifactCleanup = startArtifactCleanup(repo, {
       info: (m) => obs.log.info(m as any, {}),
       warn: (m) => obs.log.warn(m as any, {}),
     });
 
-    // Auto-provision the Node-RED bf-server-config so the user doesn't have
-    // to set server URL + API key manually. Best-effort with retries because
-    // Node-RED may still be starting.
-    void this.provisionNoderedBridge(repo, secrets, auth, nodered, selfUrl, obs);
+    deps.scheduleNoderedReconcile();
 
-    // Startup purge (inherited from old service-store)
     this._repo = repo;
     this._deps = deps;
     void this.runPurge(obs);
   }
-
-  private _repo?: Repository;
 
   private async runPurge(obs: Observable): Promise<void> {
     if (!this._repo) return;
@@ -365,6 +365,22 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     obs.log.info("ablesign: background sync complete");
   }
 
+  private async scheduleNoderedReconcile(
+    repo: Repository,
+    secrets: SecretsApi,
+    auth: AuthApi,
+    nodered: NoderedBridge,
+    selfUrl: string,
+    obs: Observable,
+  ): Promise<void> {
+    this.noderedReconcilePromise = this.noderedReconcilePromise.then(async () => {
+      await this.provisionNoderedBridge(repo, secrets, auth, nodered, selfUrl, obs);
+    }).catch((err) => {
+      obs.log.warn("nodered: reconcile queue failed: {err}", { err: (err as Error).message });
+    });
+    await this.noderedReconcilePromise;
+  }
+
   private async provisionNoderedBridge(
     repo: Repository,
     secrets: SecretsApi,
@@ -373,54 +389,77 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     selfUrl: string,
     obs: Observable,
   ): Promise<void> {
-    let plaintext: string;
+    let tenantConfigs: NoderedTenantConfig[];
     try {
-      plaintext = await this.getOrMintNoderedApiKey(repo, secrets, auth);
+      tenantConfigs = await this.listNoderedTenantConfigs(repo, secrets, auth);
     } catch (err) {
-      obs.log.warn("nodered: mint key failed: {err}", { err: (err as Error).message });
+      await repo.adapter.setSearchPath("public");
+      obs.log.warn("nodered: build tenant configs failed: {err}", { err: (err as Error).message });
       return;
     }
 
-    // Retry with backoff — Node-RED may still be booting + initial flow load
-    // can take 30-60s on the Pi. Total wait ~5 minutes worst case.
     const delaysMs = [2000, 5000, 10000, 15000, 30000, 30000, 60000, 60000, 60000];
     for (let attempt = 0; attempt < delaysMs.length; attempt += 1) {
       await new Promise((r) => setTimeout(r, delaysMs[attempt]));
-      obs.log.info("nodered: provisioning attempt {n} → {url}", {
+      obs.log.info("nodered: reconciling tenant configs ({count} tenants) attempt {n} -> {url}", {
+        count: tenantConfigs.length,
         n: attempt + 1,
         url: selfUrl,
       });
-      const result = await nodered.ensureServerConfig(selfUrl, plaintext);
-      if (result === "created") {
-        obs.log.info("nodered: provisioned bf-server-config at {url}", {
-          url: selfUrl,
-        });
+      const result = await nodered.reconcileServerConfigs(selfUrl, tenantConfigs);
+      if (result === "updated") {
+        obs.log.info("nodered: tenant config reconcile updated flows at {url}", { url: selfUrl });
         return;
       }
-      if (result === "exists") {
-        obs.log.info("nodered: bf-server-config already present, skipping");
+      if (result === "noop") {
+        obs.log.info("nodered: tenant config reconcile already up to date");
         return;
       }
     }
-    obs.log.warn("nodered: provisioning bf-server-config gave up after retries");
+    obs.log.warn("nodered: tenant config reconcile gave up after retries");
+  }
+
+  private async listNoderedTenantConfigs(
+    repo: Repository,
+    secrets: SecretsApi,
+    auth: AuthApi,
+  ): Promise<NoderedTenantConfig[]> {
+    const tenants = await repo.listTenants();
+    const configs: NoderedTenantConfig[] = [];
+    for (const tenant of tenants) {
+      await repo.adapter.setSearchPath(tenant.schema_name);
+      const apiKey = await this.getOrMintNoderedApiKey(repo, secrets, auth, tenant.slug);
+      configs.push({
+        tenant_slug: tenant.slug,
+        tenant_name: tenant.name,
+        api_key: apiKey,
+        active: tenant.is_active,
+      });
+    }
+    await repo.adapter.setSearchPath("public");
+    return configs;
   }
 
   private async getOrMintNoderedApiKey(
     repo: Repository,
     secrets: SecretsApi,
     auth: AuthApi,
+    tenantSlug: string,
   ): Promise<string> {
-    const KEY = "nodered_api_key";
-    const stored = await repo.getSetupExtra(KEY);
-    if (typeof stored === "string" && stored.length > 0) {
-      return secrets.decryptString(stored, "nodered_api_key");
+    const key = "nodered_api_keys";
+    const stored = await repo.getSetupExtra(key);
+    const current = stored && typeof stored === "object" ? stored as Record<string, unknown> : {};
+    const enc = typeof current[tenantSlug] === "string" ? current[tenantSlug] : "";
+    if (enc.length > 0) {
+      return secrets.decryptString(enc, "nodered_api_key");
     }
     const { plaintext } = await auth.createApiKey({
       name: "node-red-bridge",
       scopes: ["admin"],
       expiresAt: null,
     });
-    await repo.setSetupExtra(KEY, secrets.encryptString(plaintext, "nodered_api_key"));
+    current[tenantSlug] = secrets.encryptString(plaintext, "nodered_api_key");
+    await repo.setSetupExtra(key, current);
     return plaintext;
   }
 

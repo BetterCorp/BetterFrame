@@ -7,7 +7,7 @@ BetterFrame admin REST API and kiosk event ingest.
 
 | Node | Category | Purpose |
 | --- | --- | --- |
-| `bf-server-config` | config | Shared server URL + admin API key |
+| `bf-server-config` | config | Per-tenant server URL + admin API key |
 | `bf-kiosk-camera-event` | Triggers | Filter incoming kiosk camera events (default `camera.*`) |
 | `bf-trigger-display-power` | Triggers | Fires on `display.power.changed` |
 | `bf-trigger-layout-changed` | Triggers | Fires on `layout.changed` |
@@ -27,7 +27,18 @@ BetterFrame admin REST API and kiosk event ingest.
 
 All action/query nodes use an **admin-scoped API key** created in the
 BetterFrame admin UI. The key is sent as `Authorization: Bearer bf-...`.
-Configure once on a `bf-server-config` node and reference it from the others.
+Each `bf-server-config` also carries a tenant slug and sends
+`X-BetterFrame-Tenant: <tenant_slug>`. Configure one `bf-server-config` per
+tenant and reference the matching config from action/query/trigger nodes.
+
+Auto-managed tenant configs appear in Node-RED as:
+
+- `BetterFrame (Default)`
+- `BetterFrame (<tenant name>)`
+
+BetterFrame keeps those auto-managed config nodes in sync for active tenants.
+Manual/custom config nodes are still supported if you set `tenant_slug`
+explicitly.
 
 ## Event ingest path
 
@@ -35,6 +46,9 @@ Trigger nodes are **self-contained** — each one registers its own
 `POST /in/<topic>` handler on Node-RED's user-facing HTTP server (via
 `RED.httpNode.post`) when the flow is deployed. You do **not** need to wire
 an upstream `http in` node anymore.
+
+Every BetterFrame trigger node now requires selecting a `bf-server-config`.
+The trigger only emits events whose `tenant_slug` matches that config.
 
 The BetterFrame server's `nodered-bridge.forward(topic, payload)` posts
 events directly to `http://<nodered-host>:1880/in/<topic>`. Each trigger
@@ -65,6 +79,7 @@ default.
 
 Each trigger node also offers an optional ID filter (display_id / kiosk_id /
 camera_id) so you can drop one node per entity without a downstream switch.
+Tenant scoping happens before those ID filters.
 
 ## Installation
 

@@ -11,6 +11,7 @@
  * Output msg.payload: { display_id, kiosk_id, layout_id, layout_name }
  */
 const { readJsonBody } = require("./_http-body.js");
+const { tenantMatchesBody } = require("./_tenant.js");
 
 module.exports = function (RED) {
   const TOPIC = "layout.changed";
@@ -19,11 +20,19 @@ module.exports = function (RED) {
   function BfTriggerLayoutChangedNode(config) {
     RED.nodes.createNode(this, config);
     const node = this;
+    const cfg = RED.nodes.getNode(config.config);
     const filterIdRaw = (config.display_id || "").toString().trim();
     const filterId = filterIdRaw && !isNaN(Number(filterIdRaw)) ? Number(filterIdRaw) : null;
 
     async function handler(req, res) {
+      if (!cfg || !cfg.tenant_slug) {
+        node.status({ fill: "red", shape: "ring", text: "missing bf-server-config" });
+        return res.status(200).end();
+      }
       const body = await readJsonBody(req);
+      if (!tenantMatchesBody(cfg, body, node)) {
+        return res.status(200).end();
+      }
       const displayId = body.display_id !== undefined ? body.display_id : null;
       if (filterId !== null && Number(displayId) !== filterId) {
         return res.status(200).end();

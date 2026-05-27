@@ -12,6 +12,7 @@
  *   { kiosk_id, kiosk_name, cpu_temp_c, fan_rpm, fan_pwm }
  */
 const { readJsonBody } = require("./_http-body.js");
+const { tenantMatchesBody } = require("./_tenant.js");
 
 module.exports = function (RED) {
   const TOPIC = "kiosk.status";
@@ -20,11 +21,19 @@ module.exports = function (RED) {
   function BfTriggerStatusNode(config) {
     RED.nodes.createNode(this, config);
     const node = this;
+    const cfg = RED.nodes.getNode(config.config);
     const filterIdRaw = (config.kiosk_id || "").toString().trim();
     const filterId = filterIdRaw && !isNaN(Number(filterIdRaw)) ? Number(filterIdRaw) : null;
 
     async function handler(req, res) {
+      if (!cfg || !cfg.tenant_slug) {
+        node.status({ fill: "red", shape: "ring", text: "missing bf-server-config" });
+        return res.status(200).end();
+      }
       const body = await readJsonBody(req);
+      if (!tenantMatchesBody(cfg, body, node)) {
+        return res.status(200).end();
+      }
       const kioskId = body.kiosk_id !== undefined ? body.kiosk_id : null;
       if (filterId !== null && Number(kioskId) !== filterId) {
         return res.status(200).end();

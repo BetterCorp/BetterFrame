@@ -8,6 +8,7 @@
  * Output: { topic, kiosk_id, camera_id, source, data, payload }
  */
 const { readJsonBody } = require("./_http-body.js");
+const { tenantMatchesBody } = require("./_tenant.js");
 
 module.exports = function (RED) {
   const ROUTE = "/api/internal/onvif.event";
@@ -15,11 +16,19 @@ module.exports = function (RED) {
   function BfTriggerEventNode(config) {
     RED.nodes.createNode(this, config);
     const node = this;
+    const cfg = RED.nodes.getNode(config.config);
     const filterCam = config.camera_id ? String(config.camera_id).trim() : null;
     const filterTopic = (config.topic_filter || "").trim();
 
     async function handler(req, res) {
+      if (!cfg || !cfg.tenant_slug) {
+        node.status({ fill: "red", shape: "ring", text: "missing bf-server-config" });
+        return res.status(200).end();
+      }
       const body = await readJsonBody(req);
+      if (!tenantMatchesBody(cfg, body, node)) {
+        return res.status(200).end();
+      }
       const topic = String(body.topic || "");
 
       if (filterTopic && !topic.includes(filterTopic)) {

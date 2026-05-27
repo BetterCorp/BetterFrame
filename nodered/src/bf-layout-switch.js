@@ -7,6 +7,8 @@
  *   - config.display_id, config.layout_id  (statically configured)
  *   - msg.display_id, msg.layout_id        (per-message overrides)
  */
+const { adminHeaders } = require("./_tenant.js");
+
 module.exports = function (RED) {
   function BfLayoutSwitchNode(config) {
     RED.nodes.createNode(this, config);
@@ -29,7 +31,7 @@ module.exports = function (RED) {
       try {
         const r = await fetch(url, {
           method: "POST",
-          headers: { authorization: "Bearer " + cfg.api_key },
+          headers: adminHeaders(cfg),
           redirect: "manual",
         });
         // 200/302 both indicate success in BF; 302 is the post-redirect-to-admin response.

@@ -22,6 +22,7 @@ declare module "h3" {
     obs?: import("@bsb/base").Observable;
     /** Current tenant (PG multi-tenant mode). Undefined for SQLite. */
     tenant?: Tenant;
+    tenantHeaderError?: "unknown tenant" | "inactive tenant";
   }
 }
 
@@ -60,7 +61,17 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
     // Skip tenant resolution for paths that don't query tenant-scoped data.
     if (path.startsWith("/static/") || path === "/healthz" || path === "/readyz" || path === "/version") return;
 
-    // Read tenant slug from cookie.
+    const headerSlug = (event.req.headers.get("x-betterframe-tenant") ?? "").trim().toLowerCase();
+    if (headerSlug) {
+      const tenant = await deps.repo.getTenantBySlug(headerSlug);
+      if (tenant?.is_active) {
+        event.context.tenant = tenant;
+        await deps.repo.adapter.setSearchPath(tenant.schema_name);
+        return;
+      }
+      event.context.tenantHeaderError = tenant ? "inactive tenant" : "unknown tenant";
+    }
+
     const tenantSlug = getCookie(event, "bf_tenant") || "default";
     const tenant = await deps.repo.getTenantBySlug(tenantSlug);
     if (tenant && tenant.is_active) {
@@ -108,6 +119,9 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
       // cookie + present API key doesn't 302 to /auth/login.
       const authz = event.req.headers.get("authorization");
       if (authz && authz.startsWith("Bearer ")) {
+        if (event.context.tenantHeaderError) {
+          return new Response(event.context.tenantHeaderError, { status: 401 });
+        }
         const token = authz.slice(7);
         if (
           (path === "/api/admin/firmware/import" || path === "/api/admin/os/import") &&

@@ -16,6 +16,8 @@
  *   layout.priority        → POST /api/admin/layouts/:id/priority       {value: "hot"|"normal"|"cold"}
  *   entity.name            → POST /api/admin/entities/:id/name          {value: string}
  */
+const { adminHeaders } = require("./_tenant.js");
+
 module.exports = function (RED) {
   const ROUTES = {
     "display.default-layout": (id) => "/api/admin/displays/" + encodeURIComponent(id) + "/default-layout",
@@ -73,11 +75,10 @@ module.exports = function (RED) {
       try {
         const r = await fetch(url, {
           method: "POST",
-          headers: {
-            authorization: "Bearer " + cfg.api_key,
+          headers: adminHeaders(cfg, {
             "content-type": "application/json",
             accept: "application/json",
-          },
+          }),
           body: JSON.stringify({ value: value }),
         });
         if (!r.ok) throw new Error("HTTP " + r.status);

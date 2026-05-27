@@ -7,6 +7,7 @@
  * Output: { topic, kiosk_id, camera_id, active: boolean, payload }
  */
 const { readJsonBody } = require("./_http-body.js");
+const { tenantMatchesBody } = require("./_tenant.js");
 
 const MOTION_PATTERNS = [
   "MotionAlarm",
@@ -22,10 +23,18 @@ module.exports = function (RED) {
   function BfTriggerMotionNode(config) {
     RED.nodes.createNode(this, config);
     const node = this;
+    const cfg = RED.nodes.getNode(config.config);
     const filterCam = config.camera_id ? String(config.camera_id).trim() : null;
 
     async function handler(req, res) {
+      if (!cfg || !cfg.tenant_slug) {
+        node.status({ fill: "red", shape: "ring", text: "missing bf-server-config" });
+        return res.status(200).end();
+      }
       const body = await readJsonBody(req);
+      if (!tenantMatchesBody(cfg, body, node)) {
+        return res.status(200).end();
+      }
       const topic = String(body.topic || "");
 
       // Only fire for motion-related topics.

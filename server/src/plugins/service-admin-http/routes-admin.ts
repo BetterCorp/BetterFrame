@@ -58,6 +58,13 @@ interface DiscoverAddStream {
   role: "main" | "sub" | "other";
 }
 
+function noderedTenant(event: any): { tenant_slug: string; tenant_name: string | null } {
+  return {
+    tenant_slug: event.context.tenant?.slug ?? "default",
+    tenant_name: event.context.tenant?.name ?? "Default",
+  };
+}
+
 type FormValue = string | string[] | undefined;
 
 function htmlFragment(markup: unknown): Response {
@@ -567,7 +574,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       });
     }
     notifyKiosks();
-    deps.nodered.forward("camera.changed", { camera_id: cam.id, event: "created", source: "server" });
+    deps.nodered.forward(
+      "camera.changed",
+      { camera_id: cam.id, event: "created", source: "server" },
+      noderedTenant(event),
+    );
 
     return new Response(null, {
       status: 302,
@@ -654,7 +665,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         if (streams.length === 0) continue;
         const camId = await importDiscoveredCamera(deps, rawName, onvifHost, onvifPort, username, password, streams);
         if (camId != null) {
-          deps.nodered.forward("camera.changed", { camera_id: camId, event: "created", source: "server" });
+          deps.nodered.forward(
+            "camera.changed",
+            { camera_id: camId, event: "created", source: "server" },
+            noderedTenant(event),
+          );
         }
         imported += 1;
       }
@@ -664,7 +679,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       if (streams.length > 0) {
         const camId = await importDiscoveredCamera(deps, rawName, onvifHost, onvifPort, username, password, streams);
         if (camId != null) {
-          deps.nodered.forward("camera.changed", { camera_id: camId, event: "created", source: "server" });
+          deps.nodered.forward(
+            "camera.changed",
+            { camera_id: camId, event: "created", source: "server" },
+            noderedTenant(event),
+          );
         }
         imported += 1;
       }
@@ -1505,7 +1524,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
 
     notifyKiosks();
-    deps.nodered.forward("camera.changed", { camera_id: id, event: "updated", source: "server" });
+    deps.nodered.forward(
+      "camera.changed",
+      { camera_id: id, event: "updated", source: "server" },
+      noderedTenant(event),
+    );
 
     return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
   });
@@ -1602,7 +1625,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = (getRouterParam(event, "id") ?? "");
     await deps.repo.deleteCamera(id);
     notifyKiosks();
-    deps.nodered.forward("camera.changed", { camera_id: id, event: "deleted", source: "server" });
+    deps.nodered.forward(
+      "camera.changed",
+      { camera_id: id, event: "deleted", source: "server" },
+      noderedTenant(event),
+    );
     return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
   });
 
@@ -2052,15 +2079,19 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // ---- Layout switch ----------------------------------------------------
-  const emitLayoutChanged = async (displayId: string | null, kioskId: string | null, layoutId: string) => {
+  const emitLayoutChanged = async (event: any, displayId: string | null, kioskId: string | null, layoutId: string) => {
     const layout = await deps.repo.getLayoutById(layoutId);
-    deps.nodered.forward("layout.changed", {
-      display_id: displayId,
-      kiosk_id: kioskId,
-      layout_id: layoutId,
-      layout_name: layout?.name ?? null,
-      source: "server",
-    });
+    deps.nodered.forward(
+      "layout.changed",
+      {
+        display_id: displayId,
+        kiosk_id: kioskId,
+        layout_id: layoutId,
+        layout_name: layout?.name ?? null,
+        source: "server",
+      },
+      noderedTenant(event),
+    );
   };
 
   const displayLayoutSwitch = async (event: any) => {
@@ -2080,7 +2111,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
           display_id: displayId,
           layout_id: layoutId,
         });
-        await emitLayoutChanged(displayId, display.kiosk_id, layoutId);
+        await emitLayoutChanged(event, displayId, display.kiosk_id, layoutId);
       }
     }
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${displayId}` } });
@@ -2101,12 +2132,16 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         actual_power_state: state === "on" ? "awake" : "standby",
         actual_power_state_at: new Date().toISOString(),
       } as any);
-      deps.nodered.forward("display.power.changed", {
-        display_id: id,
-        kiosk_id: display.kiosk_id,
-        state,
-        source: "server",
-      });
+      deps.nodered.forward(
+        "display.power.changed",
+        {
+          display_id: id,
+          kiosk_id: display.kiosk_id,
+          state,
+          source: "server",
+        },
+        noderedTenant(event),
+      );
     }
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${id}` } });
   };
@@ -2120,7 +2155,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // ---- CEC power commands -----------------------------------------------
-  const emitDisplayPower = async (kioskId: string, state: "on" | "standby") => {
+  const emitDisplayPower = async (event: any, kioskId: string, state: "on" | "standby") => {
     const displays = await deps.repo.listDisplaysForKiosk(kioskId);
     const displayId = displays[0]?.id ?? null;
     const actual = state === "on" ? "awake" : "standby";
@@ -2131,18 +2166,22 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         actual_power_state_at: at,
       } as any);
     }
-    deps.nodered.forward("display.power.changed", {
-      display_id: displayId,
-      kiosk_id: kioskId,
-      state,
-      source: "server",
-    });
+    deps.nodered.forward(
+      "display.power.changed",
+      {
+        display_id: displayId,
+        kiosk_id: kioskId,
+        state,
+        source: "server",
+      },
+      noderedTenant(event),
+    );
   };
 
   app.post("/admin/kiosks/:id/power/standby", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
     getCoordinator().sendToKiosk(id, { type: "standby" });
-    await emitDisplayPower(id, "standby");
+    await emitDisplayPower(event, id, "standby");
     await audit(deps.repo, event as any, "display.standby", { resource_type: "kiosk", resource_id: id });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
@@ -2150,7 +2189,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/kiosks/:id/power/wake", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
     getCoordinator().sendToKiosk(id, { type: "wake" });
-    await emitDisplayPower(id, "on");
+    await emitDisplayPower(event, id, "on");
     await audit(deps.repo, event as any, "display.wake", { resource_type: "kiosk", resource_id: id });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
@@ -2369,7 +2408,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const enabled = Boolean(body["value"] ?? body["enabled"]);
     await deps.repo.updateCamera(id, { enabled } as any);
     notifyKiosks();
-    deps.nodered.forward("camera.changed", { camera_id: id, event: "updated", source: "server" });
+    deps.nodered.forward(
+      "camera.changed",
+      { camera_id: id, event: "updated", source: "server" },
+      noderedTenant(event),
+    );
     const camera = await deps.repo.getCameraById(id);
     if (!camera) return jsonResponse({ error: "not_found" }, 404);
     return jsonResponse({ camera });

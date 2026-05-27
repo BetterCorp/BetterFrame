@@ -23,16 +23,23 @@ export interface NoderedDashboard {
   hidden: boolean;
 }
 
+export interface NoderedTenantConfig {
+  tenant_slug: string;
+  tenant_name: string;
+  api_key: string;
+  active: boolean;
+  deleted?: boolean;
+}
+
 export interface NoderedBridge {
-  forward(topic: string, payload: Record<string, unknown>, onSuccess?: () => void): void;
+  forward(
+    topic: string,
+    payload: Record<string, unknown>,
+    tenant: { tenant_slug: string; tenant_name: string | null },
+    onSuccess?: () => void,
+  ): void;
   listDashboards(): Promise<NoderedDashboard[]>;
-  /**
-   * Idempotently provision a `bf-server-config` node in Node-RED's flow graph
-   * carrying the BetterFrame server URL + admin API key. Skips if any
-   * `bf-server-config` node already exists (assume user owns it). Best-effort;
-   * caller should retry on transient failure (Node-RED may still be booting).
-   */
-  ensureServerConfig(serverUrl: string, apiKey: string): Promise<"created" | "exists" | "failed">;
+  reconcileServerConfigs(serverUrl: string, tenantConfigs: NoderedTenantConfig[]): Promise<"updated" | "noop" | "failed">;
 }
 
 interface NoderedFlowNode {
@@ -87,7 +94,12 @@ export function initNoderedBridge(config: NoderedConfig, log: NoderedLog): Noder
   const timeoutMs = config.timeoutMs ?? 3000;
 
   return {
-    forward(topic: string, payload: Record<string, unknown>, onSuccess?: () => void): void {
+    forward(
+      topic: string,
+      payload: Record<string, unknown>,
+      tenant: { tenant_slug: string; tenant_name: string | null },
+      onSuccess?: () => void,
+    ): void {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
 
@@ -95,7 +107,11 @@ export function initNoderedBridge(config: NoderedConfig, log: NoderedLog): Noder
       fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          ...payload,
+          tenant_slug: tenant.tenant_slug,
+          tenant_name: tenant.tenant_name,
+        }),
         signal: ctrl.signal,
       })
         .then((r) => {
@@ -116,28 +132,49 @@ export function initNoderedBridge(config: NoderedConfig, log: NoderedLog): Noder
         return [];
       }
     },
-    async ensureServerConfig(
+    async reconcileServerConfigs(
       serverUrl: string,
-      apiKey: string,
-    ): Promise<"created" | "exists" | "failed"> {
+      tenantConfigs: NoderedTenantConfig[],
+    ): Promise<"updated" | "noop" | "failed"> {
       try {
-        return await provisionServerConfig(base, timeoutMs, serverUrl, apiKey);
+        return await reconcileServerConfigs(base, timeoutMs, serverUrl, tenantConfigs, log);
       } catch (err) {
-        log.warn(`nodered ensureServerConfig failed: ${(err as Error).message}`);
+        log.warn(`nodered reconcileServerConfigs failed: ${(err as Error).message}`);
         return "failed";
       }
     },
   };
 }
 
-const BF_SERVER_CONFIG_ID = "bfsrv-default";
+const LEGACY_BF_SERVER_CONFIG_ID = "bfsrv-default";
 
-async function provisionServerConfig(
+function managedNodeId(tenantSlug: string): string {
+  return `bfsrv-tenant-${tenantSlug}`;
+}
+
+function configNodeName(tenant: NoderedTenantConfig): string {
+  const base = `BetterFrame (${tenant.tenant_name})`;
+  if (tenant.deleted) return `${base} [deleted]`;
+  if (!tenant.active) return `${base} [inactive]`;
+  return base;
+}
+
+function desiredTenantState(tenant: NoderedTenantConfig): "active" | "inactive" | "deleted" {
+  if (tenant.deleted) return "deleted";
+  return tenant.active ? "active" : "inactive";
+}
+
+function apiKeyPrefix(apiKey: string): string {
+  return apiKey.slice(0, 8);
+}
+
+async function reconcileServerConfigs(
   base: string,
   timeoutMs: number,
   serverUrl: string,
-  apiKey: string,
-): Promise<"created" | "exists" | "failed"> {
+  tenantConfigs: NoderedTenantConfig[],
+  log: NoderedLog,
+): Promise<"updated" | "noop" | "failed"> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -154,25 +191,99 @@ async function provisionServerConfig(
     });
     if (!getResp.ok) throw new Error(`GET /flows HTTP ${String(getResp.status)}`);
     const raw = (await getResp.json()) as NoderedFlowNode[] | { flows: NoderedFlowNode[]; rev?: string };
-    const flows: NoderedFlowNode[] = Array.isArray(raw) ? raw : (raw.flows ?? []);
+    const flows: NoderedFlowNode[] = (Array.isArray(raw) ? raw : (raw.flows ?? [])).map((node) => ({ ...node }));
     const rev: string | undefined = Array.isArray(raw) ? undefined : raw.rev;
 
-    if (flows.some((n) => n.type === "bf-server-config")) {
-      return "exists";
+    const desired = new Map<string, NoderedTenantConfig>();
+    for (const tenant of tenantConfigs) {
+      desired.set(managedNodeId(tenant.tenant_slug), tenant);
     }
 
-    const newNode: NoderedFlowNode = {
-      id: BF_SERVER_CONFIG_ID,
-      type: "bf-server-config",
-      name: "BetterFrame (auto)",
-      server_url: serverUrl.replace(/\/+$/, ""),
-      // Node-RED extracts `credentials` on POST /flows and stores them in
-      // flows_cred.json. Confirmed by the editor's own save path.
-      credentials: { api_key: apiKey },
-    };
+    let changed = false;
+    const managedIds = new Set(desired.keys());
+
+    for (let i = 0; i < flows.length; i += 1) {
+      const node = flows[i]!;
+      if (node.id === LEGACY_BF_SERVER_CONFIG_ID && node.type === "bf-server-config") {
+        const legacyName = typeof node.name === "string" ? node.name : "";
+        if (legacyName === "BetterFrame (auto)") {
+          node.name = "BetterFrame (legacy auto)";
+          node.disabled = true;
+          node["managed_by_betterframe"] = true;
+          node["managed_tenant_state"] = "deleted";
+          changed = true;
+        }
+        continue;
+      }
+      if (node.type !== "bf-server-config" || node["managed_by_betterframe"] !== true) continue;
+      const tenant = desired.get(String(node.id));
+      if (!tenant) {
+        node.disabled = true;
+        node["managed_tenant_state"] = "deleted";
+        if (typeof node.name === "string" && !node.name.endsWith(" [deleted]")) {
+          node.name = `${node.name} [deleted]`;
+        }
+        changed = true;
+        log.info(`nodered: disabled tenant config ${String(node["tenant_slug"] ?? node.id)} (deleted)`);
+        continue;
+      }
+      const state = desiredTenantState(tenant);
+      const nextName = configNodeName(tenant);
+      const nextDisabled = state !== "active";
+      if (
+        node.name !== nextName
+        || node.server_url !== serverUrl.replace(/\/+$/, "")
+        || node["tenant_slug"] !== tenant.tenant_slug
+        || node["tenant_name"] !== tenant.tenant_name
+        || node["managed_api_key_prefix"] !== apiKeyPrefix(tenant.api_key)
+        || node["managed_tenant_state"] !== state
+        || node.disabled !== nextDisabled
+      ) {
+        node.name = nextName;
+        node.server_url = serverUrl.replace(/\/+$/, "");
+        node["tenant_slug"] = tenant.tenant_slug;
+        node["tenant_name"] = tenant.tenant_name;
+        node["managed_by_betterframe"] = true;
+        node["managed_api_key_prefix"] = apiKeyPrefix(tenant.api_key);
+        node["managed_tenant_state"] = state;
+        node.disabled = nextDisabled;
+        node.credentials = { api_key: tenant.api_key };
+        changed = true;
+        if (state === "active") log.info(`nodered: updated tenant config ${tenant.tenant_slug}`);
+        if (state === "inactive") log.info(`nodered: disabled tenant config ${tenant.tenant_slug} (inactive)`);
+        if (state === "deleted") log.info(`nodered: disabled tenant config ${tenant.tenant_slug} (deleted)`);
+      }
+      managedIds.delete(String(node.id));
+    }
+
+    for (const id of managedIds) {
+      const tenant = desired.get(id)!;
+      const state = desiredTenantState(tenant);
+      flows.push({
+        id,
+        type: "bf-server-config",
+        name: configNodeName(tenant),
+        server_url: serverUrl.replace(/\/+$/, ""),
+        tenant_slug: tenant.tenant_slug,
+        tenant_name: tenant.tenant_name,
+        managed_by_betterframe: true,
+        managed_api_key_prefix: apiKeyPrefix(tenant.api_key),
+        managed_tenant_state: state,
+        disabled: state !== "active",
+        credentials: { api_key: tenant.api_key },
+      });
+      changed = true;
+      if (state === "active") log.info(`nodered: created tenant config ${tenant.tenant_slug}`);
+      if (state === "inactive") log.info(`nodered: disabled tenant config ${tenant.tenant_slug} (inactive)`);
+      if (state === "deleted") log.info(`nodered: disabled tenant config ${tenant.tenant_slug} (deleted)`);
+    }
+
+    if (!changed) {
+      return "noop";
+    }
 
     const body: Record<string, unknown> = {
-      flows: [...flows, newNode],
+      flows,
     };
     if (rev) body.rev = rev;
 
@@ -191,7 +302,7 @@ async function provisionServerConfig(
       const text = await postResp.text().catch(() => "");
       throw new Error(`POST /flows HTTP ${String(postResp.status)}: ${text.slice(0, 200)}`);
     }
-    return "created";
+    return "updated";
   } finally {
     clearTimeout(t);
   }

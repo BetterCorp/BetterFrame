@@ -4,6 +4,7 @@
     color: "#a6d4ff",
     defaults: {
       name: { value: "" },
+      config: { value: "", type: "bf-server-config", required: true },
       display_id: { value: "" },
     },
     inputs: 0,
@@ -22,6 +23,10 @@
     <input type="text" id="node-input-name" placeholder="(optional)" />
   </div>
   <div class="form-row">
+    <label for="node-input-config"><i class="fa fa-cog"></i> BF</label>
+    <input type="text" id="node-input-config" />
+  </div>
+  <div class="form-row">
     <label for="node-input-display_id"><i class="fa fa-desktop"></i> Display ID</label>
     <input type="number" id="node-input-display_id" placeholder="(blank = all displays)" />
   </div>
@@ -29,7 +34,7 @@
     Fires when a display's active layout changes.
     Listens on <code>POST /in/layout.changed</code> internally — no upstream
     <code>http in</code> node required.
-    Emits <code>msg.payload = {display_id, kiosk_id, layout_id, layout_name}</code>.
+    Emits <code>msg.payload = {display_id, kiosk_id, layout_id, layout_name}</code> for the selected tenant.
     Leave Display ID blank to receive events from all displays.
   </div>
 </script>
@@ -38,5 +43,6 @@
   <p>Fires when a display switches to a new layout (admin layout-switch).</p>
   <p>Listens on <code>POST /in/layout.changed</code> internally — no upstream
   <code>http in</code> node needed.</p>
+  <p>Select a <b>BF</b> config to scope this trigger to one tenant.</p>
   <p>Optional <b>Display ID</b> filter limits this node to a single display.</p>
 </script>

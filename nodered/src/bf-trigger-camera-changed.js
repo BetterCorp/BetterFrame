@@ -12,6 +12,7 @@
  * Output msg.payload: { camera_id, event: "created" | "updated" | "deleted" }
  */
 const { readJsonBody } = require("./_http-body.js");
+const { tenantMatchesBody } = require("./_tenant.js");
 
 module.exports = function (RED) {
   const TOPIC = "camera.changed";
@@ -20,11 +21,19 @@ module.exports = function (RED) {
   function BfTriggerCameraChangedNode(config) {
     RED.nodes.createNode(this, config);
     const node = this;
+    const cfg = RED.nodes.getNode(config.config);
     const filterIdRaw = (config.camera_id || "").toString().trim();
     const filterId = filterIdRaw && !isNaN(Number(filterIdRaw)) ? Number(filterIdRaw) : null;
 
     async function handler(req, res) {
+      if (!cfg || !cfg.tenant_slug) {
+        node.status({ fill: "red", shape: "ring", text: "missing bf-server-config" });
+        return res.status(200).end();
+      }
       const body = await readJsonBody(req);
+      if (!tenantMatchesBody(cfg, body, node)) {
+        return res.status(200).end();
+      }
       const camId = body.camera_id !== undefined ? body.camera_id : null;
       if (filterId !== null && Number(camId) !== filterId) {
         return res.status(200).end();

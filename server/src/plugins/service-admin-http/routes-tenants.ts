@@ -80,6 +80,7 @@ export function registerTenantRoutes(app: H3, deps: AdminDeps): void {
         warn: (m) => { /* swallow */ },
       },
     );
+    deps.scheduleNoderedReconcile();
 
     return new Response(null, { status: 302, headers: { location: "/admin/tenants" } });
   });
@@ -126,6 +127,7 @@ export function registerTenantRoutes(app: H3, deps: AdminDeps): void {
       max_cameras: maxCameras,
       max_users: maxUsers,
     });
+    deps.scheduleNoderedReconcile();
     return new Response(null, { status: 302, headers: { location: "/admin/tenants" } });
   });
 
@@ -142,6 +144,7 @@ export function registerTenantRoutes(app: H3, deps: AdminDeps): void {
     }
     await deps.repo.deleteTenant(id);
     // Note: does NOT drop the PG schema. That's intentional for data safety.
+    deps.scheduleNoderedReconcile();
     return new Response(null, { status: 302, headers: { location: "/admin/tenants" } });
   });
 

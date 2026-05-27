@@ -12,8 +12,12 @@ module.exports = function (RED) {
     RED.nodes.createNode(this, n);
     this.name = n.name;
     this.server_url = (n.server_url || "").replace(/\/+$/, "");
+    this.tenant_slug = (n.tenant_slug || "default").trim().toLowerCase();
+    this.tenant_name = (n.tenant_name || "").trim();
+    this.managed_by_betterframe = n.managed_by_betterframe === true;
+    this.managed_tenant_state = n.managed_tenant_state || "active";
     // credentials.api_key is auto-merged onto `this` by Node-RED.
-    this.api_key = (this.credentials && this.credentials.api_key) || "";
+    this.api_key = ((this.credentials && this.credentials.api_key) || "").trim();
   }
   RED.nodes.registerType("bf-server-config", BfServerConfigNode, {
     credentials: {

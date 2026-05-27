@@ -15,6 +15,7 @@
  *   { topic, kiosk_id, camera_id, source_type, payload }
  */
 const { readJsonBody } = require("./_http-body.js");
+const { tenantMatchesBody } = require("./_tenant.js");
 
 module.exports = function (RED) {
   // Fixed ingest route. Server-side forwarders that want this node to receive
@@ -26,10 +27,18 @@ module.exports = function (RED) {
   function BfKioskCameraEventNode(config) {
     RED.nodes.createNode(this, config);
     const node = this;
+    const cfg = RED.nodes.getNode(config.config);
     const filterId = (config.camera_id || "").toString().trim() || null;
 
     async function handler(req, res) {
+      if (!cfg || !cfg.tenant_slug) {
+        node.status({ fill: "red", shape: "ring", text: "missing bf-server-config" });
+        return res.status(200).end();
+      }
       const body = await readJsonBody(req);
+      if (!tenantMatchesBody(cfg, body, node)) {
+        return res.status(200).end();
+      }
       const kioskId = body.kiosk_id !== undefined ? body.kiosk_id
         : body.source_kiosk_id !== undefined ? body.source_kiosk_id
         : null;

@@ -8,6 +8,8 @@
  *
  * Use this for populating UI dropdowns or driving "all cameras" loops.
  */
+const { adminHeaders } = require("./_tenant.js");
+
 module.exports = function (RED) {
   function BfCamerasNode(config) {
     RED.nodes.createNode(this, config);
@@ -24,10 +26,7 @@ module.exports = function (RED) {
       try {
         const r = await fetch(url, {
           method: "GET",
-          headers: {
-            authorization: "Bearer " + cfg.api_key,
-            accept: "application/json",
-          },
+          headers: adminHeaders(cfg, { accept: "application/json" }),
         });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const data = await r.json();

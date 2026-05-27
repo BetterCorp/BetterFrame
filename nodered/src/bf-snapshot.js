@@ -11,6 +11,8 @@
  *
  * Typical use: motion event → bf-snapshot → email / telegram / save-to-disk.
  */
+const { adminHeaders } = require("./_tenant.js");
+
 module.exports = function (RED) {
   function BfSnapshotNode(config) {
     RED.nodes.createNode(this, config);
@@ -32,10 +34,7 @@ module.exports = function (RED) {
       try {
         const r = await fetch(url, {
           method: "GET",
-          headers: {
-            authorization: "Bearer " + cfg.api_key,
-            accept: "image/jpeg",
-          },
+          headers: adminHeaders(cfg, { accept: "image/jpeg" }),
         });
         if (r.status === 502) {
           node.status({ fill: "red", shape: "ring", text: "no snapshot" });

@@ -4,6 +4,10 @@
     defaults: {
       name: { value: "" },
       server_url: { value: "http://localhost", required: true },
+      tenant_slug: { value: "default", required: true },
+      tenant_name: { value: "" },
+      managed_by_betterframe: { value: false },
+      managed_tenant_state: { value: "active" },
     },
     credentials: {
       api_key: { type: "password" },
@@ -27,8 +31,17 @@
     <label for="node-config-input-api_key"><i class="fa fa-key"></i> Admin API key</label>
     <input type="password" id="node-config-input-api_key" placeholder="bf-..." />
   </div>
+  <div class="form-row">
+    <label for="node-config-input-tenant_slug"><i class="fa fa-building"></i> Tenant slug</label>
+    <input type="text" id="node-config-input-tenant_slug" placeholder="default" />
+  </div>
+  <div class="form-row">
+    <label for="node-config-input-tenant_name"><i class="fa fa-tag"></i> Tenant name</label>
+    <input type="text" id="node-config-input-tenant_name" placeholder="Default" />
+  </div>
   <div class="form-tips">
     Create an admin-scoped API key in BetterFrame Admin and paste it here.
-    The key is sent as <code>Authorization: Bearer &lt;key&gt;</code>.
+    Requests send <code>Authorization: Bearer &lt;key&gt;</code> and
+    <code>X-BetterFrame-Tenant: &lt;tenant_slug&gt;</code>.
   </div>
 </script>

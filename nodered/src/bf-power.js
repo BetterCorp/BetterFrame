@@ -6,6 +6,8 @@
  * config.mode: "wake" | "standby" (can also be set via msg.mode)
  * config.kiosk_id: numeric (can be overridden by msg.kiosk_id)
  */
+const { adminHeaders } = require("./_tenant.js");
+
 module.exports = function (RED) {
   function BfPowerNode(config) {
     RED.nodes.createNode(this, config);
@@ -32,7 +34,7 @@ module.exports = function (RED) {
       try {
         const r = await fetch(url, {
           method: "POST",
-          headers: { authorization: "Bearer " + cfg.api_key },
+          headers: adminHeaders(cfg),
           redirect: "manual",
         });
         if (!r.ok && r.status !== 302) throw new Error("HTTP " + r.status);

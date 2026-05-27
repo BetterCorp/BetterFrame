@@ -339,6 +339,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           socket.destroy();
           return;
         }
+        await repo.adapter.setSearchPath(kiosk.schema_name);
         const kioskData = await repo.getKioskById(kiosk.id);
         if (!kioskData) {
           socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
@@ -350,12 +351,16 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           obs.log.info("kiosk connected: {name}", { name: kioskData.name });
           ws.send(JSON.stringify({ type: "connected", kiosk_id: kiosk.id }));
           drainOfflineQueue(kiosk.id);
-          nodered.forward("kiosk.changed", {
-            kiosk_id: kiosk.id,
-            kiosk_name: kioskData.name,
-            event: "connected",
-            source: "server",
-          });
+          nodered.forward(
+            "kiosk.changed",
+            {
+              kiosk_id: kiosk.id,
+              kiosk_name: kioskData.name,
+              event: "connected",
+              source: "server",
+            },
+            { tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name },
+          );
 
           ws.on("message", (data) => {
             try {
@@ -401,15 +406,23 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
                   disk_free_mb: typeof msg["disk_free_mb"] === "number" ? msg["disk_free_mb"] : null,
                   disk_used_percent: typeof msg["disk_used_percent"] === "number" ? msg["disk_used_percent"] : null,
                 };
-                nodered.forward("kiosk.changed", {
-                  ...telemetry,
-                  event: "heartbeat",
-                  source: "server",
-                });
+                nodered.forward(
+                  "kiosk.changed",
+                  {
+                    ...telemetry,
+                    event: "heartbeat",
+                    source: "server",
+                  },
+                  { tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name },
+                );
                 // Dedicated status topic — same payload sans the event marker
                 // so bf-trigger-status can listen on a heartbeat-only channel
                 // without filtering connect/disconnect noise out.
-                nodered.forward("kiosk.status", { ...telemetry, source: "server" });
+                nodered.forward(
+                  "kiosk.status",
+                  { ...telemetry, source: "server" },
+                  { tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name },
+                );
               }
             } catch {
               // ignore malformed
@@ -425,12 +438,16 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
               pending.reject(new Error("kiosk disconnected"));
             }
             obs.log.info("kiosk disconnected: {name}", { name: kioskData.name });
-            nodered.forward("kiosk.changed", {
-              kiosk_id: kiosk.id,
-              kiosk_name: kioskData.name,
-              event: "disconnected",
-              source: "server",
-            });
+            nodered.forward(
+              "kiosk.changed",
+              {
+                kiosk_id: kiosk.id,
+                kiosk_name: kioskData.name,
+                event: "disconnected",
+                source: "server",
+              },
+              { tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name },
+            );
           });
         });
       } catch (err) {

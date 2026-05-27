@@ -4,6 +4,7 @@
     color: "#a6d4ff",
     defaults: {
       name: { value: "" },
+      config: { value: "", type: "bf-server-config", required: true },
       camera_id: { value: "" },
     },
     inputs: 0,
@@ -22,6 +23,10 @@
     <input type="text" id="node-input-name" placeholder="(optional)" />
   </div>
   <div class="form-row">
+    <label for="node-input-config"><i class="fa fa-cog"></i> BF</label>
+    <input type="text" id="node-input-config" />
+  </div>
+  <div class="form-row">
     <label for="node-input-camera_id"><i class="fa fa-video-camera"></i> Camera ID</label>
     <input type="number" id="node-input-camera_id" placeholder="(blank = all cameras)" />
   </div>
@@ -29,7 +34,7 @@
     Triggers when a camera is created, updated, or deleted in admin.
     Listens on <code>POST /in/camera.changed</code> internally — no upstream
     <code>http in</code> node required.
-    Emits <code>msg.payload = {camera_id, event}</code>.
+    Emits <code>msg.payload = {camera_id, event}</code> for the selected tenant.
     Leave Camera ID blank to receive events from all cameras.
   </div>
 </script>
@@ -39,5 +44,6 @@
   (manual create, ONVIF import, edit, delete, enable/disable).</p>
   <p>Listens on <code>POST /in/camera.changed</code> internally — no upstream
   <code>http in</code> node needed.</p>
+  <p>Select a <b>BF</b> config to scope this trigger to one tenant.</p>
   <p>Optional <b>Camera ID</b> filter limits this node to a single camera.</p>
 </script>

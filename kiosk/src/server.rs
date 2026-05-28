@@ -496,6 +496,7 @@ fn tailscale_status() -> serde_json::Value {
 pub fn heartbeat(
     server: &str,
     key: &str,
+    bundle_version: Option<&str>,
     displays: &[DisplayReport],
     hw: &crate::hwmon::HwInfo,
 ) -> bool {
@@ -525,6 +526,7 @@ pub fn heartbeat(
         .post(format!("{server}/api/kiosk/heartbeat"))
         .header("Authorization", format!("Bearer {key}"))
         .json(&serde_json::json!({
+            "bundle_version": bundle_version,
             "kiosk_app_version": kiosk_app_version(),
             "os_version": crate::os_update::current_os_version_public(),
             "displays": display_info,

@@ -503,6 +503,11 @@ fn mark_activity(display_id: &str) {
 }
 
 fn send_heartbeat_now(server_url: &str, kiosk_key: &str) -> bool {
+    let bundle_version = CURRENT_BUNDLE.with(|b| {
+        b.borrow()
+            .as_ref()
+            .map(|bundle| bundle.version.clone())
+    });
     let raw_displays = query_displays();
     let bundle_displays = CURRENT_BUNDLE
         .with(|b| b.borrow().as_ref().map(|b| b.normalized_displays()))
@@ -536,7 +541,7 @@ fn send_heartbeat_now(server_url: &str, kiosk_key: &str) -> bool {
         })
         .collect();
     let hw = hwmon::read();
-    server::heartbeat(server_url, kiosk_key, &displays, &hw)
+    server::heartbeat(server_url, kiosk_key, bundle_version.as_deref(), &displays, &hw)
 }
 
 fn mark_kiosk_healthy() {

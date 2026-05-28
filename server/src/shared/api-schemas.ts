@@ -48,7 +48,7 @@ const HeartbeatPartition = av.object(
 
 export const HeartbeatBody = av.object(
   {
-    bundle_version: av.string().maxLength(128).default(""),
+    bundle_version: av.nullable(av.string().maxLength(128)).default(null),
     kiosk_app_version: av.string().maxLength(64).default(""),
     os_version: av.string().maxLength(64).default(""),
     displays: av.array(HeartbeatDisplay).default([]),

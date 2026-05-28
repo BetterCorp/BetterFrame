@@ -249,9 +249,17 @@ async fn handle_message(
     } else if text.contains("\"type\":\"reboot\"") {
         let _ = tx.send(ServerMsg::Reboot);
     } else if text.contains("\"type\":\"firmware_check\"") {
-        let _ = tx.send(ServerMsg::FirmwareCheck);
+        let force = serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .and_then(|msg| msg.get("force").and_then(|v| v.as_bool()))
+            .unwrap_or(false);
+        let _ = tx.send(ServerMsg::FirmwareCheck { force });
     } else if text.contains("\"type\":\"os_check\"") {
-        let _ = tx.send(ServerMsg::OsCheck);
+        let force = serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .and_then(|msg| msg.get("force").and_then(|v| v.as_bool()))
+            .unwrap_or(false);
+        let _ = tx.send(ServerMsg::OsCheck { force });
     } else if text.contains("\"type\":\"fan\"") {
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
             return;

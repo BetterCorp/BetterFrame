@@ -331,15 +331,16 @@ fn activate(app: &Application) {
                             .arg("reboot")
                             .status();
                     }
-                    ServerMsg::FirmwareCheck => {
+                    ServerMsg::FirmwareCheck { force } => {
                         maybe_apply_firmware_update(
                             &server_for_reload,
                             &key_for_reload,
                             &tx_for_reload,
+                            force,
                         );
                     }
-                    ServerMsg::OsCheck => {
-                        maybe_apply_os_update(&server_for_reload, &key_for_reload, &tx_for_reload);
+                    ServerMsg::OsCheck { force } => {
+                        maybe_apply_os_update(&server_for_reload, &key_for_reload, &tx_for_reload, force);
                     }
                     ServerMsg::ShowTerminalCode(code) => {
                         let _ = tx_for_reload.send(WorkerMsg::ShowTerminalCode(code));
@@ -368,8 +369,8 @@ fn activate(app: &Application) {
                 cleanup_stale_files();
                 first_iter = false;
             }
-            maybe_apply_os_update(&server, &key, &tx_progress);
-            maybe_apply_firmware_update(&server, &key, &tx_progress);
+            maybe_apply_os_update(&server, &key, &tx_progress, false);
+            maybe_apply_firmware_update(&server, &key, &tx_progress, false);
             maybe_refresh_onvif(&server, &key);
             std::thread::sleep(std::time::Duration::from_secs(60));
         }
@@ -623,7 +624,12 @@ fn cleanup_stale_files() {
 
 /// Ask the server whether a full-OS RAUC bundle is available for this
 /// kiosk.
-fn maybe_apply_os_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sender<WorkerMsg>) {
+fn maybe_apply_os_update(
+    server_url: &str,
+    kiosk_key: &str,
+    tx: &mpsc::Sender<WorkerMsg>,
+    force: bool,
+) {
     if std::env::var("BF_ENABLE_OS_OTA").as_deref() != Ok("1") {
         return;
     }
@@ -645,6 +651,25 @@ fn maybe_apply_os_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sender<Wo
             OS_UPDATE_ACTIVE.store(false, Ordering::SeqCst);
             return;
         };
+        if let Some(failures) = crate::update_guard::blocked("os", &info.version, force) {
+            warn!(
+                "os-update: skipping {} after {failures} failed attempts; admin push required",
+                info.version
+            );
+            server::report_kiosk_log(
+                &server_url,
+                &kiosk_key,
+                "warn",
+                "os update blocked after repeated failures",
+                serde_json::json!({
+                    "target_version": &info.version,
+                    "release_id": &info.release_id,
+                    "failures": failures,
+                }),
+            );
+            OS_UPDATE_ACTIVE.store(false, Ordering::SeqCst);
+            return;
+        }
         info!("os-update: bundle {} available", info.version);
         server::report_kiosk_log(
             &server_url,
@@ -666,6 +691,7 @@ fn maybe_apply_os_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sender<Wo
         });
         OS_UPDATE_ACTIVE.store(false, Ordering::SeqCst);
         if let Err(err) = result {
+            let failures = crate::update_guard::record_failure("os", &info.version, &err);
             let _ = tx.send(WorkerMsg::UpdateProgress(None));
             warn!("os-update: apply failed: {err}");
             server::report_kiosk_log(
@@ -677,6 +703,8 @@ fn maybe_apply_os_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sender<Wo
                     "target_version": &info.version,
                     "release_id": &info.release_id,
                     "error": &err,
+                    "failures": failures,
+                    "blocked": failures >= 3,
                 }),
             );
         }
@@ -686,7 +714,12 @@ fn maybe_apply_os_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sender<Wo
 /// Ask the server whether an update is available. On hit, download + verify
 /// + swap + report + exit (systemd brings up the new binary). On miss or
 /// error: log + keep running. Designed to be safe to call from any thread.
-fn maybe_apply_firmware_update(server_url: &str, kiosk_key: &str, tx: &mpsc::Sender<WorkerMsg>) {
+fn maybe_apply_firmware_update(
+    server_url: &str,
+    kiosk_key: &str,
+    tx: &mpsc::Sender<WorkerMsg>,
+    force: bool,
+) {
     if std::env::var("BF_ENABLE_APP_OTA").as_deref() != Ok("1") {
         return;
     }
@@ -717,6 +750,26 @@ fn run_firmware_update_worker(server_url: String, kiosk_key: String, tx: mpsc::S
         FIRMWARE_ACTIVE.store(false, Ordering::SeqCst);
         return;
     };
+    if let Some(failures) = crate::update_guard::blocked("firmware", &info.version, force) {
+        warn!(
+            "firmware: skipping {} after {failures} failed attempts; admin push required",
+            info.version
+        );
+        server::report_kiosk_log(
+            &server_url,
+            &kiosk_key,
+            "warn",
+            "firmware update blocked after repeated failures",
+            serde_json::json!({
+                "current_version": current,
+                "target_version": &info.version,
+                "release_id": &info.release_id,
+                "failures": failures,
+            }),
+        );
+        FIRMWARE_ACTIVE.store(false, Ordering::SeqCst);
+        return;
+    }
     info!("firmware: update {} -> {} available", current, info.version);
     server::report_kiosk_log(
         &server_url,
@@ -743,6 +796,7 @@ fn run_firmware_update_worker(server_url: String, kiosk_key: String, tx: mpsc::S
     });
     FIRMWARE_ACTIVE.store(false, Ordering::SeqCst);
     if let Err(err) = result {
+        let failures = crate::update_guard::record_failure("firmware", &info.version, &err);
         let _ = tx.send(WorkerMsg::UpdateProgress(None));
         warn!("firmware: apply failed: {err}");
         server::report_kiosk_log(
@@ -754,6 +808,8 @@ fn run_firmware_update_worker(server_url: String, kiosk_key: String, tx: mpsc::S
                 "target_version": &info.version,
                 "release_id": &info.release_id,
                 "error": &err,
+                "failures": failures,
+                "blocked": failures >= 3,
             }),
         );
         let _ = reqwest::blocking::Client::new()

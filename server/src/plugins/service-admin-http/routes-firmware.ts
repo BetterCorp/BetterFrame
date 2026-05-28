@@ -177,7 +177,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
   // happens kiosk-side over the existing kiosk_key channel.
   app.post("/admin/kiosks/:id/firmware/push", (event) => {
     const id = (getRouterParam(event, "id") ?? "");
-    const dispatched = getCoordinator().sendToKiosk(id, { type: "firmware_check" });
+    const dispatched = getCoordinator().sendToKiosk(id, { type: "firmware_check", force: true });
     return { ok: true, dispatched };
   });
 
@@ -227,9 +227,9 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     const coord = getCoordinator();
     if (targets.length === 0) {
       const allKiosks = await deps.repo.listKiosks();
-      for (const k of allKiosks) coord.sendToKiosk(k.id, { type: "firmware_check" });
+      for (const k of allKiosks) coord.sendToKiosk(k.id, { type: "firmware_check", force: true });
     } else {
-      for (const id of targets) coord.sendToKiosk(id, { type: "firmware_check" });
+      for (const id of targets) coord.sendToKiosk(id, { type: "firmware_check", force: true });
     }
     return new Response(null, { status: 302, headers: { location: "/admin/firmware/rollouts" } });
   });

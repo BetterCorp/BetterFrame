@@ -17,6 +17,7 @@ mod server;
 mod tailscale;
 mod thermal;
 mod ui;
+mod update_guard;
 mod ws_client;
 
 pub use ui::WorkerMsg;
@@ -39,9 +40,9 @@ pub enum ServerMsg {
     Reboot,
     TailscaleAuth(String),
     /// Server-pushed "go check for a firmware update now".
-    FirmwareCheck,
+    FirmwareCheck { force: bool },
     /// Server-pushed "go check for an OS update now".
-    OsCheck,
+    OsCheck { force: bool },
     /// Show terminal auth code on screen (overlay).
     ShowTerminalCode(String),
     /// Dismiss the terminal code overlay.

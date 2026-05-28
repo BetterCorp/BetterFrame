@@ -67,7 +67,7 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/kiosks/:id/os-update/push", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
     const { getCoordinator } = await import("../../shared/coordinator-registry.js");
-    const dispatched = getCoordinator().sendToKiosk(id, { type: "os_check" });
+    const dispatched = getCoordinator().sendToKiosk(id, { type: "os_check", force: true });
     return { ok: true, dispatched };
   });
 

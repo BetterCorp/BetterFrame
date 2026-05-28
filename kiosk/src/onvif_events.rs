@@ -41,6 +41,7 @@ static GENERATION: Mutex<Option<Arc<()>>> = Mutex::new(None);
 
 /// Subscription status per camera — reported in heartbeat for admin visibility.
 static STATUS: Mutex<Option<HashMap<String, SubStatus>>> = Mutex::new(None);
+static PUSH_RENEW_UNSUPPORTED: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
 #[derive(Clone, serde::Serialize)]
 pub struct SubStatus {
@@ -86,6 +87,23 @@ fn set_status_with_sink(
     if state == "active" {
         entry.subscribed_at = Some(iso_now());
     }
+}
+
+fn push_renew_unsupported(cam_id: &str) -> bool {
+    PUSH_RENEW_UNSUPPORTED
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|m| m.contains_key(cam_id))
+        .unwrap_or(false)
+}
+
+fn remember_push_renew_unsupported(cam_id: &str, err: String) {
+    PUSH_RENEW_UNSUPPORTED
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(cam_id.to_string(), err);
 }
 
 pub fn mark_event_received(cam_id: &str) {
@@ -168,6 +186,7 @@ pub fn start(
     // Store in static — replaces old generation → old Arc drops → old
     // threads' Weak::upgrade() returns None → they exit cleanly.
     *GENERATION.lock().unwrap() = Some(generation.clone());
+    *PUSH_RENEW_UNSUPPORTED.lock().unwrap() = None;
 
     for cam in onvif_cams {
         let server = server_url.to_string();
@@ -376,7 +395,12 @@ fn run_subscription(
         set_status(&cam.id, "subscribing", None);
 
         // ---- Try push subscription first ----
-        if let Some((ref cb_url, sink_label)) = callback_url {
+        if push_renew_unsupported(&cam.id) {
+            info!(
+                "onvif-events: cam {} skipping push; renew unsupported this runtime",
+                cam.id
+            );
+        } else if let Some((ref cb_url, sink_label)) = callback_url {
             info!(
                 "onvif-events: cam {} trying push subscription, callback={cb_url}",
                 cam.id
@@ -416,8 +440,9 @@ fn run_subscription(
                                         cam.id
                                     );
                                     if consecutive_errors >= 3 {
+                                        remember_push_renew_unsupported(&cam.id, e.clone());
                                         warn!(
-                                            "onvif-events: cam {} push renew failed too many times, falling through to poll",
+                                            "onvif-events: cam {} push renew failed too many times, disabling push until restart/reload and falling through to poll: {e}",
                                             cam.id
                                         );
                                         let _ = unsubscribe_push(
@@ -618,6 +643,57 @@ fn soap_post_body(
     Ok((status, text, challenge))
 }
 
+fn soap_error(kind: &str, url: &str, action: &str, status: reqwest::StatusCode, text: &str) -> String {
+    let fault = extract_soap_fault(text);
+    let preview = sanitized_xml_preview(text, 900);
+    let action_tail = action.rsplit('/').next().unwrap_or(action);
+    if preview.is_empty() {
+        format!("soap {kind} HTTP {status} action={action_tail} url={url} fault={fault}")
+    } else {
+        format!(
+            "soap {kind} HTTP {status} action={action_tail} url={url} fault={fault} body={preview}"
+        )
+    }
+}
+
+fn sanitized_xml_preview(xml: &str, max_chars: usize) -> String {
+    let mut out = xml
+        .replace('\r', " ")
+        .replace('\n', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for tag in &["Password", "Username", "Nonce"] {
+        out = redact_tag(&out, tag);
+    }
+    out.chars().take(max_chars).collect()
+}
+
+fn redact_tag(input: &str, tag: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    loop {
+        let Some(start_rel) = rest.find(&format!(":{tag}>")).or_else(|| rest.find(&format!("<{tag}>"))) else {
+            out.push_str(rest);
+            break;
+        };
+        let value_start = start_rel
+            + rest[start_rel..]
+                .find('>')
+                .map(|idx| idx + 1)
+                .unwrap_or(rest[start_rel..].len());
+        out.push_str(&rest[..value_start]);
+        let after_value = &rest[value_start..];
+        let Some(end_rel) = after_value.find(&format!("</")) else {
+            out.push_str("[redacted]");
+            break;
+        };
+        out.push_str("[redacted]");
+        rest = &after_value[end_rel..];
+    }
+    out
+}
+
 /// Cached auth method per host origin. Once we discover which auth works for
 /// a camera, reuse it for all subsequent SOAP calls to avoid 401 probing.
 static AUTH_CACHE: Mutex<Option<HashMap<String, CachedAuth>>> = Mutex::new(None);
@@ -721,7 +797,7 @@ fn soap_post_authed(
                     }
                     return Ok(text);
                 }
-                last_error = format!("soap {kind} HTTP {status}: {fault}");
+                last_error = soap_error(kind, url, action, status, &text);
             }
             Err(err) => last_error = format!("soap {kind}: {err}"),
         }
@@ -737,7 +813,7 @@ fn soap_post_authed(
                 set_cached_auth(url, CachedAuth::HttpDigest(challenge.to_string()));
                 return Ok(text);
             }
-            last_error = format!("soap digest HTTP {status}: {fault}");
+            last_error = soap_error("digest", url, action, status, &text);
         }
     }
 

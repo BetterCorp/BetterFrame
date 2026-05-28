@@ -450,11 +450,10 @@ function registerKioskRoutes(
     if (!bundle) throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
     bundle.tenant_slug = kiosk.tenant_slug;
 
-    // Content-hash ETag: kiosk sends If-None-Match on subsequent fetches.
-    // If bundle hasn't changed → 304 Not Modified (no body, saves bandwidth).
+    // Stable bundle ETag: the payload contains randomized encrypted fields,
+    // so hashing raw JSON would change on every request with no config change.
     const json = JSON.stringify(bundle);
-    const hash = createHash("sha256").update(json).digest("hex").slice(0, 16);
-    const etag = `"${hash}"`;
+    const etag = `"${bundle.version}"`;
     const ifNoneMatch = getRequestHeader(event, "if-none-match");
     if (ifNoneMatch === etag) {
       return new Response(null, { status: 304 });

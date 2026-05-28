@@ -202,6 +202,13 @@ export async function generateBundle(
     for (const l of await repo.layoutsForDisplayId(d.id)) allLayoutIds.add(l.id);
   }
   const cameras = await repo.camerasForLayoutIds([...allLayoutIds]);
+  const stableEncryptedValues = new Map<string, string>();
+
+  function encryptForBundle(plaintext: string, key: string, stableContext: string): string {
+    const ciphertext = secrets.encryptForCluster(plaintext, key);
+    stableEncryptedValues.set(ciphertext, stableSecretFingerprint(stableContext, plaintext));
+    return ciphertext;
+  }
 
   async function buildLayouts(displayId: string, defaultLayoutId: string | null): Promise<BundleLayout[]> {
     const layouts = await repo.layoutsForDisplayId(displayId);
@@ -279,7 +286,7 @@ export async function generateBundle(
               // Encrypt plaintext values with per-kiosk key for transport.
               const ek = kioskEncryptKey ?? clusterKey;
               if (step.value && step.type === "fill" && ek) {
-                step.value_encrypted = secrets.encryptForCluster(step.value, ek);
+                step.value_encrypted = encryptForBundle(step.value, ek, `smart-url:${c.id}:${String(step.selector ?? "")}`);
                 delete step.value;
               }
               return step;
@@ -361,11 +368,11 @@ export async function generateBundle(
     let onvifPwEncrypted: string | null = null;
     const encryptKey = kioskEncryptKey ?? clusterKey;
     if (cam.onvif_password && encryptKey) {
-      onvifPwEncrypted = secrets.encryptForCluster(cam.onvif_password, encryptKey);
+      onvifPwEncrypted = encryptForBundle(cam.onvif_password, encryptKey, `onvif:${cam.id}`);
     }
     let playbackPwEncrypted: string | null = null;
     if (playbackCreds.password && encryptKey) {
-      playbackPwEncrypted = secrets.encryptForCluster(playbackCreds.password, encryptKey);
+      playbackPwEncrypted = encryptForBundle(playbackCreds.password, encryptKey, `playback:${cam.id}`);
     }
     bundleCameras.push({
       id: cam.id,
@@ -430,7 +437,7 @@ export async function generateBundle(
   };
 
   bundle.version = createHash("sha256")
-    .update(JSON.stringify(bundle))
+    .update(JSON.stringify(stableBundleForVersion(bundle, stableEncryptedValues)))
     .digest("hex");
 
   span?.log.info("bundle generated for kiosk {id} version {ver}", {
@@ -439,4 +446,28 @@ export async function generateBundle(
   });
   span?.end();
   return bundle;
+}
+
+function stableSecretFingerprint(context: string, plaintext: string): string {
+  return `secret:${createHash("sha256").update(context).update("\0").update(plaintext).digest("hex")}`;
+}
+
+function stableBundleForVersion(value: unknown, encryptedValues: Map<string, string>): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => stableBundleForVersion(item, encryptedValues));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (key === "version") {
+      out[key] = "";
+    } else if (typeof raw === "string" && key.endsWith("_encrypted")) {
+      out[key] = encryptedValues.get(raw) ?? raw;
+    } else {
+      out[key] = stableBundleForVersion(raw, encryptedValues);
+    }
+  }
+  return out;
 }

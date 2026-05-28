@@ -528,6 +528,10 @@ function registerKioskRoutes(
         patch["managed_config_error"] = body.managed_config_error ?? null;
       }
       await repo.updateKiosk(kiosk.id, patch as any);
+    } else if (kioskFull?.managed_image && body.managed_config_error !== undefined) {
+      await repo.updateKiosk(kiosk.id, {
+        managed_config_error: body.managed_config_error ?? null,
+      } as any);
     }
 
     // Mirror to MQTT bridge (no-op when BF_MQTT_URL unset).

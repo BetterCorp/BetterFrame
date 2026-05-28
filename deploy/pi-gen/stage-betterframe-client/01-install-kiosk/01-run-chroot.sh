@@ -51,6 +51,13 @@ install -m 644 /tmp/bf-files/betterframe-expand-data.service \
   /etc/systemd/system/betterframe-expand-data.service
 install -m 755 /tmp/bf-files/betterframe-expand-data.sh \
   /usr/local/sbin/betterframe-expand-data.sh
+install -m 755 /tmp/bf-files/betterframe-apply-managed-config.sh \
+  /usr/local/sbin/betterframe-apply-managed-config.sh
+install -d -m 755 /etc/sudoers.d
+cat > /etc/sudoers.d/betterframe-managed-config <<'SUDOERS'
+bfkiosk ALL=(root) NOPASSWD: /usr/local/sbin/betterframe-apply-managed-config.sh *
+SUDOERS
+chmod 440 /etc/sudoers.d/betterframe-managed-config
 install -d -m 755 /etc/tmpfiles.d
 install -m 644 /tmp/bf-files/betterframe-kiosk.conf /etc/tmpfiles.d/betterframe-kiosk.conf
 install -d -m 755 /etc/udev/rules.d

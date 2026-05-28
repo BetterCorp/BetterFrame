@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::Mutex;
 use tracing::info;
 
 use crate::bundle::KioskBundle;
@@ -15,6 +16,26 @@ pub struct DisplayReport {
     pub width_px: u32,
     pub height_px: u32,
     pub power_state: String,
+}
+
+#[derive(Clone, Debug)]
+struct ManagedConfigReport {
+    version: u64,
+    error: Option<String>,
+}
+
+static MANAGED_CONFIG_REPORT: Mutex<Option<ManagedConfigReport>> = Mutex::new(None);
+static LAST_MANAGED_CONFIG_ATTEMPT: Mutex<Option<(u64, bool)>> = Mutex::new(None);
+
+#[derive(Debug, Deserialize)]
+struct PendingManagedConfig {
+    version: u64,
+    config: ManagedConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManagedConfig {
+    timezone: Option<String>,
 }
 
 pub fn kiosk_app_version() -> &'static str {
@@ -522,36 +543,45 @@ pub fn heartbeat(
         .unwrap_or(18090);
     let hostname = reported_hostname();
     let network_interfaces = read_network_interfaces();
+    let managed_report = MANAGED_CONFIG_REPORT.lock().ok().and_then(|g| g.clone());
+    let mut payload = serde_json::json!({
+        "bundle_version": bundle_version,
+        "kiosk_app_version": kiosk_app_version(),
+        "os_version": crate::os_update::current_os_version_public(),
+        "displays": display_info,
+        "cpu_temp_c": hw.cpu_temp_c,
+        "cpu_load_percent": hw.cpu_load_percent,
+        "fan_rpm": hw.fan_rpm,
+        "fan_pwm": hw.fan_pwm,
+        "memory_total_mb": hw.memory_total_mb,
+        "memory_used_mb": hw.memory_used_mb,
+        "disk_total_mb": hw.disk_total_mb,
+        "disk_free_mb": hw.disk_free_mb,
+        "disk_used_percent": hw.disk_used_percent,
+        "local_key": local_key,
+        "local_port": local_port,
+        "reported_hostname": hostname,
+        "network_interfaces": network_interfaces,
+        "logging": {
+            "client_time": crate::axiom::iso_now(),
+            "axiom": crate::axiom::status(),
+        },
+        "onvif_subscriptions": serde_json::to_value(crate::onvif_events::get_statuses()).unwrap_or_default(),
+        "partitions": serde_json::to_value(&hw.partitions).unwrap_or_default(),
+        "audio": serde_json::to_value(crate::audio::get_state()).unwrap_or_default(),
+        "tailscale": tailscale_status(),
+    });
+    if let Some(report) = managed_report {
+        if let Some(err) = report.error {
+            payload["managed_config_error"] = serde_json::json!(err);
+        } else {
+            payload["managed_config_applied_version"] = serde_json::json!(report.version);
+        }
+    }
     client
         .post(format!("{server}/api/kiosk/heartbeat"))
         .header("Authorization", format!("Bearer {key}"))
-        .json(&serde_json::json!({
-            "bundle_version": bundle_version,
-            "kiosk_app_version": kiosk_app_version(),
-            "os_version": crate::os_update::current_os_version_public(),
-            "displays": display_info,
-            "cpu_temp_c": hw.cpu_temp_c,
-            "cpu_load_percent": hw.cpu_load_percent,
-            "fan_rpm": hw.fan_rpm,
-            "fan_pwm": hw.fan_pwm,
-            "memory_total_mb": hw.memory_total_mb,
-            "memory_used_mb": hw.memory_used_mb,
-            "disk_total_mb": hw.disk_total_mb,
-            "disk_free_mb": hw.disk_free_mb,
-            "disk_used_percent": hw.disk_used_percent,
-            "local_key": local_key,
-            "local_port": local_port,
-            "reported_hostname": hostname,
-            "network_interfaces": network_interfaces,
-            "logging": {
-                "client_time": crate::axiom::iso_now(),
-                "axiom": crate::axiom::status(),
-            },
-            "onvif_subscriptions": serde_json::to_value(crate::onvif_events::get_statuses()).unwrap_or_default(),
-            "partitions": serde_json::to_value(&hw.partitions).unwrap_or_default(),
-            "audio": serde_json::to_value(crate::audio::get_state()).unwrap_or_default(),
-            "tailscale": tailscale_status(),
-        }))
+        .json(&payload)
         .timeout(Duration::from_secs(5))
         .send()
         .and_then(|r| {
@@ -570,6 +600,9 @@ pub fn heartbeat(
                 let fw = body.get("firmware_channel").and_then(|v| v.as_str());
                 let os = body.get("os_update_channel").and_then(|v| v.as_str());
                 update_cached_channels(fw, os);
+                if let Some(pending) = body.get("pending_config") {
+                    apply_pending_managed_config(pending);
+                }
             }
             Ok(true)
         })
@@ -616,4 +649,97 @@ pub fn cached_os_channel() -> String {
         .unwrap()
         .clone()
         .unwrap_or_else(|| "stable".to_string())
+}
+
+fn apply_pending_managed_config(raw: &Value) {
+    let pending = match serde_json::from_value::<PendingManagedConfig>(raw.clone()) {
+        Ok(p) => p,
+        Err(err) => {
+            tracing::warn!("managed-config: invalid pending config: {err}");
+            return;
+        }
+    };
+    let already_attempted = LAST_MANAGED_CONFIG_ATTEMPT
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .map(|(version, success)| version == pending.version && !success)
+        .unwrap_or(false);
+    if already_attempted {
+        return;
+    }
+
+    let result = apply_managed_config(&pending.config);
+    let success = result.is_ok();
+    let error = result.err();
+    if let Ok(mut report) = MANAGED_CONFIG_REPORT.lock() {
+        *report = Some(ManagedConfigReport {
+            version: pending.version,
+            error: error.clone(),
+        });
+    }
+    if let Ok(mut attempt) = LAST_MANAGED_CONFIG_ATTEMPT.lock() {
+        *attempt = Some((pending.version, success));
+    }
+    match error {
+        Some(err) => tracing::warn!("managed-config: version {} failed: {err}", pending.version),
+        None => tracing::info!("managed-config: version {} applied", pending.version),
+    }
+}
+
+fn apply_managed_config(config: &ManagedConfig) -> Result<(), String> {
+    if let Some(tz) = config.timezone.as_deref() {
+        apply_timezone(tz)?;
+    }
+    Ok(())
+}
+
+fn apply_timezone(timezone: &str) -> Result<(), String> {
+    validate_timezone(timezone)?;
+    let current = Command::new("timedatectl")
+        .args(["show", "-p", "Timezone", "--value"])
+        .output()
+        .map_err(|e| format!("timedatectl show: {e}"))?;
+    if current.status.success() {
+        let current_tz = String::from_utf8_lossy(&current.stdout).trim().to_string();
+        if current_tz == timezone {
+            return Ok(());
+        }
+    }
+    let helper = std::path::Path::new("/usr/local/sbin/betterframe-apply-managed-config.sh");
+    let out = if helper.is_file() {
+        let helper_path = helper.to_string_lossy().to_string();
+        Command::new("sudo")
+            .args(["-n", helper_path.as_str(), "timezone", timezone])
+            .output()
+    } else {
+        Command::new("timedatectl")
+            .args(["set-timezone", timezone])
+            .output()
+    }
+    .map_err(|e| format!("set timezone: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(format!("timedatectl set-timezone failed: {stderr}"))
+    }
+}
+
+fn validate_timezone(timezone: &str) -> Result<(), String> {
+    if timezone.starts_with('/')
+        || timezone.contains("..")
+        || timezone.contains('\\')
+        || !timezone
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '+'))
+    {
+        return Err(format!("invalid timezone: {timezone}"));
+    }
+    let path = std::path::Path::new("/usr/share/zoneinfo").join(timezone);
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(format!("timezone not found: {timezone}"))
+    }
 }

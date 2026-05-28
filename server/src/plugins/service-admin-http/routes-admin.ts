@@ -602,7 +602,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       } catch { /* ignore */ }
       const bundleMismatch =
         expectedBundleVersion != null
-        && k.last_bundle_version != null
+        && !!k.last_bundle_version
         && k.last_bundle_version !== expectedBundleVersion;
       rows.push({
         kiosk: k,

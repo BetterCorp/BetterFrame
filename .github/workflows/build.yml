@@ -215,10 +215,12 @@ jobs:
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/rauc-system.conf
           cp deploy/rauc/betterframe-rauc-boot.sh \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
-          # RAUC systemd unit + D-Bus activation (Debian package omits these)
+          # RAUC systemd unit + D-Bus activation/policy (Debian package omits these)
           cp deploy/systemd/rauc.service \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/dbus/de.pengutronix.rauc.service \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/dbus/de.pengutronix.rauc.conf \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           # Firewall ruleset
           cp deploy/nftables/nftables.conf \

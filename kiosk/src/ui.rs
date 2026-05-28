@@ -739,11 +739,16 @@ fn maybe_apply_firmware_update(
     let kiosk_key = kiosk_key.to_string();
     let tx = tx.clone();
     std::thread::spawn(move || {
-        run_firmware_update_worker(server_url, kiosk_key, tx);
+        run_firmware_update_worker(server_url, kiosk_key, tx, force);
     });
 }
 
-fn run_firmware_update_worker(server_url: String, kiosk_key: String, tx: mpsc::Sender<WorkerMsg>) {
+fn run_firmware_update_worker(
+    server_url: String,
+    kiosk_key: String,
+    tx: mpsc::Sender<WorkerMsg>,
+    force: bool,
+) {
     let _lock = FIRMWARE_LOCK.lock().unwrap();
     let current = option_env!("BF_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
     let Some(info) = firmware::check(&server_url, &kiosk_key, current) else {

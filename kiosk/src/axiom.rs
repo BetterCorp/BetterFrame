@@ -36,7 +36,7 @@ pub fn active() -> bool {
     FLUSH_ACTIVE.load(Ordering::Relaxed)
 }
 
-fn iso_now() -> String {
+pub fn iso_now() -> String {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| String::from("1970-01-01T00:00:00Z"))
@@ -196,7 +196,7 @@ impl<S: Subscriber> Layer<S> for AxiomLayer {
             .unwrap_or_default();
 
         let entry = serde_json::json!({
-            "_time": chrono_now(),
+            "_time": iso_now(),
             "level": level,
             "message": message,
             "target": target,
@@ -243,23 +243,4 @@ impl<'a> tracing::field::Visit for JsonVisitor<'a> {
             serde_json::json!(value),
         );
     }
-}
-
-fn chrono_now() -> String {
-    use std::time::SystemTime;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    let nanos = now.subsec_nanos();
-    format!(
-        "{}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        1970 + secs / 31557600,
-        (secs % 31557600) / 2629800 + 1,
-        (secs % 2629800) / 86400 + 1,
-        (secs % 86400) / 3600,
-        (secs % 3600) / 60,
-        secs % 60,
-        nanos / 1_000_000,
-    )
 }

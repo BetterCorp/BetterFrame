@@ -542,6 +542,7 @@ pub fn heartbeat(
             "reported_hostname": hostname,
             "network_interfaces": network_interfaces,
             "logging": {
+                "client_time": crate::axiom::iso_now(),
                 "axiom": crate::axiom::status(),
             },
             "onvif_subscriptions": serde_json::to_value(crate::onvif_events::get_statuses()).unwrap_or_default(),

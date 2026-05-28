@@ -1592,6 +1592,7 @@ interface KioskEditProps {
 }
 
 interface AxiomStatus {
+  clientTime: string | null;
   axiomEnabled: boolean | null;
   axiomActive: boolean | null;
   axiomFlushCount: number | null;
@@ -1602,6 +1603,7 @@ interface AxiomStatus {
   axiomLastError: string | null;
 }
 const EMPTY_AXIOM: AxiomStatus = {
+  clientTime: null,
   axiomEnabled: null, axiomActive: null, axiomFlushCount: null,
   axiomErrorCount: null, axiomEventsReceived: null,
   axiomLastFlush: null, axiomLastAttempt: null, axiomLastError: null,
@@ -1613,6 +1615,7 @@ function parseKioskLogging(raw: string | null): AxiomStatus {
     const a = parsed?.axiom;
     if (!a) return EMPTY_AXIOM;
     return {
+      clientTime: typeof parsed?.client_time === "string" ? parsed.client_time : null,
       axiomEnabled: typeof a.enabled === "boolean" ? a.enabled : null,
       axiomActive: typeof a.active === "boolean" ? a.active : null,
       axiomFlushCount: typeof a.flush_count === "number" ? a.flush_count : null,
@@ -1839,6 +1842,7 @@ export function KioskEditPage(props: KioskEditProps) {
             <div>Hardware: {k.hardware_model ?? "—"}</div>
             <div>Paired: {k.paired_at ? formatTime(k.paired_at) : "—"}</div>
             <div>Last seen: {k.last_seen_at ? formatTime(k.last_seen_at) : "Never"}</div>
+            <div>Client time: {logging.clientTime ? formatTime(logging.clientTime) : "—"}</div>
             <div>
               Axiom: {
                 logging.axiomEnabled == null

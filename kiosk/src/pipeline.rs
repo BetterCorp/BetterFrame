@@ -1,13 +1,23 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 use gstreamer::prelude::*;
 use gstreamer::{self as gst, Element, Pipeline};
 use tracing::{error, info, warn};
+
+fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 pub fn create_camera_pipeline(
     name: &str,
     rtsp_uri: &str,
     username: Option<&str>,
     password: Option<&str>,
-) -> Option<(Pipeline, Element)> {
+) -> Option<(Pipeline, Element, Arc<AtomicU64>)> {
     let pipeline_name = format!("cam-{name}");
     let pipeline = Pipeline::with_name(&pipeline_name);
 
@@ -134,8 +144,19 @@ pub fn create_camera_pipeline(
     // Leak the guard so it lives as long as the pipeline
     std::mem::forget(_guard);
 
+    // Track last buffer arrival for stall detection. Initialised to "now"
+    // so the watchdog gives the pipeline time to connect before flagging it.
+    let last_buffer = Arc::new(AtomicU64::new(epoch_millis()));
+    if let Some(pad) = sink.static_pad("sink") {
+        let ts = last_buffer.clone();
+        pad.add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+            ts.store(epoch_millis(), Ordering::Relaxed);
+            gst::PadProbeReturn::Ok
+        });
+    }
+
     info!("[{pipeline_name}] pipeline created for {rtsp_uri}");
-    Some((pipeline, sink))
+    Some((pipeline, sink, last_buffer))
 }
 
 pub fn play(pipeline: &Pipeline) {

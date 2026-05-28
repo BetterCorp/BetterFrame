@@ -1,8 +1,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -54,11 +54,14 @@ enum WarmthState {
     Cooling,
 }
 
+const STALL_THRESHOLD_MS: u64 = 15_000;
+
 struct PipelineEntry {
     pipeline: gstreamer::Pipeline,
     paintable: gtk::gdk::Paintable,
     state: WarmthState,
     cooling_until: Option<Instant>,
+    last_buffer_at: Arc<AtomicU64>,
 }
 
 /// Pool key. A camera can have multiple concurrent pipelines — typically one
@@ -1833,28 +1836,64 @@ fn purge_removed_cameras(bundle_cameras: &[crate::bundle::BundleCamera]) {
 /// 1s watchdog tick.
 fn expire_cooling_pipelines() {
     let now = Instant::now();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
     let mut expired: Vec<(PoolKey, gstreamer::Pipeline)> = Vec::new();
+    let mut stalled: Vec<PoolKey> = Vec::new();
     WARM_CAMERAS.with(|w| {
         let mut warm = w.borrow_mut();
-        let keys: Vec<PoolKey> = warm
-            .iter()
-            .filter(|(_, e)| {
-                e.state == WarmthState::Cooling && e.cooling_until.is_some_and(|t| now >= t)
-            })
-            .map(|(k, _)| k.clone())
-            .collect();
-        for k in keys {
-            if let Some(e) = warm.remove(&k) {
-                expired.push((k, e.pipeline));
+        for (k, e) in warm.iter() {
+            if e.state == WarmthState::Cooling && e.cooling_until.is_some_and(|t| now >= t) {
+                expired.push((k.clone(), e.pipeline.clone()));
+                continue;
+            }
+            if e.state == WarmthState::Warm || e.state == WarmthState::Hot {
+                let last = e.last_buffer_at.load(Ordering::Relaxed);
+                if last > 0 && now_ms.saturating_sub(last) > STALL_THRESHOLD_MS {
+                    stalled.push(k.clone());
+                }
+            }
+        }
+        for k in &expired {
+            warm.remove(&k.0);
+        }
+        for k in &stalled {
+            if let Some(e) = warm.remove(k) {
+                expired.push((k.clone(), e.pipeline));
             }
         }
     });
-    for (key, pipe) in expired {
-        info!(
-            "camera {} ({}): cooling expired → stopping pipeline",
-            key.0, key.1
-        );
-        pipeline::stop(&pipe);
+    for (key, pipe) in &expired {
+        if stalled.contains(key) {
+            warn!(
+                "camera {} ({}): stream stalled (no frames for {}s) → restarting",
+                key.0,
+                key.1,
+                STALL_THRESHOLD_MS / 1000
+            );
+        } else {
+            info!(
+                "camera {} ({}): cooling expired → stopping pipeline",
+                key.0, key.1
+            );
+        }
+        pipeline::stop(pipe);
+    }
+    // Re-warm stalled pipelines by triggering a layout re-render.
+    if !stalled.is_empty() {
+        DISPLAYS.with(|ds| {
+            for (display_id, st) in ds.borrow().iter() {
+                if let Some(layout_id) = &st.current_layout_id {
+                    let did = display_id.clone();
+                    let lid = layout_id.clone();
+                    gtk::glib::idle_add_local_once(move || {
+                        render_layout(&did, &lid);
+                    });
+                }
+            }
+        });
     }
 }
 
@@ -2073,7 +2112,7 @@ fn ensure_warm(
         return Some((paintable, desired_badge));
     }
 
-    let (pipe, sink) = pipeline::create_camera_pipeline(
+    let (pipe, sink, last_buffer) = pipeline::create_camera_pipeline(
         &cam.name,
         &uri,
         cam.playback_username.as_deref(),
@@ -2089,6 +2128,7 @@ fn ensure_warm(
                 paintable: paintable.clone(),
                 state: WarmthState::Warm,
                 cooling_until: None,
+                last_buffer_at: last_buffer,
             },
         );
     });

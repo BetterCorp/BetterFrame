@@ -2131,15 +2131,24 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
           ws.onmessage=function(e){
             try{var m=JSON.parse(e.data);
               if(m.type==='terminal-challenge'){
-                status.textContent='Enter code from kiosk screen';
                 codeInput.style.display='';authBtn.style.display='';codeInput.focus();
+                var ttl=60;
+                status.textContent='Enter code ('+ttl+'s remaining)';
+                if(window._authTimer)clearInterval(window._authTimer);
+                window._authTimer=setInterval(function(){
+                  ttl--;
+                  if(ttl<=0){clearInterval(window._authTimer);status.textContent='Code expired';codeInput.style.display='none';authBtn.style.display='none';return;}
+                  status.textContent='Enter code ('+ttl+'s remaining)';
+                },1000);
               }else if(m.type==='terminal-granted'){
+                if(window._authTimer)clearInterval(window._authTimer);
                 status.textContent='Terminal active';
                 codeInput.style.display='none';authBtn.style.display='none';
                 cmdRow.style.display='flex';cmdInput.focus();
                 // Get initial pwd
                 ws.send(JSON.stringify({type:'terminal-data',data:btoa('pwd\\n')}));
               }else if(m.type==='terminal-denied'){
+                if(window._authTimer)clearInterval(window._authTimer);
                 status.textContent='Denied: '+(m.reason||'unknown');
               }else if(m.type==='terminal-data'){
                 var bytes=atob(m.data);

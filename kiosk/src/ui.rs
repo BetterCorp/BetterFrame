@@ -1158,6 +1158,10 @@ fn switch_layout_anywhere(layout_id: &str) {
 
 /// Render a specific layout id on a specific display.
 fn render_layout(display_id: &str, layout_id: &str) {
+    if is_terminal_overlay_active() {
+        info!("render_layout: deferred — terminal auth overlay active");
+        return;
+    }
     mark_activity(display_id);
 
     let snapshot: Option<(KioskBundle, String, String)> = CURRENT_BUNDLE.with(|b| {
@@ -2548,14 +2552,16 @@ fn add_css(widget: &impl IsA<gtk::Widget>, css: &str) {
 thread_local! {
     static TERMINAL_CODE_WIDGET: RefCell<Option<gtk::Widget>> = const { RefCell::new(None) };
     static TERMINAL_CODE_SAVED_CHILD: RefCell<Option<(String, gtk::Widget)>> = const { RefCell::new(None) };
+    static TERMINAL_OVERLAY_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
+
+fn is_terminal_overlay_active() -> bool {
+    TERMINAL_OVERLAY_ACTIVE.with(|a| a.get())
 }
 
 fn show_terminal_code_overlay(code: &str) {
     dismiss_terminal_code_overlay();
 
-    // Cage is a single-window compositor. We can't open a new window.
-    // Instead, replace the first display window's child with the code
-    // overlay and restore it when dismissed.
     let display_id = DISPLAYS.with(|ds| ds.borrow().keys().next().cloned());
     let Some(display_id) = display_id else { return };
 
@@ -2564,28 +2570,23 @@ fn show_terminal_code_overlay(code: &str) {
         let Some(st) = ds.get(&display_id) else { return };
         let win = &st.window;
 
-        // Save current child for restore.
         let old_child = win.child();
         if let Some(ref c) = old_child {
             TERMINAL_CODE_SAVED_CHILD.with(|s| *s.borrow_mut() = Some((display_id.clone(), c.clone())));
         }
 
-        // Match the pairing screen layout but with red warning theme.
         let vbox = GtkBox::new(Orientation::Vertical, 20);
         vbox.set_valign(gtk::Align::Center);
         vbox.set_halign(gtk::Align::Center);
         vbox.set_vexpand(true);
         vbox.set_hexpand(true);
 
-        // Warning banner
         let warning = Label::new(Some("⚠  REMOTE TERMINAL ACCESS  ⚠"));
         add_css(&warning, ".term-warn { font-size: 20px; color: #ff4444; font-weight: 700; letter-spacing: 2px; }");
         warning.add_css_class("term-warn");
 
-        // Logo (same as pairing screen)
         let logo = logo_picture(BETTERFRAME_LOGO_SVG, 360, 88, "terminal-logo");
 
-        // Code label (same style as pairing but red)
         let code_label = Label::new(Some(code));
         add_css(&code_label, ".term-code { font-size: 72px; color: #ff4444; font-weight: 700; letter-spacing: 12px; font-family: monospace; }");
         code_label.add_css_class("term-code");
@@ -2609,16 +2610,30 @@ fn show_terminal_code_overlay(code: &str) {
         win.set_child(Some(&vbox));
 
         TERMINAL_CODE_WIDGET.with(|w| *w.borrow_mut() = Some(vbox.upcast()));
-    });
+        TERMINAL_OVERLAY_ACTIVE.with(|a| a.set(true));
 
-    // Auto-dismiss after 60s (timeout doesn't count as failed attempt).
-    gtk::glib::timeout_add_local_once(Duration::from_secs(60), || {
-        dismiss_terminal_code_overlay();
+        // Live countdown on kiosk screen.
+        let remaining = std::rc::Rc::new(Cell::new(60u32));
+        let tl = timeout_label.clone();
+        let r = remaining.clone();
+        gtk::glib::timeout_add_local(Duration::from_secs(1), move || {
+            if !TERMINAL_OVERLAY_ACTIVE.with(|a| a.get()) {
+                return gtk::glib::ControlFlow::Break;
+            }
+            let left = r.get().saturating_sub(1);
+            r.set(left);
+            tl.set_text(&format!("Code expires in {left} seconds"));
+            if left == 0 {
+                dismiss_terminal_code_overlay();
+                return gtk::glib::ControlFlow::Break;
+            }
+            gtk::glib::ControlFlow::Continue
+        });
     });
 }
 
 fn dismiss_terminal_code_overlay() {
-    // Restore previous content.
+    TERMINAL_OVERLAY_ACTIVE.with(|a| a.set(false));
     TERMINAL_CODE_WIDGET.with(|w| {
         if w.borrow().is_none() {
             return;

@@ -83,6 +83,16 @@ export const PUBLIC_MIGRATIONS: readonly string[] = [
       '[{"id":"usb_otg","label":"USB OTG","kind":"usb_hid","direction":"input"},{"id":"eth0","label":"W5500 Ethernet","kind":"ethernet","direction":"bidirectional"}]'::jsonb)
    ON CONFLICT (id) DO NOTHING`,
 
+  `INSERT INTO iobox_models
+    (id, name, description, hardware_variant, firmware_arch, firmware_track, capabilities_json, ports_json)
+   VALUES
+    ('ioBOX-WIFI', 'ioBOX Wi-Fi', 'ESP32-S3 Wi-Fi ioBOX base firmware target.', 'wifi', 'esp32s3', 'stable',
+      '{"keyboard":true,"mouse":true,"usb_hid":true,"wifi_provisioning":true}'::jsonb,
+      '[{"id":"usb_otg","label":"USB OTG","kind":"usb_hid","direction":"input"}]'::jsonb),
+    ('ioBOX-ETHERNET', 'ioBOX Ethernet', 'ESP32-S3 ioBOX base firmware target with W5500 Ethernet.', 'ethernet', 'esp32s3', 'stable',
+      '{"keyboard":true,"mouse":true,"usb_hid":true,"ethernet":true,"wifi_provisioning":true}'::jsonb,
+      '[{"id":"usb_otg","label":"USB OTG","kind":"usb_hid","direction":"input"},{"id":"eth0","label":"W5500 Ethernet","kind":"ethernet","direction":"bidirectional"}]'::jsonb)
+   ON CONFLICT (id) DO NOTHING`,
   `UPDATE iobox_serials SET model_id = 'ioBOX-WIFI' WHERE model_id = 'ioBOX-KB'`,
   `UPDATE iobox_serials SET model_id = 'ioBOX-ETHERNET' WHERE model_id = 'ioBOX-KB-E'`,
   `DELETE FROM iobox_models WHERE id IN ('ioBOX-KB', 'ioBOX-KB-E')`,

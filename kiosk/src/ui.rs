@@ -683,6 +683,7 @@ fn maybe_apply_os_update(
     force: bool,
 ) {
     if std::env::var("BF_ENABLE_OS_OTA").as_deref() != Ok("1") {
+        info!("os-update: disabled (BF_ENABLE_OS_OTA != 1)");
         return;
     }
     if OS_UPDATE_ACTIVE
@@ -700,9 +701,15 @@ fn maybe_apply_os_update(
     std::thread::spawn(move || {
         let _lock = OS_UPDATE_LOCK.lock().unwrap();
         let Some(info) = os_update::check(&server_url, &kiosk_key) else {
+            info!("os-update: no eligible update");
             OS_UPDATE_ACTIVE.store(false, Ordering::SeqCst);
             return;
         };
+        let failures = crate::update_guard::failure_count("os", &info.version);
+        info!(
+            "os-update: check found {} (force={}, previous_failures={failures})",
+            info.version, force
+        );
         if let Some(failures) = crate::update_guard::blocked("os", &info.version, force) {
             warn!(
                 "os-update: skipping {} after {failures} failed attempts; admin push required",
@@ -773,6 +780,7 @@ fn maybe_apply_firmware_update(
     force: bool,
 ) {
     if std::env::var("BF_ENABLE_APP_OTA").as_deref() != Ok("1") {
+        info!("firmware: disabled (BF_ENABLE_APP_OTA != 1)");
         return;
     }
     if OS_UPDATE_ACTIVE.load(Ordering::SeqCst) {
@@ -804,9 +812,15 @@ fn run_firmware_update_worker(
     let _lock = FIRMWARE_LOCK.lock().unwrap();
     let current = option_env!("BF_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
     let Some(info) = firmware::check(&server_url, &kiosk_key, current) else {
+        info!("firmware: no eligible update");
         FIRMWARE_ACTIVE.store(false, Ordering::SeqCst);
         return;
     };
+    let failures = crate::update_guard::failure_count("firmware", &info.version);
+    info!(
+        "firmware: check found {} (force={}, previous_failures={failures})",
+        info.version, force
+    );
     if let Some(failures) = crate::update_guard::blocked("firmware", &info.version, force) {
         warn!(
             "firmware: skipping {} after {failures} failed attempts; admin push required",

@@ -386,6 +386,7 @@ pub fn apply(
     // the next heartbeat anyway, but recording success now means the
     // admin UI shows progress immediately.
     let _ = report_applied(server, key, &info.version, None);
+    crate::update_guard::record_success("os", &info.version);
 
     on_progress("Rebooting", 100);
     info!("os-update: rauc install OK → rebooting into the new slot");

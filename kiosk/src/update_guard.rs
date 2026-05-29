@@ -3,7 +3,7 @@ use std::fs;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{info, warn};
 
 const ATTEMPT_LIMIT: u32 = 3;
 const ATTEMPT_FILE: &str = "/var/lib/betterframe/kiosk/update-attempts.json";
@@ -47,6 +47,28 @@ pub fn record_failure(kind: &str, version: &str, err: &str) -> u32 {
         warn!("update-guard: failed to persist {kind} {version} failure: {write_err}");
     }
     failures
+}
+
+pub fn failure_count(kind: &str, version: &str) -> u32 {
+    let _lock = GUARD_LOCK.lock().ok();
+    let state = read_state();
+    state
+        .entries
+        .get(&key(kind, version))
+        .map(|entry| entry.failures)
+        .unwrap_or(0)
+}
+
+pub fn record_success(kind: &str, version: &str) {
+    let _lock = GUARD_LOCK.lock().ok();
+    let mut state = read_state();
+    if state.entries.remove(&key(kind, version)).is_some() {
+        if let Err(write_err) = write_state(&state) {
+            warn!("update-guard: failed to clear {kind} {version} failure state: {write_err}");
+        } else {
+            info!("update-guard: cleared {kind} {version} failure state after success");
+        }
+    }
 }
 
 fn key(kind: &str, version: &str) -> String {

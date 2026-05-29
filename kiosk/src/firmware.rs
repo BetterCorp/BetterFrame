@@ -353,6 +353,13 @@ fn verify_signature(public_key_pem: &str, sha256_hex: &str, sig_b64url: &str) ->
 pub fn mark_firmware_applied() {
     let marker = PathBuf::from(FIRMWARE_MARKER);
     if marker.exists() {
+        if let Ok(raw) = fs::read_to_string(&marker) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(version) = value.get("version").and_then(|v| v.as_str()) {
+                    crate::update_guard::record_success("firmware", version);
+                }
+            }
+        }
         let _ = fs::remove_file(marker);
     }
     let attempts = PathBuf::from(FIRMWARE_ATTEMPTS);

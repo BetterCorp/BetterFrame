@@ -83,7 +83,7 @@ http://<pi-ip>/nrdp/
 The proxy has four route surfaces:
 
 - BetterFrame web/API: `/`, `/setup`, `/admin/*`, `/auth/*`, `/static/*`,
-  `/api/admin/*`, `/api/kiosk/*`, `/api/pair/*`, `/ws/kiosk`
+  `/api/admin/*`, `/api/kiosk/*`, `/api/iobox/*`, `/api/pair/*`, `/ws/kiosk`
 - Kiosk-only Node-RED ingress: `/in/kiosk/<node-red-path>`
 - Kiosk-only Node-RED dashboards: `/dash/*`
 - Public Node-RED HTTP-in URLs: any otherwise-unmatched root path, plus

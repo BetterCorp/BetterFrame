@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use url::Url;
@@ -75,6 +75,7 @@ struct PipelineEntry {
     state: WarmthState,
     cooling_until: Option<Instant>,
     last_buffer_at: Arc<AtomicU64>,
+    stream_status: Arc<AtomicU8>,
 }
 
 /// Pool key. A camera can have multiple concurrent pipelines — typically one
@@ -1415,7 +1416,7 @@ fn render_layout(display_id: &str, layout_id: &str) {
                 if let Some(cam_id) = cell.camera_id.as_ref() {
                     if let Some(cam) = cam_map.get(cam_id.as_str()) {
                         let area = (cell.col_span * cell.row_span) as f32 / total_area;
-                        if let Some((paintable, badge)) =
+                        if let Some((paintable, badge, stream_status)) =
                             ensure_warm(cam_id, cam, cell.stream_selector.as_deref(), area)
                         {
                             let picture = Picture::for_paintable(&paintable);
@@ -1465,18 +1466,54 @@ fn render_layout(display_id: &str, layout_id: &str) {
                             });
                             overlay.add_overlay(&name_label);
 
+                            // Top-left badge row: stream type + status icon
+                            let badge_box = GtkBox::new(Orientation::Horizontal, 3);
+                            badge_box.set_halign(gtk::Align::Start);
+                            badge_box.set_valign(gtk::Align::Start);
+                            badge_box.set_margin_start(4);
+                            badge_box.set_margin_top(4);
+
                             if badge == 'M' || badge == 'S' {
                                 let label = Label::new(Some(&badge.to_string()));
-                                label.set_halign(gtk::Align::Start);
-                                label.set_valign(gtk::Align::Start);
-                                label.set_margin_start(4);
-                                label.set_margin_top(4);
                                 add_css(
                                     &label,
                                     "label { background: rgba(0,0,0,0.6); color: #fff; font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; min-width: 14px; }",
                                 );
-                                overlay.add_overlay(&label);
+                                badge_box.append(&label);
                             }
+
+                            let status_label = Label::new(None);
+                            status_label.set_visible(false);
+                            add_css(
+                                &status_label,
+                                "label { background: rgba(200,40,40,0.85); color: #fff; font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; min-width: 14px; }",
+                            );
+                            badge_box.append(&status_label);
+                            overlay.add_overlay(&badge_box);
+
+                            // Poll stream status every 1s; stop when label is dropped
+                            let status_weak = status_label.downgrade();
+                            gtk::glib::timeout_add_local(Duration::from_secs(1), move || {
+                                let Some(lbl) = status_weak.upgrade() else {
+                                    return gtk::glib::ControlFlow::Break;
+                                };
+                                let s = stream_status.load(Ordering::Relaxed);
+                                match s {
+                                    pipeline::STATUS_RESTARTING => {
+                                        lbl.set_label("↻");
+                                        lbl.set_visible(true);
+                                    }
+                                    pipeline::STATUS_ERROR => {
+                                        lbl.set_label("!");
+                                        lbl.set_visible(true);
+                                    }
+                                    _ => {
+                                        lbl.set_visible(false);
+                                    }
+                                }
+                                gtk::glib::ControlFlow::Continue
+                            });
+
                             overlay.upcast()
                         } else {
                             camera_error_cell(&cam.name, "Stream unavailable")
@@ -1973,7 +2010,7 @@ fn expire_cooling_pipelines() {
                         "camera {} ({}): stream stalled (no frames for {}s) → restarting in-place",
                         k.0, k.1, STALL_THRESHOLD_MS / 1000
                     );
-                    pipeline::restart(&e.pipeline, &e.last_buffer_at);
+                    pipeline::restart(&e.pipeline, &e.last_buffer_at, &e.stream_status);
                 }
             }
         }
@@ -2183,7 +2220,7 @@ fn ensure_warm(
     cam: &crate::bundle::BundleCamera,
     selector: Option<&str>,
     area_fraction: f32,
-) -> Option<(gtk::gdk::Paintable, char)> {
+) -> Option<(gtk::gdk::Paintable, char, Arc<AtomicU8>)> {
     let (uri, desired_badge) = cam.pick_stream(selector, area_fraction)?;
     let decrypt_key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
     let playback_password = cam.playback_password_encrypted.as_ref().and_then(|enc| {
@@ -2196,9 +2233,9 @@ fn ensure_warm(
     let cached = WARM_CAMERAS.with(|w| {
         w.borrow()
             .get(&key)
-            .map(|e| (e.pipeline.clone(), e.paintable.clone()))
+            .map(|e| (e.pipeline.clone(), e.paintable.clone(), e.stream_status.clone()))
     });
-    if let Some((_pipe, paintable)) = cached {
+    if let Some((_pipe, paintable, status)) = cached {
         // Promote out of Cooling if we're rendering it again.
         WARM_CAMERAS.with(|w| {
             if let Some(e) = w.borrow_mut().get_mut(&key) {
@@ -2212,10 +2249,10 @@ fn ensure_warm(
                 }
             }
         });
-        return Some((paintable, desired_badge));
+        return Some((paintable, desired_badge, status));
     }
 
-    let (pipe, sink, last_buffer) = pipeline::create_camera_pipeline(
+    let (pipe, sink, last_buffer, status) = pipeline::create_camera_pipeline(
         &cam.name,
         &uri,
         cam.playback_username.as_deref(),
@@ -2223,6 +2260,7 @@ fn ensure_warm(
     )?;
     let paintable = sink.property::<gtk::gdk::Paintable>("paintable");
     pipeline::play(&pipe);
+    let status_clone = status.clone();
     WARM_CAMERAS.with(|w| {
         w.borrow_mut().insert(
             key,
@@ -2232,11 +2270,12 @@ fn ensure_warm(
                 state: WarmthState::Warm,
                 cooling_until: None,
                 last_buffer_at: last_buffer,
+                stream_status: status_clone,
             },
         );
     });
     info!("warmed pipeline for camera {cam_id} (stream: {desired_badge})");
-    Some((paintable, desired_badge))
+    Some((paintable, desired_badge, status))
 }
 
 enum WebSource<'a> {

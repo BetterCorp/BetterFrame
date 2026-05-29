@@ -1,5 +1,9 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::Arc;
+
+pub const STATUS_OK: u8 = 0;
+pub const STATUS_RESTARTING: u8 = 1;
+pub const STATUS_ERROR: u8 = 2;
 
 use gstreamer::prelude::*;
 use gstreamer::{self as gst, Element, Pipeline};
@@ -17,7 +21,7 @@ pub fn create_camera_pipeline(
     rtsp_uri: &str,
     username: Option<&str>,
     password: Option<&str>,
-) -> Option<(Pipeline, Element, Arc<AtomicU64>)> {
+) -> Option<(Pipeline, Element, Arc<AtomicU64>, Arc<AtomicU8>)> {
     let pipeline_name = format!("cam-{name}");
     let pipeline = Pipeline::with_name(&pipeline_name);
 
@@ -113,8 +117,11 @@ pub fn create_camera_pipeline(
         }
     });
 
+    let status = Arc::new(AtomicU8::new(STATUS_OK));
+
     // Watch bus for errors
     let pn3 = pipeline_name.clone();
+    let status_bus = status.clone();
     let bus = pipeline.bus().unwrap();
     let _guard = bus
         .add_watch_local(move |_bus, msg| {
@@ -126,6 +133,7 @@ pub fn create_camera_pipeline(
                         err.error(),
                         err.debug()
                     );
+                    status_bus.store(STATUS_ERROR, Ordering::Relaxed);
                 }
                 MessageView::Warning(w) => {
                     warn!("[{pn3}] pipeline warning: {} ({:?})", w.error(), w.debug());
@@ -149,14 +157,18 @@ pub fn create_camera_pipeline(
     let last_buffer = Arc::new(AtomicU64::new(epoch_millis()));
     if let Some(pad) = sink.static_pad("sink") {
         let ts = last_buffer.clone();
+        let st = status.clone();
         pad.add_probe(gst::PadProbeType::BUFFER, move |_, _| {
             ts.store(epoch_millis(), Ordering::Relaxed);
+            if st.load(Ordering::Relaxed) != STATUS_OK {
+                st.store(STATUS_OK, Ordering::Relaxed);
+            }
             gst::PadProbeReturn::Ok
         });
     }
 
     info!("[{pipeline_name}] pipeline created for {rtsp_uri}");
-    Some((pipeline, sink, last_buffer))
+    Some((pipeline, sink, last_buffer, status))
 }
 
 pub fn play(pipeline: &Pipeline) {
@@ -170,13 +182,17 @@ pub fn stop(pipeline: &Pipeline) {
     let _ = pipeline.set_state(gst::State::Null);
 }
 
-pub fn restart(pipeline: &Pipeline, last_buffer: &AtomicU64) {
+pub fn restart(pipeline: &Pipeline, last_buffer: &AtomicU64, status: &AtomicU8) {
     let name = pipeline.name().to_string();
     info!("[{name}] restarting stalled pipeline");
+    status.store(STATUS_RESTARTING, Ordering::Relaxed);
     let _ = pipeline.set_state(gst::State::Null);
     last_buffer.store(epoch_millis(), Ordering::Relaxed);
     match pipeline.set_state(gst::State::Playing) {
         Ok(r) => info!("[{name}] restart → Playing = {r:?}"),
-        Err(e) => error!("[{name}] restart failed: {e:?}"),
+        Err(e) => {
+            error!("[{name}] restart failed: {e:?}");
+            status.store(STATUS_ERROR, Ordering::Relaxed);
+        }
     }
 }

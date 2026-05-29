@@ -143,9 +143,9 @@ export function registerAbleSignRoutes(app: H3, deps: AdminDeps): void {
       });
 
       await deps.repo.createEntity({
-        name: `AbleSign: ${result.title}`,
+        name: `Digital Signage: ${result.title}`,
         type: "ablesign",
-        description: `AbleSign screen (ID: ${result.screenId})`,
+        description: `Digital signage screen (ID: ${result.screenId})`,
         web_url: "https://player.ablesign.tv",
         ablesign_screen_id: screenRowId,
         managed: true,

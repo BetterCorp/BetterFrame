@@ -826,13 +826,25 @@ interface EntitiesPageProps {
   entities: Entity[];
 }
 
+function entityTypeLabel(type: string): string {
+  return type === "ablesign" ? "digital signage" : type;
+}
+
+function entityDisplayName(e: Entity): string {
+  return e.type === "ablesign" ? e.name.replace(/^AbleSign\b/, "Digital Signage") : e.name;
+}
+
+function entityDisplayDescription(e: Entity): string {
+  return e.type === "ablesign" ? (e.description ?? "").replace(/^AbleSign\b/, "Digital signage") : (e.description ?? "");
+}
+
 function entityBadge(type: string) {
   const cls =
     type === "camera" ? "badge-blue" :
     type === "web" ? "badge-green" :
     type === "dashboard" ? "badge-blue" :
     "badge-gray";
-  return <span class={`badge ${cls}`}>{type}</span>;
+  return <span class={`badge ${cls}`}>{entityTypeLabel(type)}</span>;
 }
 
 function entityDetail(e: Entity): string {
@@ -878,7 +890,7 @@ export function EntitiesPage(props: EntitiesPageProps) {
             ) : (
               others.map((e) => (
                 <tr>
-                  <td><a href={`/admin/entities/${e.id}`}><strong>{e.name}</strong></a></td>
+                  <td><a href={`/admin/entities/${e.id}`}><strong>{entityDisplayName(e)}</strong></a></td>
                   <td>{entityBadge(e.type)}</td>
                   <td style="color:#666; font-size:0.85rem; max-width:20rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{entityDetail(e)}</td>
                 </tr>
@@ -911,7 +923,7 @@ export function EntitiesPage(props: EntitiesPageProps) {
             ) : (
               dashboards.map((e) => (
                 <tr>
-                  <td><a href={`/admin/entities/${e.id}`}><strong>{e.name}</strong></a></td>
+                  <td><a href={`/admin/entities/${e.id}`}><strong>{entityDisplayName(e)}</strong></a></td>
                   <td style="font-family:monospace; font-size:0.8rem; color:#666">{e.dashboard_id ?? "—"}</td>
                   <td style="color:#666; font-size:0.85rem">{e.dashboard_id ? `/dash/${e.dashboard_id}` : "—"}</td>
                 </tr>
@@ -1030,7 +1042,7 @@ export function EntityEditPage(props: EntityEditPageProps) {
   const allowlist = Array.isArray(inputOptions["keyboard_allowlist"]) ? inputOptions["keyboard_allowlist"].join(", ") : "";
   return (
     <Layout
-      title={`Entity: ${e.name}`}
+      title={`Entity: ${entityDisplayName(e)}`}
       user={props.user}
       activeNav="entities"
       flash={
@@ -1047,11 +1059,11 @@ export function EntityEditPage(props: EntityEditPageProps) {
             <input type="hidden" name="type" value={e.type} />
             <div class="form-group">
               <label for="name">Name</label>
-              <input id="name" name="name" type="text" class="form-input" required value={e.name} maxlength="128" />
+              <input id="name" name="name" type="text" class="form-input" required value={entityDisplayName(e)} maxlength="128" />
             </div>
             <div class="form-group">
               <label for="description">Description</label>
-              <input id="description" name="description" type="text" class="form-input" value={e.description ?? ""} />
+              <input id="description" name="description" type="text" class="form-input" value={entityDisplayDescription(e)} />
             </div>
 
             {e.type === "camera" && (
@@ -2882,7 +2894,7 @@ export function renderCell(
               <option value="">-- Empty --</option>
               {entities.map((e) => (
                 <option value={String(e.id)} selected={c.entity_id === e.id}>
-                  [{e.type}] {e.name}
+                  [{entityTypeLabel(e.type)}] {entityDisplayName(e)}
                 </option>
               ))}
             </select>
@@ -4899,7 +4911,7 @@ export function SettingsPage(props: SettingsPageProps) {
       {props.error ? <div class="alert alert-error" style="margin-bottom:1rem">{props.error}</div> : ""}
 
       <div class="card" style="margin-bottom:1.5rem">
-        <h2 style="font-size:1.1rem; margin:0 0 1rem">AbleSign Account</h2>
+        <h2 style="font-size:1.1rem; margin:0 0 1rem">Digital Signage Account</h2>
         {props.ablesignAccounts.length > 0 ? (
           <div class="table-wrap">
             <table>
@@ -4924,7 +4936,7 @@ export function SettingsPage(props: SettingsPageProps) {
           <form method="POST" action="/admin/ablesign/add" style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:end">
             <label style="font-size:0.85rem">
               {"Name"}<br/>
-              <input type="text" name="name" required style="width:10rem" placeholder="My AbleSign" />
+              <input type="text" name="name" required style="width:10rem" placeholder="My Digital Signage" />
             </label>
             <label style="font-size:0.85rem">
               {"API Key"}<br/>
@@ -4959,8 +4971,8 @@ interface AbleSignPageProps {
 
 export function AbleSignPage(props: AbleSignPageProps) {
   return (
-    <Layout title="AbleSign" activeNav="ablesign">
-      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">AbleSign Accounts</h1>
+    <Layout title="Digital Signage" activeNav="ablesign">
+      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">Digital Signage Accounts</h1>
 
       {props.error ? <div class="alert alert-error" style="margin-bottom:1rem">{props.error}</div> : ""}
 
@@ -4969,7 +4981,7 @@ export function AbleSignPage(props: AbleSignPageProps) {
         <form method="POST" action="/admin/ablesign/add" style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:end">
           <label style="font-size:0.85rem">
             {"Name"}<br/>
-            <input type="text" name="name" required style="width:12rem" placeholder="My AbleSign" />
+            <input type="text" name="name" required style="width:12rem" placeholder="My Digital Signage" />
           </label>
           <label style="font-size:0.85rem">
             {"API Key"}<br/>
@@ -5022,7 +5034,7 @@ export function AbleSignPage(props: AbleSignPageProps) {
   );
 }
 
-// ---- AbleSign Screens -------------------------------------------------------
+// ---- Digital Signage Screens -------------------------------------------------------
 
 interface AbleSignScreensPageProps {
   screens: any[];
@@ -5033,14 +5045,14 @@ interface AbleSignScreensPageProps {
 export function AbleSignScreensPage(props: AbleSignScreensPageProps) {
   const aid = props.accountId;
   return (
-    <Layout title="AbleSign — Screens" activeNav="ablesign-screens">
-      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">AbleSign Screens</h1>
+    <Layout title="Digital Signage — Screens" activeNav="ablesign-screens">
+      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">Digital Signage Screens</h1>
 
       {props.error ? <div class="alert alert-error" style="margin-bottom:1rem">{props.error}</div> : ""}
 
       {!aid ? (
         <div class="card" style="margin-bottom:1.5rem">
-          <p style="color:#999; font-size:0.85rem">No AbleSign account configured. Add one under Account settings first.</p>
+          <p style="color:#999; font-size:0.85rem">No digital signage account configured. Add one under Account settings first.</p>
         </div>
       ) : (
         <div class="card" style="margin-bottom:1.5rem">
@@ -5053,7 +5065,7 @@ export function AbleSignScreensPage(props: AbleSignScreensPageProps) {
             <button type="submit" class="btn btn-sm">{"Create & Pair"}</button>
           </form>
           <p style="font-size:0.8rem; color:#999; margin:0.5rem 0 0">
-            Registers a new screen in AbleSign headlessly and creates a linked entity for use in layouts.
+            Registers a new digital signage screen headlessly and creates a linked entity for use in layouts.
           </p>
         </div>
       )}
@@ -5063,7 +5075,7 @@ export function AbleSignScreensPage(props: AbleSignScreensPageProps) {
           <h2 style="font-size:1rem; margin:0">Screens</h2>
           {aid ? (
             <form method="POST" action={`/admin/ablesign/${aid}/sync`}>
-              <button type="submit" class="btn btn-sm btn-ghost">Sync from AbleSign</button>
+              <button type="submit" class="btn btn-sm btn-ghost">Sync from Digital Signage</button>
             </form>
           ) : ""}
         </div>
@@ -5082,7 +5094,7 @@ export function renderScreensTable(props: { screens: any[]; accountId: string | 
 
 function renderScreensTableInner(props: { screens: any[]; accountId: string | null }) {
   if (props.screens.length === 0) {
-    return <p style="color:#999; font-size:0.85rem">No screens yet. Create one above or sync from AbleSign.</p>;
+    return <p style="color:#999; font-size:0.85rem">No screens yet. Create one above or sync from digital signage.</p>;
   }
   return (
     <div class="table-wrap">
@@ -5136,7 +5148,7 @@ export function AbleSignScreenDetailPage(props: AbleSignScreenDetailPageProps) {
   const r = props.remoteScreen;
   const pl = props.playlist;
   return (
-    <Layout title={`AbleSign — ${String(s.title)}`} activeNav="ablesign-screens">
+    <Layout title={`Digital Signage — ${String(s.title)}`} activeNav="ablesign-screens">
       <h1 style="font-size:1.5rem; margin:0 0 1.5rem">{s.title}</h1>
 
       <div class="card" style="margin-bottom:1.5rem">
@@ -5166,10 +5178,10 @@ export function AbleSignScreenDetailPage(props: AbleSignScreenDetailPageProps) {
       <div class="card" style="margin-bottom:1.5rem">
         <h2 style="font-size:1rem; margin:0 0 0.5rem">Status</h2>
         <div style="display:flex; gap:1.5rem; flex-wrap:wrap; font-size:0.85rem; color:#666">
-          <div>{"AbleSign ID: "}{String(s.ablesign_screen_id)}</div>
+          <div>{"Digital Signage ID: "}{String(s.ablesign_screen_id)}</div>
           <div>{"Status: "}{s.online ? "Online" : "Offline"}</div>
           <div>{"Source: "}{props.entity ? "Internal" : "External"}</div>
-          {props.entity ? <div>{"Entity: "}<a href={`/admin/entities/${String(props.entity.id)}`}>{props.entity.name}</a></div> : ""}
+          {props.entity ? <div>{"Entity: "}<a href={`/admin/entities/${String(props.entity.id)}`}>{entityDisplayName(props.entity)}</a></div> : ""}
           {r?.heartbeatTime ? <div>{"Last heartbeat: "}{formatTime(r.heartbeatTime)}</div> : ""}
           {r?.timezone ? <div>{"Timezone: "}{String(r.timezone)}</div> : ""}
         </div>
@@ -5373,7 +5385,7 @@ function renderPlaylistItemsInner(screenSid: string, playlist: any, baseUrl: str
   );
 }
 
-// ---- AbleSign Content Page --------------------------------------------------
+// ---- Digital Signage Content Page --------------------------------------------------
 
 interface AbleSignContentPageProps {
   content: any[];
@@ -5385,8 +5397,8 @@ interface AbleSignContentPageProps {
 export function AbleSignContentPage(props: AbleSignContentPageProps) {
   const firstAccountId = props.accounts[0]?.id ?? "";
   return (
-    <Layout title="AbleSign — Content" activeNav="ablesign-content">
-      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">AbleSign Content</h1>
+    <Layout title="Digital Signage — Content" activeNav="ablesign-content">
+      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">Digital Signage Content</h1>
 
       {props.error ? <div class="alert alert-error" style="margin-bottom:1rem">{props.error}</div> : ""}
 
@@ -5586,14 +5598,14 @@ function renderContentGridInner(props: { content: any[] }) {
   );
 }
 
-// ---- AbleSign Playlists Overview --------------------------------------------
+// ---- Digital Signage Playlists Overview --------------------------------------------
 
 interface AbleSignPlaylistsPageProps { playlists: any[]; }
 
 export function AbleSignPlaylistsPage(props: AbleSignPlaylistsPageProps) {
   return (
-    <Layout title="AbleSign — Playlists" activeNav="ablesign-playlists">
-      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">AbleSign Playlists</h1>
+    <Layout title="Digital Signage — Playlists" activeNav="ablesign-playlists">
+      <h1 style="font-size:1.5rem; margin:0 0 1.5rem">Digital Signage Playlists</h1>
       {props.playlists.length === 0
         ? <div class="card"><p style="color:#999; font-size:0.85rem">No playlists found.</p></div>
         : props.playlists.map((pl: any) =>
@@ -5628,7 +5640,7 @@ interface AbleSignGroupsPageProps {
 export function AbleSignGroupsPage(props: AbleSignGroupsPageProps) {
   const firstAccountId = props.accounts[0]?.id ?? "";
   return (
-    <Layout title="AbleSign — Groups" activeNav="ablesign-groups">
+    <Layout title="Digital Signage — Groups" activeNav="ablesign-groups">
       <h1 style="font-size:1.5rem; margin:0 0 1.5rem">Screen Groups</h1>
 
       <div class="card" style="margin-bottom:1.5rem">
@@ -5704,7 +5716,7 @@ export function AbleSignGroupDetailPage(props: AbleSignGroupDetailPageProps) {
   const g = props.group;
   const memberIds = new Set(props.members.map((m: any) => m.id));
   return (
-    <Layout title={`AbleSign — ${String(g.title)}`} activeNav="ablesign-groups">
+    <Layout title={`Digital Signage — ${String(g.title)}`} activeNav="ablesign-groups">
       <h1 style="font-size:1.5rem; margin:0 0 1.5rem">{g.title}</h1>
 
       <div class="card" style="margin-bottom:1.5rem">

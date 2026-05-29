@@ -106,6 +106,11 @@ fn remember_push_renew_unsupported(cam_id: &str, err: String) {
         .insert(cam_id.to_string(), err);
 }
 
+fn push_renew_invalid_args(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    lower.contains("invalid args") || lower.contains("ter:invalidargs")
+}
+
 pub fn mark_event_received(cam_id: &str) {
     let mut map = STATUS.lock().unwrap();
     if let Some(map) = map.as_mut() {
@@ -439,6 +444,19 @@ fn run_subscription(
                                         "onvif-events: cam {} push renew failed ({consecutive_errors}x): {e}",
                                         cam.id
                                     );
+                                    if push_renew_invalid_args(&e) {
+                                        remember_push_renew_unsupported(&cam.id, e.clone());
+                                        warn!(
+                                            "onvif-events: cam {} push renew returned Invalid Args; disabling push renew for this runtime and falling through to poll: {e}",
+                                            cam.id
+                                        );
+                                        let _ = unsubscribe_push(
+                                            &push_sub.subscription_reference,
+                                            user,
+                                            pass,
+                                        );
+                                        break; // fall through to PullPoint below
+                                    }
                                     if consecutive_errors >= 3 {
                                         remember_push_renew_unsupported(&cam.id, e.clone());
                                         warn!(

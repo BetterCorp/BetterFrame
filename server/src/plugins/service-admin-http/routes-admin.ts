@@ -283,6 +283,14 @@ function extractOnvifErrorDebug(msg: string): {
   rawProfilesXml: string;
   rawCapabilitiesXml: string | null;
 } | undefined {
+  const fallback = {
+    mediaUrl: "unknown",
+    deviceName: null,
+    profileCount: 0,
+    rawProfilesXml: msg,
+    rawCapabilitiesXml: null,
+  };
+
   if (msg.includes("response preview:")) {
     return {
       mediaUrl: msg.split("mediaUrl=")[1]?.split(" ")[0] ?? "unknown",
@@ -304,7 +312,7 @@ function extractOnvifErrorDebug(msg: string): {
         mediaUrl: "unknown",
         deviceName: null,
         profileCount: 0,
-        rawProfilesXml: msg,
+        rawProfilesXml: xml,
         rawCapabilitiesXml: null,
       };
     }
@@ -327,13 +335,11 @@ function extractOnvifErrorDebug(msg: string): {
   }
 
   if (msg.includes("failed all auth methods")) {
-    return {
-      mediaUrl: "unknown",
-      deviceName: null,
-      profileCount: 0,
-      rawProfilesXml: msg,
-      rawCapabilitiesXml: null,
-    };
+    return fallback;
+  }
+
+  if (msg.includes("SOAP fault") || msg.includes("HTTP 400") || msg.includes("HTTP 401") || msg.includes("HTTP 404")) {
+    return fallback;
   }
 
   return undefined;

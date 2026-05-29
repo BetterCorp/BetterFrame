@@ -33,6 +33,11 @@ import type {
   GpioDirection,
   GpioEdge,
   GpioPull,
+  IoBox,
+  IoBoxFirmwareRelease,
+  IoBoxInputMapping,
+  IoBoxModel,
+  IoBoxSerial,
   Kiosk,
   KioskGpioBinding,
   KioskLabel,
@@ -225,6 +230,7 @@ export function rowToLayout(r: Row): Layout {
     preload_camera_ids: j<string[]>(r["preload_camera_ids"], []),
     is_default: b(r["is_default"]),
     resets_idle_timer: b(r["resets_idle_timer"]),
+    input_options_json: j<Record<string, unknown>>(r["input_options_json"], {}),
   };
 }
 
@@ -244,8 +250,100 @@ export function rowToLayoutCell(r: Row): LayoutCell {
     html_content: sn(r["html_content"]),
     cooling_timeout_seconds: nn(r["cooling_timeout_seconds"]),
     options: j<Record<string, unknown>>(r["options"], {}),
+    input_options_json: j<Record<string, unknown>>(r["input_options_json"], {}),
     entity_id: sn(r["entity_id"]),
     fit: (s(r["fit"]) || "cover") as "cover" | "contain" | "fill",
+  };
+}
+
+export function rowToIoBoxModel(r: Row): IoBoxModel {
+  return {
+    id: s(r["id"]),
+    name: s(r["name"]),
+    description: sn(r["description"]),
+    hardware_variant: s(r["hardware_variant"]) as IoBoxModel["hardware_variant"],
+    firmware_arch: s(r["firmware_arch"] ?? "esp32s3"),
+    firmware_track: s(r["firmware_track"] ?? "stable"),
+    capabilities_json: j<Record<string, unknown>>(r["capabilities_json"], {}),
+    ports_json: j<IoBoxModel["ports_json"]>(r["ports_json"], []),
+    created_at: s(r["created_at"]),
+  };
+}
+
+export function rowToIoBoxSerial(r: Row): IoBoxSerial {
+  return {
+    serial: s(r["serial"]),
+    model_id: s(r["model_id"]),
+    notes: sn(r["notes"]),
+    registered_at: s(r["registered_at"]),
+    paired_tenant_id: sn(r["paired_tenant_id"]),
+    paired_iobox_id: sn(r["paired_iobox_id"]),
+    last_seen_at: sn(r["last_seen_at"]),
+  };
+}
+
+export function rowToIoBox(r: Row): IoBox {
+  return {
+    id: s(r["id"]),
+    serial: s(r["serial"]),
+    model_id: s(r["model_id"]),
+    name: s(r["name"]),
+    key_hash: sn(r["key_hash"]),
+    key_prefix: sn(r["key_prefix"]),
+    enabled: b(r["enabled"]),
+    paired_at: sn(r["paired_at"]),
+    last_seen_at: sn(r["last_seen_at"]),
+    assigned_display_id: sn(r["assigned_display_id"]),
+    firmware_version: sn(r["firmware_version"]),
+    firmware_channel: s(r["firmware_channel"] ?? "stable") as IoBox["firmware_channel"],
+    firmware_target_version: sn(r["firmware_target_version"]),
+    firmware_last_attempt_at: sn(r["firmware_last_attempt_at"]),
+    firmware_last_attempt_version: sn(r["firmware_last_attempt_version"]),
+    firmware_last_error: sn(r["firmware_last_error"]),
+    config_json: j<Record<string, unknown>>(r["config_json"], {}),
+    config_version: n(r["config_version"]),
+    config_applied_version: n(r["config_applied_version"]),
+    config_applied_at: sn(r["config_applied_at"]),
+    config_error: sn(r["config_error"]),
+    route_mode: s(r["route_mode"] ?? "unknown") as IoBox["route_mode"],
+    local_last_ip: sn(r["local_last_ip"]),
+    network_json: j<Record<string, unknown>>(r["network_json"], {}),
+    created_at: s(r["created_at"]),
+  };
+}
+
+export function rowToIoBoxInputMapping(r: Row): IoBoxInputMapping {
+  return {
+    id: s(r["id"]),
+    iobox_id: sn(r["iobox_id"]),
+    display_id: sn(r["display_id"]),
+    layout_id: sn(r["layout_id"]),
+    cell_id: sn(r["cell_id"]),
+    source_kind: s(r["source_kind"]),
+    match_json: j<Record<string, unknown>>(r["match_json"], {}),
+    target_kind: s(r["target_kind"]),
+    action: s(r["action"]),
+    params_json: j<Record<string, unknown>>(r["params_json"], {}),
+    enabled: b(r["enabled"]),
+    created_at: s(r["created_at"]),
+  };
+}
+
+export function rowToIoBoxFirmwareRelease(r: Row): IoBoxFirmwareRelease {
+  return {
+    id: s(r["id"]),
+    version: s(r["version"]),
+    channel: s(r["channel"] ?? "stable") as FirmwareChannel,
+    firmware_arch: s(r["firmware_arch"] ?? "esp32s3"),
+    model_id: sn(r["model_id"]),
+    artifact_path: s(r["artifact_path"]),
+    size_bytes: n(r["size_bytes"]),
+    sha256: s(r["sha256"]),
+    signature: s(r["signature"]),
+    release_notes: sn(r["release_notes"]),
+    uploaded_at: s(r["uploaded_at"]),
+    uploaded_by: sn(r["uploaded_by"]),
+    yanked_at: sn(r["yanked_at"]),
   };
 }
 
@@ -261,6 +359,7 @@ export function rowToEntity(r: Row): Entity {
     dashboard_id: sn(r["dashboard_id"]),
     ablesign_screen_id: sn(r["ablesign_screen_id"]),
     managed: !!r["managed"],
+    input_options_json: j<Record<string, unknown>>(r["input_options_json"], {}),
     created_at: s(r["created_at"]),
   };
 }
@@ -448,6 +547,7 @@ export function rowToEventLog(r: Row): EventLog {
     id: s(r["id"]),
     source_kiosk_id: sn(r["source_kiosk_id"]),
     source_camera_id: sn(r["source_camera_id"]),
+    source_iobox_id: sn(r["source_iobox_id"]),
     source_type: s(r["source_type"]) as EventSourceType,
     topic: s(r["topic"]),
     property_op: sn(r["property_op"]),

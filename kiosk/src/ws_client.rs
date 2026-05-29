@@ -40,6 +40,15 @@ struct OnvifActionRequest {
     timeout_ms: Option<u64>,
 }
 
+#[derive(Deserialize)]
+struct IoBoxControlRequest {
+    request_id: String,
+    display_id: Option<String>,
+    action: String,
+    #[serde(default)]
+    params: serde_json::Value,
+}
+
 /// Run the WebSocket client in a tokio runtime. Blocks the calling thread.
 /// Reconnects on disconnect with exponential backoff.
 pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
@@ -165,6 +174,17 @@ async fn handle_message(
             return;
         };
         let response = perform_onvif_action(req).await;
+        let _ = writer.send(Message::Text(response)).await;
+    } else if text.contains("\"type\":\"iobox-control\"") {
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
+            warn!("ws: iobox control request was not valid JSON");
+            return;
+        };
+        let Ok(req) = serde_json::from_value::<IoBoxControlRequest>(msg) else {
+            warn!("ws: iobox control request missing fields");
+            return;
+        };
+        let response = perform_iobox_control(req, tx).await;
         let _ = writer.send(Message::Text(response)).await;
     } else if text.contains("\"type\":\"rotate-local-key\"") {
         let request_id = serde_json::from_str::<serde_json::Value>(text)
@@ -829,6 +849,81 @@ async fn perform_onvif_action(req: OnvifActionRequest) -> String {
         })
         .to_string(),
     }
+}
+
+async fn perform_iobox_control(req: IoBoxControlRequest, tx: &Sender<ServerMsg>) -> String {
+    if req.action == "layout.switch" {
+        let Some(layout_id) = req.params.get("layout_id").and_then(flexible_id_from_value) else {
+            return serde_json::json!({
+                "type": "iobox-control-response",
+                "request_id": req.request_id,
+                "ok": false,
+                "error": {
+                    "code": "invalid_params",
+                    "message": "layout.switch requires params.layout_id",
+                },
+            })
+            .to_string();
+        };
+        let send_result = tx.send(ServerMsg::SwitchLayout {
+            display_id: req.display_id,
+            layout_id,
+        });
+        return serde_json::json!({
+            "type": "iobox-control-response",
+            "request_id": req.request_id,
+            "ok": send_result.is_ok(),
+            "result": {
+                "action": "layout.switch",
+            },
+            "error": send_result.err().map(|e| serde_json::json!({
+                "code": "executor_unavailable",
+                "message": format!("ui channel send failed: {e}"),
+            })),
+        })
+        .to_string();
+    }
+
+    if req.action.starts_with("ptz.") {
+        let Some(camera_id) = req.params.get("camera_id").and_then(flexible_id_from_value) else {
+            return serde_json::json!({
+                "type": "iobox-control-response",
+                "request_id": req.request_id,
+                "ok": false,
+                "error": {
+                    "code": "invalid_params",
+                    "message": "PTZ ioBOX control requires params.camera_id",
+                },
+            })
+            .to_string();
+        };
+        let mut params = req.params.clone();
+        if let Some(obj) = params.as_object_mut() {
+            obj.remove("camera_id");
+        }
+        let result = perform_onvif_action(OnvifActionRequest {
+            request_id: req.request_id.clone(),
+            camera_id,
+            action: req.action,
+            params,
+            timeout_ms: Some(8000),
+        })
+        .await;
+        let mut value = serde_json::from_str::<serde_json::Value>(&result).unwrap_or_default();
+        value["type"] = serde_json::Value::String("iobox-control-response".to_string());
+        return value.to_string();
+    }
+
+    serde_json::json!({
+        "type": "iobox-control-response",
+        "request_id": req.request_id,
+        "ok": false,
+        "error": {
+            "code": "unsupported_action",
+            "message": format!("unsupported ioBOX local action: {}", req.action),
+        },
+    })
+    .to_string()
 }
 
 fn digest_auth_header_for(

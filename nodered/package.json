@@ -29,7 +29,8 @@
       "bf-onvif": "src/bf-onvif.js",
       "bf-trigger-motion": "src/bf-trigger-motion.js",
       "bf-trigger-anpr": "src/bf-trigger-anpr.js",
-      "bf-trigger-event": "src/bf-trigger-event.js"
+      "bf-trigger-event": "src/bf-trigger-event.js",
+      "bf-trigger-io-event": "src/bf-trigger-io-event.js"
     },
     "icons": [
       "icons"

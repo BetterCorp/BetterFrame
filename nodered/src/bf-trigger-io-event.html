@@ -1,0 +1,63 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-trigger-io-event", {
+    category: "BetterFrame Triggers",
+    color: "#ccddaa",
+    defaults: {
+      name: { value: "" },
+      config: { value: "", type: "bf-server-config", required: true },
+      iobox_id: { value: "" },
+      display_id: { value: "" },
+      kind: { value: "" },
+      topic_filter: { value: "" },
+    },
+    inputs: 0,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      if (this.name) return this.name;
+      if (this.kind) return "IO: " + this.kind;
+      if (this.topic_filter) return "IO: " + this.topic_filter;
+      return "IO Event";
+    },
+    paletteLabel: "IO Event",
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-trigger-io-event">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" placeholder="(optional)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-config"><i class="fa fa-cog"></i> BF</label>
+    <input type="text" id="node-input-config" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-iobox_id"><i class="fa fa-keyboard-o"></i> ioBOX ID</label>
+    <input type="text" id="node-input-iobox_id" placeholder="(blank = all ioBOX devices)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-display_id"><i class="fa fa-desktop"></i> Display ID</label>
+    <input type="text" id="node-input-display_id" placeholder="(blank = all displays)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-kind"><i class="fa fa-filter"></i> Kind</label>
+    <input type="text" id="node-input-kind" placeholder="keyboard, mouse, presence, button, rs485" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-topic_filter"><i class="fa fa-filter"></i> Topic Filter</label>
+    <input type="text" id="node-input-topic_filter" placeholder="e.g. io.presence" />
+  </div>
+  <div class="form-tips">
+    Fires on BetterFrame ioBOX events. Kiosk-local actions may already have
+    been handled, but every ioBOX event is still reported here for automation.
+  </div>
+</script>
+
+<script type="text/html" data-help-name="bf-trigger-io-event">
+  <p>Triggers on ioBOX events such as keyboard, mouse, joystick, RS485,
+  buttons, and presence sensors.</p>
+  <p>Outputs <code>msg.iobox_id</code>, <code>msg.display_id</code>,
+  <code>msg.kind</code>, <code>msg.action</code>, <code>msg.code</code>, and
+  the raw <code>msg.payload</code>.</p>
+</script>

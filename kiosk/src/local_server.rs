@@ -22,12 +22,12 @@ use std::sync::mpsc::Sender as StdSender;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::{
+    Json, Router,
     body::{Body, Bytes},
     extract::{Path, Query, Request, State},
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{any, get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -87,6 +87,17 @@ struct ProfileQuery {
     profile_token: Option<String>,
 }
 
+#[derive(Deserialize, Serialize, Clone)]
+struct LocalIoBoxEventBody {
+    topic: String,
+    #[serde(default)]
+    source_type: Option<String>,
+    #[serde(default)]
+    property_op: Option<String>,
+    #[serde(default)]
+    payload: serde_json::Value,
+}
+
 pub fn start(state: LocalServerState) {
     if std::env::var("BF_KIOSK_LOCAL_DISABLE").ok().as_deref() == Some("1") {
         info!("local-server: disabled by BF_KIOSK_LOCAL_DISABLE=1");
@@ -106,6 +117,8 @@ pub fn start(state: LocalServerState) {
         rt.block_on(async move {
             let app = Router::new()
                 .route("/local/info", get(local_info_handler))
+                .route("/local/iobox/check", get(local_iobox_check_handler))
+                .route("/local/iobox/event", post(local_iobox_event_handler))
                 .route("/local/layout/:id", get(local_layout_handler))
                 .route("/local/snapshot/:camera_id", get(local_snapshot_handler))
                 .route("/oce/:tenant/:camera_id", post(onvif_event_callback))
@@ -161,6 +174,70 @@ async fn local_info_handler(
         server_url: state.server_url.clone(),
     })
     .into_response()
+}
+
+async fn local_iobox_check_handler(
+    State(state): State<LocalServerState>,
+    Query(auth): Query<LocalAuth>,
+) -> Response {
+    if !local_key_matches(&state, &auth.key) {
+        return (StatusCode::UNAUTHORIZED, "bad key").into_response();
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "kind": "betterframe-kiosk-iobox-local",
+    }))
+    .into_response()
+}
+
+async fn local_iobox_event_handler(
+    State(state): State<LocalServerState>,
+    Query(auth): Query<LocalAuth>,
+    Json(body): Json<LocalIoBoxEventBody>,
+) -> Response {
+    if !local_key_matches(&state, &auth.key) {
+        return (StatusCode::UNAUTHORIZED, "bad key").into_response();
+    }
+    if body.topic.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "topic required").into_response();
+    }
+
+    let target = format!("{}/api/kiosk/event", state.server_url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    match client
+        .post(target)
+        .bearer_auth(&state.kiosk_key)
+        .json(&serde_json::json!({
+            "topic": body.topic,
+            "source_type": body.source_type.unwrap_or_else(|| "io".to_string()),
+            "property_op": body.property_op,
+            "payload": body.payload,
+        }))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "ok": true })),
+        )
+            .into_response(),
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": format!("server HTTP {}", resp.status().as_u16()),
+            })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": format!("server event forward failed: {err}"),
+            })),
+        )
+            .into_response(),
+    }
 }
 
 async fn local_layout_handler(

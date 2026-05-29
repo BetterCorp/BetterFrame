@@ -94,6 +94,7 @@ export interface BundleCell {
   };
   /** Key→value pairs injected into WebView localStorage before page load. */
   local_storage?: Record<string, string>;
+  input_options?: Record<string, unknown>;
 }
 
 export interface BundleLayout {
@@ -110,6 +111,7 @@ export interface BundleLayout {
   /** True if the kiosk's display has this layout as its default_layout_id. */
   is_default: boolean;
   cells: BundleCell[];
+  input_options?: Record<string, unknown>;
 }
 
 export interface BundleDisplay {
@@ -232,6 +234,7 @@ export async function generateBundle(
         // so the existing Rust kiosk consumes it unchanged.
         let contentType = c.content_type;
         let cellLocalStorage: Record<string, string> | undefined;
+        let cellInputOptions: Record<string, unknown> | undefined = c.input_options_json;
         let cameraId = c.camera_id;
         let webUrl = c.web_url;
         let htmlContent = c.html_content;
@@ -264,6 +267,9 @@ export async function generateBundle(
                 cellLocalStorage = ls;
               }
             }
+            cellInputOptions = Object.keys(ent.input_options_json ?? {}).length > 0
+              ? ent.input_options_json
+              : cellInputOptions;
           }
         }
         bundleCells.push({
@@ -299,6 +305,7 @@ export async function generateBundle(
             };
           })() : undefined,
           local_storage: cellLocalStorage,
+          input_options: cellInputOptions,
         });
       }
       result.push({
@@ -312,6 +319,7 @@ export async function generateBundle(
         resets_idle_timer: l.resets_idle_timer,
         is_default: defaultLayoutId === l.id,
         cells: bundleCells,
+        input_options: l.input_options_json,
       });
     }
     return result;

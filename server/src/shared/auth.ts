@@ -58,6 +58,12 @@ export interface AuthApi {
     tenant_name: string | null;
     schema_name: string;
   } | null>;
+  verifyIoBoxKey(plaintext: string): Promise<{
+    id: string;
+    tenant_slug: string;
+    tenant_name: string | null;
+    schema_name: string;
+  } | null>;
 }
 
 // ---- Constants --------------------------------------------------------------
@@ -323,6 +329,50 @@ export function createAuth(
     return null;
   }
 
+  async function verifyIoBoxKey(plaintext: string): Promise<{
+    id: string;
+    tenant_slug: string;
+    tenant_name: string | null;
+    schema_name: string;
+  } | null> {
+    if (plaintext.length < 8) return null;
+    const prefix = plaintext.slice(0, 8);
+
+    const tenants = await repo.listTenants();
+    if (tenants.length === 0) {
+      await repo.adapter.setSearchPath("public");
+      const candidates = await repo.listIoBoxesByKeyPrefix(prefix);
+      for (const cand of candidates) {
+        if (cand.key_hash && await verifyPassword(plaintext, cand.key_hash)) {
+          return {
+            id: cand.id,
+            tenant_slug: "default",
+            tenant_name: "Default",
+            schema_name: "public",
+          };
+        }
+      }
+      return null;
+    }
+    for (const tenant of tenants) {
+      if (!tenant.is_active) continue;
+      await repo.adapter.setSearchPath(tenant.schema_name);
+      const candidates = await repo.listIoBoxesByKeyPrefix(prefix);
+      for (const cand of candidates) {
+        if (cand.key_hash && await verifyPassword(plaintext, cand.key_hash)) {
+          return {
+            id: cand.id,
+            tenant_slug: tenant.slug,
+            tenant_name: tenant.name,
+            schema_name: tenant.schema_name,
+          };
+        }
+      }
+    }
+    await repo.adapter.setSearchPath("public");
+    return null;
+  }
+
   // ---- Return ---------------------------------------------------------------
 
   return {
@@ -344,5 +394,6 @@ export function createAuth(
     createApiKey,
     verifyApiKey,
     verifyKioskKey,
+    verifyIoBoxKey,
   };
 }

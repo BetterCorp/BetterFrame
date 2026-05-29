@@ -118,6 +118,55 @@ export const OsAppliedBody = av.object(
   { unknownKeys: "strip" },
 );
 
+// ---- ioBOX API --------------------------------------------------------------
+
+export const IoBoxAnnounceBody = av.object(
+  {
+    serial: av.string().minLength(1).maxLength(128),
+    firmware_version: av.string().maxLength(64).default(""),
+    firmware_arch: av.string().maxLength(64).default("esp32s3"),
+    hardware_variant_detected: av.string().maxLength(32).default(""),
+    network: av.any().default({}),
+  },
+  { unknownKeys: "strip" },
+);
+
+export const IoBoxPairClaimBody = av.object(
+  {
+    serial: av.string().minLength(1).maxLength(128),
+    name: av.string().maxLength(128).default(""),
+    assigned_display_id: av.optional(av.nullable(av.string().maxLength(128))).default(null),
+  },
+  { unknownKeys: "strip" },
+);
+
+export const IoBoxHeartbeatBody = av.object(
+  {
+    firmware_version: av.string().maxLength(64).default(""),
+    config_applied_version: av.optional(av.int().min(0)),
+    config_error: av.optional(av.nullable(av.string().maxLength(4096))),
+    route_mode: av.string().maxLength(16).default("unknown"),
+    network: av.any().default({}),
+    inputs: av.any().default({}),
+  },
+  { unknownKeys: "strip" },
+);
+
+export const IoBoxEventBody = av.object(
+  {
+    event_id: av.optional(av.string().maxLength(128)),
+    topic: av.string().minLength(1).maxLength(512),
+    kind: av.string().maxLength(64).default("unknown"),
+    action: av.optional(av.nullable(av.string().maxLength(64))).default(null),
+    code: av.optional(av.nullable(av.string().maxLength(128))).default(null),
+    value: av.optional(av.any()),
+    display_id: av.optional(av.nullable(av.string().maxLength(128))).default(null),
+    payload: av.any().default({}),
+    route: av.optional(av.string().maxLength(32)),
+  },
+  { unknownKeys: "strip" },
+);
+
 // ---- Auth (routes-auth, routes-setup) ----------------------------------------
 
 export const LoginBody = av.object(

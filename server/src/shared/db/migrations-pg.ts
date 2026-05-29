@@ -49,6 +49,39 @@ export const PUBLIC_MIGRATIONS: readonly string[] = [
     applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (schema_name, version)
   )`,
+
+  `CREATE TABLE IF NOT EXISTS iobox_models (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    hardware_variant TEXT NOT NULL CHECK(hardware_variant IN ('wifi', 'ethernet')),
+    firmware_arch TEXT NOT NULL DEFAULT 'esp32s3',
+    firmware_track TEXT NOT NULL DEFAULT 'stable',
+    capabilities_json JSONB NOT NULL DEFAULT '{}',
+    ports_json JSONB NOT NULL DEFAULT '[]',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS iobox_serials (
+    serial TEXT PRIMARY KEY,
+    model_id TEXT NOT NULL REFERENCES iobox_models(id) ON DELETE RESTRICT,
+    notes TEXT,
+    registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    paired_tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL,
+    paired_iobox_id TEXT,
+    last_seen_at TIMESTAMPTZ
+  )`,
+
+  `INSERT INTO iobox_models
+    (id, name, description, hardware_variant, firmware_arch, firmware_track, capabilities_json, ports_json)
+   VALUES
+    ('ioBOX-KB', 'ioBOX Keyboard', 'ESP32-S3 Wi-Fi ioBOX with USB keyboard/mouse input support.', 'wifi', 'esp32s3', 'stable',
+      '{"keyboard":true,"mouse":true,"usb_hid":true,"wifi_provisioning":true}'::jsonb,
+      '[{"id":"usb_otg","label":"USB OTG","kind":"usb_hid","direction":"input"}]'::jsonb),
+    ('ioBOX-KB-E', 'ioBOX Keyboard Ethernet', 'ESP32-S3 ioBOX with W5500 Ethernet and USB keyboard/mouse input support.', 'ethernet', 'esp32s3', 'stable',
+      '{"keyboard":true,"mouse":true,"usb_hid":true,"ethernet":true,"wifi_provisioning":true}'::jsonb,
+      '[{"id":"usb_otg","label":"USB OTG","kind":"usb_hid","direction":"input"},{"id":"eth0","label":"W5500 Ethernet","kind":"ethernet","direction":"bidirectional"}]'::jsonb)
+   ON CONFLICT (id) DO NOTHING`,
 ];
 
 /**
@@ -735,4 +768,88 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   // databases skipped it (the version counter already covered that index).
   // Re-append at the end so it actually runs on databases that missed it.
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS logging_json JSONB`,
+
+  // ---- ioBOX platform foundation -------------------------------------------
+  `CREATE TABLE IF NOT EXISTS ioboxes (
+    id TEXT PRIMARY KEY,
+    serial TEXT NOT NULL UNIQUE,
+    model_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    key_hash TEXT,
+    key_prefix TEXT,
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    paired_at TIMESTAMPTZ,
+    last_seen_at TIMESTAMPTZ,
+    assigned_display_id TEXT REFERENCES displays(id) ON DELETE SET NULL,
+    firmware_version TEXT,
+    firmware_channel TEXT NOT NULL DEFAULT 'stable',
+    firmware_target_version TEXT,
+    firmware_last_attempt_at TIMESTAMPTZ,
+    firmware_last_attempt_version TEXT,
+    firmware_last_error TEXT,
+    config_json JSONB NOT NULL DEFAULT '{}',
+    config_version INTEGER NOT NULL DEFAULT 0,
+    config_applied_version INTEGER NOT NULL DEFAULT 0,
+    config_applied_at TIMESTAMPTZ,
+    config_error TEXT,
+    route_mode TEXT NOT NULL DEFAULT 'unknown' CHECK(route_mode IN ('unknown', 'direct', 'proxy', 'offline')),
+    local_last_ip TEXT,
+    network_json JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_ioboxes_prefix ON ioboxes(key_prefix)`,
+  `CREATE INDEX IF NOT EXISTS idx_ioboxes_display ON ioboxes(assigned_display_id)`,
+
+  `CREATE TABLE IF NOT EXISTS iobox_input_mappings (
+    id TEXT PRIMARY KEY,
+    iobox_id TEXT REFERENCES ioboxes(id) ON DELETE CASCADE,
+    display_id TEXT REFERENCES displays(id) ON DELETE CASCADE,
+    layout_id TEXT REFERENCES layouts(id) ON DELETE CASCADE,
+    cell_id TEXT REFERENCES layout_cells(id) ON DELETE CASCADE,
+    source_kind TEXT NOT NULL,
+    match_json JSONB NOT NULL DEFAULT '{}',
+    target_kind TEXT NOT NULL,
+    action TEXT NOT NULL,
+    params_json JSONB NOT NULL DEFAULT '{}',
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_iobox_mappings_iobox ON iobox_input_mappings(iobox_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_iobox_mappings_display ON iobox_input_mappings(display_id)`,
+
+  `CREATE TABLE IF NOT EXISTS iobox_firmware_releases (
+    id TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    channel TEXT NOT NULL CHECK(channel IN ('stable', 'beta', 'dev')),
+    firmware_arch TEXT NOT NULL DEFAULT 'esp32s3',
+    model_id TEXT,
+    artifact_path TEXT NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    sha256 TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    release_notes TEXT,
+    uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    uploaded_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    yanked_at TIMESTAMPTZ,
+    UNIQUE(version, firmware_arch, model_id)
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS iobox_firmware_rollouts (
+    id TEXT PRIMARY KEY,
+    release_id TEXT NOT NULL REFERENCES iobox_firmware_releases(id) ON DELETE CASCADE,
+    target_iobox_ids JSONB NOT NULL DEFAULT '[]',
+    state TEXT NOT NULL DEFAULT 'queued' CHECK(state IN ('queued', 'active', 'paused', 'complete')),
+    percentage INTEGER NOT NULL DEFAULT 100 CHECK(percentage BETWEEN 1 AND 100),
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL
+  )`,
+
+  `ALTER TABLE event_log ADD COLUMN IF NOT EXISTS source_iobox_id TEXT REFERENCES ioboxes(id) ON DELETE SET NULL`,
+  `ALTER TABLE event_log DROP CONSTRAINT IF EXISTS event_log_source_type_check`,
+  `ALTER TABLE event_log ADD CONSTRAINT event_log_source_type_check CHECK(source_type IN ('onvif', 'gpio', 'synthetic', 'system', 'io'))`,
+  `ALTER TABLE layouts ADD COLUMN IF NOT EXISTS input_options_json JSONB NOT NULL DEFAULT '{}'`,
+  `ALTER TABLE layout_cells ADD COLUMN IF NOT EXISTS input_options_json JSONB NOT NULL DEFAULT '{}'`,
+  `ALTER TABLE entities ADD COLUMN IF NOT EXISTS input_options_json JSONB NOT NULL DEFAULT '{}'`,
 ];

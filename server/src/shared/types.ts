@@ -14,6 +14,130 @@ export type StreamPolicy = "auto" | "always_main" | "always_sub";
 export type LayoutPriority = "hot" | "normal" | "cold";
 export type CellContentType = "none" | "camera" | "web" | "html" | "ablesign";
 export type EntityType = "camera" | "html" | "web" | "dashboard" | "ablesign";
+export type IoBoxHardwareVariant = "wifi" | "ethernet";
+export type IoBoxRouteMode = "unknown" | "direct" | "proxy" | "offline";
+export type IoBoxPortKind =
+  | "usb_keyboard"
+  | "usb_mouse"
+  | "usb_serial"
+  | "rs485"
+  | "gpio_input"
+  | "gpio_output"
+  | "pir"
+  | "button"
+  | "led"
+  | "relay"
+  | "joystick";
+
+export interface IoBoxPortSpec {
+  id: string;
+  label: string;
+  kind: IoBoxPortKind;
+  enabled: boolean;
+  gpio?: number;
+  index?: number;
+  active_low?: boolean;
+  debounce_ms?: number;
+  default_topic?: string;
+  config?: Record<string, unknown>;
+}
+
+export interface IoBoxModelCapabilities {
+  keyboard?: boolean;
+  mouse?: boolean;
+  usb_hid?: boolean;
+  usb_serial?: boolean;
+  rs485?: boolean;
+  joystick?: boolean;
+  gpio_inputs?: boolean;
+  gpio_outputs?: boolean;
+  presence?: boolean;
+  leds?: boolean;
+  relays?: boolean;
+  ethernet?: boolean;
+  wifi_provisioning?: boolean;
+}
+
+export interface IoBoxModel {
+  id: string;
+  name: string;
+  description: string | null;
+  hardware_variant: IoBoxHardwareVariant;
+  firmware_arch: string;
+  firmware_track: string;
+  capabilities_json: Record<string, unknown>;
+  ports_json: IoBoxPortSpec[];
+  created_at: string;
+}
+
+export interface IoBoxSerial {
+  serial: string;
+  model_id: string;
+  notes: string | null;
+  registered_at: string;
+  paired_tenant_id: string | null;
+  paired_iobox_id: string | null;
+  last_seen_at: string | null;
+}
+
+export interface IoBox {
+  id: string;
+  serial: string;
+  model_id: string;
+  name: string;
+  key_hash: string | null;
+  key_prefix: string | null;
+  enabled: boolean;
+  paired_at: string | null;
+  last_seen_at: string | null;
+  assigned_display_id: string | null;
+  firmware_version: string | null;
+  firmware_channel: FirmwareChannel;
+  firmware_target_version: string | null;
+  firmware_last_attempt_at: string | null;
+  firmware_last_attempt_version: string | null;
+  firmware_last_error: string | null;
+  config_json: Record<string, unknown>;
+  config_version: number;
+  config_applied_version: number;
+  config_applied_at: string | null;
+  config_error: string | null;
+  route_mode: IoBoxRouteMode;
+  local_last_ip: string | null;
+  network_json: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface IoBoxInputMapping {
+  id: string;
+  iobox_id: string | null;
+  display_id: string | null;
+  layout_id: string | null;
+  cell_id: string | null;
+  source_kind: string;
+  match_json: Record<string, unknown>;
+  target_kind: string;
+  action: string;
+  params_json: Record<string, unknown>;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface IoBoxFirmwareRelease {
+  id: string;
+  version: string;
+  channel: FirmwareChannel;
+  firmware_arch: string;
+  model_id: string | null;
+  artifact_path: string;
+  size_bytes: number;
+  sha256: string;
+  signature: string;
+  release_notes: string | null;
+  uploaded_at: string;
+  uploaded_by: string | null;
+  yanked_at: string | null;
+}
 
 export interface Entity {
   id: string;
@@ -29,12 +153,13 @@ export interface Entity {
   ablesign_screen_id: string | null;
   /** True for entities auto-created by camera sync, cloud cams, AbleSign. Read-only in UI. */
   managed: boolean;
+  input_options_json: Record<string, unknown>;
   created_at: string;
 }
 export type DesiredPowerState = "follow_layout" | "on" | "standby";
 export type ActualPowerState = "awake" | "standby" | "unknown";
 export type LabelRole = "consume" | "operate";
-export type EventSourceType = "onvif" | "gpio" | "synthetic" | "system";
+export type EventSourceType = "onvif" | "gpio" | "synthetic" | "system" | "io";
 
 export interface User {
   id: string;
@@ -195,6 +320,7 @@ export interface Layout {
   /** @deprecated Per-display defaults live on `display.default_layout_id`. */
   is_default: boolean;
   resets_idle_timer: boolean;
+  input_options_json: Record<string, unknown>;
 }
 
 export interface LayoutCell {
@@ -213,6 +339,7 @@ export interface LayoutCell {
   html_content: string | null;
   cooling_timeout_seconds: number | null;
   options: Record<string, unknown>;
+  input_options_json: Record<string, unknown>;
   entity_id: string | null;
   fit: "cover" | "contain" | "fill";
 }
@@ -408,6 +535,7 @@ export interface EventLog {
   id: string;
   source_kiosk_id: string | null;
   source_camera_id: string | null;
+  source_iobox_id: string | null;
   source_type: EventSourceType;
   topic: string;
   property_op: string | null;

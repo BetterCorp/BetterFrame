@@ -38,6 +38,11 @@ import type {
   GpioDirection,
   GpioEdge,
   GpioPull,
+  IoBox,
+  IoBoxFirmwareRelease,
+  IoBoxInputMapping,
+  IoBoxModel,
+  IoBoxSerial,
   Kiosk,
   KioskGpioBinding,
   KioskLabel,
@@ -73,6 +78,11 @@ import {
   rowToEventLog,
   rowToFirmwareRelease,
   rowToFirmwareRollout,
+  rowToIoBox,
+  rowToIoBoxFirmwareRelease,
+  rowToIoBoxInputMapping,
+  rowToIoBoxModel,
+  rowToIoBoxSerial,
   rowToKiosk,
   rowToKioskGpioBinding,
   rowToKioskLog,
@@ -722,11 +732,12 @@ export class Repository {
     cooling_timeout_seconds?: number | null;
     preload_camera_ids?: string[];
     resets_idle_timer?: boolean;
+    input_options_json?: Record<string, unknown>;
   }): Promise<Layout> {
     const id = uuidv7();
     await this._run(
-      `INSERT INTO layouts (id, name, description, priority, cooling_timeout_seconds, preload_camera_ids, resets_idle_timer)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO layouts (id, name, description, priority, cooling_timeout_seconds, preload_camera_ids, resets_idle_timer, input_options_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.name,
@@ -735,6 +746,7 @@ export class Repository {
         input.cooling_timeout_seconds ?? null,
         J(input.preload_camera_ids ?? []),
         Boolean(input.resets_idle_timer ?? true),
+        J(input.input_options_json ?? {}),
       ],
     );
     void this.notify("layouts", "create", id);
@@ -749,7 +761,7 @@ export class Repository {
     for (const [k, v] of Object.entries(patch)) {
       if (k === "id" || k === "display_id") continue; // display_id deprecated
       sets.push(`${k} = ?`);
-      if (k === "preload_camera_ids" || k === "regions") vals.push(J(v));
+      if (k === "preload_camera_ids" || k === "regions" || k === "input_options_json") vals.push(J(v));
       else if (typeof v === "boolean") vals.push(v);
       else vals.push(v === undefined ? null : v);
     }
@@ -777,6 +789,7 @@ export class Repository {
       cooling_timeout_seconds: src.cooling_timeout_seconds,
       preload_camera_ids: src.preload_camera_ids,
       resets_idle_timer: src.resets_idle_timer,
+      input_options_json: src.input_options_json,
     });
 
     const cells = await this.listLayoutCells(id);
@@ -951,7 +964,7 @@ export class Repository {
       if (k === "id" || k === "layout_id") continue;
       const col = k === "row" ? `"row"` : k;
       sets.push(`${col} = ?`);
-      if (k === "options") vals.push(J(v));
+      if (k === "options" || k === "input_options_json") vals.push(J(v));
       else vals.push(v === undefined ? null : v);
     }
     if (sets.length === 0) return;
@@ -1281,6 +1294,356 @@ export class Repository {
        VALUES (?, ?)`,
       [layoutId, labelId],
     );
+  }
+
+  // ===========================================================================
+  // ioBOX models + serial inventory (PUBLIC schema)
+  // ===========================================================================
+
+  async listIoBoxModels(): Promise<IoBoxModel[]> {
+    const rs = await this._all("SELECT * FROM public.iobox_models ORDER BY name");
+    return rs.map((r) => rowToIoBoxModel(r as Record<string, unknown>));
+  }
+
+  async getIoBoxModel(id: string): Promise<IoBoxModel | null> {
+    const r = await this._get("SELECT * FROM public.iobox_models WHERE id = ?", [id]);
+    return r ? rowToIoBoxModel(r as Record<string, unknown>) : null;
+  }
+
+  async createIoBoxModel(input: {
+    id: string;
+    name: string;
+    description?: string | null;
+    hardware_variant: "wifi" | "ethernet";
+    firmware_arch?: string;
+    firmware_track?: string;
+    capabilities_json?: Record<string, unknown>;
+    ports_json?: unknown[];
+  }): Promise<IoBoxModel> {
+    await this._run(
+      `INSERT INTO public.iobox_models
+        (id, name, description, hardware_variant, firmware_arch, firmware_track, capabilities_json, ports_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.id,
+        input.name,
+        input.description ?? null,
+        input.hardware_variant,
+        input.firmware_arch ?? "esp32s3",
+        input.firmware_track ?? "stable",
+        J(input.capabilities_json ?? {}),
+        J(input.ports_json ?? []),
+      ],
+    );
+    void this.notify("iobox_models", "create", input.id);
+    const model = await this.getIoBoxModel(input.id);
+    if (!model) throw new Error("ioBOX model vanished after insert");
+    return model;
+  }
+
+  async updateIoBoxModel(id: string, patch: Partial<IoBoxModel>): Promise<void> {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (k === "id" || k === "created_at") continue;
+      sets.push(`${k} = ?`);
+      vals.push(k.endsWith("_json") ? J(v ?? (k === "ports_json" ? [] : {})) : v ?? null);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    await this._run(`UPDATE public.iobox_models SET ${sets.join(", ")} WHERE id = ?`, vals);
+    void this.notify("iobox_models", "update", id);
+  }
+
+  async deleteIoBoxModel(id: string): Promise<void> {
+    await this._run("DELETE FROM public.iobox_models WHERE id = ?", [id]);
+    void this.notify("iobox_models", "delete", id);
+  }
+
+  async listIoBoxSerials(): Promise<IoBoxSerial[]> {
+    const rs = await this._all("SELECT * FROM public.iobox_serials ORDER BY registered_at DESC");
+    return rs.map((r) => rowToIoBoxSerial(r as Record<string, unknown>));
+  }
+
+  async getIoBoxSerial(serial: string): Promise<IoBoxSerial | null> {
+    const r = await this._get("SELECT * FROM public.iobox_serials WHERE serial = ?", [serial]);
+    return r ? rowToIoBoxSerial(r as Record<string, unknown>) : null;
+  }
+
+  async registerIoBoxSerial(input: {
+    serial: string;
+    model_id: string;
+    notes?: string | null;
+  }): Promise<IoBoxSerial> {
+    await this._run(
+      `INSERT INTO public.iobox_serials (serial, model_id, notes)
+       VALUES (?, ?, ?)
+       ON CONFLICT (serial) DO UPDATE SET model_id = ?, notes = ?`,
+      [input.serial, input.model_id, input.notes ?? null, input.model_id, input.notes ?? null],
+    );
+    void this.notify("iobox_serials", "update", input.serial);
+    const row = await this.getIoBoxSerial(input.serial);
+    if (!row) throw new Error("ioBOX serial vanished after upsert");
+    return row;
+  }
+
+  async touchIoBoxSerial(serial: string): Promise<void> {
+    await this._run("UPDATE public.iobox_serials SET last_seen_at = ? WHERE serial = ?", [isoNow(), serial]);
+  }
+
+  async markIoBoxSerialPaired(serial: string, tenantId: string | null, ioBoxId: string): Promise<void> {
+    await this._run(
+      `UPDATE public.iobox_serials
+          SET paired_tenant_id = ?, paired_iobox_id = ?, last_seen_at = ?
+        WHERE serial = ?`,
+      [tenantId, ioBoxId, isoNow(), serial],
+    );
+  }
+
+  // ===========================================================================
+  // ioBOX devices (tenant schema)
+  // ===========================================================================
+
+  async listIoBoxes(): Promise<IoBox[]> {
+    const rs = await this._all("SELECT * FROM ioboxes ORDER BY name");
+    return rs.map((r) => rowToIoBox(r as Record<string, unknown>));
+  }
+
+  async getIoBoxById(id: string): Promise<IoBox | null> {
+    const r = await this._get("SELECT * FROM ioboxes WHERE id = ?", [id]);
+    return r ? rowToIoBox(r as Record<string, unknown>) : null;
+  }
+
+  async getIoBoxBySerial(serial: string): Promise<IoBox | null> {
+    const r = await this._get("SELECT * FROM ioboxes WHERE serial = ?", [serial]);
+    return r ? rowToIoBox(r as Record<string, unknown>) : null;
+  }
+
+  async listIoBoxesByKeyPrefix(prefix: string): Promise<IoBox[]> {
+    const rs = await this._all(
+      "SELECT * FROM ioboxes WHERE key_prefix = ? AND enabled = true",
+      [prefix],
+    );
+    return rs.map((r) => rowToIoBox(r as Record<string, unknown>));
+  }
+
+  async createIoBox(input: {
+    serial: string;
+    model_id: string;
+    name: string;
+    key_hash: string;
+    key_prefix: string;
+    assigned_display_id?: string | null;
+  }): Promise<IoBox> {
+    const id = uuidv7();
+    await this._run(
+      `INSERT INTO ioboxes
+        (id, serial, model_id, name, key_hash, key_prefix, paired_at, assigned_display_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.serial,
+        input.model_id,
+        input.name,
+        input.key_hash,
+        input.key_prefix,
+        isoNow(),
+        input.assigned_display_id ?? null,
+      ],
+    );
+    void this.notify("ioboxes", "create", id);
+    const box = await this.getIoBoxById(id);
+    if (!box) throw new Error("ioBOX vanished after insert");
+    return box;
+  }
+
+  async updateIoBox(id: string, patch: Partial<IoBox>): Promise<void> {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (k === "id" || k === "created_at" || k === "paired_at") continue;
+      sets.push(`${k} = ?`);
+      vals.push(k.endsWith("_json") ? J(v ?? {}) : v ?? null);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    await this._run(`UPDATE ioboxes SET ${sets.join(", ")} WHERE id = ?`, vals);
+    void this.notify("ioboxes", "update", id);
+  }
+
+  async touchIoBox(id: string, patch: {
+    firmware_version?: string | null;
+    config_applied_version?: number | null;
+    config_error?: string | null;
+    route_mode?: string | null;
+    local_last_ip?: string | null;
+    network_json?: Record<string, unknown> | null;
+  }): Promise<void> {
+    await this._run(
+      `UPDATE ioboxes SET
+         last_seen_at = ?,
+         firmware_version = COALESCE(?, firmware_version),
+         config_applied_version = COALESCE(?, config_applied_version),
+         config_applied_at = CASE WHEN ? IS NOT NULL THEN ? ELSE config_applied_at END,
+         config_error = ?,
+         route_mode = COALESCE(?, route_mode),
+         local_last_ip = COALESCE(?, local_last_ip),
+         network_json = COALESCE(?, network_json)
+       WHERE id = ?`,
+      [
+        isoNow(),
+        patch.firmware_version ?? null,
+        patch.config_applied_version ?? null,
+        patch.config_applied_version ?? null,
+        isoNow(),
+        patch.config_error ?? null,
+        patch.route_mode ?? null,
+        patch.local_last_ip ?? null,
+        patch.network_json ? J(patch.network_json) : null,
+        id,
+      ],
+    );
+    void this.notify("ioboxes", "update", id);
+  }
+
+  async listIoBoxMappingsForDisplay(displayId: string): Promise<IoBoxInputMapping[]> {
+    const rs = await this._all(
+      `SELECT * FROM iobox_input_mappings
+        WHERE enabled = true AND (display_id = ? OR display_id IS NULL)
+        ORDER BY created_at`,
+      [displayId],
+    );
+    return rs.map((r) => rowToIoBoxInputMapping(r as Record<string, unknown>));
+  }
+
+  async listIoBoxMappingsForIoBox(ioBoxId: string): Promise<IoBoxInputMapping[]> {
+    const rs = await this._all(
+      "SELECT * FROM iobox_input_mappings WHERE iobox_id = ? ORDER BY created_at",
+      [ioBoxId],
+    );
+    return rs.map((r) => rowToIoBoxInputMapping(r as Record<string, unknown>));
+  }
+
+  async createIoBoxMapping(input: {
+    iobox_id?: string | null;
+    display_id?: string | null;
+    layout_id?: string | null;
+    cell_id?: string | null;
+    source_kind: string;
+    match_json?: Record<string, unknown>;
+    target_kind: string;
+    action: string;
+    params_json?: Record<string, unknown>;
+    enabled?: boolean;
+  }): Promise<IoBoxInputMapping> {
+    const id = uuidv7();
+    await this._run(
+      `INSERT INTO iobox_input_mappings
+        (id, iobox_id, display_id, layout_id, cell_id, source_kind, match_json, target_kind, action, params_json, enabled)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.iobox_id ?? null,
+        input.display_id ?? null,
+        input.layout_id ?? null,
+        input.cell_id ?? null,
+        input.source_kind,
+        J(input.match_json ?? {}),
+        input.target_kind,
+        input.action,
+        J(input.params_json ?? {}),
+        input.enabled ?? true,
+      ],
+    );
+    void this.notify("iobox_input_mappings", "create", id);
+    const row = await this._get("SELECT * FROM iobox_input_mappings WHERE id = ?", [id]);
+    if (!row) throw new Error("ioBOX mapping vanished after insert");
+    return rowToIoBoxInputMapping(row as Record<string, unknown>);
+  }
+
+  async deleteIoBoxMapping(id: string): Promise<void> {
+    await this._run("DELETE FROM iobox_input_mappings WHERE id = ?", [id]);
+    void this.notify("iobox_input_mappings", "delete", id);
+  }
+
+  async createIoBoxFirmwareRelease(input: {
+    id: string;
+    version: string;
+    channel: FirmwareChannel;
+    firmware_arch: string;
+    model_id?: string | null;
+    artifact_path: string;
+    size_bytes: number;
+    sha256: string;
+    signature: string;
+    release_notes?: string | null;
+    uploaded_by?: string | null;
+  }): Promise<IoBoxFirmwareRelease> {
+    await this._run(
+      `INSERT INTO iobox_firmware_releases
+        (id, version, channel, firmware_arch, model_id, artifact_path, size_bytes, sha256, signature, release_notes, uploaded_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (version, firmware_arch, model_id) DO UPDATE SET
+         channel = EXCLUDED.channel,
+         artifact_path = EXCLUDED.artifact_path,
+         size_bytes = EXCLUDED.size_bytes,
+         sha256 = EXCLUDED.sha256,
+         signature = EXCLUDED.signature,
+         release_notes = EXCLUDED.release_notes,
+         uploaded_by = EXCLUDED.uploaded_by,
+         uploaded_at = now(),
+         yanked_at = NULL`,
+      [
+        input.id,
+        input.version,
+        input.channel,
+        input.firmware_arch,
+        input.model_id ?? null,
+        input.artifact_path,
+        input.size_bytes,
+        input.sha256,
+        input.signature,
+        input.release_notes ?? null,
+        input.uploaded_by ?? null,
+      ],
+    );
+    void this.notify("iobox_firmware_releases", "update", input.id);
+    const row = await this.getIoBoxFirmwareReleaseByVersionArchModel(input.version, input.firmware_arch, input.model_id ?? null);
+    if (!row) throw new Error("ioBOX firmware release vanished after insert");
+    return row;
+  }
+
+  async getIoBoxFirmwareRelease(id: string): Promise<IoBoxFirmwareRelease | null> {
+    const r = await this._get("SELECT * FROM iobox_firmware_releases WHERE id = ?", [id]);
+    return r ? rowToIoBoxFirmwareRelease(r as Record<string, unknown>) : null;
+  }
+
+  async getIoBoxFirmwareReleaseByVersionArchModel(version: string, firmwareArch: string, modelId: string | null): Promise<IoBoxFirmwareRelease | null> {
+    const r = await this._get(
+      `SELECT * FROM iobox_firmware_releases
+        WHERE version = ? AND firmware_arch = ? AND model_id IS NOT DISTINCT FROM ?`,
+      [version, firmwareArch, modelId],
+    );
+    return r ? rowToIoBoxFirmwareRelease(r as Record<string, unknown>) : null;
+  }
+
+  async getLatestIoBoxFirmwareRelease(channel: FirmwareChannel, firmwareArch: string, modelId: string | null): Promise<IoBoxFirmwareRelease | null> {
+    const r = await this._get(
+      `SELECT * FROM iobox_firmware_releases
+        WHERE channel = ?
+          AND firmware_arch = ?
+          AND yanked_at IS NULL
+          AND (model_id IS NULL OR model_id = ?)
+        ORDER BY CASE WHEN model_id = ? THEN 0 ELSE 1 END, uploaded_at DESC
+        LIMIT 1`,
+      [channel, firmwareArch, modelId, modelId],
+    );
+    return r ? rowToIoBoxFirmwareRelease(r as Record<string, unknown>) : null;
+  }
+
+  async listIoBoxFirmwareReleases(): Promise<IoBoxFirmwareRelease[]> {
+    const rs = await this._all("SELECT * FROM iobox_firmware_releases ORDER BY uploaded_at DESC");
+    return rs.map((r) => rowToIoBoxFirmwareRelease(r as Record<string, unknown>));
   }
 
   // ===========================================================================
@@ -1989,6 +2352,7 @@ export class Repository {
   async insertEvent(input: {
     source_kiosk_id: string | null;
     source_camera_id: string | null;
+    source_iobox_id?: string | null;
     source_type: EventSourceType;
     topic: string;
     property_op: string | null;
@@ -1998,13 +2362,14 @@ export class Repository {
     const id = uuidv7();
     await this._run(
       `INSERT INTO event_log
-         (id, source_kiosk_id, source_camera_id, source_type, topic,
+         (id, source_kiosk_id, source_camera_id, source_iobox_id, source_type, topic,
           property_op, payload, forwarded_to_nodered)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.source_kiosk_id,
         input.source_camera_id,
+        input.source_iobox_id ?? null,
         input.source_type,
         input.topic,
         input.property_op,
@@ -2378,13 +2743,14 @@ export class Repository {
       html_content?: string | null;
       web_url?: string | null;
       dashboard_id?: string | null;
+      input_options_json?: Record<string, unknown>;
     },
   ): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
       sets.push(`${k} = ?`);
-      vals.push(v === undefined ? null : v);
+      vals.push(k === "input_options_json" ? J(v ?? {}) : v === undefined ? null : v);
     }
     if (sets.length === 0) return;
     vals.push(id);

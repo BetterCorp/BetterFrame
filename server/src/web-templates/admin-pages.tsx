@@ -11,6 +11,11 @@ import type {
   Entity,
   FirmwareRelease,
   FirmwareRollout,
+  IoBox,
+  IoBoxFirmwareRelease,
+  IoBoxInputMapping,
+  IoBoxModel,
+  IoBoxSerial,
   Kiosk,
   KioskGpioBinding,
   KioskLog,
@@ -23,6 +28,267 @@ import type {
   EventLog,
   Tenant,
 } from "../shared/types.js";
+
+// ---- ioBOX ------------------------------------------------------------------
+
+interface IoBoxPageProps {
+  user: string;
+  boxes: IoBox[];
+  models: IoBoxModel[];
+  serials: IoBoxSerial[];
+  displays: Display[];
+  firmwareReleases: IoBoxFirmwareRelease[];
+  error?: string;
+}
+
+export function IoBoxesPage(props: IoBoxPageProps) {
+  const modelById = new Map(props.models.map((m) => [m.id, m]));
+  return (
+    <Layout title="ioBOX" user={props.user} activeNav="iobox" flash={props.error ? { type: "error", message: props.error } : undefined}>
+      <div class="section-header">
+        <h2 class="section-title">ioBOX Devices</h2>
+        <div style="display:flex; gap:0.5rem">
+          <a href="/admin/iobox/models" class="btn btn-ghost">Models</a>
+          <a href="/admin/iobox/serials" class="btn btn-ghost">Serials</a>
+        </div>
+      </div>
+      <div class="table-wrap" style="margin-bottom:1.5rem">
+        <table>
+          <thead><tr><th>Name</th><th>Serial</th><th>Model</th><th>Display</th><th>Route</th><th>Firmware</th><th>Last Seen</th></tr></thead>
+          <tbody>
+            {props.boxes.length === 0 ? (
+              <tr><td colspan="7" style="text-align:center; color:#999; padding:2rem">No ioBOX devices paired</td></tr>
+            ) : props.boxes.map((box) => {
+              const display = props.displays.find((d) => d.id === box.assigned_display_id);
+              return (
+                <tr>
+                  <td><a href={`/admin/iobox/${box.id}`}><strong>{box.name}</strong></a></td>
+                  <td><code>{box.serial}</code></td>
+                  <td>{modelById.get(box.model_id)?.name ?? box.model_id}</td>
+                  <td>{display ? <a href={`/admin/displays/${display.id}`}>{display.name}</a> : <span style="color:#999">unassigned</span>}</td>
+                  <td><span class="badge badge-gray">{box.route_mode}</span></td>
+                  <td>{box.firmware_version ?? "—"}</td>
+                  <td>{box.last_seen_at ? formatTime(box.last_seen_at) : "never"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div class="section-header"><h2 class="section-title">Registered Unpaired Serials</h2></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Serial</th><th>Model</th><th>Last Seen</th><th>Status</th></tr></thead>
+          <tbody>
+            {props.serials.filter((s) => !s.paired_iobox_id).length === 0 ? (
+              <tr><td colspan="4" style="text-align:center; color:#999; padding:2rem">No registered unpaired serials</td></tr>
+            ) : props.serials.filter((s) => !s.paired_iobox_id).map((s) => (
+              <tr>
+                <td><code>{s.serial}</code></td>
+                <td>{modelById.get(s.model_id)?.name ?? s.model_id}</td>
+                <td>{s.last_seen_at ? formatTime(s.last_seen_at) : "never"}</td>
+                <td>{s.last_seen_at ? <span class="badge badge-green">active unpaired</span> : <span class="badge badge-gray">inactive unpaired</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div class="section-header" style="margin-top:1.5rem"><h2 class="section-title">Firmware Releases</h2></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Version</th><th>Channel</th><th>Model</th><th>Size</th><th>Uploaded</th><th>Status</th></tr></thead>
+          <tbody>
+            {props.firmwareReleases.length === 0 ? (
+              <tr><td colspan="6" style="text-align:center; color:#999; padding:2rem">No ioBOX firmware releases imported</td></tr>
+            ) : props.firmwareReleases.map((r) => (
+              <tr>
+                <td><code>{r.version}</code></td>
+                <td>{r.channel}</td>
+                <td>{r.model_id ? (modelById.get(r.model_id)?.name ?? r.model_id) : "all models"}</td>
+                <td>{String(r.size_bytes)} bytes</td>
+                <td>{formatTime(r.uploaded_at)}</td>
+                <td>{r.yanked_at ? <span class="badge badge-gray">yanked</span> : <span class="badge badge-green">active</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Layout>
+  );
+}
+
+export function IoBoxModelsPage(props: { user: string; models: IoBoxModel[]; error?: string }) {
+  const defaultPorts = "usb_otg|USB OTG|usb_hid|input";
+  return (
+    <Layout title="ioBOX Models" user={props.user} activeNav="iobox-models" flash={props.error ? { type: "error", message: props.error } : undefined}>
+      <div class="section-header">
+        <h2 class="section-title">Model Definitions</h2>
+        <a href="/admin/iobox" class="btn btn-ghost">Back</a>
+      </div>
+      <div class="two-col">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>Name</th><th>Variant</th><th>Ports</th></tr></thead>
+            <tbody>
+              {props.models.length === 0 ? (
+                <tr><td colspan="4" style="text-align:center; color:#999; padding:2rem">No models defined</td></tr>
+              ) : props.models.map((m) => (
+                <tr>
+                  <td><code>{m.id}</code></td>
+                  <td><a href={`/admin/iobox/models/${m.id}`}><strong>{m.name}</strong></a></td>
+                  <td><span class="badge badge-blue">{m.hardware_variant}</span></td>
+                  <td>{String(m.ports_json.length)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <form method="post" action="/admin/iobox/models" class="card">
+          <h3 style="margin-top:0">Create Model</h3>
+          <div class="form-group"><label>ID</label><input name="id" class="form-input" placeholder="ioBOX-KBP" required /></div>
+          <div class="form-group"><label>Name</label><input name="name" class="form-input" placeholder="ioBOX Keyboard + PIR" required /></div>
+          <div class="form-group"><label>Description</label><input name="description" class="form-input" /></div>
+          <div class="form-group"><label>Hardware Variant</label><select name="hardware_variant" class="form-input"><option value="ethernet">Ethernet</option><option value="wifi">Wi-Fi only</option></select></div>
+          <div class="form-group">
+            <label>Capabilities</label>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.35rem; font-size:0.9rem">
+              {["keyboard", "mouse", "usb_hid", "rs485", "joystick", "gpio_inputs", "gpio_outputs", "presence", "leds", "relays"].map((cap) => (
+                <label><input type="checkbox" name={`cap_${cap}`} value="1" checked={["keyboard", "mouse", "usb_hid"].includes(cap)} /> {cap}</label>
+              ))}
+              <label><input type="checkbox" name="cap_wifi_provisioning" value="1" checked /> wifi_provisioning</label>
+            </div>
+          </div>
+          <div class="form-group"><label>Ports</label><textarea name="ports_text" class="form-input" rows="5">{defaultPorts}</textarea></div>
+          <div class="form-group"><label>Extra Capabilities JSON</label><textarea name="extra_capabilities_json" class="form-input" rows="3">{`{}`}</textarea></div>
+          <div class="form-group"><label>Extra Ports JSON</label><textarea name="extra_ports_json" class="form-input" rows="4">{`[]`}</textarea></div>
+          <button class="btn btn-primary" type="submit">Create</button>
+        </form>
+      </div>
+    </Layout>
+  );
+}
+
+export function IoBoxModelEditPage(props: { user: string; model: IoBoxModel; error?: string }) {
+  const m = props.model;
+  const caps = m.capabilities_json ?? {};
+  const portsText = (m.ports_json ?? []).map((p: any) => `${p.id ?? ""}|${p.label ?? ""}|${p.kind ?? ""}|${p.direction ?? "input"}`).join("\n");
+  return (
+    <Layout title={`ioBOX Model: ${m.name}`} user={props.user} activeNav="iobox-models" flash={props.error ? { type: "error", message: props.error } : undefined}>
+      <form method="post" action={`/admin/iobox/models/${m.id}`} class="card" style="max-width:900px">
+        <div class="form-group"><label>ID</label><input class="form-input" value={m.id} disabled /></div>
+        <div class="form-group"><label>Name</label><input name="name" class="form-input" value={m.name} required /></div>
+        <div class="form-group"><label>Description</label><input name="description" class="form-input" value={m.description ?? ""} /></div>
+        <div class="form-group"><label>Hardware Variant</label><select name="hardware_variant" class="form-input"><option value="ethernet" selected={m.hardware_variant === "ethernet"}>Ethernet</option><option value="wifi" selected={m.hardware_variant === "wifi"}>Wi-Fi only</option></select></div>
+        <div class="form-group"><label>Firmware Track</label><input name="firmware_track" class="form-input" value={m.firmware_track} /></div>
+        <div class="form-group">
+          <label>Capabilities</label>
+          <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:0.35rem; font-size:0.9rem">
+            {["keyboard", "mouse", "usb_hid", "rs485", "joystick", "gpio_inputs", "gpio_outputs", "presence", "leds", "relays", "wifi_provisioning"].map((cap) => (
+              <label><input type="checkbox" name={`cap_${cap}`} value="1" checked={caps[cap] === true} /> {cap}</label>
+            ))}
+          </div>
+        </div>
+        <div class="form-group"><label>Ports</label><textarea name="ports_text" class="form-input" rows="8">{portsText}</textarea></div>
+        <div class="form-group"><label>Extra Capabilities JSON</label><textarea name="extra_capabilities_json" class="form-input" rows="4">{`{}`}</textarea></div>
+        <div class="form-group"><label>Extra Ports JSON</label><textarea name="extra_ports_json" class="form-input" rows="6">{`[]`}</textarea></div>
+        <button class="btn btn-primary" type="submit">Save</button>
+        <a href="/admin/iobox/models" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
+      </form>
+    </Layout>
+  );
+}
+
+export function IoBoxSerialsPage(props: { user: string; serials: IoBoxSerial[]; models: IoBoxModel[]; error?: string }) {
+  const modelById = new Map(props.models.map((m) => [m.id, m]));
+  return (
+    <Layout title="ioBOX Serials" user={props.user} activeNav="iobox-serials" flash={props.error ? { type: "error", message: props.error } : undefined}>
+      <div class="two-col">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Serial</th><th>Model</th><th>Pairing</th><th>Last Seen</th></tr></thead>
+            <tbody>{props.serials.length === 0 ? <tr><td colspan="4" style="text-align:center; color:#999; padding:2rem">No serials registered</td></tr> : props.serials.map((s) => <tr><td><code>{s.serial}</code></td><td>{modelById.get(s.model_id)?.name ?? s.model_id}</td><td>{s.paired_iobox_id ? <span class="badge badge-green">paired</span> : <span class="badge badge-gray">unpaired</span>}</td><td>{s.last_seen_at ? formatTime(s.last_seen_at) : "never"}</td></tr>)}</tbody>
+          </table>
+        </div>
+        <form method="post" action="/admin/iobox/serials" class="card">
+          <h3 style="margin-top:0">Register Serial</h3>
+          <div class="form-group"><label>Serial</label><input name="serial" class="form-input" required /></div>
+          <div class="form-group"><label>Model</label><select name="model_id" class="form-input" required>{props.models.map((m) => <option value={m.id}>{m.name}</option>)}</select></div>
+          <div class="form-group"><label>Notes</label><input name="notes" class="form-input" /></div>
+          <button class="btn btn-primary" type="submit">Register</button>
+          <a href="/admin/iobox" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
+        </form>
+      </div>
+    </Layout>
+  );
+}
+
+export function IoBoxDetailPage(props: { user: string; box: IoBox; model: IoBoxModel | null; displays: Display[]; mappings: IoBoxInputMapping[]; firmwareReleases: IoBoxFirmwareRelease[]; error?: string }) {
+  const box = props.box;
+  const releases = props.firmwareReleases.filter((r) => !r.yanked_at && (r.model_id == null || r.model_id === box.model_id));
+  return (
+    <Layout title={`ioBOX: ${box.name}`} user={props.user} activeNav="iobox" flash={props.error ? { type: "error", message: props.error } : undefined}>
+      <div class="two-col">
+        <form method="post" action={`/admin/iobox/${box.id}`} class="card">
+          <h3 style="margin-top:0">Device</h3>
+          <div class="form-group"><label>Name</label><input name="name" class="form-input" value={box.name} required /></div>
+          <div class="form-group"><label>Serial</label><input class="form-input" value={box.serial} disabled /></div>
+          <div class="form-group"><label>Model</label><input class="form-input" value={props.model?.name ?? box.model_id} disabled /></div>
+          <div class="form-group"><label>Assigned Display</label><select name="assigned_display_id" class="form-input"><option value="">Unassigned</option>{props.displays.map((d) => <option value={d.id} selected={box.assigned_display_id === d.id}>{d.name}</option>)}</select></div>
+          <div class="form-group"><label><input type="checkbox" name="enabled" value="1" checked={box.enabled} /> Enabled</label></div>
+          <button class="btn btn-primary" type="submit">Save</button>
+          <a href="/admin/iobox" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
+        </form>
+        <div class="card">
+          <h3 style="margin-top:0">Status</h3>
+          <p>Route: <span class="badge badge-gray">{box.route_mode}</span></p>
+          <p>Firmware: {box.firmware_version ?? "—"}</p>
+          {box.firmware_last_attempt_version ? <p>Last OTA: {box.firmware_last_attempt_version}{box.firmware_last_error ? <span style="color:#a00"> — {box.firmware_last_error}</span> : null}</p> : null}
+          <p>Config: {String(box.config_applied_version)} / {String(box.config_version)}</p>
+          <p>Last seen: {box.last_seen_at ? formatTime(box.last_seen_at) : "never"}</p>
+          <p>IP: {box.local_last_ip ?? "—"}</p>
+        </div>
+      </div>
+      <div class="card" style="margin-top:1.5rem; max-width:760px">
+        <h3 style="margin-top:0">Firmware OTA</h3>
+        <form method="post" action={`/admin/iobox/${box.id}/firmware`} style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; align-items:end">
+          <div class="form-group">
+            <label>Channel</label>
+            <select name="channel" class="form-input">
+              {(["stable", "beta", "dev"] as const).map((c) => <option value={c} selected={box.firmware_channel === c}>{c}</option>)}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Pin to version</label>
+            <select name="target_version" class="form-input">
+              <option value="">-- follow channel --</option>
+              {releases.map((r) => (
+                <option value={r.version} selected={box.firmware_target_version === r.version}>
+                  {r.version} ({r.channel}, {r.model_id ?? "all models"})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div style="grid-column:1/-1">
+            <button class="btn btn-primary" type="submit">Save OTA Policy</button>
+          </div>
+        </form>
+      </div>
+      <div class="section-header" style="margin-top:1.5rem"><h2 class="section-title">Input Mappings</h2></div>
+      <div class="two-col">
+        <div class="table-wrap"><table><thead><tr><th>Source</th><th>Action</th><th>Target</th><th></th></tr></thead><tbody>{props.mappings.length === 0 ? <tr><td colspan="4" style="text-align:center; color:#999; padding:2rem">No mappings</td></tr> : props.mappings.map((m) => <tr><td><code>{m.source_kind}</code> {JSON.stringify(m.match_json)}</td><td><code>{m.action}</code></td><td>{m.target_kind}</td><td><form method="post" action={`/admin/iobox/${box.id}/mappings/${m.id}/delete`} style="display:inline"><button class="btn btn-sm btn-ghost" type="submit">Delete</button></form></td></tr>)}</tbody></table></div>
+        <form method="post" action={`/admin/iobox/${box.id}/mappings`} class="card">
+          <h3 style="margin-top:0">Add Mapping</h3>
+          <div class="form-group"><label>Source Kind</label><input name="source_kind" class="form-input" placeholder="keyboard" required /></div>
+          <div class="form-group"><label>Match JSON</label><textarea name="match_json" class="form-input" rows="4">{`{"code":"Digit1","action":"down"}`}</textarea></div>
+          <div class="form-group"><label>Target Kind</label><input name="target_kind" class="form-input" placeholder="camera" required /></div>
+          <div class="form-group"><label>Action</label><input name="action" class="form-input" placeholder="ptz.goto_preset" required /></div>
+          <div class="form-group"><label>Params JSON</label><textarea name="params_json" class="form-input" rows="4">{`{"camera_id":"","presetToken":"1"}`}</textarea></div>
+          <button class="btn btn-primary" type="submit">Add</button>
+        </form>
+      </div>
+    </Layout>
+  );
+}
 
 // ---- Overview ---------------------------------------------------------------
 
@@ -759,6 +1025,9 @@ interface EntityEditPageProps {
 
 export function EntityEditPage(props: EntityEditPageProps) {
   const e = props.entity;
+  const inputOptions = e.input_options_json ?? {};
+  const keyboardMode = String(inputOptions["keyboard_mode"] ?? "disabled");
+  const allowlist = Array.isArray(inputOptions["keyboard_allowlist"]) ? inputOptions["keyboard_allowlist"].join(", ") : "";
   return (
     <Layout
       title={`Entity: ${e.name}`}
@@ -843,6 +1112,29 @@ export function EntityEditPage(props: EntityEditPageProps) {
                 </div>
               </div>
             )}
+
+            <div class="card" style="box-shadow:none; border:1px solid #eee; margin:1rem 0; padding:1rem">
+              <h3 style="margin:0 0 0.75rem; font-size:0.95rem">ioBOX Input</h3>
+              <div class="form-group">
+                <label for="keyboard_mode">Keyboard</label>
+                <select id="keyboard_mode" name="keyboard_mode" class="form-input">
+                  <option value="disabled" selected={keyboardMode === "disabled"}>Disabled</option>
+                  <option value="all" selected={keyboardMode === "all"}>All keys</option>
+                  <option value="alphanumeric" selected={keyboardMode === "alphanumeric"}>Alphanumeric only</option>
+                  <option value="custom" selected={keyboardMode === "custom"}>Custom allowlist</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="keyboard_allowlist">Custom Keys</label>
+                <input id="keyboard_allowlist" name="keyboard_allowlist" class="form-input" value={allowlist} placeholder="Enter, Backspace, Digit1, ArrowLeft" />
+              </div>
+              <label style="display:block; margin-bottom:0.5rem">
+                <input type="checkbox" name="mouse_enabled" value="1" checked={inputOptions["mouse_enabled"] === true} /> Allow mouse
+              </label>
+              <label style="display:block">
+                <input type="checkbox" name="ptz_enabled" value="1" checked={inputOptions["ptz_enabled"] === true} /> Allow PTZ controls
+              </label>
+            </div>
 
             <button type="submit" class="btn btn-primary">Save</button>
             <a href="/admin/entities" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
@@ -2573,6 +2865,9 @@ export function renderCell(
   const resizeUrl = `${cellGetUrl}/resize`;
 
   if (mode === "edit") {
+    const inputOptions = c.input_options_json ?? {};
+    const keyboardMode = String(inputOptions["keyboard_mode"] ?? "disabled");
+    const allowlist = Array.isArray(inputOptions["keyboard_allowlist"]) ? inputOptions["keyboard_allowlist"].join(", ") : "";
     return (
       <div class="layout-cell editing" style={style} id={`cell-${String(c.id)}`}>
         <form
@@ -2656,6 +2951,26 @@ export function renderCell(
               <input name="row_span" type="number" class="form-input" min="1" value={String(c.row_span)} />
             </div>
           </div>
+
+          <div class="form-group">
+            <label>ioBOX Keyboard</label>
+            <select name="keyboard_mode" class="form-input">
+              <option value="disabled" selected={keyboardMode === "disabled"}>Disabled</option>
+              <option value="all" selected={keyboardMode === "all"}>All keys</option>
+              <option value="alphanumeric" selected={keyboardMode === "alphanumeric"}>Alphanumeric</option>
+              <option value="custom" selected={keyboardMode === "custom"}>Custom</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Allowed Keys</label>
+            <input name="keyboard_allowlist" class="form-input" value={allowlist} placeholder="Enter, Digit1, ArrowLeft" />
+          </div>
+          <label style="display:block; font-size:0.75rem; margin-bottom:0.25rem">
+            <input type="checkbox" name="mouse_enabled" value="1" checked={inputOptions["mouse_enabled"] === true} /> Mouse
+          </label>
+          <label style="display:block; font-size:0.75rem">
+            <input type="checkbox" name="ptz_enabled" value="1" checked={inputOptions["ptz_enabled"] === true} /> PTZ
+          </label>
 
           <div class="layout-cell-edit-form-actions">
             <button type="submit" class="btn btn-primary">Save</button>
@@ -2817,6 +3132,7 @@ export function renderGrid(
 export function LayoutEditPage(props: LayoutEditPageProps) {
   const l = props.layout;
   const cells = props.cells;
+  const inputOptions = l.input_options_json ?? {};
 
   // Compute grid dimensions from cells (for summary text).
   let gridCols = 1;
@@ -2871,6 +3187,14 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
                 <input type="checkbox" name="resets_idle_timer" value="1" checked={l.resets_idle_timer} />
                 {" "}Resets idle timer
               </label>
+            </div>
+            <div class="card" style="box-shadow:none; border:1px solid #eee; margin:1rem 0; padding:1rem">
+              <h3 style="margin:0 0 0.75rem; font-size:0.95rem">ioBOX Input</h3>
+              <label style="display:block; margin-bottom:0.5rem"><input type="checkbox" name="keyboard_enabled" value="1" checked={inputOptions["keyboard_enabled"] === true} /> Accept keyboard events</label>
+              <label style="display:block; margin-bottom:0.5rem"><input type="checkbox" name="mouse_enabled" value="1" checked={inputOptions["mouse_enabled"] === true} /> Accept mouse events</label>
+              <label style="display:block; margin-bottom:0.5rem"><input type="checkbox" name="joystick_enabled" value="1" checked={inputOptions["joystick_enabled"] === true} /> Accept joystick/PTZ events</label>
+              <label style="display:block; margin-bottom:0.5rem"><input type="checkbox" name="selection_enabled" value="1" checked={inputOptions["selection_enabled"] === true} /> Enable cell selection</label>
+              <label style="display:block"><input type="checkbox" name="selection_border_enabled" value="1" checked={inputOptions["selection_border_enabled"] === true} /> Show selected-cell border</label>
             </div>
             <button type="submit" class="btn btn-primary">Save</button>
             <a href="/admin/layouts" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
@@ -3225,7 +3549,7 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
 
 interface DisplaysPageProps {
   user: string;
-  displays: Display[];
+  displays: Array<{ display: Display; kiosk: Pick<Kiosk, "id" | "name"> | null }>;
 }
 
 export function DisplaysPage(props: DisplaysPageProps) {
@@ -3236,6 +3560,7 @@ export function DisplaysPage(props: DisplaysPageProps) {
         <table>
           <thead>
             <tr>
+              <th>Kiosk</th>
               <th>Name</th>
               <th>Details</th>
               <th>Power</th>
@@ -3243,10 +3568,15 @@ export function DisplaysPage(props: DisplaysPageProps) {
           </thead>
           <tbody>
             {props.displays.length === 0 ? (
-              <tr><td colspan="3" style="text-align:center; color:#999; padding:2rem">None configured yet</td></tr>
+              <tr><td colspan="4" style="text-align:center; color:#999; padding:2rem">None configured yet</td></tr>
             ) : (
-              props.displays.map((d) => (
+              props.displays.map(({ display: d, kiosk }) => (
                 <tr>
+                  <td>
+                    {kiosk
+                      ? <a href={`/admin/kiosks/${kiosk.id}`}>{kiosk.name}</a>
+                      : <span style="color:#999">Unassigned</span>}
+                  </td>
                   <td>
                     <a href={`/admin/displays/${d.id}`}><strong>{d.name}</strong></a>
                     {!d.is_enabled && (

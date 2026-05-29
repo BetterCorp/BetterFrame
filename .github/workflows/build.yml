@@ -2,6 +2,7 @@
 # release) and every v* tag push (stable / beta). Produces:
 #   - betterframe-kiosk-<version>-<arch>           (Linux ELF, no extension)
 #   - betterframe-client-<version>-<arch>.img.xz   (flashable Pi OS image)
+#   - betterframe-iobox-<version>-<variant>.bin    (ESP32-S3 ioBOX firmware)
 # All assets attached to the GitHub Release at ${{ inputs.tag }}.
 
 name: build
@@ -51,6 +52,90 @@ permissions:
   contents: write
 
 jobs:
+  # ---- ESP32-S3 ioBOX firmware ---------------------------------------------
+  iobox-firmware:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - env: iobox_wifi
+            variant: wifi
+            model: ioBOX-KB
+          - env: iobox_eth
+            variant: eth
+            model: ioBOX-KB-E
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install PlatformIO
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq
+          python3 -m pip install --upgrade platformio
+
+      - name: Build ioBOX firmware
+        working-directory: iobox-firmware
+        run: pio run -e ${{ matrix.env }}
+
+      - name: Package firmware artifact
+        working-directory: iobox-firmware
+        run: |
+          set -e
+          out="betterframe-iobox-${{ inputs.version }}-${{ matrix.variant }}.bin"
+          cp ".pio/build/${{ matrix.env }}/firmware.bin" "$out"
+          sha256sum "$out" > "${out}.sha256"
+
+      - name: Upload to GitHub Release (ioBOX firmware)
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            iobox-firmware/betterframe-iobox-${{ inputs.version }}-${{ matrix.variant }}.bin
+            iobox-firmware/betterframe-iobox-${{ inputs.version }}-${{ matrix.variant }}.bin.sha256
+
+      - name: Auto-import ioBOX firmware into BF server
+        if: ${{ secrets.BF_AUTOIMPORT_URL != '' && secrets.BF_AUTOIMPORT_API_KEY != '' }}
+        env:
+          BF_AUTOIMPORT_URL: ${{ secrets.BF_AUTOIMPORT_URL }}
+          BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}
+        working-directory: iobox-firmware
+        run: |
+          set -e
+          bin="betterframe-iobox-${{ inputs.version }}-${{ matrix.variant }}.bin"
+          base64 -w 0 "$bin" > "${bin}.b64"
+          jq -nc \
+            --arg v "${{ inputs.version }}" \
+            --arg c "${{ inputs.channel }}" \
+            --arg a "esp32s3" \
+            --arg m "${{ matrix.model }}" \
+            --arg n "GitHub Actions ioBOX build of ${{ inputs.tag }} (${{ github.sha }})" \
+            --rawfile b "${bin}.b64" \
+            '{version:$v, channel:$c, firmware_arch:$a, model_id:$m, release_notes:$n, content_b64:$b}' \
+            > "${bin}.import.json"
+          for attempt in 1 2 3; do
+            if curl -sSf --retry 2 --retry-delay 5 -X POST \
+              -H "Authorization: Bearer ${BF_AUTOIMPORT_API_KEY}" \
+              -H "Content-Type: application/json" \
+              --data-binary @"${bin}.import.json" \
+              "${BF_AUTOIMPORT_URL}/api/admin/iobox/firmware/import"; then
+              break
+            fi
+            echo "ioBOX import attempt $attempt failed, retrying in 10s..."
+            sleep 10
+          done
+
+      - name: Upload artifact (always)
+        uses: actions/upload-artifact@v7
+        with:
+          name: betterframe-iobox-${{ matrix.variant }}
+          path: |
+            iobox-firmware/betterframe-iobox-${{ inputs.version }}-${{ matrix.variant }}.bin
+            iobox-firmware/betterframe-iobox-${{ inputs.version }}-${{ matrix.variant }}.bin.sha256
+          retention-days: 14
+
   # ---- Per-arch kiosk binary ------------------------------------------------
   binary:
     strategy:

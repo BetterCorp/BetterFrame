@@ -124,10 +124,10 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
         }
         const token = authz.slice(7);
         if (
-          (path === "/api/admin/firmware/import" || path === "/api/admin/os/import") &&
+          (path === "/api/admin/firmware/import" || path === "/api/admin/iobox/firmware/import" || path === "/api/admin/os/import") &&
           (tokenMatchesExpected(token, deps.firmwareImportApiKey) || tokenMatchesExpected(token, deps.otaImportApiKey))
         ) {
-          const label = path === "/api/admin/os/import" ? "ota-import" : "fw-import";
+          const label = path === "/api/admin/os/import" ? "ota-import" : path.includes("/iobox/") ? "iobox-fw-import" : "fw-import";
           event.context.user = syntheticApiKeyUser(label);
           event.context.apiKeyPrefix = label;
           return;

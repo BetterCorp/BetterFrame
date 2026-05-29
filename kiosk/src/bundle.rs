@@ -128,6 +128,8 @@ pub struct BundleLayout {
     pub preload_camera_ids: Vec<String>,
     pub is_default: bool,
     pub resets_idle_timer: bool,
+    #[serde(default)]
+    pub input_options: Option<serde_json::Value>,
     pub cells: Vec<BundleCell>,
 }
 
@@ -150,6 +152,8 @@ pub struct BundleCell {
     pub smart_url: Option<SmartUrlConfig>,
     #[serde(default)]
     pub local_storage: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    pub input_options: Option<serde_json::Value>,
 }
 
 fn default_fit() -> String {

@@ -27,13 +27,16 @@ import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
 import { initOsUpdates, type OsUpdateApi } from "../../shared/os-updates.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
 import { initMqttBridge, type MqttBridge } from "../../shared/mqtt-bridge.js";
-import { createHash } from "node:crypto";
+import { getCoordinator } from "../../shared/coordinator-registry.js";
+import { createHash, randomBytes } from "node:crypto";
 import type { AuthApi } from "../../shared/auth.js";
 import type { SecretsApi } from "../../shared/secrets.js";
 import type { FirmwareChannel } from "../../shared/types.js";
 import {
   PairInitiateBody, PairClaimBody, HeartbeatBody, EventBody,
-  KioskLogsBody, FirmwareAppliedBody, OsAppliedBody, validateBody,
+  KioskLogsBody, FirmwareAppliedBody, OsAppliedBody,
+  IoBoxAnnounceBody, IoBoxPairClaimBody, IoBoxHeartbeatBody, IoBoxEventBody,
+  validateBody,
 } from "../../shared/api-schemas.js";
 
 // ---- Config -----------------------------------------------------------------
@@ -230,6 +233,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
     registerPairingRoutes(app, repo, auth, secrets, codeTtl, firmware);
     registerKioskRoutes(app, repo, auth, secrets, nodered, firmware, osUpdates, mqtt);
+    registerIoBoxRoutes(app, repo, auth, nodered, mqtt, firmware);
 
     this.server = serve(app, {
       port: this.config.port,
@@ -286,6 +290,24 @@ async function requireKiosk(
   if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
   await repo.adapter.setSearchPath(kiosk.schema_name);
   return kiosk;
+}
+
+async function requireIoBox(
+  event: any,
+  repo: Repository,
+  auth: AuthApi,
+): Promise<{
+  id: string;
+  tenant_slug: string;
+  tenant_name: string | null;
+  schema_name: string;
+}> {
+  const token = extractBearerToken(event);
+  if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
+  const box = await auth.verifyIoBoxKey(token);
+  if (!box) throw createError({ statusCode: 401, statusMessage: "Invalid ioBOX key" });
+  await repo.adapter.setSearchPath(box.schema_name);
+  return box;
 }
 
 async function getClusterKey(repo: Repository, secrets: SecretsApi): Promise<string | undefined> {
@@ -419,6 +441,325 @@ function registerPairingRoutes(
       },
     });
   });
+}
+
+// ---- ioBOX routes -----------------------------------------------------------
+
+function safeRouteMode(raw: string): "unknown" | "direct" | "proxy" | "offline" {
+  return raw === "direct" || raw === "proxy" || raw === "offline" ? raw : "unknown";
+}
+
+const ioBoxEventDedupCache = new Map<string, number>();
+
+function remoteIp(event: any): string | null {
+  return getRequestHeader(event, "x-real-ip")
+    ?? getRequestHeader(event, "x-forwarded-for")?.split(",")[0]?.trim()
+    ?? null;
+}
+
+async function resolveTenantForIoBoxClaim(repo: Repository, event: any): Promise<{ id: string | null; slug: string; schema_name: string }> {
+  const requested = getRequestHeader(event, "x-betterframe-tenant")?.trim() || "default";
+  const tenants = await repo.listTenants();
+  if (tenants.length === 0) return { id: null, slug: "default", schema_name: "public" };
+  const tenant = tenants.find((t) => t.slug === requested && t.is_active)
+    ?? tenants.find((t) => t.slug === "default" && t.is_active)
+    ?? tenants.find((t) => t.is_active);
+  if (!tenant) throw createError({ statusCode: 400, statusMessage: "No active tenant" });
+  return { id: tenant.id, slug: tenant.slug, schema_name: tenant.schema_name };
+}
+
+function registerIoBoxRoutes(
+  app: H3,
+  repo: Repository,
+  auth: AuthApi,
+  nodered: NoderedBridge,
+  mqtt: MqttBridge,
+  firmware: FirmwareApi,
+): void {
+  app.post("/api/iobox/announce", async (event) => {
+    const body = validateBody(IoBoxAnnounceBody, await readBody(event));
+    const serial = body.serial.trim();
+    const registered = await repo.getIoBoxSerial(serial);
+    if (!registered) return { status: "unknown_serial" };
+    await repo.touchIoBoxSerial(serial);
+    const model = await repo.getIoBoxModel(registered.model_id);
+    return {
+      status: registered.paired_iobox_id ? "registered_paired" : "registered_unpaired",
+      serial: registered.serial,
+      paired_iobox_id: registered.paired_iobox_id,
+      model,
+      server_time: new Date().toISOString(),
+    };
+  });
+
+  app.post("/api/iobox/pair/claim", async (event) => {
+    const body = validateBody(IoBoxPairClaimBody, await readBody(event));
+    const serial = body.serial.trim();
+    const registered = await repo.getIoBoxSerial(serial);
+    if (!registered) throw createError({ statusCode: 404, statusMessage: "unknown serial" });
+    if (registered.paired_iobox_id) throw createError({ statusCode: 409, statusMessage: "serial already paired" });
+    const model = await repo.getIoBoxModel(registered.model_id);
+    if (!model) throw createError({ statusCode: 400, statusMessage: "serial model missing" });
+
+    const tenant = await resolveTenantForIoBoxClaim(repo, event);
+    await repo.adapter.setSearchPath(tenant.schema_name);
+    const plaintext = `bfio-${randomBytes(24).toString("base64url")}`;
+    const box = await repo.createIoBox({
+      serial,
+      model_id: model.id,
+      name: body.name?.trim() || `${model.name} ${serial}`,
+      key_hash: await auth.hashPassword(plaintext),
+      key_prefix: plaintext.slice(0, 8),
+      assigned_display_id: body.assigned_display_id ?? null,
+    });
+    await repo.markIoBoxSerialPaired(serial, tenant.id, box.id);
+    return {
+      status: "claimed",
+      tenant_slug: tenant.slug,
+      iobox_id: box.id,
+      iobox_key: plaintext,
+      config_url: "/api/iobox/config",
+      heartbeat_url: "/api/iobox/heartbeat",
+    };
+  });
+
+  app.post("/api/iobox/heartbeat", async (event) => {
+    const verified = await requireIoBox(event, repo, auth);
+    const body = validateBody(IoBoxHeartbeatBody, await readBody(event));
+    await repo.touchIoBox(verified.id, {
+      firmware_version: body.firmware_version || null,
+      config_applied_version: body.config_applied_version ?? null,
+      config_error: body.config_error ?? null,
+      route_mode: safeRouteMode(body.route_mode),
+      local_last_ip: remoteIp(event),
+      network_json: body.network && typeof body.network === "object" ? body.network as Record<string, unknown> : {},
+    });
+    return { ok: true, now: new Date().toISOString() };
+  });
+
+  app.get("/api/iobox/config", async (event) => {
+    const verified = await requireIoBox(event, repo, auth);
+    const box = await repo.getIoBoxById(verified.id);
+    if (!box) throw createError({ statusCode: 404, statusMessage: "ioBOX not found" });
+    const model = await repo.getIoBoxModel(box.model_id);
+    let assignedDisplay = null;
+    let localTarget = null;
+    let mappings: unknown[] = [];
+    if (box.assigned_display_id) {
+      const display = await repo.getDisplayById(box.assigned_display_id);
+      assignedDisplay = display;
+      mappings = await repo.listIoBoxMappingsForDisplay(box.assigned_display_id);
+      if (display?.kiosk_id) {
+        const kiosk = await repo.getKioskById(display.kiosk_id);
+        if (kiosk?.local_key) {
+          const ifaces = kiosk.network_interfaces_json
+            ? JSON.parse(kiosk.network_interfaces_json) as Array<{ ips?: string[] }>
+            : [];
+          const candidates = [
+            ...(kiosk.local_last_ip ? [{ ip: kiosk.local_last_ip, port: kiosk.local_port ?? 18090 }] : []),
+            ...ifaces.flatMap((iface) => (iface.ips ?? []).map((ip) => ({ ip: ip.split("/")[0], port: kiosk.local_port ?? 18090 }))),
+          ].filter((c, idx, arr) => c.ip && arr.findIndex((x) => x.ip === c.ip && x.port === c.port) === idx);
+          localTarget = {
+            display_id: display.id,
+            kiosk_id: kiosk.id,
+            local_key: kiosk.local_key,
+            candidates,
+          };
+        }
+      }
+    }
+    return {
+      iobox: {
+        id: box.id,
+        serial: box.serial,
+        name: box.name,
+        config_version: box.config_version,
+        config: box.config_json,
+      },
+      model,
+      assigned_display: assignedDisplay,
+      local_target: localTarget,
+      mappings,
+    };
+  });
+
+  app.post("/api/iobox/event", async (event) => {
+    const verified = await requireIoBox(event, repo, auth);
+    const body = validateBody(IoBoxEventBody, await readBody(event));
+    const box = await repo.getIoBoxById(verified.id);
+    if (!box) throw createError({ statusCode: 404, statusMessage: "ioBOX not found" });
+    if (body.event_id) {
+      const dedupKey = `${box.id}:${body.event_id}`;
+      const now = Date.now();
+      const lastSeen = ioBoxEventDedupCache.get(dedupKey);
+      if (lastSeen && now - lastSeen < 60_000) {
+        return { ok: true, event_id: null, deduplicated: true };
+      }
+      ioBoxEventDedupCache.set(dedupKey, now);
+      if (ioBoxEventDedupCache.size > 10_000) {
+        const cutoff = now - 120_000;
+        for (const [key, ts] of ioBoxEventDedupCache) {
+          if (ts < cutoff) ioBoxEventDedupCache.delete(key);
+        }
+      }
+    }
+    const displayId = body.display_id ?? box.assigned_display_id ?? null;
+    const payload = {
+      ...(body.payload && typeof body.payload === "object" ? body.payload as Record<string, unknown> : {}),
+      event_id: body.event_id ?? null,
+      iobox_id: box.id,
+      serial: box.serial,
+      display_id: displayId,
+      kind: body.kind,
+      action: body.action ?? null,
+      code: body.code ?? null,
+      value: body.value ?? null,
+      route: body.route ?? box.route_mode,
+    };
+    const eventId = await repo.insertEvent({
+      source_kiosk_id: null,
+      source_camera_id: null,
+      source_iobox_id: box.id,
+      source_type: "io",
+      topic: body.topic,
+      property_op: body.action ?? null,
+      payload,
+      forwarded_to_nodered: false,
+    });
+    const tenantInfo = { tenant_slug: verified.tenant_slug, tenant_name: verified.tenant_name };
+    const out = {
+      event_id: eventId,
+      iobox_id: box.id,
+      display_id: displayId,
+      source_type: "io",
+      topic: body.topic,
+      kind: body.kind,
+      action: body.action ?? null,
+      code: body.code ?? null,
+      payload,
+      timestamp: new Date().toISOString(),
+      source: "iobox",
+    };
+    let proxyResult: unknown = null;
+    if ((body.route ?? box.route_mode) === "proxy" && displayId) {
+      proxyResult = await proxyIoBoxEventToKiosk(repo, box.id, displayId, {
+        topic: body.topic,
+        kind: body.kind,
+        action: body.action ?? null,
+        code: body.code ?? null,
+        value: body.value ?? null,
+        payload,
+      }).catch((err) => ({
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    }
+
+    const markForwarded = () => { repo.markEventForwarded(eventId); };
+    nodered.forward(body.topic, out, tenantInfo, markForwarded);
+    nodered.forward("io.event", out, tenantInfo);
+    mqtt.publishEvent(box.id, body.topic, out);
+    return { ok: true, event_id: eventId, proxy: proxyResult };
+  });
+
+  app.get("/api/iobox/firmware/check", async (event) => {
+    const verified = await requireIoBox(event, repo, auth);
+    const box = await repo.getIoBoxById(verified.id);
+    if (!box) throw createError({ statusCode: 404, statusMessage: "ioBOX not found" });
+    const url = new URL(event.req.url);
+    const current = url.searchParams.get("current") ?? box.firmware_version ?? "";
+    const arch = url.searchParams.get("arch") ?? "esp32s3";
+    let release = null;
+    if (box.firmware_target_version) {
+      release = await repo.getIoBoxFirmwareReleaseByVersionArchModel(box.firmware_target_version, arch, box.model_id);
+      release ??= await repo.getIoBoxFirmwareReleaseByVersionArchModel(box.firmware_target_version, arch, null);
+      if (release?.yanked_at) release = null;
+    }
+    release ??= await repo.getLatestIoBoxFirmwareRelease(box.firmware_channel ?? "stable", arch, box.model_id);
+    if (!release || release.version === current) return { up_to_date: true };
+    return {
+      up_to_date: false,
+      version: release.version,
+      channel: release.channel,
+      firmware_arch: release.firmware_arch,
+      model_id: release.model_id,
+      size_bytes: release.size_bytes,
+      sha256: release.sha256,
+      signature: release.signature,
+      release_notes: release.release_notes,
+      download_url: `/api/iobox/firmware/download/${release.id}`,
+      public_key_pem: firmware.publicKeyPem(),
+    };
+  });
+
+  app.get("/api/iobox/firmware/download/:id", async (event) => {
+    await requireIoBox(event, repo, auth);
+    const id = getRouterParam(event, "id") ?? new URL(event.req.url).pathname.split("/").pop();
+    if (!id) throw createError({ statusCode: 400, statusMessage: "missing release id" });
+    const release = await repo.getIoBoxFirmwareRelease(id);
+    if (!release || release.yanked_at) throw createError({ statusCode: 404, statusMessage: "firmware release not found" });
+    const buf = await firmware.readBlob(release.artifact_path, release.sha256);
+    return new Response(buf, {
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": String(buf.length),
+        "x-firmware-version": release.version,
+        "x-firmware-sha256": release.sha256,
+      },
+    });
+  });
+
+  app.post("/api/iobox/firmware/applied", async (event) => {
+    const verified = await requireIoBox(event, repo, auth);
+    const body = validateBody(FirmwareAppliedBody, await readBody(event));
+    await repo.updateIoBox(verified.id, {
+      ...(body.error ? {} : { firmware_version: body.version }),
+      firmware_last_attempt_at: new Date().toISOString(),
+      firmware_last_attempt_version: body.version,
+      firmware_last_error: body.error ?? null,
+    } as any);
+    return { ok: true };
+  });
+}
+
+function mappingMatches(mapping: { source_kind: string; match_json: Record<string, unknown> }, event: Record<string, unknown>): boolean {
+  if (mapping.source_kind !== String(event["kind"] ?? "")) return false;
+  for (const [key, expected] of Object.entries(mapping.match_json ?? {})) {
+    if (JSON.stringify(event[key]) !== JSON.stringify(expected)) return false;
+  }
+  return true;
+}
+
+async function proxyIoBoxEventToKiosk(
+  repo: Repository,
+  ioBoxId: string,
+  displayId: string,
+  event: Record<string, unknown>,
+): Promise<unknown> {
+  const display = await repo.getDisplayById(displayId);
+  if (!display?.kiosk_id) {
+    return { ok: false, error: "assigned display has no kiosk" };
+  }
+  const mappings = (await repo.listIoBoxMappingsForDisplay(displayId))
+    .filter((m) => (m.iobox_id == null || m.iobox_id === ioBoxId) && mappingMatches(m, event));
+  if (mappings.length === 0) {
+    return { ok: true, matched: false };
+  }
+
+  const results = [];
+  for (const mapping of mappings) {
+    const response = await getCoordinator().requestKiosk(display.kiosk_id, {
+      type: "iobox-control",
+      iobox_id: ioBoxId,
+      display_id: displayId,
+      action: mapping.action,
+      target_kind: mapping.target_kind,
+      params: mapping.params_json,
+      event,
+    }, 8000);
+    results.push(response);
+  }
+  return { ok: true, matched: true, results };
 }
 
 // ---- Kiosk routes (require Bearer kiosk key) --------------------------------
@@ -779,6 +1120,8 @@ function registerKioskRoutes(
         nodered.forward("onvif.event", out, tenantInfo);
         nodered.forward("onvif.motion", out, tenantInfo);
         nodered.forward("onvif.anpr", out, tenantInfo);
+      } else if (body.source_type === "io") {
+        nodered.forward("io.event", out, tenantInfo);
       }
     }
 

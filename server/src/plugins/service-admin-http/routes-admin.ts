@@ -28,6 +28,11 @@ import {
   DisplayEditPage,
   SystemHealthPage,
   NoderedEmbedPage,
+  IoBoxesPage,
+  IoBoxModelsPage,
+  IoBoxModelEditPage,
+  IoBoxSerialsPage,
+  IoBoxDetailPage,
   renderCell,
   renderGrid,
   renderCameraLabels,
@@ -154,6 +159,66 @@ function formValue(v: FormValue): string {
 function formValues(v: FormValue): string[] {
   if (Array.isArray(v)) return v;
   return v ? [v] : [];
+}
+
+function parseJsonFormField(raw: string, fallback: unknown): unknown {
+  const trimmed = raw.trim();
+  if (!trimmed) return fallback;
+  return JSON.parse(trimmed) as unknown;
+}
+
+function parseList(raw: string): string[] {
+  return raw.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+}
+
+function ioBoxCapabilitiesFromForm(body: Record<string, string | undefined>): Record<string, unknown> {
+  const caps: Record<string, unknown> = {
+    keyboard: body["cap_keyboard"] === "1",
+    mouse: body["cap_mouse"] === "1",
+    usb_hid: body["cap_usb_hid"] === "1",
+    rs485: body["cap_rs485"] === "1",
+    joystick: body["cap_joystick"] === "1",
+    gpio_inputs: body["cap_gpio_inputs"] === "1",
+    gpio_outputs: body["cap_gpio_outputs"] === "1",
+    presence: body["cap_presence"] === "1",
+    leds: body["cap_leds"] === "1",
+    relays: body["cap_relays"] === "1",
+    ethernet: body["cap_ethernet"] === "1" || body["hardware_variant"] === "ethernet",
+    wifi_provisioning: body["cap_wifi_provisioning"] !== "0",
+  };
+  const extra = parseJsonFormField(body["extra_capabilities_json"] ?? "", {}) as Record<string, unknown>;
+  return { ...caps, ...extra };
+}
+
+function ioBoxPortsFromForm(body: Record<string, string | undefined>): unknown[] {
+  const rows = parseList(body["ports_text"] ?? "").map((line) => {
+    const [id, label, kind, direction] = line.split("|").map((s) => s.trim());
+    return id && kind ? { id, label: label || id, kind, direction: direction || "input", enabled: true } : null;
+  }).filter(Boolean);
+  const extra = parseJsonFormField(body["extra_ports_json"] ?? "", []) as unknown;
+  return [...rows, ...(Array.isArray(extra) ? extra : [])];
+}
+
+function layoutInputOptions(body: Record<string, string | undefined>): Record<string, unknown> {
+  return {
+    keyboard_enabled: body["keyboard_enabled"] === "1",
+    mouse_enabled: body["mouse_enabled"] === "1",
+    joystick_enabled: body["joystick_enabled"] === "1",
+    selection_enabled: body["selection_enabled"] === "1",
+    selection_border_enabled: body["selection_border_enabled"] === "1",
+  };
+}
+
+function elementInputOptions(body: Record<string, string | undefined>): Record<string, unknown> {
+  const mode = body["keyboard_mode"] === "all" || body["keyboard_mode"] === "alphanumeric" || body["keyboard_mode"] === "custom"
+    ? body["keyboard_mode"]
+    : "disabled";
+  return {
+    keyboard_mode: mode,
+    keyboard_allowlist: parseList(body["keyboard_allowlist"] ?? ""),
+    mouse_enabled: body["mouse_enabled"] === "1",
+    ptz_enabled: body["ptz_enabled"] === "1",
+  };
 }
 
 function kioskOnvifSoapTransport(kioskId: string) {
@@ -503,6 +568,169 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // Redirect /admin to /admin/
   app.get("/admin", async () => {
     return new Response(null, { status: 301, headers: { location: "/admin/" } });
+  });
+
+  // ---- ioBOX ---------------------------------------------------------------
+
+  app.get("/admin/iobox", async (event) => {
+    const user = event.context.user!;
+    const [boxes, models, serials, displays, firmwareReleases] = await Promise.all([
+      deps.repo.listIoBoxes(),
+      deps.repo.listIoBoxModels(),
+      deps.repo.listIoBoxSerials(),
+      deps.repo.listDisplays(),
+      deps.repo.listIoBoxFirmwareReleases(),
+    ]);
+    return htmlPage(IoBoxesPage({ user: user.username, boxes, models, serials, displays, firmwareReleases }));
+  });
+
+  app.get("/admin/iobox/models", async (event) => {
+    const user = event.context.user!;
+    const models = await deps.repo.listIoBoxModels();
+    return htmlPage(IoBoxModelsPage({ user: user.username, models }));
+  });
+
+  app.post("/admin/iobox/models", async (event) => {
+    const user = event.context.user!;
+    const body = (await readBody<Record<string, string>>(event)) ?? {};
+    try {
+      await deps.repo.createIoBoxModel({
+        id: formValue(body.id).trim(),
+        name: formValue(body.name).trim(),
+        description: formValue(body.description).trim() || null,
+        hardware_variant: formValue(body.hardware_variant) === "wifi" ? "wifi" : "ethernet",
+        capabilities_json: ioBoxCapabilitiesFromForm(body),
+        ports_json: ioBoxPortsFromForm(body),
+      });
+    } catch (err) {
+      const models = await deps.repo.listIoBoxModels();
+      return htmlPage(IoBoxModelsPage({ user: user.username, models, error: (err as Error).message }));
+    }
+    return new Response(null, { status: 302, headers: { location: "/admin/iobox/models" } });
+  });
+
+  app.get("/admin/iobox/models/:id", async (event) => {
+    const user = event.context.user!;
+    const id = getRouterParam(event, "id") ?? "";
+    const model = await deps.repo.getIoBoxModel(id);
+    if (!model) return new Response("model not found", { status: 404 });
+    return htmlPage(IoBoxModelEditPage({ user: user.username, model }));
+  });
+
+  app.post("/admin/iobox/models/:id", async (event) => {
+    const user = event.context.user!;
+    const id = getRouterParam(event, "id") ?? "";
+    const body = (await readBody<Record<string, string>>(event)) ?? {};
+    try {
+      await deps.repo.updateIoBoxModel(id, {
+        name: formValue(body.name).trim(),
+        description: formValue(body.description).trim() || null,
+        hardware_variant: formValue(body.hardware_variant) === "wifi" ? "wifi" : "ethernet",
+        firmware_track: formValue(body.firmware_track).trim() || "stable",
+        capabilities_json: ioBoxCapabilitiesFromForm(body),
+        ports_json: ioBoxPortsFromForm(body) as any,
+      });
+    } catch (err) {
+      const model = await deps.repo.getIoBoxModel(id);
+      if (!model) return new Response("model not found", { status: 404 });
+      return htmlPage(IoBoxModelEditPage({ user: user.username, model, error: (err as Error).message }));
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/iobox/models/${id}` } });
+  });
+
+  app.get("/admin/iobox/serials", async (event) => {
+    const user = event.context.user!;
+    const [serials, models] = await Promise.all([
+      deps.repo.listIoBoxSerials(),
+      deps.repo.listIoBoxModels(),
+    ]);
+    return htmlPage(IoBoxSerialsPage({ user: user.username, serials, models }));
+  });
+
+  app.post("/admin/iobox/serials", async (event) => {
+    const user = event.context.user!;
+    const body = (await readBody<Record<string, string>>(event)) ?? {};
+    try {
+      await deps.repo.registerIoBoxSerial({
+        serial: formValue(body.serial).trim(),
+        model_id: formValue(body.model_id).trim(),
+        notes: formValue(body.notes).trim() || null,
+      });
+    } catch (err) {
+      const [serials, models] = await Promise.all([
+        deps.repo.listIoBoxSerials(),
+        deps.repo.listIoBoxModels(),
+      ]);
+      return htmlPage(IoBoxSerialsPage({ user: user.username, serials, models, error: (err as Error).message }));
+    }
+    return new Response(null, { status: 302, headers: { location: "/admin/iobox/serials" } });
+  });
+
+  app.get("/admin/iobox/:id", async (event) => {
+    const user = event.context.user!;
+    const id = getRouterParam(event, "id") ?? "";
+    const box = await deps.repo.getIoBoxById(id);
+    if (!box) return new Response("ioBOX not found", { status: 404 });
+    const [model, displays, mappings, firmwareReleases] = await Promise.all([
+      deps.repo.getIoBoxModel(box.model_id),
+      deps.repo.listDisplays(),
+      deps.repo.listIoBoxMappingsForIoBox(box.id),
+      deps.repo.listIoBoxFirmwareReleases(),
+    ]);
+    return htmlPage(IoBoxDetailPage({ user: user.username, box, model, displays, mappings, firmwareReleases }));
+  });
+
+  app.post("/admin/iobox/:id", async (event) => {
+    const id = getRouterParam(event, "id") ?? "";
+    const body = (await readBody<Record<string, string>>(event)) ?? {};
+    await deps.repo.updateIoBox(id, {
+      name: formValue(body.name).trim(),
+      assigned_display_id: formValue(body.assigned_display_id).trim() || null,
+      enabled: formValue(body.enabled) === "1",
+      config_version: Date.now(),
+    } as any);
+    return new Response(null, { status: 302, headers: { location: `/admin/iobox/${id}` } });
+  });
+
+  app.post("/admin/iobox/:id/firmware", async (event) => {
+    const id = getRouterParam(event, "id") ?? "";
+    const body = (await readBody<Record<string, string>>(event)) ?? {};
+    const channel = formValue(body.channel).trim();
+    if (channel !== "stable" && channel !== "beta" && channel !== "dev") {
+      return new Response("invalid channel", { status: 400 });
+    }
+    await deps.repo.updateIoBox(id, {
+      firmware_channel: channel,
+      firmware_target_version: formValue(body.target_version).trim() || null,
+    } as any);
+    return new Response(null, { status: 302, headers: { location: `/admin/iobox/${id}` } });
+  });
+
+  app.post("/admin/iobox/:id/mappings", async (event) => {
+    const id = getRouterParam(event, "id") ?? "";
+    const body = (await readBody<Record<string, string>>(event)) ?? {};
+    const box = await deps.repo.getIoBoxById(id);
+    if (!box) return new Response("ioBOX not found", { status: 404 });
+    await deps.repo.createIoBoxMapping({
+      iobox_id: id,
+      display_id: box.assigned_display_id,
+      source_kind: formValue(body.source_kind).trim(),
+      match_json: parseJsonFormField(formValue(body.match_json), {}) as Record<string, unknown>,
+      target_kind: formValue(body.target_kind).trim(),
+      action: formValue(body.action).trim(),
+      params_json: parseJsonFormField(formValue(body.params_json), {}) as Record<string, unknown>,
+    });
+    await deps.repo.updateIoBox(id, { config_version: box.config_version + 1 } as any);
+    return new Response(null, { status: 302, headers: { location: `/admin/iobox/${id}` } });
+  });
+
+  app.post("/admin/iobox/:id/mappings/:mappingId/delete", async (event) => {
+    const id = getRouterParam(event, "id") ?? "";
+    const mappingId = getRouterParam(event, "mappingId") ?? "";
+    await deps.repo.deleteIoBoxMapping(mappingId);
+    const box = await deps.repo.getIoBoxById(id);
+    if (box) await deps.repo.updateIoBox(id, { config_version: box.config_version + 1 } as any);
+    return new Response(null, { status: 302, headers: { location: `/admin/iobox/${id}` } });
   });
 
   // ---- Backup / restore -----------------------------------------------------
@@ -900,9 +1128,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       camera_id?: string | null;
       html_content?: string | null;
       web_url?: string | null;
+      input_options_json?: Record<string, unknown>;
     } = {
       name: (body?.["name"] ?? ent.name).trim(),
       description: (body?.["description"] ?? "").trim() || null,
+      input_options_json: elementInputOptions(body ?? {}),
     };
     if (ent.type === "camera") {
       patch.camera_id = body?.["camera_id"] ? String(body["camera_id"] ?? "") : null;
@@ -1118,6 +1348,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       priority: (body?.["priority"] ?? "normal") as any,
       cooling_timeout_seconds: coolingTimeout,
       resets_idle_timer: body?.["resets_idle_timer"] === "1",
+      input_options_json: layoutInputOptions(body ?? {}),
     });
     notifyKiosks();
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${id}` } });
@@ -1254,6 +1485,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (rowSpanRaw != null && String(rowSpanRaw).trim() !== "") {
       dimsPatch["row_span"] = Math.max(1, Number(rowSpanRaw) || 1);
     }
+    dimsPatch["input_options_json"] = elementInputOptions(body ?? {});
     let spansChanged = false;
     if (Object.keys(dimsPatch).length > 0) {
       await deps.repo.updateLayoutCell(cellId, dimsPatch as any);
@@ -1406,7 +1638,22 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.get("/admin/displays", async (event) => {
     const user = event.context.user!;
     const displays = await deps.repo.listDisplays();
-    return htmlPage(DisplaysPage({ user: user.username, displays }));
+    const kiosks = await deps.repo.listKiosks();
+    const kiosksById = new Map(kiosks.map((k) => [k.id, k]));
+    const displayRows = displays
+      .map((display) => ({
+        display,
+        kiosk: display.kiosk_id ? (kiosksById.get(display.kiosk_id) ?? null) : null,
+      }))
+      .sort((a, b) => {
+        const kioskA = a.kiosk?.name ?? "\uffff";
+        const kioskB = b.kiosk?.name ?? "\uffff";
+        const kioskOrder = kioskA.localeCompare(kioskB, undefined, { sensitivity: "base" });
+        if (kioskOrder !== 0) return kioskOrder;
+        if (a.display.index !== b.display.index) return a.display.index - b.display.index;
+        return a.display.name.localeCompare(b.display.name, undefined, { sensitivity: "base" });
+      });
+    return htmlPage(DisplaysPage({ user: user.username, displays: displayRows }));
   });
 
   app.get("/admin/displays/:id", async (event) => {

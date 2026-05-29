@@ -29,6 +29,7 @@ const ALLOWED_ARCHES = new Set([
   "x86_64-unknown-linux-gnu",
   "armv7-unknown-linux-gnueabihf",
 ]);
+const ALLOWED_IOBOX_ARCHES = new Set(["esp32s3"]);
 
 export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
   // ---- List page -----------------------------------------------------------
@@ -128,6 +129,53 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
       version: body.version,
       channel: body.channel,
       arch: body.arch,
+      artifact_path: artifactPath,
+      size_bytes: buf.length,
+      sha256,
+      signature,
+      release_notes: body.release_notes ?? null,
+      uploaded_by: null,
+    });
+
+    return { ok: true, release_id: release.id, sha256, signature };
+  });
+
+  app.post("/api/admin/iobox/firmware/import", async (event) => {
+    const body = await readBody<{
+      version: string;
+      channel: FirmwareChannel;
+      firmware_arch?: string;
+      model_id?: string | null;
+      release_notes?: string;
+      content_b64: string;
+    }>(event);
+
+    const firmwareArch = body?.firmware_arch || "esp32s3";
+    const modelId = body?.model_id?.trim() || null;
+    if (!body?.version || !body.channel || !body.content_b64) {
+      throw createError({ statusCode: 400, statusMessage: "version, channel, content_b64 required" });
+    }
+    if (!ALLOWED_CHANNELS.has(body.channel)) {
+      throw createError({ statusCode: 400, statusMessage: `invalid channel '${body.channel}'` });
+    }
+    if (!ALLOWED_IOBOX_ARCHES.has(firmwareArch)) {
+      throw createError({ statusCode: 400, statusMessage: `invalid ioBOX arch '${firmwareArch}'` });
+    }
+    if (modelId && !(await deps.repo.getIoBoxModel(modelId))) {
+      throw createError({ statusCode: 400, statusMessage: `unknown ioBOX model '${modelId}'` });
+    }
+
+    const buf = Buffer.from(body.content_b64, "base64");
+    if (buf.length === 0) throw createError({ statusCode: 400, statusMessage: "empty artifact" });
+
+    const { sha256, signature } = deps.firmware.signBlob(buf);
+    const artifactPath = await deps.firmware.storeBlob(buf, sha256);
+    const release = await deps.repo.createIoBoxFirmwareRelease({
+      id: randomUUID(),
+      version: body.version,
+      channel: body.channel,
+      firmware_arch: firmwareArch,
+      model_id: modelId,
       artifact_path: artifactPath,
       size_bytes: buf.length,
       sha256,

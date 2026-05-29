@@ -44,7 +44,7 @@ fn is_manual_override_active() -> bool {
 fn zone_pwm(temp_c: f32) -> u32 {
     if temp_c >= 50.0 {
         255
-    } else if temp_c >= 45.0 {
+    } else if temp_c >= 40.0 {
         128
     } else {
         0
@@ -69,7 +69,7 @@ pub fn start() {
         .name("thermal".into())
         .spawn(|| {
             info!(
-                "thermal: zone fan control started (>=50C→100%, 45-49C→50%, <45C→off, hold {HOLD_SECS}s)"
+                "thermal: zone fan control started (>=50C→100%, 40-49C→50%, <40C→off, hold {HOLD_SECS}s)"
             );
 
             hwmon::set_fan(Some(255));

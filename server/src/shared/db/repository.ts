@@ -1910,6 +1910,13 @@ export class Repository {
   // pairing_codes
   // ===========================================================================
 
+  // Pairing codes are always global — kiosks don't have a tenant until paired.
+  // In postgres multi-tenant mode, explicitly target public schema so tenant
+  // search_path doesn't shadow the table.
+  private get _pairingT() {
+    return this.adapter.dialect() === "postgres" ? "public.pairing_codes" : "pairing_codes";
+  }
+
   async createPairingCode(input: {
     code: string;
     kiosk_proposed_name: string | null;
@@ -1918,8 +1925,9 @@ export class Repository {
     expires_at: string;
     extras: Record<string, unknown>;
   }): Promise<PairingCode> {
+    const t = this._pairingT;
     await this._run(
-      `INSERT INTO pairing_codes
+      `INSERT INTO ${t}
          (code, kiosk_proposed_name, kiosk_hardware_model, kiosk_capabilities,
           expires_at, extras)
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -1932,19 +1940,19 @@ export class Repository {
         J(input.extras),
       ],
     );
-    const r = await this._get("SELECT * FROM pairing_codes WHERE code = ?", [input.code]);
+    const r = await this._get(`SELECT * FROM ${t} WHERE code = ?`, [input.code]);
     if (!r) throw new Error("pairing_code vanished after insert");
     return rowToPairingCode(r as Record<string, unknown>);
   }
 
   async getPairingCode(code: string): Promise<PairingCode | null> {
-    const r = await this._get("SELECT * FROM pairing_codes WHERE code = ?", [code]);
+    const r = await this._get(`SELECT * FROM ${this._pairingT} WHERE code = ?`, [code]);
     return r ? rowToPairingCode(r as Record<string, unknown>) : null;
   }
 
   async listPendingPairingCodes(): Promise<PairingCode[]> {
     const rs = await this._all(
-      `SELECT * FROM pairing_codes
+      `SELECT * FROM ${this._pairingT}
         WHERE consumed_at IS NULL AND expires_at > ?
         ORDER BY issued_at DESC`,
       [isoNow()],
@@ -1958,7 +1966,7 @@ export class Repository {
     extras: Record<string, unknown>,
   ): Promise<void> {
     await this._run(
-      `UPDATE pairing_codes
+      `UPDATE ${this._pairingT}
           SET consumed_at = ?,
               consumed_by_kiosk_id = ?,
               extras = ?
@@ -1968,7 +1976,7 @@ export class Repository {
   }
 
   async updatePairingCodeExtras(code: string, extras: Record<string, unknown>): Promise<void> {
-    await this._run("UPDATE pairing_codes SET extras = ? WHERE code = ?", [
+    await this._run(`UPDATE ${this._pairingT} SET extras = ? WHERE code = ?`, [
       J(extras),
       code,
     ]);

@@ -40,6 +40,19 @@ struct DisplayState {
     current_layout_id: Option<String>,
     last_activity: Instant,
     is_asleep: bool,
+    content_overlay: gtk::Overlay,
+    web_layer: gtk::Fixed,
+    web_positions: Vec<WebCellPos>,
+    grid_dims: (u32, u32),
+}
+
+#[derive(Clone)]
+struct WebCellPos {
+    key: WebKey,
+    col: u32,
+    row: u32,
+    col_span: u32,
+    row_span: u32,
 }
 
 /// Pipeline lifecycle states (CLAUDE.md hot/warm/cooling/cold model):
@@ -341,6 +354,11 @@ fn activate(app: &Application) {
                     }
                     ServerMsg::OsCheck { force } => {
                         maybe_apply_os_update(&server_for_reload, &key_for_reload, &tx_for_reload, force);
+                    }
+                    ServerMsg::CancelUpdates => {
+                        server::cancel_active_updates("server update preference change");
+                        server::clear_cached_update_preferences();
+                        let _ = tx_for_reload.send(WorkerMsg::UpdateProgress(None));
                     }
                     ServerMsg::ShowTerminalCode(code) => {
                         let _ = tx_for_reload.send(WorkerMsg::ShowTerminalCode(code));
@@ -1140,8 +1158,8 @@ fn render_bundle(
     let mut new_state: HashMap<String, DisplayState> = HashMap::new();
     for (i, bd) in displays.iter().enumerate() {
         let existing = DISPLAYS.with(|ds| ds.borrow_mut().remove(&bd.id));
-        let (window, was_asleep) = match existing {
-            Some(st) => (st.window, st.is_asleep),
+        let (window, was_asleep, existing_overlay, existing_web_layer) = match existing {
+            Some(st) => (st.window, st.is_asleep, Some(st.content_overlay), Some(st.web_layer)),
             None => {
                 let w = ApplicationWindow::builder()
                     .application(app)
@@ -1160,9 +1178,23 @@ fn render_bundle(
                 if let Some(monitor) = gdk_monitors.get(i) {
                     w.fullscreen_on_monitor(monitor);
                 }
-                (w, false)
+                (w, false, None, None)
             }
         };
+        let content_overlay = existing_overlay.unwrap_or_else(|| {
+            let ov = gtk::Overlay::new();
+            ov.set_vexpand(true);
+            ov.set_hexpand(true);
+            ov
+        });
+        let web_layer = existing_web_layer.unwrap_or_else(|| {
+            let wl = gtk::Fixed::new();
+            wl.set_can_target(false);
+            content_overlay.add_overlay(&wl);
+            wl
+        });
+        window.set_child(Some(&content_overlay));
+
         new_state.insert(
             bd.id.clone(),
             DisplayState {
@@ -1170,6 +1202,10 @@ fn render_bundle(
                 current_layout_id: None,
                 last_activity: Instant::now(),
                 is_asleep: was_asleep,
+                content_overlay,
+                web_layer,
+                web_positions: Vec::new(),
+                grid_dims: (1, 1),
             },
         );
     }
@@ -1189,7 +1225,9 @@ fn render_bundle(
             warn!("display {} has no default layout", bd.id);
             DISPLAYS.with(|ds| {
                 if let Some(st) = ds.borrow_mut().get_mut(&bd.id) {
-                    show_empty_display_reference(&st.window, &bundle, bd);
+                    let content = build_empty_display_reference(&bundle, bd);
+                    st.content_overlay.set_child(Some(&content));
+                    hide_all_webviews(&st.web_layer);
                     st.current_layout_id = None;
                 }
             });
@@ -1262,7 +1300,10 @@ fn render_layout(display_id: &str, layout_id: &str) {
         warn!("render_layout: no usable layout on display {display_id}");
         DISPLAYS.with(|ds| {
             if let Some(st) = ds.borrow_mut().get_mut(display_id) {
-                show_empty_display_reference(&st.window, &bundle, bd);
+                let content = build_empty_display_reference(&bundle, bd);
+                st.content_overlay.set_child(Some(&content));
+                hide_all_webviews(&st.web_layer);
+                st.web_positions.clear();
                 st.current_layout_id = None;
             }
         });
@@ -1317,7 +1358,9 @@ fn render_layout(display_id: &str, layout_id: &str) {
         recompute_global_state();
         DISPLAYS.with(|ds| {
             if let Some(st) = ds.borrow_mut().get_mut(display_id) {
-                show_logo(&st.window);
+                st.content_overlay.set_child(Some(&build_logo_content()));
+                hide_all_webviews(&st.web_layer);
+                st.web_positions.clear();
             }
         });
         return;
@@ -1348,6 +1391,8 @@ fn render_layout(display_id: &str, layout_id: &str) {
             ensure_warm(cam_id, cam, None, 0.0);
         }
     }
+
+    let mut web_cells: Vec<WebCellPos> = Vec::new();
 
     for cell in &layout.cells {
         let cell_key: Option<String> = match cell.content_type.as_str() {
@@ -1385,16 +1430,39 @@ fn render_layout(display_id: &str, layout_id: &str) {
                             overlay.set_child(Some(&picture));
                             overlay.set_vexpand(true);
                             overlay.set_hexpand(true);
-                            // Camera name overlay — bottom-right
+                            overlay.set_overflow(gtk::Overflow::Hidden);
                             let name_label = Label::new(Some(&cam.name));
                             name_label.set_halign(gtk::Align::End);
                             name_label.set_valign(gtk::Align::End);
+                            name_label.set_overflow(gtk::Overflow::Hidden);
+                            name_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                            name_label.set_single_line_mode(true);
+                            name_label.set_xalign(1.0);
                             name_label.set_margin_end(6);
                             name_label.set_margin_bottom(6);
                             add_css(
                                 &name_label,
                                 "label { background: rgba(0,0,0,0.7); color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 3px; }",
                             );
+                            let overlay_weak = overlay.downgrade();
+                            let name_label_weak = name_label.downgrade();
+                            overlay.add_tick_callback(move |_, _| {
+                                let Some(overlay) = overlay_weak.upgrade() else {
+                                    return gtk::glib::ControlFlow::Break;
+                                };
+                                let Some(name_label) = name_label_weak.upgrade() else {
+                                    return gtk::glib::ControlFlow::Break;
+                                };
+
+                                let tile_width = overlay.allocated_width();
+                                if tile_width > 0 {
+                                    name_label
+                                        .set_width_request(((tile_width as f64) * 0.9) as i32);
+                                    return gtk::glib::ControlFlow::Break;
+                                }
+
+                                gtk::glib::ControlFlow::Continue
+                            });
                             overlay.add_overlay(&name_label);
 
                             if badge == 'M' || badge == 'S' {
@@ -1426,7 +1494,15 @@ fn render_layout(display_id: &str, layout_id: &str) {
                     none_cell()
                 } else {
                     let key = html_key(html);
-                    ensure_web(key, WebSource::Html(html), server_url, kiosk_key, None).upcast()
+                    let _ = ensure_web(key.clone(), WebSource::Html(html), server_url, kiosk_key, None);
+                    web_cells.push(WebCellPos {
+                        key,
+                        col: cell.col,
+                        row: cell.row,
+                        col_span: cell.col_span,
+                        row_span: cell.row_span,
+                    });
+                    web_spacer()
                 }
             }
             "web" => {
@@ -1436,27 +1512,31 @@ fn render_layout(display_id: &str, layout_id: &str) {
                 } else {
                     let key = format!("web:{url}");
                     let wv = ensure_web(
-                        key,
+                        key.clone(),
                         WebSource::Url(url),
                         server_url,
                         kiosk_key,
                         cell.local_storage.as_ref(),
                     );
-                    // Smart URL: execute login/navigation steps after page loads.
                     if let Some(ref smart) = cell.smart_url {
                         let decrypt_key =
                             server::load_encrypt_key().or_else(|| server::load_cluster_key());
                         execute_smart_url_steps(&wv, smart, decrypt_key.as_deref());
                     }
-                    wv.upcast()
+                    web_cells.push(WebCellPos {
+                        key,
+                        col: cell.col,
+                        row: cell.row,
+                        col_span: cell.col_span,
+                        row_span: cell.row_span,
+                    });
+                    web_spacer()
                 }
             }
             "none" => none_cell(),
             _ => placeholder(Some("Unknown content")),
         };
 
-        // Tag the cell widget with a stable key for the layout-swap animation
-        // (animate_layout_swap matches by widget_name across old + new grids).
         if let Some(k) = &cell_key {
             widget.set_widget_name(k);
         }
@@ -1470,19 +1550,32 @@ fn render_layout(display_id: &str, layout_id: &str) {
         );
     }
 
+    let grid_cols = layout.grid_cols;
+    let grid_rows = layout.grid_rows;
+    let display_id_owned = display_id.to_string();
+
     DISPLAYS.with(|ds| {
         if let Some(st) = ds.borrow_mut().get_mut(display_id) {
-            animate_layout_swap(&st.window, &grid);
+            st.web_positions = web_cells;
+            st.grid_dims = (grid_cols, grid_rows);
+            animate_layout_swap(&st.content_overlay, &grid);
         }
     });
+
+    schedule_webview_positions(&display_id_owned);
 }
 
-/// Swap the window's content to `new_grid` with a per-cell morph animation.
+/// Swap the overlay's grid content with a per-cell morph animation.
 ///
 /// Matches cells by widget_name across old + new grids. Same-key cells slide +
-/// scale from their old screen position to the new one over 300ms (ease-out
+/// scale from their old screen position to the new one over 350ms (ease-out
 /// cubic). New cells fade in; removed cells fade out from their old spot.
 /// Cells with no widget_name (e.g. placeholders) just snap.
+///
+/// The `content_overlay` is a persistent Overlay that is always the window
+/// child. Its main child is the grid; its overlay children include the
+/// web_layer (persistent WebView Fixed). Animation ghosts are added/removed
+/// as temporary overlay children.
 const LAYOUT_ANIM_MS: u32 = 350;
 
 #[derive(Clone)]
@@ -1491,15 +1584,14 @@ struct CellSnap {
     bounds: gtk::graphene::Rect,
 }
 
-fn animate_layout_swap(window: &ApplicationWindow, new_grid: &gtk::Grid) {
-    // Capture old cell snapshots BEFORE we drop the existing window child.
+fn animate_layout_swap(content_overlay: &gtk::Overlay, new_grid: &gtk::Grid) {
     let mut snaps: std::collections::HashMap<String, CellSnap> = std::collections::HashMap::new();
-    if let Some(old_child) = window.child() {
-        let mut child = old_child.first_child();
+    if let Some(old_grid) = content_overlay.child() {
+        let mut child = old_grid.first_child();
         while let Some(c) = child {
             let key = c.widget_name();
             if !key.is_empty() {
-                if let Some(b) = c.compute_bounds(&old_child) {
+                if let Some(b) = c.compute_bounds(&old_grid) {
                     let paintable: gtk::gdk::Paintable =
                         gtk::WidgetPaintable::new(Some(&c)).upcast();
                     snaps.insert(
@@ -1515,45 +1607,18 @@ fn animate_layout_swap(window: &ApplicationWindow, new_grid: &gtk::Grid) {
         }
     }
 
-    // Always wrap content in an Overlay so the ghost layer can sit on top of
-    // the new grid without disturbing GTK's main layout pass.
-    let overlay = gtk::Overlay::new();
-    overlay.set_vexpand(true);
-    overlay.set_hexpand(true);
-    overlay.set_child(Some(new_grid));
-    let ghost = gtk::Fixed::new();
-    ghost.set_can_target(false);
-    overlay.add_overlay(&ghost);
-
-    window.set_child(Some(&overlay));
+    content_overlay.set_child(Some(new_grid));
 
     if snaps.is_empty() {
-        // First render of this display — nothing to animate from. Skip the
-        // ghost layer entirely on the next idle tick to keep the tree clean.
-        let overlay_weak = overlay.downgrade();
-        let new_grid_weak = new_grid.downgrade();
-        let window_weak = window.downgrade();
-        gtk::glib::idle_add_local_once(move || {
-            // Swap back to plain grid as window child (drop the overlay).
-            if let (Some(grid), Some(win), Some(ov)) = (
-                new_grid_weak.upgrade(),
-                window_weak.upgrade(),
-                overlay_weak.upgrade(),
-            ) {
-                if grid.parent().as_ref() == Some(ov.upcast_ref::<gtk::Widget>()) {
-                    ov.set_child(None::<&gtk::Widget>);
-                    win.set_child(Some(&grid));
-                }
-            }
-        });
         return;
     }
 
-    // Defer one idle tick so the new_grid has computed its allocations.
+    let ghost = gtk::Fixed::new();
+    ghost.set_can_target(false);
+    content_overlay.add_overlay(&ghost);
+
     let new_grid_clone = new_grid.clone();
     let ghost_clone = ghost.clone();
-    let overlay_clone = overlay.clone();
-    let window_clone = window.clone();
     gtk::glib::idle_add_local_once(move || {
         let mut pairs: Vec<(gtk::Widget, gtk::graphene::Rect, CellSnap)> = Vec::new();
         let mut fresh: Vec<gtk::Widget> = Vec::new();
@@ -1573,8 +1638,6 @@ fn animate_layout_swap(window: &ApplicationWindow, new_grid: &gtk::Grid) {
             child = c.next_sibling();
         }
 
-        // Anything left in `snaps` was removed by this swap — fade ghosts out
-        // in place so the transition visibly drops them.
         for (_key, snap) in &snaps {
             let pic = gtk::Picture::for_paintable(&snap.paintable);
             pic.set_can_target(false);
@@ -1583,7 +1646,6 @@ fn animate_layout_swap(window: &ApplicationWindow, new_grid: &gtk::Grid) {
             fade_out_and_drop(&pic, &ghost_clone);
         }
 
-        // Matched cells: hide real widget, animate ghost from old bounds → new.
         for (target, new_bounds, snap) in pairs {
             target.set_opacity(0.0);
             let pic = gtk::Picture::for_paintable(&snap.paintable);
@@ -1593,28 +1655,17 @@ fn animate_layout_swap(window: &ApplicationWindow, new_grid: &gtk::Grid) {
             animate_picture_to_bounds(&pic, &target, &ghost_clone, snap.bounds, new_bounds);
         }
 
-        // Fresh cells (no match in old layout): fade in.
         for c in fresh {
             c.set_opacity(0.0);
             fade_in(&c);
         }
 
-        // After animation window, drop the overlay so we return to plain grid.
-        let overlay_weak = overlay_clone.downgrade();
-        let grid_weak = new_grid_clone.downgrade();
-        let window_weak = window_clone.downgrade();
+        let ghost_weak = ghost_clone.downgrade();
         gtk::glib::timeout_add_local_once(
             Duration::from_millis((LAYOUT_ANIM_MS + 50) as u64),
             move || {
-                if let (Some(grid), Some(win), Some(ov)) = (
-                    grid_weak.upgrade(),
-                    window_weak.upgrade(),
-                    overlay_weak.upgrade(),
-                ) {
-                    if grid.parent().as_ref() == Some(ov.upcast_ref::<gtk::Widget>()) {
-                        ov.set_child(None::<&gtk::Widget>);
-                        win.set_child(Some(&grid));
-                    }
+                if let Some(g) = ghost_weak.upgrade() {
+                    g.unparent();
                 }
             },
         );
@@ -2223,18 +2274,6 @@ fn ensure_web(
                 }
             }
         });
-        // Detach from previous container so the new grid can take it.
-        if wv.parent().is_some() {
-            wv.unparent();
-        }
-        // Always reload after re-attach — WebKit can lose rendering surface
-        // when reparented between grids (layout switches).
-        let wv_weak = wv.downgrade();
-        gtk::glib::idle_add_local_once(move || {
-            if let Some(wv) = wv_weak.upgrade() {
-                webkit6::prelude::WebViewExt::reload(&wv);
-            }
-        });
         return wv;
     }
 
@@ -2416,7 +2455,7 @@ fn hide_cursor_on(window: &ApplicationWindow) {
     window.set_cursor(blank.as_ref());
 }
 
-fn show_logo(window: &ApplicationWindow) {
+fn build_logo_content() -> gtk::Widget {
     let vbox = GtkBox::new(Orientation::Vertical, 24);
     vbox.set_valign(gtk::Align::Center);
     vbox.set_halign(gtk::Align::Center);
@@ -2441,14 +2480,17 @@ fn show_logo(window: &ApplicationWindow) {
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&vbox));
     overlay.add_overlay(&ver_label);
-    window.set_child(Some(&overlay));
+    overlay.upcast()
 }
 
-fn show_empty_display_reference(
-    window: &ApplicationWindow,
+fn show_logo(window: &ApplicationWindow) {
+    window.set_child(Some(&build_logo_content()));
+}
+
+fn build_empty_display_reference(
     bundle: &KioskBundle,
     display: &BundleDisplayWithLayouts,
-) {
+) -> gtk::Widget {
     let overlay = gtk::Overlay::new();
     overlay.set_vexpand(true);
     overlay.set_hexpand(true);
@@ -2478,7 +2520,7 @@ fn show_empty_display_reference(
     info.add_css_class("empty-reference");
     overlay.add_overlay(&info);
 
-    window.set_child(Some(&overlay));
+    overlay.upcast()
 }
 
 fn format_current_local_time() -> String {
@@ -2558,6 +2600,90 @@ fn placeholder(text: Option<&str>) -> gtk::Widget {
     vbox.upcast()
 }
 
+fn web_spacer() -> gtk::Widget {
+    let bx = GtkBox::new(Orientation::Vertical, 0);
+    bx.set_vexpand(true);
+    bx.set_hexpand(true);
+    bx.upcast()
+}
+
+fn hide_all_webviews(web_layer: &gtk::Fixed) {
+    WARM_WEBVIEWS.with(|m| {
+        for entry in m.borrow().values() {
+            if entry.webview.parent().as_ref() == Some(web_layer.upcast_ref::<gtk::Widget>()) {
+                entry.webview.set_visible(false);
+            }
+        }
+    });
+}
+
+fn schedule_webview_positions(display_id: &str) {
+    let did = display_id.to_string();
+    gtk::glib::idle_add_local_once(move || {
+        let ok = apply_webview_positions(&did);
+        if !ok {
+            let did2 = did.clone();
+            gtk::glib::timeout_add_local_once(Duration::from_millis(50), move || {
+                apply_webview_positions(&did2);
+            });
+        }
+    });
+}
+
+fn apply_webview_positions(display_id: &str) -> bool {
+    DISPLAYS.with(|ds| {
+        let ds = ds.borrow();
+        let Some(st) = ds.get(display_id) else { return true };
+
+        let width = st.window.allocated_width();
+        let height = st.window.allocated_height();
+        if width == 0 || height == 0 {
+            return false;
+        }
+
+        let (grid_cols, grid_rows) = st.grid_dims;
+        if grid_cols == 0 || grid_rows == 0 {
+            return true;
+        }
+
+        let active_keys: std::collections::HashSet<&str> =
+            st.web_positions.iter().map(|p| p.key.as_str()).collect();
+
+        WARM_WEBVIEWS.with(|m| {
+            let pool = m.borrow();
+
+            for pos in &st.web_positions {
+                let Some(entry) = pool.get(&pos.key) else { continue };
+                let x = (pos.col as f64 / grid_cols as f64) * width as f64;
+                let y = (pos.row as f64 / grid_rows as f64) * height as f64;
+                let w = (pos.col_span as f64 / grid_cols as f64) * width as f64;
+                let h = (pos.row_span as f64 / grid_rows as f64) * height as f64;
+
+                entry.webview.set_size_request(w as i32, h as i32);
+
+                if entry.webview.parent().as_ref() == Some(st.web_layer.upcast_ref::<gtk::Widget>()) {
+                    st.web_layer.move_(&entry.webview, x, y);
+                } else {
+                    if entry.webview.parent().is_some() {
+                        entry.webview.unparent();
+                    }
+                    st.web_layer.put(&entry.webview, x, y);
+                }
+                entry.webview.set_visible(true);
+            }
+
+            for (key, entry) in pool.iter() {
+                if !active_keys.contains(key.as_str()) {
+                    if entry.webview.parent().as_ref() == Some(st.web_layer.upcast_ref::<gtk::Widget>()) {
+                        entry.webview.set_visible(false);
+                    }
+                }
+            }
+        });
+        true
+    })
+}
+
 fn logo_picture(svg: &'static str, width: i32, height: i32, css_class: &str) -> gtk::Widget {
     let bytes = gtk::glib::Bytes::from_static(svg.as_bytes());
     match gtk::gdk::Texture::from_bytes(&bytes) {
@@ -2616,9 +2742,8 @@ fn show_terminal_code_overlay(code: &str) {
     DISPLAYS.with(|ds| {
         let ds = ds.borrow();
         let Some(st) = ds.get(&display_id) else { return };
-        let win = &st.window;
 
-        let old_child = win.child();
+        let old_child = st.content_overlay.child();
         if let Some(ref c) = old_child {
             TERMINAL_CODE_SAVED_CHILD.with(|s| *s.borrow_mut() = Some((display_id.clone(), c.clone())));
         }
@@ -2655,12 +2780,12 @@ fn show_terminal_code_overlay(code: &str) {
         vbox.append(&timeout_label);
 
         add_css(&vbox, "box { background: #000; }");
-        win.set_child(Some(&vbox));
+        st.content_overlay.set_child(Some(&vbox));
+        hide_all_webviews(&st.web_layer);
 
         TERMINAL_CODE_WIDGET.with(|w| *w.borrow_mut() = Some(vbox.upcast()));
         TERMINAL_OVERLAY_ACTIVE.with(|a| a.set(true));
 
-        // Live countdown on kiosk screen.
         let remaining = std::rc::Rc::new(Cell::new(60u32));
         let tl = timeout_label.clone();
         let r = remaining.clone();
@@ -2693,7 +2818,8 @@ fn dismiss_terminal_code_overlay() {
             DISPLAYS.with(|ds| {
                 let ds = ds.borrow();
                 if let Some(st) = ds.get(&display_id) {
-                    st.window.set_child(Some(&child));
+                    st.content_overlay.set_child(Some(&child));
+                    schedule_webview_positions(&display_id);
                 }
             });
         }
@@ -2729,18 +2855,8 @@ fn show_update_banner(progress: Option<(String, u8)>) {
                 DISPLAYS.with(|ds| {
                     let ds = ds.borrow();
                     for (_, st) in ds.iter() {
-                        if let Some(child) = st.window.child() {
-                            if let Ok(overlay) = child.clone().downcast::<gtk::Overlay>() {
-                                overlay.add_overlay(&label);
-                                return;
-                            }
-                            let overlay = gtk::Overlay::new();
-                            st.window.set_child(None::<&gtk::Widget>);
-                            overlay.set_child(Some(&child));
-                            overlay.add_overlay(&label);
-                            st.window.set_child(Some(&overlay));
-                            return;
-                        }
+                        st.content_overlay.add_overlay(&label);
+                        return;
                     }
                 });
                 *b.borrow_mut() = Some(label);
@@ -2749,10 +2865,8 @@ fn show_update_banner(progress: Option<(String, u8)>) {
         None => {
             UPDATE_BANNER_LABEL.with(|b| {
                 if let Some(label) = b.borrow().as_ref() {
-                    if let Some(parent) = label.parent() {
-                        if let Some(overlay) = parent.downcast_ref::<gtk::Overlay>() {
-                            overlay.remove_overlay(label);
-                        }
+                    if label.parent().is_some() {
+                        label.unparent();
                     }
                 }
                 *b.borrow_mut() = None;

@@ -2777,6 +2777,9 @@ fn schedule_webview_positions(display_id: &str) {
 }
 
 fn apply_webview_positions(display_id: &str) -> bool {
+    if is_terminal_overlay_active() {
+        return true;
+    }
     DISPLAYS.with(|ds| {
         let ds = ds.borrow();
         let Some(st) = ds.get(display_id) else { return true };
@@ -2928,6 +2931,7 @@ fn show_terminal_code_overlay(code: &str) {
         add_css(&vbox, "box { background: #000; }");
         st.content_overlay.set_child(Some(&vbox));
         hide_all_webviews(&st.web_layer);
+        st.web_layer.set_visible(false);
 
         TERMINAL_CODE_WIDGET.with(|w| *w.borrow_mut() = Some(vbox.upcast()));
         TERMINAL_OVERLAY_ACTIVE.with(|a| a.set(true));
@@ -2964,6 +2968,7 @@ fn dismiss_terminal_code_overlay() {
             DISPLAYS.with(|ds| {
                 let ds = ds.borrow();
                 if let Some(st) = ds.get(&display_id) {
+                    st.web_layer.set_visible(true);
                     st.content_overlay.set_child(Some(&child));
                     schedule_webview_positions(&display_id);
                 }

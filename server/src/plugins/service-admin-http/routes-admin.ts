@@ -689,11 +689,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/iobox/:id", async (event) => {
     const id = getRouterParam(event, "id") ?? "";
     const body = (await readBody<Record<string, string>>(event)) ?? {};
+    const box = await deps.repo.getIoBoxById(id);
+    if (!box) return new Response("ioBOX not found", { status: 404 });
     await deps.repo.updateIoBox(id, {
       name: formValue(body.name).trim(),
       assigned_display_id: formValue(body.assigned_display_id).trim() || null,
       enabled: formValue(body.enabled) === "1",
-      config_version: Date.now(),
+      config_version: box.config_version + 1,
     } as any);
     return new Response(null, { status: 302, headers: { location: `/admin/iobox/${id}` } });
   });

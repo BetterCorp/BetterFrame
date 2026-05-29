@@ -1488,7 +1488,7 @@ export class Repository {
          config_error = ?,
          route_mode = COALESCE(?, route_mode),
          local_last_ip = COALESCE(?, local_last_ip),
-         network_json = COALESCE(?, network_json)
+         network_json = COALESCE(?::jsonb, network_json)
        WHERE id = ?`,
       [
         isoNow(),

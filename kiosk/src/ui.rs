@@ -1491,9 +1491,10 @@ fn render_layout(display_id: &str, layout_id: &str) {
 
                             let status_label = Label::new(None);
                             status_label.set_visible(false);
+                            status_label.add_css_class("bf-stream-status");
                             add_css(
                                 &status_label,
-                                "label { background: rgba(200,40,40,0.85); color: #fff; font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; min-width: 14px; }",
+                                ".bf-stream-status { background: rgba(200,40,40,0.85); color: #fff; font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; min-width: 14px; }",
                             );
                             badge_box.append(&status_label);
                             overlay.add_overlay(&badge_box);

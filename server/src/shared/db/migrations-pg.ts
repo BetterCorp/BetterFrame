@@ -806,7 +806,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     config_applied_version INTEGER NOT NULL DEFAULT 0,
     config_applied_at TIMESTAMPTZ,
     config_error TEXT,
-    route_mode TEXT NOT NULL DEFAULT 'unknown' CHECK(route_mode IN ('unknown', 'direct', 'proxy', 'offline')),
+    route_mode TEXT NOT NULL DEFAULT 'unknown' CHECK(route_mode IN ('unknown', 'direct', 'proxy', 'server', 'offline')),
     local_last_ip TEXT,
     network_json JSONB NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -889,4 +889,6 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `ALTER TABLE layouts ADD COLUMN IF NOT EXISTS input_options_json JSONB NOT NULL DEFAULT '{}'`,
   `ALTER TABLE layout_cells ADD COLUMN IF NOT EXISTS input_options_json JSONB NOT NULL DEFAULT '{}'`,
   `ALTER TABLE entities ADD COLUMN IF NOT EXISTS input_options_json JSONB NOT NULL DEFAULT '{}'`,
+  `ALTER TABLE ioboxes DROP CONSTRAINT IF EXISTS ioboxes_route_mode_check`,
+  `ALTER TABLE ioboxes ADD CONSTRAINT ioboxes_route_mode_check CHECK(route_mode IN ('unknown', 'direct', 'proxy', 'server', 'offline'))`,
 ];

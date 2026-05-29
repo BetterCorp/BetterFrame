@@ -445,8 +445,8 @@ function registerPairingRoutes(
 
 // ---- ioBOX routes -----------------------------------------------------------
 
-function safeRouteMode(raw: string): "unknown" | "direct" | "proxy" | "offline" {
-  return raw === "direct" || raw === "proxy" || raw === "offline" ? raw : "unknown";
+function safeRouteMode(raw: string): "unknown" | "direct" | "proxy" | "server" | "offline" {
+  return raw === "direct" || raw === "proxy" || raw === "server" || raw === "offline" ? raw : "unknown";
 }
 
 const ioBoxEventDedupCache = new Map<string, number>();

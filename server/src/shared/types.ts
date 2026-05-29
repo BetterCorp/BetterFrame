@@ -15,7 +15,7 @@ export type LayoutPriority = "hot" | "normal" | "cold";
 export type CellContentType = "none" | "camera" | "web" | "html" | "ablesign";
 export type EntityType = "camera" | "html" | "web" | "dashboard" | "ablesign";
 export type IoBoxHardwareVariant = "wifi" | "ethernet";
-export type IoBoxRouteMode = "unknown" | "direct" | "proxy" | "offline";
+export type IoBoxRouteMode = "unknown" | "direct" | "proxy" | "server" | "offline";
 export type IoBoxPortKind =
   | "usb_keyboard"
   | "usb_mouse"

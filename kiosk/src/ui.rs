@@ -73,6 +73,7 @@ enum WarmthState {
 }
 
 const STALL_THRESHOLD_MS: u64 = 15_000;
+const HEAL_THRESHOLD_MS: u64 = 45_000;
 
 struct PipelineEntry {
     pipeline: gstreamer::Pipeline,
@@ -908,6 +909,8 @@ fn install_idle_watchdog() {
         // Drop any pipelines / webviews whose cooling window has elapsed.
         expire_cooling_pipelines();
         expire_cooling_webviews();
+        // Drop persistently stalled pipelines and re-render affected displays.
+        heal_stalled_streams();
 
         let bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
         let Some(bundle) = bundle else {
@@ -2038,6 +2041,58 @@ fn expire_cooling_pipelines() {
             key.0, key.1
         );
         pipeline::stop(&pipe);
+    }
+}
+
+/// Drop Warm/Hot pipelines that stayed stalled despite in-place restart.
+/// Re-renders the affected displays so `ensure_warm()` creates fresh pipelines.
+fn heal_stalled_streams() {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let mut any_dropped = false;
+
+    WARM_CAMERAS.with(|w| {
+        let mut warm = w.borrow_mut();
+        let to_drop: Vec<PoolKey> = warm
+            .iter()
+            .filter(|(_, e)| {
+                (e.state == WarmthState::Warm || e.state == WarmthState::Hot)
+                    && e.last_buffer_at.load(Ordering::Relaxed) > 0
+                    && now_ms.saturating_sub(e.last_buffer_at.load(Ordering::Relaxed))
+                        > HEAL_THRESHOLD_MS
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        for k in &to_drop {
+            if let Some(e) = warm.remove(k) {
+                warn!(
+                    "camera {} ({}): stalled >{}s — dropping pipeline for re-render",
+                    k.0, k.1, HEAL_THRESHOLD_MS / 1000
+                );
+                pipeline::stop(&e.pipeline);
+                any_dropped = true;
+            }
+        }
+    });
+
+    if any_dropped {
+        let to_render: Vec<(String, String)> = DISPLAYS.with(|ds| {
+            ds.borrow()
+                .iter()
+                .filter_map(|(id, st)| {
+                    st.current_layout_id
+                        .as_ref()
+                        .map(|lid| (id.clone(), lid.clone()))
+                })
+                .collect()
+        });
+        for (display_id, layout_id) in to_render {
+            info!("auto-heal: re-rendering layout {layout_id} on display {display_id}");
+            render_layout(&display_id, &layout_id);
+        }
     }
 }
 

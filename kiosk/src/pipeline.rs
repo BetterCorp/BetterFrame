@@ -169,3 +169,14 @@ pub fn play(pipeline: &Pipeline) {
 pub fn stop(pipeline: &Pipeline) {
     let _ = pipeline.set_state(gst::State::Null);
 }
+
+pub fn restart(pipeline: &Pipeline, last_buffer: &AtomicU64) {
+    let name = pipeline.name().to_string();
+    info!("[{name}] restarting stalled pipeline");
+    let _ = pipeline.set_state(gst::State::Null);
+    last_buffer.store(epoch_millis(), Ordering::Relaxed);
+    match pipeline.set_state(gst::State::Playing) {
+        Ok(r) => info!("[{name}] restart → Playing = {r:?}"),
+        Err(e) => error!("[{name}] restart failed: {e:?}"),
+    }
+}

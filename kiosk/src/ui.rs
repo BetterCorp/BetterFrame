@@ -1911,59 +1911,41 @@ fn expire_cooling_pipelines() {
         .unwrap_or_default()
         .as_millis() as u64;
     let mut expired: Vec<(PoolKey, gstreamer::Pipeline)> = Vec::new();
-    let mut stalled: Vec<PoolKey> = Vec::new();
     WARM_CAMERAS.with(|w| {
         let mut warm = w.borrow_mut();
+        // Restart stalled Warm/Hot pipelines in-place (no widget rebuild).
         for (k, e) in warm.iter() {
-            if e.state == WarmthState::Cooling && e.cooling_until.is_some_and(|t| now >= t) {
-                expired.push((k.clone(), e.pipeline.clone()));
-                continue;
-            }
             if e.state == WarmthState::Warm || e.state == WarmthState::Hot {
                 let last = e.last_buffer_at.load(Ordering::Relaxed);
                 if last > 0 && now_ms.saturating_sub(last) > STALL_THRESHOLD_MS {
-                    stalled.push(k.clone());
+                    warn!(
+                        "camera {} ({}): stream stalled (no frames for {}s) → restarting in-place",
+                        k.0, k.1, STALL_THRESHOLD_MS / 1000
+                    );
+                    pipeline::restart(&e.pipeline, &e.last_buffer_at);
                 }
             }
         }
-        for k in &expired {
-            warm.remove(&k.0);
-        }
-        for k in &stalled {
-            if let Some(e) = warm.remove(k) {
-                expired.push((k.clone(), e.pipeline));
+        // Collect cooling-expired entries for removal.
+        let keys: Vec<PoolKey> = warm
+            .iter()
+            .filter(|(_, e)| {
+                e.state == WarmthState::Cooling && e.cooling_until.is_some_and(|t| now >= t)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in keys {
+            if let Some(e) = warm.remove(&k) {
+                expired.push((k, e.pipeline));
             }
         }
     });
-    for (key, pipe) in &expired {
-        if stalled.contains(key) {
-            warn!(
-                "camera {} ({}): stream stalled (no frames for {}s) → restarting",
-                key.0,
-                key.1,
-                STALL_THRESHOLD_MS / 1000
-            );
-        } else {
-            info!(
-                "camera {} ({}): cooling expired → stopping pipeline",
-                key.0, key.1
-            );
-        }
-        pipeline::stop(pipe);
-    }
-    // Re-warm stalled pipelines by triggering a layout re-render.
-    if !stalled.is_empty() {
-        DISPLAYS.with(|ds| {
-            for (display_id, st) in ds.borrow().iter() {
-                if let Some(layout_id) = &st.current_layout_id {
-                    let did = display_id.clone();
-                    let lid = layout_id.clone();
-                    gtk::glib::idle_add_local_once(move || {
-                        render_layout(&did, &lid);
-                    });
-                }
-            }
-        });
+    for (key, pipe) in expired {
+        info!(
+            "camera {} ({}): cooling expired → stopping pipeline",
+            key.0, key.1
+        );
+        pipeline::stop(&pipe);
     }
 }
 

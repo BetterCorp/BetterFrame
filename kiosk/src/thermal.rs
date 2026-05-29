@@ -1,14 +1,16 @@
-//! PID-based fan control for Pi5.
+//! Zone-based fan control with hysteresis for Pi5.
 //!
-//! Polls CPU temp every 1s, runs a PID loop targeting 55°C setpoint.
-//! Always holds pwm1_enable=1 (manual mode) to prevent the hardware
-//! fan controller from fighting our output.
+//! Zones: ≥50°C → 100%, 45–49°C → 50%, <45°C → off.
+//! Increases are immediate; decreases step down one zone at a time,
+//! holding for 60s at each level before dropping further.
+//!
+//! Boot cooldown: 30s at 100% to absorb GStreamer hw-decode startup.
 //!
 //! Manual fan commands (from admin/Node-RED) override auto control for
-//! 60s, after which the PID loop resumes.
+//! 60s, after which zone control resumes.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
 use crate::hwmon;
@@ -18,15 +20,8 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const OVERRIDE_DURATION: Duration = Duration::from_secs(60);
-
-const SETPOINT_C: f32 = 55.0;
-const KP: f32 = 8.0;
-const KI: f32 = 0.3;
-const KD: f32 = 2.0;
-const INTEGRAL_CLAMP: f32 = 200.0;
-const MIN_PWM: f32 = 0.0;
-const MAX_PWM: f32 = 255.0;
 const BOOT_COOLDOWN_SECS: u64 = 30;
+const HOLD_SECS: u64 = 60;
 
 fn now_epoch_secs() -> u64 {
     SystemTime::now()
@@ -46,47 +41,21 @@ fn is_manual_override_active() -> bool {
     until > 0 && now_epoch_secs() < until
 }
 
-struct PidState {
-    integral: f32,
-    prev_error: Option<f32>,
-    prev_output: f32,
+fn zone_pwm(temp_c: f32) -> u32 {
+    if temp_c >= 50.0 {
+        255
+    } else if temp_c >= 45.0 {
+        128
+    } else {
+        0
+    }
 }
 
-impl PidState {
-    fn new() -> Self {
-        Self {
-            integral: 0.0,
-            prev_error: None,
-            prev_output: 0.0,
-        }
-    }
-
-    fn update(&mut self, temp_c: f32) -> u32 {
-        let error = temp_c - SETPOINT_C;
-
-        self.integral = (self.integral + error).clamp(-INTEGRAL_CLAMP, INTEGRAL_CLAMP);
-
-        let derivative = match self.prev_error {
-            Some(prev) => error - prev,
-            None => 0.0,
-        };
-        self.prev_error = Some(error);
-
-        let output = KP * error + KI * self.integral + KD * derivative;
-        let clamped = output.clamp(MIN_PWM, MAX_PWM);
-
-        // Anti-windup: if output saturated, don't accumulate integral further
-        if (output > MAX_PWM && error > 0.0) || (output < MIN_PWM && error < 0.0) {
-            self.integral -= error;
-        }
-
-        self.prev_output = clamped;
-        clamped as u32
-    }
-
-    fn reset(&mut self) {
-        self.integral = 0.0;
-        self.prev_error = None;
+fn next_zone_down(pwm: u32) -> u32 {
+    if pwm > 128 {
+        128
+    } else {
+        0
     }
 }
 
@@ -100,53 +69,76 @@ pub fn start() {
         .name("thermal".into())
         .spawn(|| {
             info!(
-                "thermal: PID fan control started (setpoint={SETPOINT_C}C, Kp={KP}, Ki={KI}, Kd={KD})"
+                "thermal: zone fan control started (>=50C→100%, 45-49C→50%, <45C→off, hold {HOLD_SECS}s)"
             );
 
-            // Full blast on boot to absorb GStreamer hw-decode startup spike.
             hwmon::set_fan(Some(255));
             info!("thermal: boot cooldown — fan 100% for {BOOT_COOLDOWN_SECS}s");
 
-            let boot_start = std::time::Instant::now();
-            let mut pid = PidState::new();
-            let mut was_override = false;
+            let boot_start = Instant::now();
             let mut boot_phase = true;
+            let mut was_override = false;
+            let mut current_pwm: u32 = 255;
+            let mut hold_until: Option<Instant> = None;
 
             loop {
                 std::thread::sleep(POLL_INTERVAL);
 
                 if is_manual_override_active() {
                     if !was_override {
-                        info!("thermal: manual override active, PID paused");
+                        info!("thermal: manual override active, auto paused");
                         was_override = true;
                     }
                     continue;
                 }
 
                 if was_override {
-                    info!("thermal: manual override expired, PID resuming");
-                    pid.reset();
+                    info!("thermal: manual override expired, auto resuming");
                     was_override = false;
+                    current_pwm = hwmon::read_temp_c().map(zone_pwm).unwrap_or(255);
+                    hwmon::set_fan(Some(current_pwm));
+                    hold_until = None;
+                    continue;
                 }
 
                 if boot_phase {
                     if boot_start.elapsed() >= Duration::from_secs(BOOT_COOLDOWN_SECS) {
-                        info!("thermal: boot cooldown complete, PID taking over");
+                        info!("thermal: boot cooldown complete, zone control taking over");
                         boot_phase = false;
-                        pid.reset();
+                        current_pwm = hwmon::read_temp_c().map(zone_pwm).unwrap_or(128);
+                        hwmon::set_fan(Some(current_pwm));
+                        hold_until = None;
                     } else {
                         hwmon::set_fan(Some(255));
-                        continue;
                     }
+                    continue;
                 }
 
                 let Some(temp) = hwmon::read_temp_c() else {
                     continue;
                 };
 
-                let pwm = pid.update(temp);
-                if !hwmon::set_fan(Some(pwm)) {
-                    warn!("thermal: failed to set fan PWM {pwm}");
+                let target = zone_pwm(temp);
+
+                if target > current_pwm {
+                    current_pwm = target;
+                    hold_until = None;
+                    if !hwmon::set_fan(Some(current_pwm)) {
+                        warn!("thermal: failed to set fan PWM {current_pwm}");
+                    }
+                } else if target < current_pwm {
+                    if hold_until.is_none() {
+                        hold_until = Some(Instant::now() + Duration::from_secs(HOLD_SECS));
+                    }
+                    if Instant::now() >= hold_until.unwrap() {
+                        current_pwm = next_zone_down(current_pwm);
+                        hold_until = None;
+                        if !hwmon::set_fan(Some(current_pwm)) {
+                            warn!("thermal: failed to set fan PWM {current_pwm}");
+                        }
+                    }
+                } else {
+                    hold_until = None;
                 }
             }
         })

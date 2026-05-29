@@ -88,6 +88,9 @@ struct PipelineEntry {
     cooling_until: Option<Instant>,
     last_buffer_at: Arc<AtomicU64>,
     stream_status: Arc<AtomicU8>,
+    /// Epoch millis when this pipeline was first detected as stalled.
+    /// NOT reset by in-place restart — only cleared when frames resume.
+    first_stall_at: Arc<AtomicU64>,
 }
 
 /// Pool key. A camera can have multiple concurrent pipelines — typically one
@@ -311,12 +314,15 @@ fn activate(app: &Application) {
                             }
                             None => warn!("reload-bundle: fetch failed, keeping current render"),
                         }
+                        delayed_heartbeat(&server_for_reload, &key_for_reload);
                     }
                     ServerMsg::Standby(display_id) => {
                         let _ = tx_for_reload.send(WorkerMsg::Standby(display_id));
+                        delayed_heartbeat(&server_for_reload, &key_for_reload);
                     }
                     ServerMsg::Wake(display_id) => {
                         let _ = tx_for_reload.send(WorkerMsg::Wake(display_id));
+                        delayed_heartbeat(&server_for_reload, &key_for_reload);
                     }
                     ServerMsg::Fan(pwm) => {
                         thermal::set_manual_override();
@@ -345,6 +351,7 @@ fn activate(app: &Application) {
                             display_id,
                             layout_id,
                         });
+                        delayed_heartbeat(&server_for_reload, &key_for_reload);
                     }
                     #[cfg(target_os = "linux")]
                     ServerMsg::TailscaleAuth(key) => {
@@ -534,6 +541,15 @@ fn mark_activity(display_id: &str) {
                 st.is_asleep = false;
             }
         }
+    });
+}
+
+fn delayed_heartbeat(server_url: &str, kiosk_key: &str) {
+    let s = server_url.to_string();
+    let k = kiosk_key.to_string();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(2));
+        send_heartbeat_now(&s, &k);
     });
 }
 
@@ -2022,11 +2038,16 @@ fn expire_cooling_pipelines() {
             if e.state == WarmthState::Warm || e.state == WarmthState::Hot {
                 let last = e.last_buffer_at.load(Ordering::Relaxed);
                 if last > 0 && now_ms.saturating_sub(last) > STALL_THRESHOLD_MS {
+                    if e.first_stall_at.load(Ordering::Relaxed) == 0 {
+                        e.first_stall_at.store(now_ms, Ordering::Relaxed);
+                    }
                     warn!(
                         "camera {} ({}): stream stalled (no frames for {}s) → restarting in-place",
                         k.0, k.1, STALL_THRESHOLD_MS / 1000
                     );
                     pipeline::restart(&e.pipeline, &e.last_buffer_at, &e.stream_status);
+                } else if e.first_stall_at.load(Ordering::Relaxed) > 0 {
+                    e.first_stall_at.store(0, Ordering::Relaxed);
                 }
             }
         }
@@ -2054,13 +2075,13 @@ fn expire_cooling_pipelines() {
 }
 
 /// Drop Warm/Hot pipelines that stayed stalled despite in-place restart.
-/// Re-renders the affected displays so `ensure_warm()` creates fresh pipelines.
+/// Only re-renders displays that contained the stalled cameras.
 fn heal_stalled_streams() {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
-    let mut any_dropped = false;
+    let mut dropped_cam_ids: Vec<String> = Vec::new();
 
     WARM_CAMERAS.with(|w| {
         let mut warm = w.borrow_mut();
@@ -2068,8 +2089,8 @@ fn heal_stalled_streams() {
             .iter()
             .filter(|(_, e)| {
                 (e.state == WarmthState::Warm || e.state == WarmthState::Hot)
-                    && e.last_buffer_at.load(Ordering::Relaxed) > 0
-                    && now_ms.saturating_sub(e.last_buffer_at.load(Ordering::Relaxed))
+                    && e.first_stall_at.load(Ordering::Relaxed) > 0
+                    && now_ms.saturating_sub(e.first_stall_at.load(Ordering::Relaxed))
                         > HEAL_THRESHOLD_MS
             })
             .map(|(k, _)| k.clone())
@@ -2082,26 +2103,43 @@ fn heal_stalled_streams() {
                     k.0, k.1, HEAL_THRESHOLD_MS / 1000
                 );
                 pipeline::stop(&e.pipeline);
-                any_dropped = true;
+                dropped_cam_ids.push(k.0.clone());
             }
         }
     });
 
-    if any_dropped {
-        let to_render: Vec<(String, String)> = DISPLAYS.with(|ds| {
-            ds.borrow()
-                .iter()
-                .filter_map(|(id, st)| {
-                    st.current_layout_id
+    if dropped_cam_ids.is_empty() {
+        return;
+    }
+
+    let bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
+    let Some(bundle) = bundle else { return };
+    let displays = bundle.normalized_displays();
+
+    let to_render: Vec<(String, String)> = DISPLAYS.with(|ds| {
+        ds.borrow()
+            .iter()
+            .filter_map(|(id, st)| {
+                let layout_id = st.current_layout_id.as_ref()?;
+                let bd = displays.iter().find(|d| d.id == *id)?;
+                let layout = bd.layouts.iter().find(|l| l.id == *layout_id)?;
+                let uses_dropped = layout.cells.iter().any(|c| {
+                    c.camera_id
                         .as_ref()
-                        .map(|lid| (id.clone(), lid.clone()))
-                })
-                .collect()
-        });
-        for (display_id, layout_id) in to_render {
-            info!("auto-heal: re-rendering layout {layout_id} on display {display_id}");
-            render_layout(&display_id, &layout_id);
-        }
+                        .is_some_and(|cid| dropped_cam_ids.contains(cid))
+                });
+                if uses_dropped {
+                    Some((id.clone(), layout_id.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    });
+
+    for (display_id, layout_id) in to_render {
+        info!("auto-heal: re-rendering layout {layout_id} on display {display_id}");
+        render_layout(&display_id, &layout_id);
     }
 }
 
@@ -2339,6 +2377,7 @@ fn ensure_warm(
                 cooling_until: None,
                 last_buffer_at: last_buffer,
                 stream_status: status_clone,
+                first_stall_at: Arc::new(AtomicU64::new(0)),
             },
         );
     });

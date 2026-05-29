@@ -260,6 +260,8 @@ async fn handle_message(
             .and_then(|msg| msg.get("force").and_then(|v| v.as_bool()))
             .unwrap_or(false);
         let _ = tx.send(ServerMsg::OsCheck { force });
+    } else if text.contains("\"type\":\"update_cancel\"") {
+        let _ = tx.send(ServerMsg::CancelUpdates);
     } else if text.contains("\"type\":\"fan\"") {
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
             return;

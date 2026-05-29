@@ -160,6 +160,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     if (!ALLOWED_CHANNELS.has(channelRaw)) {
       throw createError({ statusCode: 400, statusMessage: "invalid channel" });
     }
+    const before = await deps.repo.getKioskById(id);
     await deps.repo.setKioskFirmwarePref(id, {
       channel: channelRaw,
       target_version: targetRaw ? targetRaw : null,
@@ -167,6 +168,13 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     const k = await deps.repo.getKioskById(id);
     if (!k) {
       return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
+    }
+    const nextTarget = targetRaw ? targetRaw : null;
+    if (before && (before.firmware_channel !== channelRaw || before.firmware_target_version !== nextTarget)) {
+      getCoordinator().sendToKiosk(id, {
+        type: "update_cancel",
+        reason: "firmware preference changed",
+      });
     }
     const releases = await deps.repo.listFirmwareReleases();
     return htmlFragment(KioskFirmwarePanel({ kiosk: k, releases }));

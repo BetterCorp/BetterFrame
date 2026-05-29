@@ -599,7 +599,13 @@ pub fn heartbeat(
                 }
                 let fw = body.get("firmware_channel").and_then(|v| v.as_str());
                 let os = body.get("os_update_channel").and_then(|v| v.as_str());
-                update_cached_channels(fw, os);
+                let fw_target = body
+                    .get("firmware_target_version")
+                    .map(|v| v.as_str());
+                let os_target = body
+                    .get("os_update_target_version")
+                    .map(|v| v.as_str());
+                update_cached_update_preferences(fw, fw_target, os, os_target);
                 if let Some(pending) = body.get("pending_config") {
                     apply_pending_managed_config(pending);
                 }
@@ -611,9 +617,16 @@ pub fn heartbeat(
 
 use std::sync::Mutex as StdMutex;
 static CACHED_FIRMWARE_CHANNEL: StdMutex<Option<String>> = StdMutex::new(None);
+static CACHED_FIRMWARE_TARGET_VERSION: StdMutex<Option<Option<String>>> = StdMutex::new(None);
 static CACHED_OS_CHANNEL: StdMutex<Option<String>> = StdMutex::new(None);
+static CACHED_OS_TARGET_VERSION: StdMutex<Option<Option<String>>> = StdMutex::new(None);
 
-pub fn update_cached_channels(firmware_channel: Option<&str>, os_channel: Option<&str>) {
+pub fn update_cached_update_preferences(
+    firmware_channel: Option<&str>,
+    firmware_target_version: Option<Option<&str>>,
+    os_channel: Option<&str>,
+    os_target_version: Option<Option<&str>>,
+) {
     let mut changed = false;
     if let Some(next) = firmware_channel {
         let mut cached = CACHED_FIRMWARE_CHANNEL.lock().unwrap();
@@ -622,6 +635,14 @@ pub fn update_cached_channels(firmware_channel: Option<&str>, os_channel: Option
         }
         cached.replace(next.to_string());
     }
+    if let Some(firmware_target_version) = firmware_target_version {
+        let mut cached = CACHED_FIRMWARE_TARGET_VERSION.lock().unwrap();
+        let next = firmware_target_version.map(|s| s.to_string());
+        if cached.as_ref().is_some_and(|old| old != &next) {
+            changed = true;
+        }
+        cached.replace(next);
+    }
     if let Some(next) = os_channel {
         let mut cached = CACHED_OS_CHANNEL.lock().unwrap();
         if cached.as_deref().is_some_and(|old| old != next) {
@@ -629,11 +650,30 @@ pub fn update_cached_channels(firmware_channel: Option<&str>, os_channel: Option
         }
         cached.replace(next.to_string());
     }
-    if changed {
-        tracing::warn!("update channel changed; canceling active updates and cleaning partial artifacts");
-        crate::firmware::request_cancel();
-        crate::os_update::request_cancel();
+    if let Some(os_target_version) = os_target_version {
+        let mut cached = CACHED_OS_TARGET_VERSION.lock().unwrap();
+        let next = os_target_version.map(|s| s.to_string());
+        if cached.as_ref().is_some_and(|old| old != &next) {
+            changed = true;
+        }
+        cached.replace(next);
     }
+    if changed {
+        cancel_active_updates("update channel or pinned version changed");
+    }
+}
+
+pub fn cancel_active_updates(reason: &str) {
+    tracing::warn!("{reason}; canceling active updates and cleaning partial artifacts");
+    crate::firmware::request_cancel();
+    crate::os_update::request_cancel();
+}
+
+pub fn clear_cached_update_preferences() {
+    CACHED_FIRMWARE_CHANNEL.lock().unwrap().take();
+    CACHED_FIRMWARE_TARGET_VERSION.lock().unwrap().take();
+    CACHED_OS_CHANNEL.lock().unwrap().take();
+    CACHED_OS_TARGET_VERSION.lock().unwrap().take();
 }
 
 pub fn cached_firmware_channel() -> String {

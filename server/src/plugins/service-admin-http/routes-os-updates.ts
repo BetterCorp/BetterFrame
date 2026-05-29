@@ -13,6 +13,7 @@ import {
   OsUpdateRolloutsPage,
   KioskOsUpdatePanel,
 } from "../../web-templates/admin-pages.js";
+import { getCoordinator } from "../../shared/coordinator-registry.js";
 import type { FirmwareChannel } from "../../shared/types.js";
 import { audit } from "../../shared/audit.js";
 
@@ -51,6 +52,7 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
     if (!ALLOWED_CHANNELS.has(channelRaw)) {
       throw createError({ statusCode: 400, statusMessage: "invalid channel" });
     }
+    const before = await deps.repo.getKioskById(id);
     await deps.repo.setKioskOsUpdatePref(id, {
       channel: channelRaw,
       target_version: targetRaw ? targetRaw : null,
@@ -59,6 +61,13 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
     if (!k) {
       return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
     }
+    const nextTarget = targetRaw ? targetRaw : null;
+    if (before && (before.os_update_channel !== channelRaw || before.os_update_target_version !== nextTarget)) {
+      getCoordinator().sendToKiosk(id, {
+        type: "update_cancel",
+        reason: "os update preference changed",
+      });
+    }
     const releases = await deps.repo.listOsUpdateReleases();
     return htmlFragment(KioskOsUpdatePanel({ kiosk: k, releases }));
   });
@@ -66,7 +75,6 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
   // Push OS update now: server pings the kiosk via WS coordinator.
   app.post("/admin/kiosks/:id/os-update/push", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
-    const { getCoordinator } = await import("../../shared/coordinator-registry.js");
     const dispatched = getCoordinator().sendToKiosk(id, { type: "os_check", force: true });
     return { ok: true, dispatched };
   });

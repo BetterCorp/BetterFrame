@@ -14,10 +14,9 @@ should stay disabled in production.
 - Bundle format: RAUC `verity`.
 - Device compatibility: `betterframe-rpi5-aarch64`.
 - Slot layout:
-  - `BF_BOOTSEL`: small FAT partition containing only `autoboot.txt`.
-  - `BF_BOOT_A`: FAT boot files for slot A.
+  - `BF_BOOT_A`: FAT boot files and `autoboot.txt` for slot A.
+  - `BF_BOOT_B`: FAT boot files and `autoboot.txt` for slot B.
   - `BF_ROOT_A`: ext4 root filesystem for slot A.
-  - `BF_BOOT_B`: FAT boot files for slot B.
   - `BF_ROOT_B`: ext4 root filesystem for slot B.
   - `BF_DATA`: persistent ext4 data partition for pairing state, logs,
     RAUC state, and local kiosk cache.

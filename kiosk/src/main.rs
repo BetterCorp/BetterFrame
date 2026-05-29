@@ -43,6 +43,8 @@ pub enum ServerMsg {
     FirmwareCheck { force: bool },
     /// Server-pushed "go check for an OS update now".
     OsCheck { force: bool },
+    /// Server-pushed update preference change; cancel any in-flight updater.
+    CancelUpdates,
     /// Show terminal auth code on screen (overlay).
     ShowTerminalCode(String),
     /// Dismiss the terminal code overlay.

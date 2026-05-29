@@ -80,7 +80,7 @@ mounted_at() {
   local dev resolved
   dev="$1"
   resolved="$(readlink -f "$dev" 2>/dev/null || printf '%s' "$dev")"
-  findmnt -rn -S "$resolved" -o TARGET 2>/dev/null | head -n1
+  findmnt -rn -S "$resolved" -o TARGET 2>/dev/null | head -n1 || true
 }
 
 with_boot_mounted() {

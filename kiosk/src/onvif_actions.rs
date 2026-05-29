@@ -213,6 +213,29 @@ fn split_profile_blocks(xml: &str) -> Vec<String> {
     out
 }
 
+fn extract_preset_blocks(xml: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = xml;
+    for prefix in ["tptz:", ""] {
+        let open_tag = format!("<{prefix}Preset ");
+        let close_tag = format!("</{prefix}Preset>");
+        rest = xml;
+        while let Some(start) = rest.find(&open_tag) {
+            let after = &rest[start..];
+            if let Some(end) = after.find(&close_tag) {
+                out.push(after[..end + close_tag.len()].to_string());
+                rest = &after[end + close_tag.len()..];
+            } else {
+                break;
+            }
+        }
+        if !out.is_empty() {
+            break;
+        }
+    }
+    out
+}
+
 fn read_string(params: &Value, key: &str) -> Option<String> {
     params
         .get(key)?
@@ -673,6 +696,7 @@ pub fn execute_camera_action(
             | "ptz.relative_move"
             | "ptz.absolute_move"
             | "ptz.stop"
+            | "ptz.get_presets"
             | "ptz.goto_preset"
             | "ptz.set_preset"
             | "ptz.remove_preset"
@@ -889,6 +913,13 @@ pub fn execute_camera_action(
                         read_bool(params, "zoom").unwrap_or(true),
                     )
                 }
+                "ptz.get_presets" => {
+                    soap_action = "http://www.onvif.org/ver20/ptz/wsdl/GetPresets";
+                    format!(
+                        "<tptz:GetPresets><tptz:ProfileToken>{}</tptz:ProfileToken></tptz:GetPresets>",
+                        escape_xml(&profile_token)
+                    )
+                }
                 "ptz.goto_preset" => {
                     let preset = read_string(params, "presetToken").ok_or_else(|| {
                         action_error("invalid_params", "ptz.goto_preset requires presetToken")
@@ -984,6 +1015,26 @@ pub fn execute_camera_action(
                     "pan": extract_attr(&xml, "PanTilt", "x").first().cloned(),
                     "tilt": extract_attr(&xml, "PanTilt", "y").first().cloned(),
                     "zoom": extract_attr(&xml, "Zoom", "x").first().cloned(),
+                })
+            } else if action == "ptz.get_presets" {
+                let tokens = extract_attr(&xml, "Preset", "token");
+                let names: Vec<Option<String>> = extract_preset_blocks(&xml)
+                    .iter()
+                    .map(|block| extract_tag_ns(block, "Name"))
+                    .collect();
+                let presets: Vec<Value> = tokens
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, token)| {
+                        json!({
+                            "token": token,
+                            "name": names.get(i).and_then(|n| n.clone()),
+                        })
+                    })
+                    .collect();
+                json!({
+                    "profileToken": profile_token,
+                    "presets": presets,
                 })
             } else {
                 json!({ "profileToken": profile_token })

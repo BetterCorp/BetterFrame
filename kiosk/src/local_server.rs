@@ -123,6 +123,10 @@ pub fn start(state: LocalServerState) {
                     get(local_onvif_ptz_move_handler),
                 )
                 .route(
+                    "/local/onvif/:camera_id/ptz/preset",
+                    get(local_onvif_ptz_list_presets_handler),
+                )
+                .route(
                     "/local/onvif/:camera_id/ptz/preset/:preset_token",
                     get(local_onvif_ptz_preset_handler),
                 )
@@ -330,6 +334,18 @@ async fn local_onvif_ptz_home_handler(
     }
     let params = json_object_with_profile(query.profile_token);
     execute_local_onvif(camera_id, "ptz.goto_home".to_string(), params).await
+}
+
+async fn local_onvif_ptz_list_presets_handler(
+    State(state): State<LocalServerState>,
+    Path(camera_id): Path<String>,
+    Query(query): Query<ProfileQuery>,
+) -> Response {
+    if !local_key_matches(&state, &query.key) {
+        return (StatusCode::UNAUTHORIZED, "bad key").into_response();
+    }
+    let params = json_object_with_profile(query.profile_token);
+    execute_local_onvif(camera_id, "ptz.get_presets".to_string(), params).await
 }
 
 async fn local_onvif_ptz_preset_handler(

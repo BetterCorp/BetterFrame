@@ -140,8 +140,11 @@ get_primary() {
 }
 
 set_primary() {
-  with_boot_mounted A write_primary_to_mount "$1"
-  with_boot_mounted B write_primary_to_mount "$1"
+  local primary_slot="$1"
+  local secondary_slot
+  secondary_slot="$(other_slot "$primary_slot")"
+  with_boot_mounted "$primary_slot" write_primary_to_mount "$primary_slot"
+  with_boot_mounted "$secondary_slot" write_primary_to_mount "$primary_slot"
 }
 
 get_state() {

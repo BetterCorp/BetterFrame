@@ -222,6 +222,8 @@ pub struct BundleStream {
     pub id: String,
     pub role: String,
     pub name: String,
+    #[serde(default)]
+    pub profile_token: Option<String>,
     pub rtsp_uri: String,
     pub width: Option<u32>,
     pub height: Option<u32>,

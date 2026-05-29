@@ -525,21 +525,34 @@ fn resolve_services(
         &header,
         r#"<tds:GetCapabilities><tds:Category>All</tds:Category></tds:GetCapabilities>"#,
     );
-    let xml = soap_post_with_fallback(
+    match soap_post_with_fallback(
         &device_url,
         "http://www.onvif.org/ver10/device/wsdl/GetCapabilities",
         &envelope,
         cam.onvif_username.as_deref().unwrap_or(""),
         password,
         timeout_ms,
-    )?;
-    Ok(Services {
-        media_url: extract_first_xaddr(&xml, "Media")
-            .unwrap_or_else(|| format!("{origin}/onvif/media_service")),
-        ptz_url: extract_first_xaddr(&xml, "PTZ"),
-        imaging_url: extract_first_xaddr(&xml, "Imaging"),
-        device_io_url: extract_first_xaddr(&xml, "DeviceIO"),
-    })
+    ) {
+        Ok(xml) => Ok(Services {
+            media_url: extract_first_xaddr(&xml, "Media")
+                .unwrap_or_else(|| format!("{origin}/onvif/media_service")),
+            ptz_url: extract_first_xaddr(&xml, "PTZ"),
+            imaging_url: extract_first_xaddr(&xml, "Imaging"),
+            device_io_url: extract_first_xaddr(&xml, "DeviceIO"),
+        }),
+        Err(e) => {
+            tracing::warn!(
+                "GetCapabilities failed, falling back to well-known paths: {}",
+                e.message.chars().take(120).collect::<String>()
+            );
+            Ok(Services {
+                media_url: format!("{origin}/onvif/media_service"),
+                ptz_url: Some(format!("{origin}/onvif/PTZ")),
+                imaging_url: Some(format!("{origin}/onvif/imaging_service")),
+                device_io_url: None,
+            })
+        }
+    }
 }
 
 fn get_profiles(
@@ -670,8 +683,25 @@ pub fn execute_camera_action(
             | "media.get_stream_uri"
             | "media.get_snapshot_uri"
     );
+
+    let bundle_profiles: Vec<ProfileSummary> = cam
+        .streams
+        .iter()
+        .filter_map(|s| {
+            Some(ProfileSummary {
+                token: s.profile_token.clone()?,
+                name: Some(s.name.clone()),
+                ptz_configuration_token: None,
+            })
+        })
+        .collect();
+
     let profiles = if needs_profiles {
-        get_profiles(cam, password, timeout_ms, &services.media_url)?
+        if !bundle_profiles.is_empty() && action != "media.get_profiles" {
+            bundle_profiles
+        } else {
+            get_profiles(cam, password, timeout_ms, &services.media_url)?
+        }
     } else {
         Vec::new()
     };

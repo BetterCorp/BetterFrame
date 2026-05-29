@@ -55,6 +55,7 @@ export interface BundleCamera {
     id: string;
     role: string;
     name: string;
+    profile_token: string | null;
     /** Final playable RTSP URL with properly encoded credentials. */
     rtsp_uri: string;
     width: number | null;
@@ -352,6 +353,7 @@ export async function generateBundle(
           id: "",
           role: "main" as const,
           name: "Main",
+          profile_token: null as string | null,
           rtsp_uri: stripRtspCredentials(cam.rtsp_url) ?? cam.rtsp_url,
           width: null,
           height: null,
@@ -391,6 +393,7 @@ export async function generateBundle(
         id: s.id,
         role: s.role,
         name: s.name,
+        profile_token: s.profile_token ?? null,
         // Bundle ships credential-free RTSP endpoints; kiosk injects
         // playback credentials locally when starting the pipeline.
         rtsp_uri: stripRtspCredentials(s.rtsp_uri) ?? s.rtsp_uri,

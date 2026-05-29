@@ -39,6 +39,7 @@ pub const ARCH: &str = match option_env!("BF_BUILD_ARCH") {
 
 const DEFAULT_BIN_PATH: &str = "/opt/betterframe/kiosk/betterframe-kiosk";
 const FIRMWARE_MARKER: &str = "/var/lib/betterframe/kiosk/firmware-applying.json";
+const FIRMWARE_ATTEMPTS: &str = "/var/lib/betterframe/kiosk/firmware-applying.attempts";
 static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 fn binary_path() -> PathBuf {
@@ -64,6 +65,7 @@ fn cleanup_partial_update() {
     let bin = binary_path();
     let _ = fs::remove_file(bin.with_extension("new"));
     let _ = fs::remove_file(FIRMWARE_MARKER);
+    let _ = fs::remove_file(FIRMWARE_ATTEMPTS);
 }
 
 #[derive(Debug, Deserialize)]
@@ -292,10 +294,12 @@ pub fn apply(
         let payload = serde_json::json!({
             "version": info.version,
             "attempt_at": chrono_now_iso(),
+            "confirmed": false,
             "bin": bin.to_string_lossy(),
             "prev": prev_path.to_string_lossy(),
         });
         let _ = fs::write(&marker, payload.to_string());
+        let _ = fs::remove_file(FIRMWARE_ATTEMPTS);
     }
     if cancel_requested() {
         cleanup_partial_update();
@@ -350,6 +354,10 @@ pub fn mark_firmware_applied() {
     let marker = PathBuf::from(FIRMWARE_MARKER);
     if marker.exists() {
         let _ = fs::remove_file(marker);
+    }
+    let attempts = PathBuf::from(FIRMWARE_ATTEMPTS);
+    if attempts.exists() {
+        let _ = fs::remove_file(attempts);
     }
 }
 

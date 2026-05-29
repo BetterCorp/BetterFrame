@@ -16,6 +16,8 @@ gstreamer1.0-tools
 v4l-utils
 wlr-randr
 ca-certificates
+curl
+gnupg
 rauc
 dosfstools
 nftables

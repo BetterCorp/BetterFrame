@@ -92,6 +92,22 @@ get_part() {
   echo "$NEW_PT" | jq -r ".partitiontable.partitions[$1].$2"
 }
 
+quiet_cmdline() {
+  local cmdline="$1"
+  for flag in quiet splash plymouth.ignore-serial-consoles loglevel=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target; do
+    if ! grep -qw -- "$flag" "$cmdline"; then
+      sed -i "s|\$| $flag|" "$cmdline"
+    fi
+  done
+}
+
+quiet_config() {
+  local config="$1"
+  if ! grep -q '^disable_splash=1' "$config"; then
+    printf '\n# BetterFrame: disable firmware rainbow splash\ndisable_splash=1\n' >> "$config"
+  fi
+}
+
 PARTUUID_ROOT_A="$(get_part 2 uuid | tr '[:upper:]' '[:lower:]')"
 PARTUUID_ROOT_B="$(get_part 3 uuid | tr '[:upper:]' '[:lower:]')"
 echo "    BF_ROOT_A PARTUUID: $PARTUUID_ROOT_A"
@@ -123,6 +139,8 @@ mount "$BOOT_A_LOOP" "$WORK/mnt-ba"
 sed -i "s|root=PARTUUID=[^ ]*|root=PARTUUID=${PARTUUID_ROOT_A}|" "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
 sed -i "s|root=/dev/[^ ]*|root=PARTUUID=${PARTUUID_ROOT_A}|" "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
 sed -i 's/ resize//' "$WORK/mnt-ba/cmdline.txt" 2>/dev/null || true
+quiet_cmdline "$WORK/mnt-ba/cmdline.txt"
+quiet_config "$WORK/mnt-ba/config.txt"
 cat > "$WORK/mnt-ba/autoboot.txt" <<'AUTOBOOT'
 [all]
 tryboot_a_b=1
@@ -143,6 +161,8 @@ mount "$BOOT_B_LOOP" "$WORK/mnt-bb"
 sed -i "s|root=PARTUUID=[^ ]*|root=PARTUUID=${PARTUUID_ROOT_B}|" "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
 sed -i "s|root=/dev/[^ ]*|root=PARTUUID=${PARTUUID_ROOT_B}|" "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
 sed -i 's/ resize//' "$WORK/mnt-bb/cmdline.txt" 2>/dev/null || true
+quiet_cmdline "$WORK/mnt-bb/cmdline.txt"
+quiet_config "$WORK/mnt-bb/config.txt"
 cat > "$WORK/mnt-bb/autoboot.txt" <<'AUTOBOOT'
 [all]
 tryboot_a_b=1

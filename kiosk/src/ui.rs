@@ -16,6 +16,12 @@ static OS_UPDATE_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// threads can't see it.
 static BUNDLE_VERSION: Mutex<Option<String>> = Mutex::new(None);
 
+fn set_reported_bundle_version(version: &str) {
+    if let Ok(mut v) = BUNDLE_VERSION.lock() {
+        *v = Some(version.to_string());
+    }
+}
+
 use gtk4::prelude::*;
 use gtk4::{
     self as gtk, Application, ApplicationWindow, Box as GtkBox, Grid, Label, Orientation, Picture,
@@ -201,6 +207,7 @@ fn activate(app: &Application) {
         // cached on-disk bundle and keep retrying every 30s in the background.
         let initial = match server::fetch_bundle(&server, &key) {
             Some(b) => {
+                set_reported_bundle_version(&b.version);
                 crate::axiom::set_kiosk_id(b.kiosk_id.clone());
                 set_hostname_from_name(&b.kiosk_name);
                 info!(
@@ -213,6 +220,7 @@ fn activate(app: &Application) {
             None => {
                 if let Some(cached) = server::load_cached_bundle() {
                     warn!("offline mode: rendering cached bundle");
+                    set_reported_bundle_version(&cached.version);
                     Some(cached)
                 } else {
                     warn!("no bundle available (server unreachable, no cache)");
@@ -266,6 +274,7 @@ fn activate(app: &Application) {
                 std::thread::sleep(Duration::from_secs(backoff_secs));
                 if let Some(b) = server::fetch_bundle(&retry_server, &retry_key) {
                     info!("offline-retry: fresh bundle fetched, rendering");
+                    set_reported_bundle_version(&b.version);
                     let _ = retry_tx.send(WorkerMsg::RenderBundle(
                         b,
                         retry_server.clone(),
@@ -293,6 +302,7 @@ fn activate(app: &Application) {
                         info!("reloading bundle");
                         match server::fetch_bundle(&server_for_reload, &key_for_reload) {
                             Some(bundle) => {
+                                set_reported_bundle_version(&bundle.version);
                                 let _ = tx_for_reload.send(WorkerMsg::RenderBundle(
                                     bundle,
                                     server_for_reload.clone(),
@@ -1087,9 +1097,7 @@ fn render_bundle(
     server_url: &str,
     kiosk_key: &str,
 ) {
-    if let Ok(mut v) = BUNDLE_VERSION.lock() {
-        *v = Some(bundle.version.clone());
-    }
+    set_reported_bundle_version(&bundle.version);
     CURRENT_BUNDLE.with(|b| *b.borrow_mut() = Some(bundle.clone()));
     CURRENT_AUTH.with(|a| *a.borrow_mut() = Some((server_url.to_string(), kiosk_key.to_string())));
     CURRENT_SYNC_LABEL.with(|s| *s.borrow_mut() = format_current_local_time());

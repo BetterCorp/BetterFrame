@@ -1,7 +1,8 @@
-#!/bin/bash -e
+#!/bin/bash
 # Runs inside the pi-gen chroot. Installs the BetterFrame kiosk binary +
 # systemd unit + cage PAM + plymouth theme. Mirrors setup-pi-kiosk.sh but
 # baked into the image so first boot is fully provisioned.
+set -euo pipefail
 
 # --- bfadmin user (replaces pi-gen's username/password config) ---
 # Pi-gen's built-in user setup reinstalls the firstboot wizard AFTER
@@ -27,6 +28,7 @@ apt-get -y install cloud-guest-utils e2fsprogs 2>/dev/null || true
 
 # --- Tailscale VPN ---
 curl -fsSL https://tailscale.com/install.sh | sh
+command -v tailscale >/dev/null
 systemctl enable tailscaled
 systemctl disable tailscaled.service 2>/dev/null || true
 # Tailscale auth is triggered from the admin UI, not on boot.

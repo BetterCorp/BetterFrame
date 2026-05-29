@@ -11,6 +11,11 @@ static OS_UPDATE_LOCK: Mutex<()> = Mutex::new(());
 static FIRMWARE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static OS_UPDATE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Cross-thread bundle version. Set on GTK main thread in render_bundle(),
+/// read from heartbeat thread. CURRENT_BUNDLE is thread-local so background
+/// threads can't see it.
+static BUNDLE_VERSION: Mutex<Option<String>> = Mutex::new(None);
+
 use gtk4::prelude::*;
 use gtk4::{
     self as gtk, Application, ApplicationWindow, Box as GtkBox, Grid, Label, Orientation, Picture,
@@ -522,11 +527,7 @@ fn mark_activity(display_id: &str) {
 }
 
 fn send_heartbeat_now(server_url: &str, kiosk_key: &str) -> bool {
-    let bundle_version = CURRENT_BUNDLE.with(|b| {
-        b.borrow()
-            .as_ref()
-            .map(|bundle| bundle.version.clone())
-    });
+    let bundle_version = BUNDLE_VERSION.lock().ok().and_then(|v| v.clone());
     let raw_displays = query_displays();
     let bundle_displays = CURRENT_BUNDLE
         .with(|b| b.borrow().as_ref().map(|b| b.normalized_displays()))
@@ -1083,6 +1084,9 @@ fn render_bundle(
     server_url: &str,
     kiosk_key: &str,
 ) {
+    if let Ok(mut v) = BUNDLE_VERSION.lock() {
+        *v = Some(bundle.version.clone());
+    }
     CURRENT_BUNDLE.with(|b| *b.borrow_mut() = Some(bundle.clone()));
     CURRENT_AUTH.with(|a| *a.borrow_mut() = Some((server_url.to_string(), kiosk_key.to_string())));
     CURRENT_SYNC_LABEL.with(|s| *s.borrow_mut() = format_current_local_time());

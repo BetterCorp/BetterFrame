@@ -108,10 +108,44 @@ fn read_network_interfaces() -> Vec<Value> {
 }
 
 fn state_dir() -> PathBuf {
+    let persistent = PathBuf::from("/var/lib/betterframe/kiosk");
+    if fs::create_dir_all(&persistent).is_ok() {
+        migrate_legacy_state(&persistent);
+        return persistent;
+    }
+
+    tracing::warn!("could not use persistent kiosk state dir; falling back to home directory");
     let home = dirs::home_dir().expect("no home directory");
-    let dir = home.join(".betterframe-kiosk");
-    fs::create_dir_all(&dir).ok();
-    dir
+    let fallback = home.join(".betterframe-kiosk");
+    fs::create_dir_all(&fallback).ok();
+    fallback
+}
+
+fn migrate_legacy_state(persistent: &PathBuf) {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let legacy = home.join(".betterframe-kiosk");
+    if !legacy.is_dir() {
+        return;
+    }
+
+    for name in [
+        "kiosk.key",
+        "server.url",
+        "bundle.json",
+        "cluster.key",
+        "encrypt.key",
+        "local.key",
+    ] {
+        let src = legacy.join(name);
+        let dst = persistent.join(name);
+        if src.is_file() && !dst.exists() {
+            if let Err(err) = fs::copy(&src, &dst) {
+                tracing::warn!("failed to migrate kiosk state file {name}: {err}");
+            }
+        }
+    }
 }
 
 fn key_file() -> PathBuf {

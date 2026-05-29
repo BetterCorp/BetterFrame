@@ -97,13 +97,16 @@ jobs:
             iobox-firmware/betterframe-iobox-${{ inputs.version }}-${{ matrix.variant }}.bin.sha256
 
       - name: Auto-import ioBOX firmware into BF server
-        if: ${{ secrets.BF_AUTOIMPORT_URL != '' && secrets.BF_AUTOIMPORT_API_KEY != '' }}
         env:
           BF_AUTOIMPORT_URL: ${{ secrets.BF_AUTOIMPORT_URL }}
           BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}
         working-directory: iobox-firmware
         run: |
           set -e
+          if [ -z "${BF_AUTOIMPORT_URL}" ] || [ -z "${BF_AUTOIMPORT_API_KEY}" ]; then
+            echo "Skipping ioBOX firmware auto-import; BF_AUTOIMPORT_URL or BF_AUTOIMPORT_API_KEY is not set."
+            exit 0
+          fi
           bin="betterframe-iobox-${{ inputs.version }}-${{ matrix.variant }}.bin"
           base64 -w 0 "$bin" > "${bin}.b64"
           jq -nc \

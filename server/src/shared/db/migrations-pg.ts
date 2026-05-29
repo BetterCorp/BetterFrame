@@ -75,13 +75,17 @@ export const PUBLIC_MIGRATIONS: readonly string[] = [
   `INSERT INTO iobox_models
     (id, name, description, hardware_variant, firmware_arch, firmware_track, capabilities_json, ports_json)
    VALUES
-    ('ioBOX-KB', 'ioBOX Keyboard', 'ESP32-S3 Wi-Fi ioBOX with USB keyboard/mouse input support.', 'wifi', 'esp32s3', 'stable',
+    ('ioBOX-WIFI', 'ioBOX Wi-Fi', 'ESP32-S3 Wi-Fi ioBOX base firmware target.', 'wifi', 'esp32s3', 'stable',
       '{"keyboard":true,"mouse":true,"usb_hid":true,"wifi_provisioning":true}'::jsonb,
       '[{"id":"usb_otg","label":"USB OTG","kind":"usb_hid","direction":"input"}]'::jsonb),
-    ('ioBOX-KB-E', 'ioBOX Keyboard Ethernet', 'ESP32-S3 ioBOX with W5500 Ethernet and USB keyboard/mouse input support.', 'ethernet', 'esp32s3', 'stable',
+    ('ioBOX-ETHERNET', 'ioBOX Ethernet', 'ESP32-S3 ioBOX base firmware target with W5500 Ethernet.', 'ethernet', 'esp32s3', 'stable',
       '{"keyboard":true,"mouse":true,"usb_hid":true,"ethernet":true,"wifi_provisioning":true}'::jsonb,
       '[{"id":"usb_otg","label":"USB OTG","kind":"usb_hid","direction":"input"},{"id":"eth0","label":"W5500 Ethernet","kind":"ethernet","direction":"bidirectional"}]'::jsonb)
    ON CONFLICT (id) DO NOTHING`,
+
+  `UPDATE iobox_serials SET model_id = 'ioBOX-WIFI' WHERE model_id = 'ioBOX-KB'`,
+  `UPDATE iobox_serials SET model_id = 'ioBOX-ETHERNET' WHERE model_id = 'ioBOX-KB-E'`,
+  `DELETE FROM iobox_models WHERE id IN ('ioBOX-KB', 'ioBOX-KB-E')`,
 ];
 
 /**
@@ -845,6 +849,29 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_by TEXT REFERENCES users(id) ON DELETE SET NULL
   )`,
+
+  `UPDATE ioboxes SET model_id = 'ioBOX-WIFI' WHERE model_id = 'ioBOX-KB'`,
+  `UPDATE ioboxes SET model_id = 'ioBOX-ETHERNET' WHERE model_id = 'ioBOX-KB-E'`,
+  `UPDATE iobox_firmware_releases r
+      SET model_id = 'ioBOX-WIFI'
+    WHERE model_id = 'ioBOX-KB'
+      AND NOT EXISTS (
+        SELECT 1 FROM iobox_firmware_releases existing
+        WHERE existing.version = r.version
+          AND existing.firmware_arch = r.firmware_arch
+          AND existing.model_id = 'ioBOX-WIFI'
+      )`,
+  `DELETE FROM iobox_firmware_releases WHERE model_id = 'ioBOX-KB'`,
+  `UPDATE iobox_firmware_releases r
+      SET model_id = 'ioBOX-ETHERNET'
+    WHERE model_id = 'ioBOX-KB-E'
+      AND NOT EXISTS (
+        SELECT 1 FROM iobox_firmware_releases existing
+        WHERE existing.version = r.version
+          AND existing.firmware_arch = r.firmware_arch
+          AND existing.model_id = 'ioBOX-ETHERNET'
+      )`,
+  `DELETE FROM iobox_firmware_releases WHERE model_id = 'ioBOX-KB-E'`,
 
   `ALTER TABLE event_log ADD COLUMN IF NOT EXISTS source_iobox_id TEXT REFERENCES ioboxes(id) ON DELETE SET NULL`,
   `ALTER TABLE event_log DROP CONSTRAINT IF EXISTS event_log_source_type_check`,

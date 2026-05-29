@@ -22,7 +22,7 @@
 #endif
 
 #ifndef BF_MODEL_HINT
-#define BF_MODEL_HINT "ioBOX-KB"
+#define BF_MODEL_HINT "ioBOX-WIFI"
 #endif
 
 #ifndef BF_AP_TIMEOUT_MS

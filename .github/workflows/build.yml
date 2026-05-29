@@ -61,10 +61,10 @@ jobs:
         include:
           - env: iobox_wifi
             variant: wifi
-            model: ioBOX-KB
+            model: ioBOX-WIFI
           - env: iobox_eth
             variant: eth
-            model: ioBOX-KB-E
+            model: ioBOX-ETHERNET
     steps:
       - uses: actions/checkout@v6
         with:

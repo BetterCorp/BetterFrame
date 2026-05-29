@@ -145,8 +145,8 @@ export function IoBoxModelsPage(props: { user: string; models: IoBoxModel[]; err
         </div>
         <form method="post" action="/admin/iobox/models" class="card">
           <h3 style="margin-top:0">Create Model</h3>
-          <div class="form-group"><label>ID</label><input name="id" class="form-input" placeholder="ioBOX-KBP" required /></div>
-          <div class="form-group"><label>Name</label><input name="name" class="form-input" placeholder="ioBOX Keyboard + PIR" required /></div>
+          <div class="form-group"><label>ID</label><input name="id" class="form-input" placeholder="ioBOX-WIFI" required /></div>
+          <div class="form-group"><label>Name</label><input name="name" class="form-input" placeholder="ioBOX Wi-Fi" required /></div>
           <div class="form-group"><label>Description</label><input name="description" class="form-input" /></div>
           <div class="form-group"><label>Hardware Variant</label><select name="hardware_variant" class="form-input"><option value="ethernet">Ethernet</option><option value="wifi">Wi-Fi only</option></select></div>
           <div class="form-group">

@@ -30,6 +30,13 @@ mkdir -p "$STAGE"
 cp "$ROOTFS_IN" "${STAGE}/rootfs.ext4"
 cp "$BOOTFS_IN" "${STAGE}/bootfs.vfat"
 
+# Per-slot install hook: patches cmdline.txt root=PARTUUID (bootfs) and
+# /etc/fstab (rootfs) for the actual target slot at install time. Without
+# it the slot images carry stale build-time references and the device
+# drops to initramfs after activation.
+cp "${SCRIPT_DIR}/hook.sh" "${STAGE}/hook.sh"
+chmod +x "${STAGE}/hook.sh"
+
 echo "==> Rendering manifest"
 sed -e "s|@VERSION@|${VERSION}|g" \
     -e "s|@GIT_SHA@|${GIT_SHA}|g" \

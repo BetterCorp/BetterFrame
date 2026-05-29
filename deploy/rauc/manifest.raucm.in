@@ -7,8 +7,13 @@ build=@GIT_SHA@
 [bundle]
 format=plain
 
+[hooks]
+filename=hook.sh
+
 [image.bootfs]
 filename=bootfs.vfat
+hooks=post-install
 
 [image.rootfs]
 filename=rootfs.ext4
+hooks=post-install

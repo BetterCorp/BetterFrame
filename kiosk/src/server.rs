@@ -294,18 +294,36 @@ fn confirm_deletion(server: &str, key: &str) -> bool {
     }
 }
 
-/// Wipe all kiosk state and exit. Systemd restarts the service,
-/// kiosk boots fresh with a new pairing code. Only called after
-/// double-verification (bf_kiosk_deleted + _check 401).
-fn wipe_and_restart() -> ! {
-    let dir = state_dir();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let _ = std::fs::remove_file(entry.path());
-        }
+fn remove_pairing_state_files(dir: &PathBuf) {
+    for name in [
+        "kiosk.key",
+        "server.url",
+        "bundle.json",
+        "cluster.key",
+        "encrypt.key",
+        "local.key",
+    ] {
+        let _ = std::fs::remove_file(dir.join(name));
     }
+}
+
+/// Wipe all kiosk state and exit. Systemd restarts the service,
+/// kiosk boots fresh with a new pairing code.
+pub fn reset_pairing_and_restart(reason: &str) -> ! {
+    tracing::warn!("{reason}; wiping kiosk pairing state and restarting");
+
+    remove_pairing_state_files(&PathBuf::from("/var/lib/betterframe/kiosk"));
+    if let Some(home) = dirs::home_dir() {
+        remove_pairing_state_files(&home.join(".betterframe-kiosk"));
+    }
+
     tracing::info!("config wiped, exiting for systemd restart");
     std::process::exit(1);
+}
+
+/// Only called after double-verification (bf_kiosk_deleted + _check 401).
+fn wipe_and_restart() -> ! {
+    reset_pairing_and_restart("server confirmed kiosk key is invalid")
 }
 
 /// Load cluster key (if stored from pairing). Used for ONVIF password decrypt.

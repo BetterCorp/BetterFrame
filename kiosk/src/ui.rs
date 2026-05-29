@@ -227,6 +227,11 @@ fn activate(app: &Application) {
                     Some(cached)
                 } else {
                     warn!("no bundle available (server unreachable, no cache)");
+                    if server::is_paired() {
+                        server::reset_pairing_and_restart(
+                            "paired kiosk has no live bundle and no cached bundle",
+                        );
+                    }
                     None
                 }
             }

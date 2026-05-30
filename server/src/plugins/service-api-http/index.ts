@@ -28,6 +28,7 @@ import { initOsUpdates, type OsUpdateApi } from "../../shared/os-updates.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
 import { initMqttBridge, type MqttBridge } from "../../shared/mqtt-bridge.js";
 import { getCoordinator } from "../../shared/coordinator-registry.js";
+import { normalizeUpdateSchedule, updateScheduleAllowsNow } from "../../shared/update-schedule.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { AuthApi } from "../../shared/auth.js";
 import type { SecretsApi } from "../../shared/secrets.js";
@@ -973,6 +974,7 @@ function registerKioskRoutes(
     // Re-read kiosk so we see the freshly-persisted applied_version above when
     // computing whether the server still has a newer config to deliver.
     const fresh = await repo.getKioskById(kiosk.id);
+    const updateSchedule = normalizeUpdateSchedule(await repo.getSetupExtra("update_schedule"));
     let pendingConfig: { version: number; config: unknown } | undefined;
     if (
       fresh?.managed_image
@@ -997,6 +999,7 @@ function registerKioskRoutes(
       firmware_target_version: fresh?.firmware_target_version ?? null,
       os_update_channel: fresh?.os_update_channel ?? "stable",
       os_update_target_version: fresh?.os_update_target_version ?? null,
+      auto_updates_allowed: updateScheduleAllowsNow(updateSchedule),
       ...(pendingConfig ? { pending_config: pendingConfig } : {}),
     };
   });

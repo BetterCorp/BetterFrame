@@ -28,6 +28,7 @@ import type {
   EventLog,
   Tenant,
 } from "../shared/types.js";
+import type { UpdateSchedule } from "../shared/update-schedule.js";
 
 // ---- ioBOX ------------------------------------------------------------------
 
@@ -4900,15 +4901,62 @@ export function TenantEditPage(props: TenantEditPageProps) {
 interface SettingsPageProps {
   cloudAccounts: any[];
   ablesignAccounts: any[];
+  updateSchedule: UpdateSchedule;
   error?: string;
 }
 
 export function SettingsPage(props: SettingsPageProps) {
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const savedWindows = props.updateSchedule.mode === "windows" && props.updateSchedule.windows.length > 0
+    ? props.updateSchedule.windows
+    : [
+        { day: 2, start: "00:00", end: "04:00" },
+        { day: 4, start: "00:00", end: "04:00" },
+      ];
+  const windows = [
+    ...savedWindows,
+    ...Array.from({ length: Math.max(0, 5 - savedWindows.length) }, () => ({ day: 0, start: "", end: "" })),
+  ];
   return (
     <Layout title="Settings" activeNav="settings">
       <h1 style="font-size:1.5rem; margin:0 0 1.5rem">Settings</h1>
 
       {props.error ? <div class="alert alert-error" style="margin-bottom:1rem">{props.error}</div> : ""}
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2 style="font-size:1.1rem; margin:0 0 1rem">Automatic Updates</h2>
+        <form method="POST" action="/admin/settings/update-schedule">
+          <div style="display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:1rem">
+            <label style="font-size:0.9rem">
+              <input type="radio" name="update_schedule_mode" value="always" checked={props.updateSchedule.mode === "always"} /> Always
+            </label>
+            <label style="font-size:0.9rem">
+              <input type="radio" name="update_schedule_mode" value="windows" checked={props.updateSchedule.mode === "windows"} /> Specific windows
+            </label>
+          </div>
+          <div class="table-wrap" style="margin-bottom:1rem">
+            <table>
+              <thead><tr><th>Day</th><th>Start</th><th>End</th></tr></thead>
+              <tbody>
+                {windows.map((window) => (
+                  <tr>
+                    <td>
+                      <select name="update_day" class="form-input">
+                        {dayNames.map((day, index) => (
+                          <option value={String(index)} selected={window.day === index}>{day}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td><input type="time" name="update_start" class="form-input" value={window.start} /></td>
+                    <td><input type="time" name="update_end" class="form-input" value={window.end} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <button type="submit" class="btn btn-primary btn-sm">Save Update Schedule</button>
+        </form>
+      </div>
 
       <div class="card" style="margin-bottom:1.5rem">
         <h2 style="font-size:1.1rem; margin:0 0 1rem">Digital Signage Account</h2>

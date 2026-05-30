@@ -219,10 +219,12 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     }
     const nextTarget = targetRaw ? targetRaw : null;
     if (before && (before.firmware_channel !== channelRaw || before.firmware_target_version !== nextTarget)) {
-      getCoordinator().sendToKiosk(id, {
+      const coord = getCoordinator();
+      coord.sendToKiosk(id, {
         type: "update_cancel",
         reason: "firmware preference changed",
       });
+      coord.sendToKiosk(id, { type: "firmware_check", force: false });
     }
     const releases = await deps.repo.listFirmwareReleases();
     return htmlFragment(KioskFirmwarePanel({ kiosk: k, releases }));
@@ -280,12 +282,13 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
       metadata: { release_id: releaseId, percentage, target_count: targets.length },
     });
     // Bump every targeted kiosk to check now (best-effort over WS).
+    // This is an auto-rollout check; only the explicit Push button uses force.
     const coord = getCoordinator();
     if (targets.length === 0) {
       const allKiosks = await deps.repo.listKiosks();
-      for (const k of allKiosks) coord.sendToKiosk(k.id, { type: "firmware_check", force: true });
+      for (const k of allKiosks) coord.sendToKiosk(k.id, { type: "firmware_check", force: false });
     } else {
-      for (const id of targets) coord.sendToKiosk(id, { type: "firmware_check", force: true });
+      for (const id of targets) coord.sendToKiosk(id, { type: "firmware_check", force: false });
     }
     return new Response(null, { status: 302, headers: { location: "/admin/firmware/rollouts" } });
   });

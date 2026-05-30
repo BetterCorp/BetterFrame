@@ -55,6 +55,11 @@ import { audit } from "../../shared/audit.js";
 import { createBackup, restoreBackup } from "../../shared/backup.js";
 import { pickKioskLanIp } from "../../shared/kiosk-lan.js";
 import { buildRtspUri, buildRtspUriFromParts, stripRtspCredentials } from "../../shared/rtsp.js";
+import {
+  DEFAULT_UPDATE_SCHEDULE,
+  normalizeUpdateSchedule,
+  type UpdateSchedule,
+} from "../../shared/update-schedule.js";
 
 interface DiscoverAddStream {
   profile_name: string;
@@ -77,6 +82,21 @@ function noderedTenant(event: any): { tenant_slug: string; tenant_name: string |
 }
 
 type FormValue = string | string[] | undefined;
+
+function parseUpdateScheduleForm(body: Record<string, FormValue>): UpdateSchedule {
+  if (formValue(body["update_schedule_mode"]) !== "windows") {
+    return DEFAULT_UPDATE_SCHEDULE;
+  }
+  const days = Array.isArray(body["update_day"]) ? body["update_day"] : [body["update_day"]];
+  const starts = Array.isArray(body["update_start"]) ? body["update_start"] : [body["update_start"]];
+  const ends = Array.isArray(body["update_end"]) ? body["update_end"] : [body["update_end"]];
+  const windows = days.map((day, index) => ({
+    day: Number(formValue(day)),
+    start: formValue(starts[index]),
+    end: formValue(ends[index]),
+  }));
+  return normalizeUpdateSchedule({ mode: "windows", windows });
+}
 
 function htmlFragment(markup: unknown): Response {
   return new Response(String(markup), {
@@ -2633,7 +2653,15 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.get("/admin/settings", async () => {
     const cloudAccounts = await deps.repo.listCloudAccounts();
     const ablesignAccounts = await deps.repo.listAbleSignAccounts();
-    return htmlPage(SettingsPage({ cloudAccounts, ablesignAccounts }));
+    const updateSchedule = normalizeUpdateSchedule(await deps.repo.getSetupExtra("update_schedule"));
+    return htmlPage(SettingsPage({ cloudAccounts, ablesignAccounts, updateSchedule }));
+  });
+
+  app.post("/admin/settings/update-schedule", async (event) => {
+    const body = await readBody<Record<string, FormValue>>(event);
+    const updateSchedule = parseUpdateScheduleForm(body ?? {});
+    await deps.repo.setSetupExtra("update_schedule", updateSchedule);
+    return new Response(null, { status: 302, headers: { location: "/admin/settings" } });
   });
 
   // ---- Tenant switcher fragment (htmx) ----------------------------------------

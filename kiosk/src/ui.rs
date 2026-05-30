@@ -374,15 +374,23 @@ fn activate(app: &Application) {
                             .status();
                     }
                     ServerMsg::FirmwareCheck { force } => {
-                        maybe_apply_firmware_update(
-                            &server_for_reload,
-                            &key_for_reload,
-                            &tx_for_reload,
-                            force,
-                        );
+                        if force || server::auto_updates_allowed() {
+                            maybe_apply_firmware_update(
+                                &server_for_reload,
+                                &key_for_reload,
+                                &tx_for_reload,
+                                force,
+                            );
+                        } else {
+                            info!("firmware: outside configured update window");
+                        }
                     }
                     ServerMsg::OsCheck { force } => {
-                        maybe_apply_os_update(&server_for_reload, &key_for_reload, &tx_for_reload, force);
+                        if force || server::auto_updates_allowed() {
+                            maybe_apply_os_update(&server_for_reload, &key_for_reload, &tx_for_reload, force);
+                        } else {
+                            info!("os-update: outside configured update window");
+                        }
                     }
                     ServerMsg::CancelUpdates => {
                         server::cancel_active_updates("server update preference change");
@@ -416,8 +424,12 @@ fn activate(app: &Application) {
                 cleanup_stale_files();
                 first_iter = false;
             }
-            maybe_apply_os_update(&server, &key, &tx_progress, false);
-            maybe_apply_firmware_update(&server, &key, &tx_progress, false);
+            if server::auto_updates_allowed() {
+                maybe_apply_os_update(&server, &key, &tx_progress, false);
+                maybe_apply_firmware_update(&server, &key, &tx_progress, false);
+            } else {
+                info!("auto-update: outside configured update window");
+            }
             maybe_refresh_onvif(&server, &key);
             std::thread::sleep(std::time::Duration::from_secs(60));
         }

@@ -63,10 +63,12 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
     }
     const nextTarget = targetRaw ? targetRaw : null;
     if (before && (before.os_update_channel !== channelRaw || before.os_update_target_version !== nextTarget)) {
-      getCoordinator().sendToKiosk(id, {
+      const coord = getCoordinator();
+      coord.sendToKiosk(id, {
         type: "update_cancel",
         reason: "os update preference changed",
       });
+      coord.sendToKiosk(id, { type: "os_check", force: false });
     }
     const releases = await deps.repo.listOsUpdateReleases();
     return htmlFragment(KioskOsUpdatePanel({ kiosk: k, releases }));
@@ -120,6 +122,13 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
       resource_id: rollout.id,
       metadata: { release_id: releaseId, percentage, target_count: targets.length },
     });
+    const coord = getCoordinator();
+    if (targets.length === 0) {
+      const allKiosks = await deps.repo.listKiosks();
+      for (const k of allKiosks) coord.sendToKiosk(k.id, { type: "os_check", force: false });
+    } else {
+      for (const id of targets) coord.sendToKiosk(id, { type: "os_check", force: false });
+    }
     return new Response(null, { status: 302, headers: { location: "/admin/os-updates/rollouts" } });
   });
 

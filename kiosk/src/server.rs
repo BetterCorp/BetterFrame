@@ -6,6 +6,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::info;
 
 use crate::bundle::KioskBundle;
@@ -26,6 +27,7 @@ struct ManagedConfigReport {
 
 static MANAGED_CONFIG_REPORT: Mutex<Option<ManagedConfigReport>> = Mutex::new(None);
 static LAST_MANAGED_CONFIG_ATTEMPT: Mutex<Option<(u64, bool)>> = Mutex::new(None);
+static AUTO_UPDATES_ALLOWED: AtomicBool = AtomicBool::new(true);
 
 #[derive(Debug, Deserialize)]
 struct PendingManagedConfig {
@@ -658,6 +660,9 @@ pub fn heartbeat(
                     .get("os_update_target_version")
                     .map(|v| v.as_str());
                 update_cached_update_preferences(fw, fw_target, os, os_target);
+                if let Some(allowed) = body.get("auto_updates_allowed").and_then(|v| v.as_bool()) {
+                    AUTO_UPDATES_ALLOWED.store(allowed, Ordering::SeqCst);
+                }
                 if let Some(pending) = body.get("pending_config") {
                     apply_pending_managed_config(pending);
                 }
@@ -665,6 +670,10 @@ pub fn heartbeat(
             Ok(true)
         })
         .unwrap_or(false)
+}
+
+pub fn auto_updates_allowed() -> bool {
+    AUTO_UPDATES_ALLOWED.load(Ordering::SeqCst)
 }
 
 use std::sync::Mutex as StdMutex;

@@ -212,7 +212,7 @@ export async function confirmPairing(
     });
 
     await repo.createDisplayForKiosk(kiosk.id, {
-      name: `${candidate} HDMI-0`,
+      name: `${candidate}: HDMI-0`,
     });
 
     if (input.initialLabels?.length) {

@@ -458,6 +458,15 @@ function remoteIp(event: any): string | null {
     ?? null;
 }
 
+function kioskDisplayName(kioskName: string, displayName: string): string {
+  return `${kioskName}: ${displayBaseName(displayName)}`;
+}
+
+function displayBaseName(displayName: string): string {
+  const idx = displayName.indexOf(": ");
+  return idx >= 0 ? displayName.slice(idx + 2) : displayName;
+}
+
 async function resolveTenantForIoBoxClaim(repo: Repository, event: any): Promise<{ id: string | null; slug: string; schema_name: string }> {
   const requested = getRequestHeader(event, "x-betterframe-tenant")?.trim() || "default";
   const tenants = await repo.listTenants();
@@ -914,7 +923,8 @@ function registerKioskRoutes(
         const reportedIndex = Number.isInteger(reported.index) && reported.index! >= 0
           ? reported.index!
           : position;
-        const match = existing.find((d) => d.name.endsWith(reported.name))
+        const displayName = kioskDisplayName(kioskFull?.name ?? String(kiosk.id), reported.name);
+        const match = existing.find((d) => displayBaseName(d.name) === reported.name)
           ?? existing.find((d) => d.index === reportedIndex);
         if (match) {
           seenDisplayIds.add(match.id);
@@ -924,14 +934,14 @@ function registerKioskRoutes(
               ? "unknown"
               : null;
           if (
-            match.name !== reported.name
+            match.name !== displayName
             || match.index !== reportedIndex
             || match.width_px !== reported.width_px
             || match.height_px !== reported.height_px
             || (powerState != null && match.actual_power_state !== powerState)
           ) {
             await repo.updateDisplay(match.id, {
-              name: reported.name,
+              name: displayName,
               index: reportedIndex,
               width_px: reported.width_px,
               height_px: reported.height_px,
@@ -944,7 +954,7 @@ function registerKioskRoutes(
         } else {
           // New display — create it
           const created = await repo.createDisplayForKiosk(kiosk.id, {
-            name: reported.name,
+            name: displayName,
             index: reportedIndex,
             width_px: reported.width_px,
             height_px: reported.height_px,
@@ -1000,6 +1010,7 @@ function registerKioskRoutes(
       os_update_channel: fresh?.os_update_channel ?? "stable",
       os_update_target_version: fresh?.os_update_target_version ?? null,
       auto_updates_allowed: updateScheduleAllowsNow(updateSchedule),
+      audio_default_volume_percent: fresh?.audio_default_volume_percent ?? 50,
       ...(pendingConfig ? { pending_config: pendingConfig } : {}),
     };
   });

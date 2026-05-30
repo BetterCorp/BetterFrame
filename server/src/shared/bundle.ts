@@ -329,7 +329,7 @@ export async function generateBundle(
   for (const display of displays) {
     bundleDisplays.push({
       id: display.id,
-      name: display.name,
+      name: stripDisplayKioskPrefix(display.name, kiosk.name),
       width_px: display.width_px,
       height_px: display.height_px,
       idle_timeout_seconds: display.idle_timeout_seconds,
@@ -457,6 +457,11 @@ export async function generateBundle(
   });
   span?.end();
   return bundle;
+}
+
+function stripDisplayKioskPrefix(displayName: string, kioskName: string): string {
+  const prefix = `${kioskName}: `;
+  return displayName.startsWith(prefix) ? displayName.slice(prefix.length) : displayName;
 }
 
 function stableSecretFingerprint(context: string, plaintext: string): string {

@@ -663,6 +663,12 @@ pub fn heartbeat(
                 if let Some(allowed) = body.get("auto_updates_allowed").and_then(|v| v.as_bool()) {
                     AUTO_UPDATES_ALLOWED.store(allowed, Ordering::SeqCst);
                 }
+                if let Some(volume) = body
+                    .get("audio_default_volume_percent")
+                    .and_then(|v| v.as_u64())
+                {
+                    *CACHED_AUDIO_DEFAULT_VOLUME.lock().unwrap() = Some(volume.min(100) as u32);
+                }
                 if let Some(pending) = body.get("pending_config") {
                     apply_pending_managed_config(pending);
                 }
@@ -681,6 +687,7 @@ static CACHED_FIRMWARE_CHANNEL: StdMutex<Option<String>> = StdMutex::new(None);
 static CACHED_FIRMWARE_TARGET_VERSION: StdMutex<Option<Option<String>>> = StdMutex::new(None);
 static CACHED_OS_CHANNEL: StdMutex<Option<String>> = StdMutex::new(None);
 static CACHED_OS_TARGET_VERSION: StdMutex<Option<Option<String>>> = StdMutex::new(None);
+static CACHED_AUDIO_DEFAULT_VOLUME: StdMutex<Option<u32>> = StdMutex::new(None);
 
 pub fn update_cached_update_preferences(
     firmware_channel: Option<&str>,
@@ -750,6 +757,10 @@ pub fn cached_os_channel() -> String {
         .unwrap()
         .clone()
         .unwrap_or_else(|| "stable".to_string())
+}
+
+pub fn cached_audio_default_volume() -> Option<u32> {
+    *CACHED_AUDIO_DEFAULT_VOLUME.lock().unwrap()
 }
 
 fn apply_pending_managed_config(raw: &Value) {

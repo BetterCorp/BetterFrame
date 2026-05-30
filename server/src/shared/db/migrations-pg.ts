@@ -286,6 +286,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     os_update_last_attempt_at TIMESTAMPTZ,
     os_update_last_attempt_version TEXT,
     os_update_last_error TEXT,
+    audio_default_volume_percent INTEGER NOT NULL DEFAULT 50,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS idx_kiosks_prefix ON kiosks(key_prefix)`,
@@ -782,6 +783,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   // databases skipped it (the version counter already covered that index).
   // Re-append at the end so it actually runs on databases that missed it.
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS logging_json JSONB`,
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS audio_default_volume_percent INTEGER NOT NULL DEFAULT 50`,
 
   // ---- ioBOX platform foundation -------------------------------------------
   `CREATE TABLE IF NOT EXISTS ioboxes (

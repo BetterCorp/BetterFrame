@@ -399,6 +399,7 @@ export function rowToKiosk(r: Row): Kiosk {
     os_update_last_attempt_at: sn(r["os_update_last_attempt_at"]),
     os_update_last_attempt_version: sn(r["os_update_last_attempt_version"]),
     os_update_last_error: sn(r["os_update_last_error"]),
+    audio_default_volume_percent: n(r["audio_default_volume_percent"] ?? 50),
     local_key: sn(r["local_key"]),
     local_port: nn(r["local_port"]),
     local_last_ip: sn(r["local_last_ip"]),

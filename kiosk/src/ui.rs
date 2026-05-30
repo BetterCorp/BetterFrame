@@ -10,6 +10,7 @@ static FIRMWARE_LOCK: Mutex<()> = Mutex::new(());
 static OS_UPDATE_LOCK: Mutex<()> = Mutex::new(());
 static FIRMWARE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static OS_UPDATE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static BOOT_AUDIO_DEFAULT_APPLIED: AtomicBool = AtomicBool::new(false);
 
 /// Cross-thread bundle version. Set on GTK main thread in render_bundle(),
 /// read from heartbeat thread. CURRENT_BUNDLE is thread-local so background
@@ -423,6 +424,7 @@ fn activate(app: &Application) {
                 mark_kiosk_healthy();
                 mark_rauc_slot_good();
                 cleanup_stale_files();
+                apply_boot_audio_default();
                 first_iter = false;
             }
             if server::auto_updates_allowed() {
@@ -714,6 +716,20 @@ fn cleanup_stale_files() {
                 let _ = fs::remove_file(prev);
             }
         }
+    }
+}
+
+fn apply_boot_audio_default() {
+    if BOOT_AUDIO_DEFAULT_APPLIED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Some(volume) = server::cached_audio_default_volume() else {
+        return;
+    };
+    if crate::audio::set_volume(volume) {
+        info!("audio: applied boot default volume {volume}%");
+    } else {
+        warn!("audio: failed to apply boot default volume {volume}%");
     }
 }
 

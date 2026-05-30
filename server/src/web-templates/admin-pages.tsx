@@ -2332,33 +2332,24 @@ export function KioskEditPage(props: KioskEditProps) {
             </div>
             <div style="margin-top:1rem; padding-top:0.75rem; border-top:1px solid #f0f0f0">
               <div style="font-size:0.8rem; font-weight:600; margin-bottom:0.5rem">Audio</div>
+              <form style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.5rem" {...{
+                "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
+                "hx-swap": "none",
+              }}>
+                <input
+                  type="range"
+                  name="volume"
+                  min="0"
+                  max="100"
+                  value={String((k as any).audio_default_volume_percent ?? 50)}
+                  style="width:12rem"
+                  {...{"oninput": "this.nextElementSibling.value = this.value + '%'"}}
+                />
+                <output style="font-size:0.85rem; min-width:3rem">{String((k as any).audio_default_volume_percent ?? 50)}%</output>
+                <button type="submit" name="action" value="apply" class="btn btn-sm btn-ghost">Apply</button>
+                <button type="submit" name="action" value="save_default" class="btn btn-sm">Save Boot Default</button>
+              </form>
               <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
-                <button type="button" class="btn btn-sm btn-ghost" {...{
-                  "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
-                  "hx-vals": JSON.stringify({ volume: "0" }),
-                  "hx-swap": "none",
-                }}>0%</button>
-                <button type="button" class="btn btn-sm btn-ghost" {...{
-                  "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
-                  "hx-vals": JSON.stringify({ volume: "25" }),
-                  "hx-swap": "none",
-                }}>25%</button>
-                <button type="button" class="btn btn-sm btn-ghost" {...{
-                  "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
-                  "hx-vals": JSON.stringify({ volume: "50" }),
-                  "hx-swap": "none",
-                }}>50%</button>
-                <button type="button" class="btn btn-sm btn-ghost" {...{
-                  "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
-                  "hx-vals": JSON.stringify({ volume: "75" }),
-                  "hx-swap": "none",
-                }}>75%</button>
-                <button type="button" class="btn btn-sm btn-ghost" {...{
-                  "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
-                  "hx-vals": JSON.stringify({ volume: "100" }),
-                  "hx-swap": "none",
-                }}>100%</button>
-                <span style="color:#999">|</span>
                 <button type="button" class="btn btn-sm btn-ghost" {...{
                   "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
                   "hx-vals": JSON.stringify({ action: "mute" }),
@@ -3591,7 +3582,7 @@ export function DisplaysPage(props: DisplaysPageProps) {
                       : <span style="color:#999">Unassigned</span>}
                   </td>
                   <td>
-                    <a href={`/admin/displays/${d.id}`}><strong>{d.name}</strong></a>
+                    <a href={`/admin/displays/${d.id}`}><strong>{displayNameWithoutKioskPrefix(d.name, kiosk?.name ?? null)}</strong></a>
                     {!d.is_enabled && (
                       <span style="margin-left:0.5rem; padding:0.1rem 0.4rem; font-size:0.7rem; background:#fee; color:#a00; border-radius:3px">disabled</span>
                     )}
@@ -3609,6 +3600,12 @@ export function DisplaysPage(props: DisplaysPageProps) {
 }
 
 // ---- Helpers ----------------------------------------------------------------
+
+function displayNameWithoutKioskPrefix(displayName: string, kioskName: string | null): string {
+  if (!kioskName) return displayName;
+  const prefix = `${kioskName}: `;
+  return displayName.startsWith(prefix) ? displayName.slice(prefix.length) : displayName;
+}
 
 function parseRtspUrl(url: string): { host: string; port: string; path: string; username: string; password: string } {
   const m = url.match(/^rtsp:\/\/(?:([^:@]+)(?::([^@]*))?@)?([^:/]+)(?::(\d+))?(\/.*)?$/);

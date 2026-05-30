@@ -2635,14 +2635,17 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
     const action = body?.["action"];
+    const vol = Math.max(0, Math.min(100, Number(body?.["volume"]) || 0));
     if (action === "mute") {
       getCoordinator().sendToKiosk(id, { type: "volume-mute", muted: true });
     } else if (action === "unmute") {
       getCoordinator().sendToKiosk(id, { type: "volume-mute", muted: false });
     } else if (action === "output") {
       getCoordinator().sendToKiosk(id, { type: "audio-output", output_id: body?.["output_id"] ?? "" });
+    } else if (action === "save_default") {
+      await deps.repo.updateKiosk(id, { audio_default_volume_percent: vol } as any);
+      getCoordinator().sendToKiosk(id, { type: "volume-set", volume: vol });
     } else {
-      const vol = Math.max(0, Math.min(100, Number(body?.["volume"]) || 0));
       getCoordinator().sendToKiosk(id, { type: "volume-set", volume: vol });
     }
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });

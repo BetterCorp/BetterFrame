@@ -378,6 +378,7 @@ export interface Kiosk {
   os_update_last_attempt_at: string | null;
   os_update_last_attempt_version: string | null;
   os_update_last_error: string | null;
+  audio_default_volume_percent: number;
   local_key: string | null;
   local_port: number | null;
   local_last_ip: string | null;

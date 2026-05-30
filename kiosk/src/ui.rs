@@ -505,6 +505,7 @@ fn standby_display(display_id: Option<&str>) {
             }
         });
     }
+    recompute_global_state();
 }
 
 fn wake_display(display_id: Option<&str>) {
@@ -528,6 +529,28 @@ fn wake_display(display_id: Option<&str>) {
                 st.last_activity = Instant::now();
             }
         });
+    }
+    render_current_layouts(display_id);
+}
+
+fn render_current_layouts(display_id: Option<&str>) {
+    let layouts: Vec<(String, String)> = DISPLAYS.with(|ds| {
+        ds.borrow()
+            .iter()
+            .filter(|(id, _)| match display_id {
+                Some(wanted) => wanted == id.as_str(),
+                None => true,
+            })
+            .filter_map(|(id, st)| {
+                st.current_layout_id
+                    .as_ref()
+                    .map(|layout_id| (id.clone(), layout_id.clone()))
+            })
+            .collect()
+    });
+
+    for (display_id, layout_id) in layouts {
+        render_layout(&display_id, &layout_id);
     }
 }
 
@@ -1022,21 +1045,7 @@ fn install_idle_watchdog() {
             }
             if a.sleep {
                 info!("sleep timeout reached on display {}", a.display_id);
-                let output_name = bundle
-                    .normalized_displays()
-                    .into_iter()
-                    .find(|d| d.id == a.display_id)
-                    .map(|d| d.name);
-                if let Some(output_name) = output_name {
-                    cec::standby_output(&output_name);
-                } else {
-                    cec::standby();
-                }
-                DISPLAYS.with(|ds| {
-                    if let Some(st) = ds.borrow_mut().get_mut(&a.display_id) {
-                        st.is_asleep = true;
-                    }
-                });
+                standby_display(Some(&a.display_id));
             }
         }
 
@@ -1866,10 +1875,10 @@ fn recompute_global_state() {
         bundle.cameras.iter().map(|c| (c.id.as_str(), c)).collect();
 
     // Snapshot per-display active layout id outside any borrow of WARM_CAMERAS.
-    let active: Vec<(String, Option<String>)> = DISPLAYS.with(|ds| {
+    let active: Vec<(String, Option<String>, bool)> = DISPLAYS.with(|ds| {
         ds.borrow()
             .iter()
-            .map(|(id, st)| (id.clone(), st.current_layout_id.clone()))
+            .map(|(id, st)| (id.clone(), st.current_layout_id.clone(), st.is_asleep))
             .collect()
     });
 
@@ -1910,17 +1919,26 @@ fn recompute_global_state() {
     }
 
     for bd in &displays {
-        let active_id = active
+        let active_entry = active
             .iter()
-            .find(|(id, _)| *id == bd.id)
-            .and_then(|(_, l)| l.clone());
-        if let Some(cur_id) = active_id {
-            if let Some(layout) = bd.layouts.iter().find(|l| l.id == cur_id) {
-                cell_keys(layout, &cam_map, &mut warm_set);
+            .find(|(id, _, _)| *id == bd.id)
+            .map(|(_, layout_id, is_asleep)| (layout_id.clone(), *is_asleep));
+        let is_asleep = active_entry
+            .as_ref()
+            .map(|(_, is_asleep)| *is_asleep)
+            .unwrap_or(false);
+        if let Some(cur_id) = active_entry.as_ref().and_then(|(layout_id, _)| layout_id.as_ref()) {
+            if let Some(layout) = bd.layouts.iter().find(|l| l.id.as_str() == cur_id.as_str()) {
                 let t = layout.cooling_timeout_seconds.unwrap_or(0);
                 let t = if t == 0 { DEFAULT_COOLING_SECS } else { t };
                 max_cooling_secs = max_cooling_secs.max(t);
+                if !is_asleep {
+                    cell_keys(layout, &cam_map, &mut warm_set);
+                }
             }
+        }
+        if is_asleep {
+            continue;
         }
         for layout in &bd.layouts {
             if layout.priority == "hot" {
@@ -1933,14 +1951,26 @@ fn recompute_global_state() {
     let mut warm_webs: std::collections::HashSet<WebKey> = std::collections::HashSet::new();
     let mut hot_webs: std::collections::HashSet<WebKey> = std::collections::HashSet::new();
     for bd in &displays {
-        let active_id = active
+        let active_entry = active
             .iter()
-            .find(|(id, _)| *id == bd.id)
-            .and_then(|(_, l)| l.clone());
-        if let Some(cur_id) = active_id {
-            if let Some(layout) = bd.layouts.iter().find(|l| l.id == cur_id) {
-                web_keys_for_layout(layout, &mut warm_webs);
+            .find(|(id, _, _)| *id == bd.id)
+            .map(|(_, layout_id, is_asleep)| (layout_id.clone(), *is_asleep));
+        let is_asleep = active_entry
+            .as_ref()
+            .map(|(_, is_asleep)| *is_asleep)
+            .unwrap_or(false);
+        if !is_asleep {
+            if let Some(cur_id) = active_entry
+                .as_ref()
+                .and_then(|(layout_id, _)| layout_id.as_ref())
+            {
+                if let Some(layout) = bd.layouts.iter().find(|l| l.id.as_str() == cur_id.as_str()) {
+                    web_keys_for_layout(layout, &mut warm_webs);
+                }
             }
+        }
+        if is_asleep {
+            continue;
         }
         for layout in &bd.layouts {
             if layout.priority == "hot" {

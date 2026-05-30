@@ -461,6 +461,52 @@ interface CellPos {
   col_span: number;
 }
 
+interface QuickLayoutCell {
+  row: number;
+  col: number;
+  row_span: number;
+  col_span: number;
+}
+
+function gridQuickLayout(size: number): QuickLayoutCell[] {
+  const cells: QuickLayoutCell[] = [];
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
+      cells.push({ row, col, row_span: 1, col_span: 1 });
+    }
+  }
+  return cells;
+}
+
+function quickLayoutCells(preset: string): QuickLayoutCell[] | null {
+  if (preset === "single") return [{ row: 0, col: 0, row_span: 1, col_span: 1 }];
+  if (preset === "grid-2") return gridQuickLayout(2);
+  if (preset === "grid-4") return gridQuickLayout(4);
+  if (preset === "grid-8") return gridQuickLayout(8);
+  if (preset === "left-focus") {
+    return [
+      { row: 0, col: 0, row_span: 4, col_span: 3 },
+      { row: 0, col: 3, row_span: 1, col_span: 1 },
+      { row: 1, col: 3, row_span: 1, col_span: 1 },
+      { row: 2, col: 3, row_span: 1, col_span: 1 },
+      { row: 3, col: 3, row_span: 1, col_span: 1 },
+    ];
+  }
+  if (preset === "focus-right-bottom") {
+    return [
+      { row: 0, col: 0, row_span: 3, col_span: 3 },
+      { row: 0, col: 3, row_span: 1, col_span: 1 },
+      { row: 1, col: 3, row_span: 1, col_span: 1 },
+      { row: 2, col: 3, row_span: 1, col_span: 1 },
+      { row: 3, col: 0, row_span: 1, col_span: 1 },
+      { row: 3, col: 1, row_span: 1, col_span: 1 },
+      { row: 3, col: 2, row_span: 1, col_span: 1 },
+      { row: 3, col: 3, row_span: 1, col_span: 1 },
+    ];
+  }
+  return null;
+}
+
 async function resolveOverlaps(
   deps: AdminDeps,
   layoutId: string,
@@ -1452,6 +1498,41 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       const cells = await deps.repo.layoutCells(layoutId);
       const cameras = await deps.repo.listCameras();
       const entities = await deps.repo.listEntities();
+      return htmlFragment(renderGrid(layoutId, cells, entities, cameras));
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
+  });
+
+  app.post("/admin/layouts/:id/quick-layout", async (event) => {
+    const layoutId = (getRouterParam(event, "id") ?? "");
+    const body = await readBody<Record<string, string>>(event);
+    const template = quickLayoutCells(String(body?.["preset"] ?? ""));
+    if (!template) {
+      return new Response("Unknown quick layout", { status: 400 });
+    }
+
+    await deps.repo.transact(async () => {
+      const existing = await deps.repo.layoutCells(layoutId);
+      for (const cell of existing) {
+        await deps.repo.deleteLayoutCell(cell.id);
+      }
+      for (const cell of template) {
+        await deps.repo.createLayoutCell({
+          layout_id: layoutId,
+          row: cell.row,
+          col: cell.col,
+          row_span: cell.row_span,
+          col_span: cell.col_span,
+          entity_id: null,
+        });
+      }
+    });
+    notifyKiosks();
+
+    const cells = await deps.repo.layoutCells(layoutId);
+    const cameras = await deps.repo.listCameras();
+    const entities = await deps.repo.listEntities();
+    if (isHtmxRequest(event)) {
       return htmlFragment(renderGrid(layoutId, cells, entities, cameras));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });

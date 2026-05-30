@@ -2791,7 +2791,7 @@ interface LayoutEditPageProps {
 }
 
 export const LAYOUT_BUILDER_CSS = `
-.layout-builder { display: grid; gap: 4px; aspect-ratio: 16/9; max-width: 100%; background: #ddd; padding: 4px; border-radius: 4px; }
+.layout-builder { display: grid; gap: 4px; width: 100%; min-height: min(56.25vw, 720px); background: #ddd; padding: 4px; border-radius: 4px; }
 .layout-cell { background: #fff; border: 2px solid #2563eb; border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; position: relative; min-height: 60px; padding: 4px; text-align: center; font-size: 0.85rem; font-weight: 600; color: #1e40af; overflow: visible; }
 .layout-cell:hover { background: #f0f7ff; }
 .layout-cell.editing { background: #f9fafb; border-color: #1e40af; box-shadow: 0 0 0 2px #1e40af33; cursor: default; align-items: stretch; justify-content: stretch; text-align: left; font-weight: 400; color: inherit; padding: 8px; overflow: auto; }
@@ -2821,7 +2821,19 @@ export const LAYOUT_BUILDER_CSS = `
 .layout-empty { display: flex; align-items: center; justify-content: center; aspect-ratio: 16/9; background: #f3f4f6; border-radius: 4px; }
 .layout-empty-add { background: #2563eb; color: #fff; border: none; width: 80px; height: 80px; border-radius: 50%; cursor: pointer; font-size: 36px; line-height: 1; padding: 0; }
 .layout-empty-add:hover { background: #1e40af; }
+.layout-quick-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+.layout-quick-actions form { display: inline-flex; }
+.layout-quick-actions .btn { white-space: nowrap; }
 `;
+
+const LAYOUT_QUICK_PRESETS = [
+  { id: "single", label: "1x1" },
+  { id: "grid-2", label: "2x2" },
+  { id: "grid-4", label: "4x4" },
+  { id: "grid-8", label: "8x8" },
+  { id: "left-focus", label: "Big left + rail" },
+  { id: "focus-right-bottom", label: "Focus + right/bottom" },
+] as const;
 
 function cellLabel(
   c: LayoutCell,
@@ -3124,7 +3136,7 @@ export function renderGrid(
       <div
         class="layout-builder"
         data-layout-editor={String(layoutId)}
-        style={`grid-template-columns:repeat(${String(gridCols)}, 1fr); grid-template-rows:repeat(${String(gridRows)}, 1fr)`}
+        style={`grid-template-columns:repeat(${String(gridCols)}, minmax(0, 1fr)); grid-template-rows:repeat(${String(gridRows)}, minmax(80px, 1fr))`}
       >
         {cells.map((c) => renderCell(layoutId, c, entities, cameras, "read"))}
       </div>
@@ -3160,7 +3172,7 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
       }
     >
       <style>{LAYOUT_BUILDER_CSS}</style>
-      <div style="max-width:900px">
+      <div>
         {/* Settings */}
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Settings</h2>
@@ -3234,6 +3246,19 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
             Expanding pushes cells in that direction out of the way. Click a cell
             to edit content in-place.
           </p>
+          <div class="layout-quick-actions">
+            {LAYOUT_QUICK_PRESETS.map((preset) => (
+              <form
+                hx-post={`/admin/layouts/${l.id}/quick-layout`}
+                hx-target="#layout-grid"
+                hx-swap="innerHTML"
+                hx-confirm="Apply this quick layout? This replaces all blocks in this layout."
+              >
+                <input type="hidden" name="preset" value={preset.id} />
+                <button type="submit" class="btn btn-sm btn-ghost">{preset.label}</button>
+              </form>
+            ))}
+          </div>
           <div id="layout-grid">
             {renderGrid(l.id, cells, props.entities, props.cameras)}
           </div>

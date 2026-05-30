@@ -203,6 +203,7 @@ fn activate(app: &Application) {
 
             let (name, key) = server::poll_claim(&server, &code);
             info!("paired as: {name}");
+            let _ = tx.send(WorkerMsg::ShowPairingProgress);
             key
         };
 
@@ -442,6 +443,7 @@ fn activate(app: &Application) {
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 WorkerMsg::ShowPairingCode(code) => show_pairing_code(&pairing_window_clone, &code),
+                WorkerMsg::ShowPairingProgress => show_pairing_progress(&pairing_window_clone),
                 WorkerMsg::RenderBundle(bundle, server, key) => {
                     render_bundle(&app_clone, &pairing_window_clone, bundle, &server, &key);
                     install_idle_watchdog();
@@ -469,6 +471,7 @@ fn activate(app: &Application) {
 
 pub enum WorkerMsg {
     ShowPairingCode(String),
+    ShowPairingProgress,
     RenderBundle(KioskBundle, String, String),
     SwitchLayout {
         display_id: Option<String>,
@@ -1142,6 +1145,33 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
     overlay.set_child(Some(&vbox));
     overlay.add_overlay(&ver_label);
     window.set_child(Some(&overlay));
+}
+
+fn show_pairing_progress(window: &ApplicationWindow) {
+    let vbox = GtkBox::new(Orientation::Vertical, 20);
+    vbox.set_valign(gtk::Align::Center);
+    vbox.set_halign(gtk::Align::Center);
+    vbox.set_vexpand(true);
+
+    let title = logo_picture(BETTERFRAME_LOGO_SVG, 360, 88, "pairing-logo");
+
+    let status = Label::new(Some("Pairing complete"));
+    add_css(
+        &status,
+        ".pairing-status { font-size: 22px; color: #fff; font-weight: 600; }",
+    );
+    status.add_css_class("pairing-status");
+
+    let hint = Label::new(Some("Preparing kiosk"));
+    add_css(&hint, ".hint { font-size: 14px; color: #666; }");
+    hint.add_css_class("hint");
+
+    vbox.append(&title);
+    vbox.append(&spinner(36));
+    vbox.append(&status);
+    vbox.append(&hint);
+
+    window.set_child(Some(&vbox));
 }
 
 /// Render a fresh bundle: rebuild the per-display window set, restart GPIO

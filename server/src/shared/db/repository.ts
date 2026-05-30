@@ -730,20 +730,22 @@ export class Repository {
     description?: string | null;
     priority?: string;
     cooling_timeout_seconds?: number | null;
+    idle_timeout_seconds?: number | null;
     preload_camera_ids?: string[];
     resets_idle_timer?: boolean;
     input_options_json?: Record<string, unknown>;
   }): Promise<Layout> {
     const id = uuidv7();
     await this._run(
-      `INSERT INTO layouts (id, name, description, priority, cooling_timeout_seconds, preload_camera_ids, resets_idle_timer, input_options_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO layouts (id, name, description, priority, cooling_timeout_seconds, idle_timeout_seconds, preload_camera_ids, resets_idle_timer, input_options_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.name,
         input.description ?? null,
         input.priority ?? "normal",
         input.cooling_timeout_seconds ?? null,
+        input.idle_timeout_seconds ?? null,
         J(input.preload_camera_ids ?? []),
         Boolean(input.resets_idle_timer ?? true),
         J(input.input_options_json ?? {}),
@@ -787,6 +789,7 @@ export class Repository {
       description: src.description,
       priority: src.priority,
       cooling_timeout_seconds: src.cooling_timeout_seconds,
+      idle_timeout_seconds: src.idle_timeout_seconds,
       preload_camera_ids: src.preload_camera_ids,
       resets_idle_timer: src.resets_idle_timer,
       input_options_json: src.input_options_json,

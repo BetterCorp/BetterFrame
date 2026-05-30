@@ -316,6 +316,7 @@ export interface Layout {
   display_id: string | null;
   priority: LayoutPriority;
   cooling_timeout_seconds: number | null;
+  idle_timeout_seconds: number | null;
   preload_camera_ids: string[];
   /** @deprecated Per-display defaults live on `display.default_layout_id`. */
   is_default: boolean;

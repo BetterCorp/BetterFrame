@@ -106,6 +106,7 @@ export interface BundleLayout {
   grid_rows: number;
   priority: string;
   cooling_timeout_seconds: number | null;
+  idle_timeout_seconds: number | null;
   preload_camera_ids: string[];
   resets_idle_timer: boolean;
   /** True if the kiosk's display has this layout as its default_layout_id. */
@@ -315,6 +316,7 @@ export async function generateBundle(
         grid_rows: gridRows,
         priority: l.priority,
         cooling_timeout_seconds: l.cooling_timeout_seconds,
+        idle_timeout_seconds: l.idle_timeout_seconds,
         preload_camera_ids: l.preload_camera_ids,
         resets_idle_timer: l.resets_idle_timer,
         is_default: defaultLayoutId === l.id,

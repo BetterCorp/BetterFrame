@@ -124,6 +124,7 @@ pub struct BundleLayout {
     pub grid_rows: u32,
     pub priority: String,
     pub cooling_timeout_seconds: Option<u32>,
+    pub idle_timeout_seconds: Option<u32>,
     #[serde(default, deserialize_with = "de_flexible_id_vec")]
     pub preload_camera_ids: Vec<String>,
     pub is_default: bool,

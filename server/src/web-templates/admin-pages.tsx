@@ -2757,6 +2757,10 @@ export function LayoutNewPage(props: LayoutNewPageProps) {
                 <option value="cold" selected={v["priority"] === "cold"}>Cold</option>
               </select>
             </div>
+            <div class="form-group">
+              <label for="idle_timeout_seconds">Idle Timeout Override (seconds)</label>
+              <input id="idle_timeout_seconds" name="idle_timeout_seconds" type="number" class="form-input" value={v["idle_timeout_seconds"] ?? ""} min="0" placeholder="Use display default" />
+            </div>
 
             <div class="form-group">
               <label>
@@ -3197,6 +3201,11 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
               <label for="cooling_timeout_seconds">Cooling Timeout (seconds)</label>
               <input id="cooling_timeout_seconds" name="cooling_timeout_seconds" type="number" class="form-input" value={l.cooling_timeout_seconds != null ? String(l.cooling_timeout_seconds) : ""} min="0" placeholder="None" />
               <div class="form-hint">How long streams stay warm after leaving this layout. Leave blank for no timeout.</div>
+            </div>
+            <div class="form-group">
+              <label for="idle_timeout_seconds">Idle Timeout Override (seconds)</label>
+              <input id="idle_timeout_seconds" name="idle_timeout_seconds" type="number" class="form-input" value={l.idle_timeout_seconds != null ? String(l.idle_timeout_seconds) : ""} min="0" placeholder="Use display default" />
+              <div class="form-hint">Leave blank to use the display idle timeout. Set 0 to disable idle revert for this layout.</div>
             </div>
             <div class="form-group">
               <label>

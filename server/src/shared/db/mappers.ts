@@ -227,6 +227,7 @@ export function rowToLayout(r: Row): Layout {
     display_id: sn(r["display_id"]),
     priority: s(r["priority"]) as LayoutPriority,
     cooling_timeout_seconds: nn(r["cooling_timeout_seconds"]),
+    idle_timeout_seconds: nn(r["idle_timeout_seconds"]),
     preload_camera_ids: j<string[]>(r["preload_camera_ids"], []),
     is_default: b(r["is_default"]),
     resets_idle_timer: b(r["resets_idle_timer"]),

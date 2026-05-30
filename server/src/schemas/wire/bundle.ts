@@ -89,6 +89,7 @@ const bundleLayout = av.object(
     grid_rows: av.int().min(1).max(64),
     priority: layoutPriority,
     cooling_timeout_seconds: av.nullable(av.int().min(0)),
+    idle_timeout_seconds: av.nullable(av.int().min(0)),
     preload_camera_ids: av.array(id),
     resets_idle_timer: av.bool(),
     is_default: av.bool(),

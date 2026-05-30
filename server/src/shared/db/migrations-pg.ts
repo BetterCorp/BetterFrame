@@ -298,6 +298,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     description TEXT,
     priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('hot', 'normal', 'cold')),
     cooling_timeout_seconds INTEGER,
+    idle_timeout_seconds INTEGER,
     preload_camera_ids JSONB NOT NULL DEFAULT '[]',
     resets_idle_timer BOOLEAN NOT NULL DEFAULT true
   )`,
@@ -784,6 +785,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   // Re-append at the end so it actually runs on databases that missed it.
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS logging_json JSONB`,
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS audio_default_volume_percent INTEGER NOT NULL DEFAULT 50`,
+  `ALTER TABLE layouts ADD COLUMN IF NOT EXISTS idle_timeout_seconds INTEGER`,
 
   // ---- ioBOX platform foundation -------------------------------------------
   `CREATE TABLE IF NOT EXISTS ioboxes (

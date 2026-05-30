@@ -1365,6 +1365,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const name = (body?.["name"] ?? "").trim();
     const priority = body?.["priority"] ?? "normal";
     const description = (body?.["description"] ?? "").trim() || null;
+    const idleStr = body?.["idle_timeout_seconds"] ?? "";
+    const idleTimeout = idleStr.trim() === "" ? null : Math.max(0, parseInt(idleStr, 10) || 0);
     const resetsIdleTimer = body?.["resets_idle_timer"] === "1";
     const errors: string[] = [];
 
@@ -1385,6 +1387,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       name,
       description,
       priority,
+      idle_timeout_seconds: idleTimeout,
       resets_idle_timer: resetsIdleTimer,
     });
 
@@ -1416,11 +1419,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const body = await readBody<Record<string, string>>(event);
     const coolingStr = body?.["cooling_timeout_seconds"] ?? "";
     const coolingTimeout = coolingStr.trim() === "" ? null : parseInt(coolingStr, 10);
+    const idleStr = body?.["idle_timeout_seconds"] ?? "";
+    const idleTimeout = idleStr.trim() === "" ? null : Math.max(0, parseInt(idleStr, 10) || 0);
     await deps.repo.updateLayout(id, {
       name: body?.["name"],
       description: body?.["description"] || null,
       priority: (body?.["priority"] ?? "normal") as any,
       cooling_timeout_seconds: coolingTimeout,
+      idle_timeout_seconds: idleTimeout,
       resets_idle_timer: body?.["resets_idle_timer"] === "1",
       input_options_json: layoutInputOptions(body ?? {}),
     });

@@ -1033,10 +1033,16 @@ fn install_idle_watchdog() {
                 else {
                     continue;
                 };
-                let idle_to = d.idle_timeout_seconds as u64;
                 let sleep_to = d.sleep_timeout_seconds as u64;
                 let elapsed = st.last_activity.elapsed();
                 let default_id = d.default_layout_id.clone();
+                let current_layout = st
+                    .current_layout_id
+                    .as_ref()
+                    .and_then(|cur_id| d.layouts.iter().find(|l| l.id == *cur_id));
+                let idle_to = current_layout
+                    .and_then(|l| l.idle_timeout_seconds)
+                    .unwrap_or(d.idle_timeout_seconds) as u64;
 
                 let mut act = Action {
                     display_id: display_id.clone(),
@@ -1045,10 +1051,7 @@ fn install_idle_watchdog() {
                 };
 
                 if idle_to > 0 && elapsed >= Duration::from_secs(idle_to) {
-                    let cur_resets_idle = st
-                        .current_layout_id
-                        .as_ref()
-                        .and_then(|cur_id| d.layouts.iter().find(|l| l.id == *cur_id))
+                    let cur_resets_idle = current_layout
                         .map(|l| l.resets_idle_timer)
                         .unwrap_or(false);
                     if let (Some(cur_id), Some(def_id)) = (&st.current_layout_id, &default_id) {
@@ -1441,6 +1444,14 @@ fn render_layout(display_id: &str, layout_id: &str) {
         prev
     });
 
+    if previous_layout_id.as_deref() == Some(layout.id.as_str()) {
+        info!(
+            "layout '{}' already active on display {}; reset idle timer",
+            layout.name, display_id
+        );
+        return;
+    }
+
     info!(
         "rendering layout '{}' (id {}) on display {} ({}x{} grid, {} cells)",
         layout.name,
@@ -1452,24 +1463,21 @@ fn render_layout(display_id: &str, layout_id: &str) {
     );
 
     // Notify the server when the active layout actually changes so Node-RED
-    // sees idle reverts + any other kiosk-initiated switch. Skip when the
-    // layout id is unchanged (re-render of the same layout).
-    if previous_layout_id.as_deref() != Some(layout.id.as_str()) {
-        let layout_name = layout.name.clone();
-        let layout_id_for_report = layout.id.clone();
-        let display_id_for_report = display_id.to_string();
-        let server = server_url.clone();
-        let key = kiosk_key.clone();
-        std::thread::spawn(move || {
-            server::report_layout_change(
-                &server,
-                &key,
-                &display_id_for_report,
-                &layout_id_for_report,
-                &layout_name,
-            );
-        });
-    }
+    // sees idle reverts + any other kiosk-initiated switch.
+    let layout_name = layout.name.clone();
+    let layout_id_for_report = layout.id.clone();
+    let display_id_for_report = display_id.to_string();
+    let server = server_url.clone();
+    let key = kiosk_key.clone();
+    std::thread::spawn(move || {
+        server::report_layout_change(
+            &server,
+            &key,
+            &display_id_for_report,
+            &layout_id_for_report,
+            &layout_name,
+        );
+    });
 
     if layout.cells.is_empty() {
         warn!("layout has no cells");

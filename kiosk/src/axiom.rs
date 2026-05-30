@@ -30,6 +30,18 @@ pub fn set_kiosk_id(id: String) {
 pub fn enabled() -> bool {
     !option_env!("BF_AXIOM_KEY").unwrap_or("").is_empty()
         && !option_env!("BF_AXIOM_DATASET").unwrap_or("").is_empty()
+        && update_channel_allows_logging()
+}
+
+fn configured() -> bool {
+    !option_env!("BF_AXIOM_KEY").unwrap_or("").is_empty()
+        && !option_env!("BF_AXIOM_DATASET").unwrap_or("").is_empty()
+}
+
+fn update_channel_allows_logging() -> bool {
+    let fw = crate::server::cached_firmware_channel();
+    let os = crate::server::cached_os_channel();
+    matches!(fw.as_str(), "dev" | "beta") || matches!(os.as_str(), "dev" | "beta")
 }
 
 pub fn active() -> bool {
@@ -79,7 +91,7 @@ impl AxiomLayer {
     pub fn new() -> Option<Self> {
         let api_key = option_env!("BF_AXIOM_KEY").unwrap_or("").to_string();
         let dataset = option_env!("BF_AXIOM_DATASET").unwrap_or("").to_string();
-        if api_key.is_empty() || dataset.is_empty() {
+        if !configured() {
             return None;
         }
 
@@ -110,6 +122,10 @@ impl AxiomLayer {
                     if buf.is_empty() {
                         continue;
                     }
+                    if !update_channel_allows_logging() {
+                        buf.clear();
+                        continue;
+                    }
                     std::mem::take(&mut *buf)
                 };
                 let key = flush_key.clone();
@@ -124,6 +140,12 @@ impl AxiomLayer {
     }
 
     fn push(&self, entry: serde_json::Value) {
+        if !enabled() {
+            if let Ok(mut buf) = self.buffer.lock() {
+                buf.clear();
+            }
+            return;
+        }
         EVENTS_RECEIVED.fetch_add(1, Ordering::Relaxed);
         let mut buf = self.buffer.lock().unwrap();
         buf.push(entry);

@@ -13,6 +13,7 @@
  */
 const { readJsonBody } = require("./_http-body.js");
 const { tenantMatchesBody } = require("./_tenant.js");
+const { withIdentity } = require("./_identity.js");
 
 module.exports = function (RED) {
   const TOPIC = "kiosk.status";
@@ -39,13 +40,13 @@ module.exports = function (RED) {
       }
       const out = {
         topic: TOPIC,
-        payload: {
+        payload: withIdentity(body, {
           kiosk_id: kioskId,
           kiosk_name: body.kiosk_name || null,
           cpu_temp_c: body.cpu_temp_c !== undefined ? body.cpu_temp_c : null,
           fan_rpm: body.fan_rpm !== undefined ? body.fan_rpm : null,
           fan_pwm: body.fan_pwm !== undefined ? body.fan_pwm : null,
-        },
+        }),
       };
       const tempStr = out.payload.cpu_temp_c != null ? out.payload.cpu_temp_c + "C" : "";
       node.status({

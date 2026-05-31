@@ -13,6 +13,7 @@
  */
 const { readJsonBody } = require("./_http-body.js");
 const { tenantMatchesBody } = require("./_tenant.js");
+const { withIdentity } = require("./_identity.js");
 
 module.exports = function (RED) {
   const TOPIC = "display.power.changed";
@@ -39,11 +40,11 @@ module.exports = function (RED) {
       }
       const out = {
         topic: TOPIC,
-        payload: {
+        payload: withIdentity(body, {
           display_id: displayId,
           kiosk_id: body.kiosk_id !== undefined ? body.kiosk_id : null,
           state: body.state || null,
-        },
+        }),
       };
       node.status({ fill: "green", shape: "dot", text: out.payload.state || "changed" });
       node.send(out);

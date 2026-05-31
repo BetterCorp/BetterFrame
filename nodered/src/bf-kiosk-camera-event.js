@@ -16,6 +16,7 @@
  */
 const { readJsonBody } = require("./_http-body.js");
 const { tenantMatchesBody } = require("./_tenant.js");
+const { eventIdentity } = require("./_identity.js");
 
 module.exports = function (RED) {
   // Fixed ingest route. Server-side forwarders that want this node to receive
@@ -49,6 +50,7 @@ module.exports = function (RED) {
         return res.status(200).end();
       }
       const out = {
+        ...eventIdentity(body, { camera_id: cameraId, kiosk_id: kioskId }),
         topic: body.topic ? String(body.topic) : TOPIC,
         kiosk_id: kioskId,
         camera_id: cameraId,

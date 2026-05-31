@@ -9,6 +9,7 @@
  */
 const { readJsonBody } = require("./_http-body.js");
 const { tenantMatchesBody } = require("./_tenant.js");
+const { eventIdentity } = require("./_identity.js");
 
 module.exports = function (RED) {
   const ROUTE = "/api/internal/onvif.event";
@@ -44,6 +45,7 @@ module.exports = function (RED) {
       const data = body.payload?.data ?? {};
 
       const out = {
+        ...eventIdentity(body, { camera_id: cameraId }),
         topic,
         kiosk_id: body.kiosk_id ?? body.source_kiosk_id ?? null,
         camera_id: cameraId,

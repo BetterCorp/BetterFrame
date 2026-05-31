@@ -5,6 +5,7 @@
  */
 const { readJsonBody } = require("./_http-body.js");
 const { tenantMatchesBody } = require("./_tenant.js");
+const { eventIdentity } = require("./_identity.js");
 
 module.exports = function (RED) {
   const ROUTE = "/api/internal/io.event";
@@ -39,6 +40,7 @@ module.exports = function (RED) {
       if (filterDisplay !== null && String(displayId) !== filterDisplay) return res.status(200).end();
 
       const out = {
+        ...eventIdentity(body, { display_id: displayId }),
         event_id: body.event_id ?? null,
         topic,
         iobox_id: ioboxId,

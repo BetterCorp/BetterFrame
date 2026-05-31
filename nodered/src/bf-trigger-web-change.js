@@ -5,6 +5,7 @@
  */
 const { readJsonBody } = require("./_http-body.js");
 const { tenantMatchesBody } = require("./_tenant.js");
+const { withIdentity } = require("./_identity.js");
 
 module.exports = function (RED) {
   const TOPIC = "web-change";
@@ -44,16 +45,14 @@ module.exports = function (RED) {
 
       const out = {
         topic: TOPIC,
-        payload: {
+        payload: withIdentity(body, {
           url,
           entity_id: entityId,
           view_id: viewId,
           display_id: displayId,
           kiosk_id: kioskId,
-          tenant_slug: body.tenant_slug || null,
-          tenant_key: body.tenant_key || body.tenant_slug || null,
           source: body.source || "kiosk",
-        },
+        }),
       };
       node.status({ fill: "green", shape: "dot", text: url || "web change" });
       node.send(out);

@@ -74,10 +74,11 @@ interface DiscoverAddStream {
   role: "main" | "sub" | "other";
 }
 
-function noderedTenant(event: any): { tenant_slug: string; tenant_name: string | null } {
+function noderedTenant(event: any): { tenant_slug: string; tenant_name: string | null; tenant_id: string | null } {
   return {
     tenant_slug: event.context.tenant?.slug ?? "default",
     tenant_name: event.context.tenant?.name ?? "Default",
+    tenant_id: event.context.tenant?.id ?? event.context.tenant?.slug ?? "default",
   };
 }
 

@@ -12,6 +12,7 @@
  */
 const { readJsonBody } = require("./_http-body.js");
 const { tenantMatchesBody } = require("./_tenant.js");
+const { withIdentity } = require("./_identity.js");
 
 module.exports = function (RED) {
   const TOPIC = "layout.changed";
@@ -38,12 +39,12 @@ module.exports = function (RED) {
       }
       const out = {
         topic: TOPIC,
-        payload: {
+        payload: withIdentity(body, {
           display_id: displayId,
           kiosk_id: body.kiosk_id !== undefined ? body.kiosk_id : null,
           layout_id: body.layout_id !== undefined ? body.layout_id : null,
           layout_name: body.layout_name || null,
-        },
+        }),
       };
       node.status({
         fill: "green",

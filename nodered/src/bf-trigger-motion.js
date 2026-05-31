@@ -8,6 +8,7 @@
  */
 const { readJsonBody } = require("./_http-body.js");
 const { tenantMatchesBody } = require("./_tenant.js");
+const { eventIdentity } = require("./_identity.js");
 
 const MOTION_PATTERNS = [
   "MotionAlarm",
@@ -54,6 +55,7 @@ module.exports = function (RED) {
         || data.IsInside === "true";
 
       const out = {
+        ...eventIdentity(body, { camera_id: cameraId }),
         topic,
         kiosk_id: body.kiosk_id ?? body.source_kiosk_id ?? null,
         camera_id: cameraId,

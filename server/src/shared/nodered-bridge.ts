@@ -35,7 +35,7 @@ export interface NoderedBridge {
   forward(
     topic: string,
     payload: Record<string, unknown>,
-    tenant: { tenant_slug: string; tenant_name: string | null },
+    tenant: { tenant_slug: string; tenant_name: string | null; tenant_id?: string | null },
     onSuccess?: () => void,
   ): void;
   listDashboards(): Promise<NoderedDashboard[]>;
@@ -97,7 +97,7 @@ export function initNoderedBridge(config: NoderedConfig, log: NoderedLog): Noder
     forward(
       topic: string,
       payload: Record<string, unknown>,
-      tenant: { tenant_slug: string; tenant_name: string | null },
+      tenant: { tenant_slug: string; tenant_name: string | null; tenant_id?: string | null },
       onSuccess?: () => void,
     ): void {
       const ctrl = new AbortController();
@@ -110,6 +110,8 @@ export function initNoderedBridge(config: NoderedConfig, log: NoderedLog): Noder
         body: JSON.stringify({
           ...payload,
           tenant_slug: tenant.tenant_slug,
+          tenant_key: tenant.tenant_slug,
+          tenant_id: tenant.tenant_id ?? tenant.tenant_slug,
           tenant_name: tenant.tenant_name,
         }),
         signal: ctrl.signal,

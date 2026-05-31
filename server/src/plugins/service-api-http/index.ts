@@ -1110,7 +1110,7 @@ function registerKioskRoutes(
       "web-change",
     ]);
     const markForwarded = () => { repo.markEventForwarded(eventId); };
-    const tenantInfo = { tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name };
+    const tenantInfo = { tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name, tenant_id: kiosk.tenant_slug };
     if (flatTopics.has(body.topic)) {
       const out = { kiosk_id: kiosk.id, ...(body.payload ?? {}), source: "kiosk" };
       nodered.forward(body.topic, out, tenantInfo, markForwarded);

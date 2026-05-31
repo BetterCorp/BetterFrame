@@ -212,14 +212,19 @@ fn activate(app: &Application) {
             info!("already paired");
             server::load_key()
         } else {
-            let (code, expires) = server::initiate_pairing(&server);
-            info!("pairing code: {code} (expires {expires})");
-            let _ = tx.send(WorkerMsg::ShowPairingCode(code.clone()));
+            loop {
+                let (code, expires) = server::initiate_pairing(&server);
+                info!("pairing code: {code} (expires {expires})");
+                let _ = tx.send(WorkerMsg::ShowPairingCode(code.clone()));
 
-            let (name, key) = server::poll_claim(&server, &code);
-            info!("paired as: {name}");
-            let _ = tx.send(WorkerMsg::ShowPairingProgress);
-            key
+                if let Some((name, key)) =
+                    server::poll_claim_until_expiry(&server, &code, &expires)
+                {
+                    info!("paired as: {name}");
+                    let _ = tx.send(WorkerMsg::ShowPairingProgress);
+                    break key;
+                }
+            }
         };
 
         // Try fetching live bundle. If server unreachable, fall back to

@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tracing::info;
 
 use crate::bundle::KioskBundle;
@@ -403,43 +404,73 @@ pub fn load_encrypt_key() -> Option<String> {
 
 /// Poll for pairing claim. Returns (name, key) when admin confirms.
 pub fn poll_claim(server: &str, code: &str) -> (String, String) {
-    let client = reqwest::blocking::Client::new();
     loop {
-        let resp = client
-            .post(format!("{server}/api/pair/claim"))
-            .json(&serde_json::json!({ "code": code }))
-            .send()
-            .expect("claim request failed");
-
-        if resp.status().as_u16() == 200 {
-            let claim: ClaimResp = resp.json().expect("bad claim response");
-            if claim.status == "claimed" {
-                let key = claim.kiosk_key.expect("missing kiosk_key");
-                let name = claim.kiosk_name.unwrap_or_else(|| "kiosk".into());
-                if let Some(ref id) = claim.kiosk_id {
-                    let id_str = match id {
-                        serde_json::Value::String(s) => s.clone(),
-                        serde_json::Value::Number(n) => n.to_string(),
-                        other => other.to_string(),
-                    };
-                    crate::axiom::set_kiosk_id(id_str);
-                }
-                crate::at_rest::write_encrypted(&key_file(), key.as_bytes())
-                    .expect("failed to save kiosk key");
-                // Store cluster key for backward compat ONVIF password decryption.
-                if let Some(ref ck) = claim.cluster_key {
-                    let _ = crate::at_rest::write_encrypted(&cluster_key_file(), ck.as_bytes());
-                }
-                // Store per-kiosk encryption key (preferred over cluster_key).
-                if let Some(ref ek) = claim.encrypt_key {
-                    let _ = crate::at_rest::write_encrypted(&encrypt_key_file(), ek.as_bytes());
-                }
-                crate::remote_debug::reset_all_lockouts();
-                return (name, key);
-            }
+        if let Some(claim) = poll_claim_once(server, code) {
+            return claim;
         }
         std::thread::sleep(Duration::from_secs(2));
     }
+}
+
+/// Poll for pairing claim until the server-provided expiry passes.
+/// Returns None when the kiosk should request and show a fresh code.
+pub fn poll_claim_until_expiry(
+    server: &str,
+    code: &str,
+    expires_at: &str,
+) -> Option<(String, String)> {
+    let expires_at = OffsetDateTime::parse(expires_at, &Rfc3339).ok();
+    loop {
+        if let Some(claim) = poll_claim_once(server, code) {
+            return Some(claim);
+        }
+        if expires_at
+            .map(|expires_at| OffsetDateTime::now_utc() >= expires_at)
+            .unwrap_or(false)
+        {
+            tracing::info!("pairing code {code} expired, requesting a fresh code");
+            return None;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+}
+
+fn poll_claim_once(server: &str, code: &str) -> Option<(String, String)> {
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(format!("{server}/api/pair/claim"))
+        .json(&serde_json::json!({ "code": code }))
+        .send()
+        .expect("claim request failed");
+
+    if resp.status().as_u16() == 200 {
+        let claim: ClaimResp = resp.json().expect("bad claim response");
+        if claim.status == "claimed" {
+            let key = claim.kiosk_key.expect("missing kiosk_key");
+            let name = claim.kiosk_name.unwrap_or_else(|| "kiosk".into());
+            if let Some(ref id) = claim.kiosk_id {
+                let id_str = match id {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    other => other.to_string(),
+                };
+                crate::axiom::set_kiosk_id(id_str);
+            }
+            crate::at_rest::write_encrypted(&key_file(), key.as_bytes())
+                .expect("failed to save kiosk key");
+            // Store cluster key for backward compat ONVIF password decryption.
+            if let Some(ref ck) = claim.cluster_key {
+                let _ = crate::at_rest::write_encrypted(&cluster_key_file(), ck.as_bytes());
+            }
+            // Store per-kiosk encryption key (preferred over cluster_key).
+            if let Some(ref ek) = claim.encrypt_key {
+                let _ = crate::at_rest::write_encrypted(&encrypt_key_file(), ek.as_bytes());
+            }
+            crate::remote_debug::reset_all_lockouts();
+            return Some((name, key));
+        }
+    }
+    None
 }
 
 /// Fetch bundle from server. Returns None on network/HTTP/parse failure.

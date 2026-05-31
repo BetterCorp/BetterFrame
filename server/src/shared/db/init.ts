@@ -95,6 +95,13 @@ export async function initDb(
     );
   }
 
+  const tenants = await adapter.all<{ slug: string }>(
+    `SELECT slug FROM public.tenants WHERE slug <> 'default' ORDER BY created_at`,
+  );
+  for (const tenant of tenants) {
+    await createTenantSchema(adapter, tenant.slug, log);
+  }
+
   const repo = new Repository(adapter, async (table, op, id) => {
     notify(table, op, id);
   });

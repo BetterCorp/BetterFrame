@@ -366,7 +366,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at TIMESTAMPTZ NOT NULL,
     consumed_at TIMESTAMPTZ,
-    consumed_by_kiosk_id TEXT REFERENCES kiosks(id) ON DELETE SET NULL,
+    consumed_by_kiosk_id TEXT,
     extras JSONB NOT NULL DEFAULT '{}'
   )`,
 
@@ -645,7 +645,6 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     PERFORM _bf_add_fk('camera_event_subscriptions','camera_id',       'cameras',            'id', 'CASCADE');
     PERFORM _bf_add_fk('camera_event_subscriptions','subscribed_by_kiosk_id','kiosks',       'id', 'SET NULL');
     PERFORM _bf_add_fk('displays',       'default_layout_id',          'layouts',            'id', 'SET NULL');
-    PERFORM _bf_add_fk('pairing_codes',  'consumed_by_kiosk_id',       'kiosks',             'id', 'SET NULL');
     PERFORM _bf_add_fk('firmware_releases','uploaded_by',               'users',              'id', 'SET NULL');
     PERFORM _bf_add_fk('firmware_rollouts','release_id',               'firmware_releases',  'id', 'CASCADE');
     PERFORM _bf_add_fk('firmware_rollouts','created_by',               'users',              'id', 'SET NULL');
@@ -901,4 +900,5 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   // them. Re-append them at the end so already-migrated tenants get them.
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS audio_default_volume_percent INTEGER NOT NULL DEFAULT 50`,
   `ALTER TABLE layouts ADD COLUMN IF NOT EXISTS idle_timeout_seconds INTEGER`,
+  `ALTER TABLE public.pairing_codes DROP CONSTRAINT IF EXISTS pairing_codes_consumed_by_kiosk_id_fkey`,
 ];

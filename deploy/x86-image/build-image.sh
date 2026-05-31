@@ -251,10 +251,45 @@ cat > /boot/efi/EFI/BOOT/grub.cfg <<'GRUB'
 search --no-floppy --label BF_BOOT_A --set=root
 configfile /EFI/betterframe/grub.cfg
 GRUB
+cat > /tmp/betterframe-embedded-grub.cfg <<'GRUB'
+search --no-floppy --label BF_BOOT_A --set=bfboot
+if [ -n "$bfboot" ]; then
+  set root=$bfboot
+  configfile /EFI/betterframe/grub.cfg
+fi
+
+search --no-floppy --label BF_BOOT_B --set=bfboot
+if [ -n "$bfboot" ]; then
+  set root=$bfboot
+  configfile /EFI/betterframe/grub.cfg
+fi
+
+set timeout=5
+set default=0
+menuentry "BetterFrame A fallback" {
+  search --no-floppy --label BF_BOOT_A --set=root
+  linux /vmlinuz root=LABEL=BF_ROOT_A ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  initrd /initrd.img
+}
+menuentry "BetterFrame B fallback" {
+  search --no-floppy --label BF_BOOT_B --set=root
+  linux /vmlinuz root=LABEL=BF_ROOT_B ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  initrd /initrd.img
+}
+menuentry "BetterFrame A fallback debug shell" {
+  search --no-floppy --label BF_BOOT_A --set=root
+  linux /vmlinuz root=LABEL=BF_ROOT_A rw loglevel=7 systemd.show_status=1 plymouth.enable=0 init=/bin/bash
+  initrd /initrd.img
+}
+GRUB
 install -d -m 755 /boot/efi/EFI/debian /boot/grub
 cp /boot/efi/EFI/BOOT/grub.cfg /boot/efi/EFI/debian/grub.cfg
 cp /boot/efi/EFI/betterframe/grub.cfg /boot/grub/grub.cfg
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable --bootloader-id=BetterFrame --no-nvram
+grub-mkstandalone \
+  -O x86_64-efi \
+  -o /boot/efi/EFI/BOOT/BOOTX64.EFI \
+  "boot/grub/grub.cfg=/tmp/betterframe-embedded-grub.cfg"
 if [ -f /usr/lib/shim/shimx64.efi.signed ] && [ -f /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed ]; then
   cp /usr/lib/shim/shimx64.efi.signed /boot/efi/EFI/BOOT/BOOTX64-SHIM.EFI
   cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /boot/efi/EFI/BOOT/grubx64-signed.efi

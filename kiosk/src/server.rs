@@ -470,6 +470,10 @@ pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
         return load_cached_bundle();
     }
 
+    if resp.status().as_u16() == 401 {
+        reset_pairing_and_restart("server rejected kiosk key during bundle fetch");
+    }
+
     if !resp.status().is_success() {
         tracing::warn!("bundle fetch returned {}", resp.status());
         return None;
@@ -670,6 +674,10 @@ pub fn heartbeat(
         .timeout(Duration::from_secs(5))
         .send()
         .and_then(|r| {
+            if r.status().as_u16() == 401 {
+                reset_pairing_and_restart("server rejected kiosk key during heartbeat");
+            }
+
             if !r.status().is_success() {
                 return Ok(false);
             }

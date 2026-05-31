@@ -181,6 +181,10 @@ pub fn check(server: &str, key: &str, current_version: &str) -> Option<UpdateInf
             return None;
         }
     };
+    if resp.status().as_u16() == 401 {
+        crate::server::reset_pairing_and_restart("server rejected kiosk key during firmware check");
+    }
+
     if !resp.status().is_success() {
         warn!("firmware check: HTTP {}", resp.status());
         return None;
@@ -216,6 +220,12 @@ pub fn apply(
         .timeout(Duration::from_secs(300))
         .send()
         .map_err(|e| format!("download request: {e}"))?;
+    if resp.status().as_u16() == 401 {
+        crate::server::reset_pairing_and_restart(
+            "server rejected kiosk key during firmware download",
+        );
+    }
+
     if !resp.status().is_success() {
         return Err(format!("download HTTP {}", resp.status()));
     }

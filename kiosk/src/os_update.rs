@@ -133,6 +133,12 @@ pub fn check(server: &str, key: &str) -> Option<UpdateInfo> {
             return None;
         }
     };
+    if resp.status().as_u16() == 401 {
+        crate::server::reset_pairing_and_restart(
+            "server rejected kiosk key during os update check",
+        );
+    }
+
     if !resp.status().is_success() {
         warn!("os-update check: HTTP {}", resp.status());
         return None;
@@ -209,6 +215,12 @@ pub fn apply(
         };
 
         let status = resp.status().as_u16();
+        if status == 401 {
+            crate::server::reset_pairing_and_restart(
+                "server rejected kiosk key during os update download",
+            );
+        }
+
         if status != 200 && status != 206 {
             return Err(format!("download HTTP {status}"));
         }

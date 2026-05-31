@@ -10,6 +10,7 @@ static FIRMWARE_LOCK: Mutex<()> = Mutex::new(());
 static OS_UPDATE_LOCK: Mutex<()> = Mutex::new(());
 static FIRMWARE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static OS_UPDATE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static UPDATE_APPLY_ACTIVE: AtomicBool = AtomicBool::new(false);
 static BOOT_AUDIO_DEFAULT_APPLIED: AtomicBool = AtomicBool::new(false);
 
 /// Cross-thread bundle version. Set on GTK main thread in render_bundle(),
@@ -814,12 +815,21 @@ fn maybe_apply_os_update(
                 "size_bytes": info.size_bytes,
             }),
         );
+        if UPDATE_APPLY_ACTIVE
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            info!("os-update: another update apply is active, skipping");
+            OS_UPDATE_ACTIVE.store(false, Ordering::SeqCst);
+            return;
+        }
         let version = info.version.clone();
         let tx_cb = tx.clone();
         let result = os_update::apply(&server_url, &kiosk_key, &info, move |phase, pct| {
             let label = format!("OS Update {version}: {phase}");
             let _ = tx_cb.send(WorkerMsg::UpdateProgress(Some((label, pct))));
         });
+        UPDATE_APPLY_ACTIVE.store(false, Ordering::SeqCst);
         OS_UPDATE_ACTIVE.store(false, Ordering::SeqCst);
         if let Err(err) = result {
             let failures = crate::update_guard::record_failure("os", &info.version, &err);
@@ -853,10 +863,6 @@ fn maybe_apply_firmware_update(
 ) {
     if std::env::var("BF_ENABLE_APP_OTA").as_deref() != Ok("1") {
         info!("firmware: disabled (BF_ENABLE_APP_OTA != 1)");
-        return;
-    }
-    if OS_UPDATE_ACTIVE.load(Ordering::SeqCst) {
-        info!("firmware: os update in progress, skipping");
         return;
     }
     if FIRMWARE_ACTIVE
@@ -926,8 +932,11 @@ fn run_firmware_update_worker(
             "release_id": &info.release_id,
         }),
     );
-    if OS_UPDATE_ACTIVE.load(Ordering::SeqCst) {
-        info!("firmware: os update started, skipping");
+    if UPDATE_APPLY_ACTIVE
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        info!("firmware: another update apply is active, skipping");
         FIRMWARE_ACTIVE.store(false, Ordering::SeqCst);
         return;
     }
@@ -937,6 +946,7 @@ fn run_firmware_update_worker(
         let label = format!("App Update {version}: {phase}");
         let _ = tx_cb.send(WorkerMsg::UpdateProgress(Some((label, pct))));
     });
+    UPDATE_APPLY_ACTIVE.store(false, Ordering::SeqCst);
     FIRMWARE_ACTIVE.store(false, Ordering::SeqCst);
     if let Err(err) = result {
         let failures = crate::update_guard::record_failure("firmware", &info.version, &err);

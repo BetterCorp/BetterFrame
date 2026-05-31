@@ -162,6 +162,7 @@ export class PgAdapter implements DbAdapter {
       throw new Error(`invalid schema name: ${schema}`);
     }
     this.searchPathContext.enterWith(schema);
+    this.searchPath = schema;
   }
 
   async close(): Promise<void> {

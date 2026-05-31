@@ -895,4 +895,10 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `ALTER TABLE entities ADD COLUMN IF NOT EXISTS input_options_json JSONB NOT NULL DEFAULT '{}'`,
   `ALTER TABLE ioboxes DROP CONSTRAINT IF EXISTS ioboxes_route_mode_check`,
   `ALTER TABLE ioboxes ADD CONSTRAINT ioboxes_route_mode_check CHECK(route_mode IN ('unknown', 'direct', 'proxy', 'server', 'offline'))`,
+
+  // ---- Fix: audio/layout timeout columns were inserted before the latest
+  // migration tail, so existing PG tenants with a newer version counter skipped
+  // them. Re-append them at the end so already-migrated tenants get them.
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS audio_default_volume_percent INTEGER NOT NULL DEFAULT 50`,
+  `ALTER TABLE layouts ADD COLUMN IF NOT EXISTS idle_timeout_seconds INTEGER`,
 ];

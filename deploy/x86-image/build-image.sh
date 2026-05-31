@@ -214,7 +214,7 @@ systemctl enable systemd-timesyncd seatd nftables betterframe-kiosk betterframe-
 systemctl set-default multi-user.target
 for dm in lightdm gdm gdm3 sddm; do systemctl disable "$dm.service" 2>/dev/null || true; systemctl mask "$dm.service" 2>/dev/null || true; done
 for tty in 1 2 3 4 5 6; do systemctl disable "getty@tty${tty}.service" 2>/dev/null || true; systemctl mask "getty@tty${tty}.service" 2>/dev/null || true; done
-systemctl mask serial-getty@.service getty@.service ctrl-alt-del.target emergency.service rescue.service emergency.target rescue.target 2>/dev/null || true
+systemctl mask serial-getty@.service getty@.service ctrl-alt-del.target emergency.service rescue.service emergency.target rescue.target grub-common.service 2>/dev/null || true
 systemctl disable ssh.service ssh.socket 2>/dev/null || true
 systemctl mask ssh.service ssh.socket 2>/dev/null || true
 
@@ -226,7 +226,7 @@ INITRD="$(basename "$(ls -1 /boot/initrd.img-* | sort -V | tail -n1)")"
 cp "/boot/${KERNEL}" /boot/efi/vmlinuz
 cp "/boot/${INITRD}" /boot/efi/initrd.img
 cat > /boot/efi/EFI/betterframe/grub.cfg <<'GRUB'
-set timeout=1
+set timeout=3
 set default=0
 if [ -f /EFI/betterframe/grubenv ]; then
   load_env -f /EFI/betterframe/grubenv bf_primary
@@ -235,15 +235,15 @@ if [ "$bf_primary" = "B" ]; then
   set default=1
 fi
 menuentry "BetterFrame A" {
-  linux /vmlinuz root=LABEL=BF_ROOT_A ro quiet splash plymouth.ignore-serial-consoles loglevel=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  linux /vmlinuz root=LABEL=BF_ROOT_A ro splash loglevel=4 systemd.show_status=1 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
   initrd /initrd.img
 }
 menuentry "BetterFrame B" {
-  linux /vmlinuz root=LABEL=BF_ROOT_B ro quiet splash plymouth.ignore-serial-consoles loglevel=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  linux /vmlinuz root=LABEL=BF_ROOT_B ro splash loglevel=4 systemd.show_status=1 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
   initrd /initrd.img
 }
 menuentry "BetterFrame A debug shell" {
-  linux /vmlinuz root=LABEL=BF_ROOT_A rw loglevel=7 systemd.show_status=1 plymouth.enable=0 systemd.unit=multi-user.target
+  linux /vmlinuz root=LABEL=BF_ROOT_A rw loglevel=7 systemd.show_status=1 plymouth.enable=0 init=/bin/bash
   initrd /initrd.img
 }
 GRUB

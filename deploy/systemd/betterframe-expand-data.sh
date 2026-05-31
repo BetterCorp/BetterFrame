@@ -26,6 +26,9 @@ fi
 if [[ "$DATA_DEV" =~ ^(/dev/mmcblk[0-9]+)p([0-9]+)$ ]]; then
   DISK="${BASH_REMATCH[1]}"
   PARTNUM="${BASH_REMATCH[2]}"
+elif [[ "$DATA_DEV" =~ ^(/dev/nvme[0-9]+n[0-9]+)p([0-9]+)$ ]]; then
+  DISK="${BASH_REMATCH[1]}"
+  PARTNUM="${BASH_REMATCH[2]}"
 elif [[ "$DATA_DEV" =~ ^(/dev/sd[a-z]+)([0-9]+)$ ]]; then
   DISK="${BASH_REMATCH[1]}"
   PARTNUM="${BASH_REMATCH[2]}"

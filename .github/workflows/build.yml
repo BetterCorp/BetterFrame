@@ -1,7 +1,7 @@
 # Reusable build workflow. Invoked by release.yml on every master push (dev
 # release) and every v* tag push (stable / beta). Produces:
-#   - betterframe-kiosk-<version>-<arch>           (Linux ELF, no extension)
-#   - betterframe-client-<version>-<arch>.img.xz   (flashable Pi OS image)
+#   - betterframe-kiosk-<version>-<target>         (Linux ELF, no extension)
+#   - betterframe-client-<version>-<target>.img.xz (flashable OS image)
 #   - betterframe-iobox-<version>-<variant>.bin    (ESP32-S3 ioBOX firmware)
 # All assets attached to the GitHub Release at ${{ inputs.tag }}.
 
@@ -378,7 +378,7 @@ jobs:
             xz-utils util-linux e2fsprogs dosfstools gdisk jq
           chmod +x deploy/rauc/repartition-image.sh
           ws="${{ github.workspace }}"
-          out_img="${ws}/betterframe-client-${{ inputs.version }}.img.xz"
+          out_img="${ws}/betterframe-client-${{ inputs.version }}-betterframe-rpi5-aarch64.img.xz"
           rootfs="${ws}/rootfs.ext4"
           bootfs="${ws}/bootfs.vfat"
           sudo BF_BUILD_VERSION="$BF_BUILD_VERSION" \
@@ -421,7 +421,7 @@ jobs:
           printf '%s\n' "$BF_RAUC_SIGNING_KEY" > /tmp/rauc-signing/key.pem
           chmod 600 /tmp/rauc-signing/key.pem
           chmod +x deploy/rauc/build-bundle.sh
-          out="${{ github.workspace }}/betterframe-${{ inputs.version }}.raucb"
+          out="${{ github.workspace }}/betterframe-${{ inputs.version }}-betterframe-rpi5-aarch64.raucb"
           deploy/rauc/build-bundle.sh \
             "${{ steps.repartition.outputs.rootfs-path }}" \
             "${{ steps.repartition.outputs.bootfs-path }}" \
@@ -499,3 +499,41 @@ jobs:
             -H "Content-Type: application/json" \
             -d "$payload" \
             "${BF_AUTOIMPORT_URL}/api/admin/os/import"
+
+  # ---- Flashable PC x86_64 UEFI image --------------------------------------
+  x86-image:
+    if: ${{ inputs.build-image }}
+    needs: binary
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Pull kiosk x86_64 binary from this run's artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: betterframe-kiosk-betterframe-pc-x86_64
+          path: staging/
+
+      - name: Build PC x86_64 UEFI image
+        run: |
+          set -e
+          mv staging/betterframe-kiosk-${{ inputs.version }}-betterframe-pc-x86_64 \
+             staging/betterframe-kiosk
+          chmod +x staging/betterframe-kiosk
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debootstrap xz-utils util-linux gdisk dosfstools e2fsprogs grub-common
+          chmod +x deploy/x86-image/build-image.sh
+          sudo deploy/x86-image/build-image.sh \
+            "${{ github.workspace }}/staging/betterframe-kiosk" \
+            "${{ github.workspace }}/betterframe-client-${{ inputs.version }}-betterframe-pc-x86_64.img.xz" \
+            "${{ inputs.version }}"
+          sudo chown "$USER:" "${{ github.workspace }}/betterframe-client-${{ inputs.version }}-betterframe-pc-x86_64.img.xz"
+
+      - name: Upload PC x86_64 image to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: betterframe-client-${{ inputs.version }}-betterframe-pc-x86_64.img.xz

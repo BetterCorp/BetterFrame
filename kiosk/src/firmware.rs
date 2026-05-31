@@ -39,12 +39,7 @@ pub const ARCH: &str = match option_env!("BF_BUILD_ARCH") {
 
 pub const FIRMWARE_TARGET: &str = match option_env!("BF_FIRMWARE_TARGET") {
     Some(s) => s,
-    None => match option_env!("BF_BUILD_ARCH") {
-        Some("aarch64-unknown-linux-gnu") => "betterframe-rpi5-aarch64",
-        Some("x86_64-unknown-linux-gnu") => "betterframe-pc-x86_64",
-        Some(s) => s,
-        None => "betterframe-rpi5-aarch64",
-    },
+    None => ARCH,
 };
 
 const DEFAULT_BIN_PATH: &str = "/opt/betterframe/kiosk/betterframe-kiosk";

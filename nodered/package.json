@@ -17,6 +17,7 @@
       "bf-trigger-kiosk-changed": "src/bf-trigger-kiosk-changed.js",
       "bf-trigger-camera-changed": "src/bf-trigger-camera-changed.js",
       "bf-trigger-status": "src/bf-trigger-status.js",
+      "bf-trigger-web-change": "src/bf-trigger-web-change.js",
       "bf-layout-switch": "src/bf-layout-switch.js",
       "bf-power": "src/bf-power.js",
       "bf-fan": "src/bf-fan.js",

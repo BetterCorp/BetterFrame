@@ -1107,6 +1107,7 @@ function registerKioskRoutes(
       "kiosk.status",
       "display.power.changed",
       "camera.changed",
+      "web-change",
     ]);
     const markForwarded = () => { repo.markEventForwarded(eventId); };
     const tenantInfo = { tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name };

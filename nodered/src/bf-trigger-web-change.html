@@ -1,0 +1,63 @@
+<script type="text/javascript">
+  RED.nodes.registerType("bf-trigger-web-change", {
+    category: "BetterFrame Triggers",
+    color: "#a6d4ff",
+    defaults: {
+      name: { value: "" },
+      config: { value: "", type: "bf-server-config", required: true },
+      kiosk_id: { value: "" },
+      display_id: { value: "" },
+      view_id: { value: "" },
+      entity_id: { value: "" },
+      url_contains: { value: "" },
+    },
+    inputs: 0,
+    outputs: 1,
+    icon: "betterframe.svg",
+    label: function () {
+      return this.name || "web change";
+    },
+    paletteLabel: "Web Change Trigger",
+  });
+</script>
+
+<script type="text/html" data-template-name="bf-trigger-web-change">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" placeholder="(optional)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-config"><i class="fa fa-cog"></i> BF</label>
+    <input type="text" id="node-input-config" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-kiosk_id"><i class="fa fa-window-maximize"></i> Kiosk ID</label>
+    <input type="text" id="node-input-kiosk_id" placeholder="(blank = all kiosks)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-display_id"><i class="fa fa-desktop"></i> Display ID</label>
+    <input type="text" id="node-input-display_id" placeholder="(blank = all displays)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-view_id"><i class="fa fa-th-large"></i> View ID</label>
+    <input type="text" id="node-input-view_id" placeholder="(blank = all views)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-entity_id"><i class="fa fa-link"></i> Entity ID</label>
+    <input type="text" id="node-input-entity_id" placeholder="(blank = all entities)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-url_contains"><i class="fa fa-filter"></i> URL contains</label>
+    <input type="text" id="node-input-url_contains" placeholder="(blank = any URL)" />
+  </div>
+  <div class="form-tips">
+    Fires when a kiosk web view first loads or navigates.
+    Emits <code>msg.payload = {url, entity_id, view_id, display_id, kiosk_id}</code> for the selected tenant.
+  </div>
+</script>
+
+<script type="text/html" data-help-name="bf-trigger-web-change">
+  <p>Fires when a kiosk WebView first loads or changes URL.</p>
+  <p>Select a <b>BF</b> config to scope this trigger to one tenant.</p>
+  <p>Optional filters limit this node to a kiosk, display, view, entity, or URL fragment.</p>
+</script>

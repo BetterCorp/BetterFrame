@@ -51,6 +51,28 @@ function tokenMatchesExpected(token: string, expected: string | undefined): bool
   return timingSafeEqual(a, b);
 }
 
+async function resolveSessionAcrossTenants(
+  cookie: string,
+  deps: AdminDeps,
+): Promise<{ user: User; session: Session } | null> {
+  if (deps.repo.adapter.dialect() !== "postgres") {
+    return deps.auth.resolveSession(cookie);
+  }
+
+  const tenants = await deps.repo.listTenants();
+  const schemas = tenants
+    .filter((tenant) => tenant.is_active)
+    .map((tenant) => tenant.schema_name);
+  if (!schemas.includes("public")) schemas.unshift("public");
+
+  for (const schema of schemas) {
+    await deps.repo.adapter.setSearchPath(schema);
+    const resolved = await deps.auth.resolveSession(cookie);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
 export function registerMiddleware(app: H3, deps: AdminDeps): void {
   // Tenant resolution middleware — sets search_path for PG multi-tenant.
   // Runs before auth so that DB queries in auth resolution use the right schema.
@@ -146,7 +168,10 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
       if (!cookie) {
         return new Response(null, { status: 302, headers: { location: "/auth/login" } });
       }
-      const resolved = await deps.auth.resolveSession(cookie);
+      const resolved = await resolveSessionAcrossTenants(cookie, deps);
+      if (event.context.tenant) {
+        await deps.repo.adapter.setSearchPath(event.context.tenant.schema_name);
+      }
       if (!resolved) {
         return new Response(null, { status: 302, headers: { location: "/auth/login" } });
       }

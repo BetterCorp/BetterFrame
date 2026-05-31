@@ -27,11 +27,12 @@ export interface PageProps {
 
 // ---- Components -------------------------------------------------------------
 
-function NavItem(props: { href: string; label: string; icon: string; active?: boolean }) {
+function NavItem(props: { href: string; label: string; icon: string; active?: boolean; coreOnly?: boolean }) {
   return (
     <a
       href={props.href}
       class={`nav-item${props.active ? " active" : ""}`}
+      {...(props.coreOnly ? { "data-core-only": "true" } : {})}
     >
       <span class="nav-icon">{props.icon}</span>
       {props.label}
@@ -70,8 +71,8 @@ function Sidebar(props: { activeNav?: string }) {
         <NavItem href="/admin/displays" label="Displays" icon="&#9642;" active={a === "displays"} />
         <NavItem href="/admin/kiosks" label="Kiosks" icon="&#9672;" active={a === "kiosks"} />
         <NavItem href="/admin/iobox" label="ioBOX" icon="&#9635;" active={a?.startsWith("iobox")} />
-        <NavItem href="/admin/firmware" label="Firmware" icon="&#9650;" active={a === "firmware"} />
-        <NavItem href="/admin/os-updates" label="OS Updates" icon="&#9679;" active={a === "os-updates"} />
+        <NavItem href="/admin/firmware" label="Firmware" icon="&#9650;" active={a === "firmware"} coreOnly />
+        <NavItem href="/admin/os-updates" label="OS Updates" icon="&#9679;" active={a === "os-updates"} coreOnly />
         <NavGroup label="Digital Signage" icon="&#9654;" active={a?.startsWith("ablesign")}>
           <NavItem href="/admin/ablesign/screens" label="Screens" icon=" " active={a === "ablesign-screens"} />
           <NavItem href="/admin/ablesign/content" label="Content" icon=" " active={a === "ablesign-content"} />

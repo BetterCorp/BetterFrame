@@ -1682,13 +1682,14 @@ export class Repository {
     key_prefix: string;
     capabilities?: string[];
     hardware_model?: string | null;
+    firmware_target?: string | null;
     managed_image?: boolean;
   }): Promise<Kiosk> {
     const id = uuidv7();
     await this._run(
       `INSERT INTO kiosks
-        (id, name, key_hash, key_prefix, capabilities, hardware_model, paired_at, managed_image)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, name, key_hash, key_prefix, capabilities, hardware_model, firmware_target, paired_at, managed_image)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.name,
@@ -1696,6 +1697,7 @@ export class Repository {
         input.key_prefix,
         J(input.capabilities ?? []),
         input.hardware_model ?? null,
+        input.firmware_target ?? null,
         isoNow(),
         input.managed_image ? 1 : 0,
       ],
@@ -1719,6 +1721,7 @@ export class Repository {
       key_prefix: string;
       capabilities?: string[];
       hardware_model?: string | null;
+      firmware_target?: string | null;
     },
   ): Promise<void> {
     await this._run(
@@ -1727,6 +1730,7 @@ export class Repository {
          key_prefix = ?,
          capabilities = ?,
          hardware_model = ?,
+         firmware_target = ?,
          paired_at = ?,
          last_seen_at = NULL,
          last_bundle_version = NULL,
@@ -1747,6 +1751,7 @@ export class Repository {
         input.key_prefix,
         J(input.capabilities ?? []),
         input.hardware_model ?? null,
+        input.firmware_target ?? null,
         isoNow(),
         id,
       ],
@@ -1759,7 +1764,9 @@ export class Repository {
     patch: {
       bundle_version?: string | null;
       kiosk_app_version?: string | null;
+      firmware_target?: string | null;
       os_version?: string | null;
+      os_update_compatibility?: string | null;
       cpu_temp_c?: number | null;
       cpu_load_percent?: number | null;
       fan_rpm?: number | null;
@@ -1783,7 +1790,9 @@ export class Repository {
          last_seen_at = ?,
          last_bundle_version = COALESCE(?, last_bundle_version),
          kiosk_app_version = COALESCE(?, kiosk_app_version),
+         firmware_target = COALESCE(?, firmware_target),
          os_version = COALESCE(?, os_version),
+         os_update_compatibility = COALESCE(?, os_update_compatibility),
          cpu_temp_c = ?,
          cpu_load_percent = ?,
          fan_rpm = ?,
@@ -1805,7 +1814,9 @@ export class Repository {
         isoNow(),
         patch.bundle_version ?? null,
         patch.kiosk_app_version ?? null,
+        patch.firmware_target ?? null,
         patch.os_version ?? null,
+        patch.os_update_compatibility ?? null,
         patch.cpu_temp_c ?? null,
         patch.cpu_load_percent ?? null,
         patch.fan_rpm ?? null,
@@ -2286,6 +2297,7 @@ export class Repository {
     code: string;
     kiosk_proposed_name: string | null;
     kiosk_hardware_model: string | null;
+    kiosk_firmware_target?: string | null;
     kiosk_capabilities: string[];
     expires_at: string;
     extras: Record<string, unknown>;
@@ -2293,13 +2305,14 @@ export class Repository {
     const t = this._pairingT;
     await this._run(
       `INSERT INTO ${t}
-         (code, kiosk_proposed_name, kiosk_hardware_model, kiosk_capabilities,
+         (code, kiosk_proposed_name, kiosk_hardware_model, kiosk_firmware_target, kiosk_capabilities,
           expires_at, extras)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         input.code,
         input.kiosk_proposed_name,
         input.kiosk_hardware_model,
+        input.kiosk_firmware_target ?? null,
         J(input.kiosk_capabilities),
         input.expires_at,
         J(input.extras),

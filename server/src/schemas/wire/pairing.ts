@@ -24,6 +24,7 @@ export const pairInitiateRequest = av.object(
   {
     proposed_name: av.string().minLength(1).maxLength(128),
     hardware_model: av.optional(av.string().maxLength(128)),
+    firmware_target: av.optional(av.string().maxLength(128)),
     capabilities: av.array(av.enum_(KIOSK_CAPABILITIES)),
     os_version: av.optional(av.string().maxLength(128)),
     kiosk_app_version: av.optional(av.string().maxLength(64)),

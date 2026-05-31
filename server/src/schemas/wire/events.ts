@@ -14,7 +14,9 @@ export const kioskHeartbeat = av.object(
   {
     bundle_version: av.optional(av.string().maxLength(64)),
     kiosk_app_version: av.optional(av.string().maxLength(64)),
+    firmware_target: av.optional(av.string().maxLength(128)),
     os_version: av.optional(av.string().maxLength(128)),
+    os_update_compatibility: av.optional(av.string().maxLength(128)),
     uptime_seconds: av.optional(av.int().min(0)),
     cpu_load: av.optional(av.number().min(0).max(100)),
     cpu_load_percent: av.optional(av.number().min(0).max(100)),

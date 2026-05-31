@@ -41,6 +41,8 @@ use tracing::{info, warn};
 pub const DEFAULT_COMPATIBILITY: &str = "betterframe-rpi5-aarch64";
 static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+pub fn compatibility_public() -> String { compatibility() }
+
 fn compatibility() -> String {
     if let Ok(s) = fs::read_to_string("/etc/betterframe/os-compatibility") {
         let trimmed = s.trim();

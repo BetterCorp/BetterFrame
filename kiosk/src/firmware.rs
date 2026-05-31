@@ -37,6 +37,16 @@ pub const ARCH: &str = match option_env!("BF_BUILD_ARCH") {
     None => "aarch64-unknown-linux-gnu",
 };
 
+pub const FIRMWARE_TARGET: &str = match option_env!("BF_FIRMWARE_TARGET") {
+    Some(s) => s,
+    None => match option_env!("BF_BUILD_ARCH") {
+        Some("aarch64-unknown-linux-gnu") => "betterframe-rpi5-aarch64",
+        Some("x86_64-unknown-linux-gnu") => "betterframe-pc-x86_64",
+        Some(s) => s,
+        None => "betterframe-rpi5-aarch64",
+    },
+};
+
 const DEFAULT_BIN_PATH: &str = "/opt/betterframe/kiosk/betterframe-kiosk";
 const FIRMWARE_MARKER: &str = "/var/lib/betterframe/kiosk/firmware-applying.json";
 const FIRMWARE_ATTEMPTS: &str = "/var/lib/betterframe/kiosk/firmware-applying.attempts";
@@ -92,7 +102,8 @@ pub struct UpdateInfo {
 /// channel. Used before pairing to self-update to latest binary.
 pub fn check_public(server: &str, current_version: &str) -> Option<UpdateInfo> {
     let url = format!(
-        "{server}/api/firmware/public/check?arch={arch}&current={cur}",
+        "{server}/api/firmware/public/check?target={target}&arch={arch}&current={cur}",
+        target = FIRMWARE_TARGET,
         arch = ARCH,
         cur = current_version,
     );
@@ -165,7 +176,8 @@ pub fn check(server: &str, key: &str, current_version: &str) -> Option<UpdateInf
     // current_version is semver-shaped (already URL-safe). Empty string is
     // fine — server treats it as "unknown" and offers any release.
     let url = format!(
-        "{server}/api/kiosk/firmware/check?arch={arch}&current={cur}",
+        "{server}/api/kiosk/firmware/check?target={target}&arch={arch}&current={cur}",
+        target = FIRMWARE_TARGET,
         arch = ARCH,
         cur = current_version,
     );

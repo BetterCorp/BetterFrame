@@ -10,6 +10,7 @@ export const PairInitiateBody = av.object(
   {
     proposed_name: av.string().maxLength(128).default(""),
     hardware_model: av.string().maxLength(128).default(""),
+    firmware_target: av.string().maxLength(128).default(""),
     capabilities: av.array(av.string().maxLength(64)).default([]),
     managed_image: av.bool().default(false),
   },
@@ -50,7 +51,9 @@ export const HeartbeatBody = av.object(
   {
     bundle_version: av.nullable(av.string().maxLength(128)).default(null),
     kiosk_app_version: av.string().maxLength(64).default(""),
+    firmware_target: av.string().maxLength(128).default(""),
     os_version: av.string().maxLength(64).default(""),
+    os_update_compatibility: av.string().maxLength(128).default(""),
     displays: av.array(HeartbeatDisplay).default([]),
     cpu_temp_c: av.nullable(av.number().min(-40).max(150)).default(null),
     cpu_load_percent: av.nullable(av.number().min(0).max(100)).default(null),

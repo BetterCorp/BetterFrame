@@ -248,6 +248,8 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     hardware_model TEXT,
     os_version TEXT,
     kiosk_app_version TEXT,
+    firmware_target TEXT,
+    os_update_compatibility TEXT,
     enabled BOOLEAN NOT NULL DEFAULT true,
     paired_at TIMESTAMPTZ,
     last_seen_at TIMESTAMPTZ,
@@ -362,6 +364,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     code TEXT PRIMARY KEY,
     kiosk_proposed_name TEXT,
     kiosk_hardware_model TEXT,
+    kiosk_firmware_target TEXT,
     kiosk_capabilities JSONB NOT NULL DEFAULT '[]',
     issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at TIMESTAMPTZ NOT NULL,
@@ -901,4 +904,26 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS audio_default_volume_percent INTEGER NOT NULL DEFAULT 50`,
   `ALTER TABLE layouts ADD COLUMN IF NOT EXISTS idle_timeout_seconds INTEGER`,
   `ALTER TABLE public.pairing_codes DROP CONSTRAINT IF EXISTS pairing_codes_consumed_by_kiosk_id_fkey`,
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS firmware_target TEXT`,
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS os_update_compatibility TEXT`,
+  `ALTER TABLE pairing_codes ADD COLUMN IF NOT EXISTS kiosk_firmware_target TEXT`,
+  `UPDATE firmware_releases r SET arch = 'betterframe-rpi5-aarch64'
+    WHERE arch = 'aarch64-unknown-linux-gnu'
+      AND NOT EXISTS (
+        SELECT 1 FROM firmware_releases existing
+        WHERE existing.version = r.version
+          AND existing.arch = 'betterframe-rpi5-aarch64'
+      )`,
+  `DELETE FROM firmware_releases WHERE arch = 'aarch64-unknown-linux-gnu'`,
+  `UPDATE firmware_releases r SET arch = 'betterframe-pc-x86_64'
+    WHERE arch = 'x86_64-unknown-linux-gnu'
+      AND NOT EXISTS (
+        SELECT 1 FROM firmware_releases existing
+        WHERE existing.version = r.version
+          AND existing.arch = 'betterframe-pc-x86_64'
+      )`,
+  `DELETE FROM firmware_releases WHERE arch = 'x86_64-unknown-linux-gnu'`,
+  `UPDATE kiosks SET firmware_target = 'betterframe-rpi5-aarch64'
+    WHERE firmware_target IS NULL
+      AND hardware_model ILIKE '%Raspberry Pi 5%'`,
 ];

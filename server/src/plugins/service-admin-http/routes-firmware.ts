@@ -22,20 +22,26 @@ import {
 import { getCoordinator } from "../../shared/coordinator-registry.js";
 import { audit } from "../../shared/audit.js";
 import type { FirmwareChannel } from "../../shared/types.js";
+import { currentTenantSchema, isDefaultTenant, withDefaultTenant } from "../../shared/default-tenant.js";
+import {
+  FIRMWARE_TARGET_PC_X86_64,
+  FIRMWARE_TARGET_RPI5,
+  normalizeFirmwareTarget,
+} from "../../shared/firmware-targets.js";
 
 const ALLOWED_CHANNELS: ReadonlySet<FirmwareChannel> = new Set(["stable", "beta", "dev"]);
-const ALLOWED_ARCHES = new Set([
-  "aarch64-unknown-linux-gnu",
-  "x86_64-unknown-linux-gnu",
-  "armv7-unknown-linux-gnueabihf",
+const ALLOWED_TARGETS = new Set([
+  FIRMWARE_TARGET_RPI5,
+  FIRMWARE_TARGET_PC_X86_64,
 ]);
 const ALLOWED_IOBOX_ARCHES = new Set(["esp32s3"]);
 
 export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
   // ---- List page -----------------------------------------------------------
   app.get("/admin/firmware", async (event) => {
+    if (!isDefaultTenant(event)) return new Response(null, { status: 404 });
     const user = event.context.user!;
-    const releases = await deps.repo.listFirmwareReleases();
+    const releases = await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.listFirmwareReleases());
     return htmlPage(FirmwarePage({
       user: user.username,
       releases,
@@ -45,6 +51,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Human upload (multipart) -------------------------------------------
   app.post("/admin/firmware/upload", async (event) => {
+    if (!isDefaultTenant(event)) return new Response(null, { status: 404 });
     const user = event.context.user!;
     const req = event.req;
     const form = await req.formData();
@@ -54,14 +61,14 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     }
     const version = String(form.get("version") ?? "").trim();
     const channelRaw = String(form.get("channel") ?? "stable").trim();
-    const arch = String(form.get("arch") ?? "").trim();
+    const target = normalizeFirmwareTarget(String(form.get("target") || form.get("arch") || "").trim());
     const releaseNotes = String(form.get("release_notes") ?? "").trim() || null;
 
     if (!ALLOWED_CHANNELS.has(channelRaw as FirmwareChannel)) {
       throw createError({ statusCode: 400, statusMessage: `invalid channel '${channelRaw}'` });
     }
-    if (!ALLOWED_ARCHES.has(arch)) {
-      throw createError({ statusCode: 400, statusMessage: `invalid arch '${arch}'` });
+    if (!ALLOWED_TARGETS.has(target)) {
+      throw createError({ statusCode: 400, statusMessage: `invalid target '${target}'` });
     }
     if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) {
       throw createError({ statusCode: 400, statusMessage: `invalid version '${version}' (expected semver)` });
@@ -71,29 +78,29 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     const { sha256, signature } = deps.firmware.signBlob(buf);
     const artifactPath = await deps.firmware.storeBlob(buf, sha256);
 
-    const release = await deps.repo.createFirmwareRelease({
+    const release = await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.createFirmwareRelease({
       id: randomUUID(),
       version,
       channel: channelRaw as FirmwareChannel,
-      arch,
+      arch: target,
       artifact_path: artifactPath,
       size_bytes: buf.length,
       sha256,
       signature,
       release_notes: releaseNotes,
       uploaded_by: user.id,
-    });
+    }));
     await audit(deps.repo, event as any, "firmware.upload", {
       resource_type: "firmware_release",
       resource_id: release.id,
-      metadata: { version, channel: channelRaw, arch, sha256, size: buf.length },
+      metadata: { version, channel: channelRaw, target, sha256, size: buf.length },
     });
 
     return new Response(null, { status: 302, headers: { location: "/admin/firmware" } });
   });
 
   // ---- CI auto-import (JSON, API-key-auth) --------------------------------
-  // Body: {version, channel, arch, release_notes?, content_b64}
+  // Body: {version, channel, target, release_notes?, content_b64}; legacy arch is accepted.
   // Server signs server-side (no client-side trust required for signing key)
   app.post("/api/admin/firmware/import", async (event) => {
     // Middleware already verified API key on /api/admin/* — admin scope
@@ -101,19 +108,21 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     const body = await readBody<{
       version: string;
       channel: FirmwareChannel;
-      arch: string;
+      target?: string;
+      arch?: string;
       release_notes?: string;
       content_b64: string;
     }>(event);
 
-    if (!body?.version || !body.channel || !body.arch || !body.content_b64) {
-      throw createError({ statusCode: 400, statusMessage: "version, channel, arch, content_b64 required" });
+    const target = normalizeFirmwareTarget(body?.target || body?.arch);
+    if (!body?.version || !body.channel || !target || !body.content_b64) {
+      throw createError({ statusCode: 400, statusMessage: "version, channel, target, content_b64 required" });
     }
     if (!ALLOWED_CHANNELS.has(body.channel)) {
       throw createError({ statusCode: 400, statusMessage: `invalid channel '${body.channel}'` });
     }
-    if (!ALLOWED_ARCHES.has(body.arch)) {
-      throw createError({ statusCode: 400, statusMessage: `invalid arch '${body.arch}'` });
+    if (!ALLOWED_TARGETS.has(target)) {
+      throw createError({ statusCode: 400, statusMessage: `invalid target '${target}'` });
     }
 
     const buf = Buffer.from(body.content_b64, "base64");
@@ -124,18 +133,18 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     const { sha256, signature } = deps.firmware.signBlob(buf);
     const artifactPath = await deps.firmware.storeBlob(buf, sha256);
     const id = randomUUID();
-    const release = await deps.repo.createFirmwareRelease({
+    const release = await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.createFirmwareRelease({
       id,
       version: body.version,
       channel: body.channel,
-      arch: body.arch,
+      arch: target,
       artifact_path: artifactPath,
       size_bytes: buf.length,
       sha256,
       signature,
       release_notes: body.release_notes ?? null,
       uploaded_by: null,
-    });
+    }));
 
     return { ok: true, release_id: release.id, sha256, signature };
   });
@@ -189,8 +198,9 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Yank ---------------------------------------------------------------
   app.post("/admin/firmware/:id/yank", async (event) => {
+    if (!isDefaultTenant(event)) return new Response(null, { status: 404 });
     const id = String(getRouterParam(event, "id"));
-    await deps.repo.yankFirmwareRelease(id);
+    await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.yankFirmwareRelease(id));
     await audit(deps.repo, event as any, "firmware.yank", {
       resource_type: "firmware_release",
       resource_id: id,
@@ -209,6 +219,21 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
       throw createError({ statusCode: 400, statusMessage: "invalid channel" });
     }
     const before = await deps.repo.getKioskById(id);
+    if (!before) {
+      return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
+    }
+    if (targetRaw) {
+      const target = normalizeFirmwareTarget(before.firmware_target);
+      if (!target) {
+        throw createError({ statusCode: 400, statusMessage: "kiosk firmware target unknown; wait for kiosk check-in" });
+      }
+      const release = await withDefaultTenant(deps.repo, currentTenantSchema(event), () =>
+        deps.repo.getFirmwareReleaseByVersionArch(targetRaw, target)
+      );
+      if (!release || release.yanked_at) {
+        throw createError({ statusCode: 400, statusMessage: "target version is not available for this kiosk target" });
+      }
+    }
     await deps.repo.setKioskFirmwarePref(id, {
       channel: channelRaw,
       target_version: targetRaw ? targetRaw : null,
@@ -226,7 +251,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
       });
       coord.sendToKiosk(id, { type: "firmware_check", force: false });
     }
-    const releases = await deps.repo.listFirmwareReleases();
+    const releases = await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.listFirmwareReleases());
     return htmlFragment(KioskFirmwarePanel({ kiosk: k, releases }));
   });
 
@@ -242,9 +267,12 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
   // ---- Rollouts -----------------------------------------------------------
 
   app.get("/admin/firmware/rollouts", async (event) => {
+    if (!isDefaultTenant(event)) return new Response(null, { status: 404 });
     const user = event.context.user!;
-    const rollouts = await deps.repo.listFirmwareRollouts();
-    const releases = await deps.repo.listFirmwareReleases();
+    const [rollouts, releases] = await withDefaultTenant(deps.repo, currentTenantSchema(event), async () => Promise.all([
+      deps.repo.listFirmwareRollouts(),
+      deps.repo.listFirmwareReleases(),
+    ]));
     const kiosks = await deps.repo.listKiosks();
     return htmlPage(FirmwareRolloutsPage({
       user: user.username,
@@ -255,11 +283,13 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/firmware/rollouts/new", async (event) => {
+    if (!isDefaultTenant(event)) return new Response(null, { status: 404 });
     const body = await readBody<Record<string, string | string[]>>(event);
     const releaseId = String(body?.["release_id"] ?? "");
     if (!releaseId) throw createError({ statusCode: 400, statusMessage: "release_id required" });
-    const release = await deps.repo.getFirmwareRelease(releaseId);
+    const release = await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.getFirmwareRelease(releaseId));
     if (!release) throw createError({ statusCode: 404, statusMessage: "release not found" });
+    const releaseTarget = normalizeFirmwareTarget(release.arch);
     const percentage = clamp(Number(body?.["percentage"] ?? 100), 1, 100);
     const targetsRaw = body?.["target_kiosk_ids"];
     const targets: string[] = Array.isArray(targetsRaw)
@@ -267,15 +297,24 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
       : typeof targetsRaw === "string" && targetsRaw
         ? targetsRaw.split(",").map((s) => s.trim()).filter((s) => s !== "")
         : [];
+    if (targets.length > 0) {
+      for (const kioskId of targets) {
+        const kiosk = await deps.repo.getKioskById(kioskId);
+        if (!kiosk) throw createError({ statusCode: 400, statusMessage: `unknown kiosk '${kioskId}'` });
+        if (normalizeFirmwareTarget(kiosk.firmware_target) !== releaseTarget) {
+          throw createError({ statusCode: 400, statusMessage: `kiosk '${kiosk.name}' does not match release target` });
+        }
+      }
+    }
     const user = event.context.user!;
-    const rollout = await deps.repo.createFirmwareRollout({
+    const rollout = await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.createFirmwareRollout({
       id: randomUUID(),
       release_id: releaseId,
       target_kiosk_ids: targets,
       percentage,
       created_by: user.id ?? null,
-    });
-    await deps.repo.updateFirmwareRolloutState(rollout.id, "active");
+    }));
+    await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.updateFirmwareRolloutState(rollout.id, "active"));
     await audit(deps.repo, event as any, "firmware.rollout.create", {
       resource_type: "firmware_rollout",
       resource_id: rollout.id,
@@ -286,7 +325,11 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     const coord = getCoordinator();
     if (targets.length === 0) {
       const allKiosks = await deps.repo.listKiosks();
-      for (const k of allKiosks) coord.sendToKiosk(k.id, { type: "firmware_check", force: false });
+      for (const k of allKiosks) {
+        if (normalizeFirmwareTarget(k.firmware_target) === releaseTarget) {
+          coord.sendToKiosk(k.id, { type: "firmware_check", force: false });
+        }
+      }
     } else {
       for (const id of targets) coord.sendToKiosk(id, { type: "firmware_check", force: false });
     }
@@ -294,13 +337,14 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/firmware/rollouts/:id/state", async (event) => {
+    if (!isDefaultTenant(event)) return new Response(null, { status: 404 });
     const id = String(getRouterParam(event, "id"));
     const body = await readBody<{ state: string }>(event);
     const state = body?.state;
     if (state !== "paused" && state !== "active" && state !== "complete") {
       throw createError({ statusCode: 400, statusMessage: "invalid state" });
     }
-    await deps.repo.updateFirmwareRolloutState(id, state);
+    await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.updateFirmwareRolloutState(id, state));
     return new Response(null, { status: 302, headers: { location: "/admin/firmware/rollouts" } });
   });
 }

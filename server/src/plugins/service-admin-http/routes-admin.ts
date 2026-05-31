@@ -60,6 +60,7 @@ import {
   normalizeUpdateSchedule,
   type UpdateSchedule,
 } from "../../shared/update-schedule.js";
+import { currentTenantSchema, withDefaultTenant } from "../../shared/default-tenant.js";
 
 interface DiscoverAddStream {
   profile_name: string;
@@ -2156,8 +2157,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       });
     }
     const gpioBindings = await deps.repo.listGpioBindings(id);
-    const firmwareReleases = await deps.repo.listFirmwareReleases();
-    const osReleases = await deps.repo.listOsUpdateReleases();
+    const [firmwareReleases, osReleases] = await withDefaultTenant(deps.repo, currentTenantSchema(event), async () => Promise.all([
+      deps.repo.listFirmwareReleases(),
+      deps.repo.listOsUpdateReleases(),
+    ]));
     const logResult = await deps.repo.queryKioskLogs({ kiosk_id: id, limit: 50 });
     return htmlPage(KioskEditPage({
       user: user.username,
@@ -2766,7 +2769,12 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const html = `<form method="post" action="/admin/tenants/switch" style="padding:0.5rem 1rem">
       <label style="font-size:0.75rem; color:#888; display:block; margin-bottom:0.25rem">Tenant</label>
       <select name="tenant_slug" style="width:100%; font-size:0.8rem; padding:0.25rem" onchange="this.form.submit()">${options}</select>
-    </form>`;
+    </form>
+    <script>
+      document.querySelectorAll('[data-core-only="true"]').forEach(function (el) {
+        el.style.display = ${JSON.stringify(current === "default" ? "" : "none")};
+      });
+    </script>`;
     return new Response(html, { headers: { "content-type": "text/html" } });
   });
 

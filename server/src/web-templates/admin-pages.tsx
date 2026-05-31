@@ -29,6 +29,7 @@ import type {
   Tenant,
 } from "../shared/types.js";
 import type { UpdateSchedule } from "../shared/update-schedule.js";
+import { firmwareTargetLabel, normalizeFirmwareTarget } from "../shared/firmware-targets.js";
 
 // ---- ioBOX ------------------------------------------------------------------
 
@@ -3872,11 +3873,10 @@ export function FirmwarePage(props: FirmwarePageProps) {
             </select>
           </div>
           <div class="form-group" style="grid-column:1/-1">
-            <label for="arch">Arch</label>
-            <select id="arch" name="arch" class="form-input">
-              <option value="aarch64-unknown-linux-gnu">aarch64 (Pi5)</option>
-              <option value="x86_64-unknown-linux-gnu">x86_64</option>
-              <option value="armv7-unknown-linux-gnueabihf">armv7</option>
+            <label for="target">Target</label>
+            <select id="target" name="target" class="form-input">
+              <option value="betterframe-rpi5-aarch64">Raspberry Pi 5</option>
+              <option value="betterframe-pc-x86_64">PC x86_64</option>
             </select>
           </div>
           <div class="form-group" style="grid-column:1/-1">
@@ -3893,7 +3893,7 @@ export function FirmwarePage(props: FirmwarePageProps) {
             <tr>
               <th>Version</th>
               <th>Channel</th>
-              <th>Arch</th>
+              <th>Target</th>
               <th>Size</th>
               <th>SHA256</th>
               <th>Uploaded</th>
@@ -3908,7 +3908,10 @@ export function FirmwarePage(props: FirmwarePageProps) {
                 <tr style={r.yanked_at ? "opacity:0.4" : ""}>
                   <td><strong>{r.version}</strong></td>
                   <td><span class={`badge ${r.channel === "stable" ? "badge-green" : r.channel === "beta" ? "badge-yellow" : "badge-gray"}`}>{r.channel}</span></td>
-                  <td style="font-family:monospace; font-size:0.8rem">{r.arch}</td>
+                  <td style="font-size:0.85rem">
+                    <div>{firmwareTargetLabel(r.arch)}</div>
+                    <code style="font-size:0.75rem">{normalizeFirmwareTarget(r.arch)}</code>
+                  </td>
                   <td style="font-size:0.85rem">{Math.round(r.size_bytes / 1024)} KiB</td>
                   <td style="font-family:monospace; font-size:0.75rem">{r.sha256.slice(0, 12)}…</td>
                   <td style="font-size:0.85rem; white-space:nowrap">{formatTime(r.uploaded_at)}</td>
@@ -3954,11 +3957,18 @@ interface KioskFirmwarePanelProps {
 export function KioskFirmwarePanel(props: KioskFirmwarePanelProps) {
   const k = props.kiosk;
   const current = k.kiosk_app_version ?? "unknown";
+  const target = normalizeFirmwareTarget(k.firmware_target);
+  const matchingReleases = target
+    ? props.releases.filter((r) => !r.yanked_at && normalizeFirmwareTarget(r.arch) === target)
+    : [];
   return (
     <div id={`kiosk-firmware-${String(k.id)}`} class="card" style="margin-bottom:1.5rem">
       <h3 style="margin:0 0 0.75rem; font-size:1rem">Firmware</h3>
       <div style="font-size:0.85rem; color:#666; margin-bottom:0.75rem">
         <div>Running: <code>{current}</code></div>
+        <div>
+          Target: {target ? <><strong>{firmwareTargetLabel(target)}</strong> <code>{target}</code></> : "unknown, waiting for kiosk check-in"}
+        </div>
         {k.firmware_last_attempt_version && (
           <div>
             Last attempt: <code>{k.firmware_last_attempt_version}</code>
@@ -3987,12 +3997,14 @@ export function KioskFirmwarePanel(props: KioskFirmwarePanelProps) {
           <label for={`target-${String(k.id)}`}>Pin to version</label>
           <select id={`target-${String(k.id)}`} name="target_version" class="form-input">
             <option value="">-- follow channel --</option>
-            {props.releases.filter((r) => !r.yanked_at).map((r) => (
+            {matchingReleases.map((r) => (
               <option value={r.version} selected={k.firmware_target_version === r.version}>
-                {r.version} ({r.channel}, {r.arch})
+                {r.version} ({r.channel})
               </option>
             ))}
           </select>
+          {!target && <div class="form-hint">Kiosk must check in before a version can be pinned.</div>}
+          {target && matchingReleases.length === 0 && <div class="form-hint">No releases for {firmwareTargetLabel(target)}.</div>}
         </div>
         <div style="grid-column:1/-1; display:flex; gap:0.5rem">
           <button type="submit" class="btn btn-primary">Save</button>
@@ -4170,7 +4182,7 @@ export function FirmwareRolloutsPage(props: FirmwareRolloutsPageProps) {
             <select id="release_id" name="release_id" class="form-input" required>
               <option value="">--</option>
               {props.releases.filter((r) => !r.yanked_at).map((r) => (
-                <option value={r.id}>{r.version} · {r.channel} · {r.arch}</option>
+                <option value={r.id}>{r.version} · {r.channel} · {firmwareTargetLabel(r.arch)}</option>
               ))}
             </select>
           </div>
@@ -4182,11 +4194,33 @@ export function FirmwareRolloutsPage(props: FirmwareRolloutsPageProps) {
             <label for="target_kiosk_ids">Targets (leave empty = all kiosks on release channel)</label>
             <select id="target_kiosk_ids" name="target_kiosk_ids" class="form-input" multiple size="6">
               {props.kiosks.map((k) => (
-                <option value={String(k.id)}>{k.name} (#{String(k.id)})</option>
+                <option value={String(k.id)} data-target={normalizeFirmwareTarget(k.firmware_target)}>
+                  {k.name} ({firmwareTargetLabel(k.firmware_target)})
+                </option>
               ))}
             </select>
             <div class="form-hint">Cmd/Ctrl-click to multi-select. Or post a comma-separated id list via API.</div>
           </div>
+          <script>{`
+            (function() {
+              var releaseTargets = ${JSON.stringify(Object.fromEntries(props.releases.map((r) => [r.id, normalizeFirmwareTarget(r.arch)])))};
+              var release = document.getElementById('release_id');
+              var targets = document.getElementById('target_kiosk_ids');
+              function syncTargets() {
+                var target = releaseTargets[release.value] || '';
+                Array.prototype.forEach.call(targets.options, function(k) {
+                  var match = !target || k.getAttribute('data-target') === target;
+                  k.disabled = !match;
+                  if (!match) k.selected = false;
+                  k.hidden = !match;
+                });
+              }
+              if (release && targets) {
+                release.addEventListener('change', syncTargets);
+                syncTargets();
+              }
+            })();
+          `}</script>
           <button type="submit" class="btn btn-primary" style="grid-column:1/-1">Create + activate</button>
         </form>
       </div>
@@ -4216,7 +4250,7 @@ export function FirmwareRolloutsPage(props: FirmwareRolloutsPageProps) {
                     + (targetCount > 3 ? ` +${String(targetCount - 3)} more` : "");
                 return (
                   <tr>
-                    <td><strong>{rel?.version ?? r.release_id}</strong>{rel && <span style="color:#999"> ({rel.channel}/{rel.arch})</span>}</td>
+                    <td><strong>{rel?.version ?? r.release_id}</strong>{rel && <span style="color:#999"> ({rel.channel}/{firmwareTargetLabel(rel.arch)})</span>}</td>
                     <td><span class={`badge ${r.state === "active" ? "badge-green" : r.state === "paused" ? "badge-yellow" : r.state === "complete" ? "badge-gray" : "badge-blue"}`}>{r.state}</span></td>
                     <td>{String(r.percentage)}%</td>
                     <td style="font-size:0.85rem">{targetSummary}</td>
@@ -4489,11 +4523,33 @@ export function OsUpdateRolloutsPage(props: OsUpdateRolloutsPageProps) {
             <label for="target_kiosk_ids">Targets (leave empty = all kiosks on release channel)</label>
             <select id="target_kiosk_ids" name="target_kiosk_ids" class="form-input" multiple size="6">
               {props.kiosks.map((k) => (
-                <option value={String(k.id)}>{k.name} (#{String(k.id)})</option>
+                <option value={String(k.id)} data-compatibility={k.os_update_compatibility ?? ""}>
+                  {k.name} ({k.os_update_compatibility ?? "unknown"})
+                </option>
               ))}
             </select>
             <div class="form-hint">Cmd/Ctrl-click to multi-select.</div>
           </div>
+          <script>{`
+            (function() {
+              var releaseCompat = ${JSON.stringify(Object.fromEntries(props.releases.map((r) => [r.id, r.compatibility])))};
+              var release = document.getElementById('release_id');
+              var targets = document.getElementById('target_kiosk_ids');
+              function syncTargets() {
+                var compat = releaseCompat[release.value] || '';
+                Array.prototype.forEach.call(targets.options, function(k) {
+                  var match = !compat || k.getAttribute('data-compatibility') === compat;
+                  k.disabled = !match;
+                  if (!match) k.selected = false;
+                  k.hidden = !match;
+                });
+              }
+              if (release && targets) {
+                release.addEventListener('change', syncTargets);
+                syncTargets();
+              }
+            })();
+          `}</script>
           <button type="submit" class="btn btn-primary" style="grid-column:1/-1">Create + activate</button>
         </form>
       </div>
@@ -4686,11 +4742,16 @@ export function CloudAccountsPage(props: CloudAccountsPageProps) {
 export function KioskOsUpdatePanel(props: KioskOsUpdatePanelProps) {
   const k = props.kiosk;
   const current = k.os_version ?? "unknown";
+  const compatibility = k.os_update_compatibility?.trim() ?? "";
+  const matchingReleases = compatibility
+    ? props.releases.filter((r) => !r.yanked_at && r.compatibility === compatibility)
+    : [];
   return (
     <div id={`kiosk-os-${String(k.id)}`} class="card" style="margin-bottom:1.5rem">
       <h3 style="margin:0 0 0.75rem; font-size:1rem">OS</h3>
       <div style="font-size:0.85rem; color:#666; margin-bottom:0.75rem">
         <div>Running: <code>{current}</code></div>
+        <div>Compatibility: {compatibility ? <code>{compatibility}</code> : "unknown, waiting for kiosk check-in"}</div>
         {k.os_update_last_attempt_version && (
           <div>
             Last attempt: <code>{k.os_update_last_attempt_version}</code>
@@ -4719,12 +4780,14 @@ export function KioskOsUpdatePanel(props: KioskOsUpdatePanelProps) {
           <label for={`os-target-${String(k.id)}`}>Pin to version</label>
           <select id={`os-target-${String(k.id)}`} name="target_version" class="form-input">
             <option value="">-- follow channel --</option>
-            {props.releases.filter((r) => !r.yanked_at).map((r) => (
+            {matchingReleases.map((r) => (
               <option value={r.version} selected={k.os_update_target_version === r.version}>
                 {r.version} ({r.channel})
               </option>
             ))}
           </select>
+          {!compatibility && <div class="form-hint">Kiosk must check in before an OS version can be pinned.</div>}
+          {compatibility && matchingReleases.length === 0 && <div class="form-hint">No OS releases for this compatibility.</div>}
         </div>
         <div style="grid-column:1/-1; display:flex; gap:0.5rem">
           <button type="submit" class="btn btn-primary">Save</button>

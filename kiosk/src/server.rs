@@ -372,6 +372,7 @@ pub fn initiate_pairing(server: &str) -> (String, String) {
         .json(&serde_json::json!({
             "proposed_name": hostname,
             "hardware_model": hw_model,
+            "firmware_target": crate::firmware::FIRMWARE_TARGET,
             "capabilities": ["rtsp", "gstreamer", "gtk4"]
         }))
         .send()
@@ -667,7 +668,9 @@ pub fn heartbeat(
     let mut payload = serde_json::json!({
         "bundle_version": bundle_version,
         "kiosk_app_version": kiosk_app_version(),
+        "firmware_target": crate::firmware::FIRMWARE_TARGET,
         "os_version": crate::os_update::current_os_version_public(),
+        "os_update_compatibility": crate::os_update::compatibility_public(),
         "displays": display_info,
         "cpu_temp_c": hw.cpu_temp_c,
         "cpu_load_percent": hw.cpu_load_percent,

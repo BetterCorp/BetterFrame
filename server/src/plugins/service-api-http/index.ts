@@ -29,6 +29,8 @@ import { createRateLimiter } from "../../shared/rate-limit.js";
 import { initMqttBridge, type MqttBridge } from "../../shared/mqtt-bridge.js";
 import { getCoordinator } from "../../shared/coordinator-registry.js";
 import { normalizeUpdateSchedule, updateScheduleAllowsNow } from "../../shared/update-schedule.js";
+import { normalizeFirmwareTarget } from "../../shared/firmware-targets.js";
+import { withDefaultTenant } from "../../shared/default-tenant.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { AuthApi } from "../../shared/auth.js";
 import type { SecretsApi } from "../../shared/secrets.js";
@@ -349,6 +351,7 @@ function registerPairingRoutes(
     const result = await initiatePairing(repo, {
       proposedName: body.proposed_name || null,
       hardwareModel: body.hardware_model || null,
+      firmwareTarget: normalizeFirmwareTarget(body.firmware_target) || null,
       capabilities: body.capabilities,
       managedImage: body.managed_image,
       codeTtlSeconds: codeTtl,
@@ -397,11 +400,13 @@ function registerPairingRoutes(
   // pairing to self-update to latest stable binary. Always stable channel.
   app.get("/api/firmware/public/check", async (event) => {
     const url = new URL(event.req.url);
-    const arch = url.searchParams.get("arch")?.trim();
-    if (!arch) throw createError({ statusCode: 400, statusMessage: "arch required" });
+    const target = normalizeFirmwareTarget(
+      url.searchParams.get("target")?.trim() || url.searchParams.get("arch")?.trim(),
+    );
+    if (!target) throw createError({ statusCode: 400, statusMessage: "target required" });
     const current = url.searchParams.get("current")?.trim() ?? "";
 
-    const release = await repo.getLatestFirmwareRelease("stable", arch);
+    const release = await withDefaultTenant(repo, null, () => repo.getLatestFirmwareRelease("stable", target));
     if (!release || release.version === current) {
       return { up_to_date: true };
     }
@@ -431,7 +436,7 @@ function registerPairingRoutes(
     }
 
     const id = getRouterParam(event, "id") ?? "";
-    const release = await repo.getFirmwareRelease(id);
+    const release = await withDefaultTenant(repo, null, () => repo.getFirmwareRelease(id));
     if (!release || release.yanked_at) {
       throw createError({ statusCode: 404, statusMessage: "release not found" });
     }
@@ -844,7 +849,9 @@ function registerKioskRoutes(
     await repo.touchKiosk(kiosk.id, {
       bundle_version: body.bundle_version ?? null,
       kiosk_app_version: body.kiosk_app_version ?? null,
+      firmware_target: normalizeFirmwareTarget(body.firmware_target) || null,
       os_version: body.os_version ?? null,
+      os_update_compatibility: body.os_update_compatibility?.trim() || null,
       cpu_temp_c: body.cpu_temp_c ?? null,
       cpu_load_percent: body.cpu_load_percent ?? null,
       fan_rpm: body.fan_rpm ?? null,
@@ -892,6 +899,7 @@ function registerKioskRoutes(
     // Mirror to MQTT bridge (no-op when BF_MQTT_URL unset).
     mqtt.publishTelemetry(kiosk.id, {
       kiosk_app_version: body.kiosk_app_version,
+      firmware_target: body.firmware_target,
       bundle_version: body.bundle_version,
       cpu_temp_c: body.cpu_temp_c,
       cpu_load_percent: body.cpu_load_percent,
@@ -1254,7 +1262,7 @@ function registerKioskRoutes(
    *   3. If chosen.version === current_version (reported via heartbeat) →
    *      "up_to_date".
    *
-   * `arch` is supplied by the kiosk because the server has no other way to
+   * `target` is supplied by the kiosk because the server has no other way to
    * know which build target the kiosk was built against.
    */
   app.get("/api/kiosk/firmware/check", async (event) => {
@@ -1264,26 +1272,33 @@ function registerKioskRoutes(
     if (!kiosk) throw createError({ statusCode: 404, statusMessage: "kiosk not found" });
 
     const url = new URL(event.req.url);
-    const arch = url.searchParams.get("arch")?.trim();
-    if (!arch) {
-      throw createError({ statusCode: 400, statusMessage: "arch query param required" });
+    const target = normalizeFirmwareTarget(
+      url.searchParams.get("target")?.trim() || url.searchParams.get("arch")?.trim(),
+    );
+    if (!target) {
+      throw createError({ statusCode: 400, statusMessage: "target query param required" });
+    }
+    if (kiosk.firmware_target !== target) {
+      await repo.updateKiosk(kiosk.id, { firmware_target: target } as any);
     }
     const currentVersion = url.searchParams.get("current")?.trim() ?? kiosk.kiosk_app_version ?? "";
 
     let release = null;
     // Explicit per-kiosk pin wins over all rollout / channel selection.
     if (kiosk.firmware_target_version) {
-      release = await repo.getFirmwareReleaseByVersionArch(kiosk.firmware_target_version, arch);
+      release = await withDefaultTenant(repo, verified.schema_name, () =>
+        repo.getFirmwareReleaseByVersionArch(kiosk.firmware_target_version!, target)
+      );
       if (release?.yanked_at) release = null;
     }
     // Active rollouts: most-recent matching, with bucket eligibility.
     if (!release) {
-      const rollouts = await repo.listActiveRolloutsForKiosk(kiosk.id);
+      const rollouts = await withDefaultTenant(repo, verified.schema_name, () => repo.listActiveRolloutsForKiosk(kiosk.id));
       for (const rollout of rollouts) {
         if (!isKioskInRolloutBucket(kiosk.id, rollout.id, rollout.percentage)) continue;
-        const r = await repo.getFirmwareRelease(rollout.release_id);
+        const r = await withDefaultTenant(repo, verified.schema_name, () => repo.getFirmwareRelease(rollout.release_id));
         if (!r || r.yanked_at) continue;
-        if (r.arch !== arch) continue;
+        if (normalizeFirmwareTarget(r.arch) !== target) continue;
         release = r;
         break;
       }
@@ -1291,7 +1306,7 @@ function registerKioskRoutes(
     // Channel-latest fallback.
     if (!release) {
       const channel = (kiosk.firmware_channel ?? "stable") as FirmwareChannel;
-      release = await repo.getLatestFirmwareRelease(channel, arch);
+      release = await withDefaultTenant(repo, verified.schema_name, () => repo.getLatestFirmwareRelease(channel, target));
     }
 
     if (!release || release.version === currentVersion) {
@@ -1325,7 +1340,7 @@ function registerKioskRoutes(
       ?? new URL(event.req.url).pathname.split("/").pop();
     if (!id) throw createError({ statusCode: 400, statusMessage: "release id required" });
 
-    const release = await repo.getFirmwareRelease(id);
+    const release = await withDefaultTenant(repo, kiosk.schema_name, () => repo.getFirmwareRelease(id));
     if (!release || release.yanked_at) {
       throw createError({ statusCode: 404, statusMessage: "release not found" });
     }
@@ -1385,18 +1400,23 @@ function registerKioskRoutes(
     if (!compatibility) {
       throw createError({ statusCode: 400, statusMessage: "compatibility query param required" });
     }
+    if (kiosk.os_update_compatibility !== compatibility) {
+      await repo.updateKiosk(kiosk.id, { os_update_compatibility: compatibility } as any);
+    }
     const currentVersion = url.searchParams.get("current")?.trim() ?? kiosk.os_version ?? "";
 
     let release = null;
     if (kiosk.os_update_target_version) {
-      release = await repo.getOsUpdateReleaseByVersionCompatibility(kiosk.os_update_target_version, compatibility);
+      release = await withDefaultTenant(repo, verified.schema_name, () =>
+        repo.getOsUpdateReleaseByVersionCompatibility(kiosk.os_update_target_version!, compatibility)
+      );
       if (release?.yanked_at) release = null;
     }
     if (!release) {
-      const rollouts = await repo.listActiveOsUpdateRolloutsForKiosk(kiosk.id);
+      const rollouts = await withDefaultTenant(repo, verified.schema_name, () => repo.listActiveOsUpdateRolloutsForKiosk(kiosk.id));
       for (const rollout of rollouts) {
         if (!isKioskInRolloutBucket(kiosk.id, rollout.id, rollout.percentage)) continue;
-        const r = await repo.getOsUpdateRelease(rollout.release_id);
+        const r = await withDefaultTenant(repo, verified.schema_name, () => repo.getOsUpdateRelease(rollout.release_id));
         if (!r || r.yanked_at) continue;
         if (r.compatibility !== compatibility) continue;
         release = r;
@@ -1405,7 +1425,7 @@ function registerKioskRoutes(
     }
     if (!release) {
       const channel = (kiosk.os_update_channel ?? "stable") as FirmwareChannel;
-      release = await repo.getLatestOsUpdateRelease(channel, compatibility);
+      release = await withDefaultTenant(repo, verified.schema_name, () => repo.getLatestOsUpdateRelease(channel, compatibility));
     }
 
     if (!release || release.version === currentVersion) {
@@ -1434,7 +1454,7 @@ function registerKioskRoutes(
       ?? new URL(event.req.url).pathname.split("/").pop();
     if (!id) throw createError({ statusCode: 400, statusMessage: "release id required" });
 
-    const release = await repo.getOsUpdateRelease(id);
+    const release = await withDefaultTenant(repo, kiosk.schema_name, () => repo.getOsUpdateRelease(id));
     if (!release || release.yanked_at) {
       throw createError({ statusCode: 404, statusMessage: "release not found" });
     }

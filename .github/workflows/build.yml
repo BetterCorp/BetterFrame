@@ -145,9 +145,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-unknown-linux-gnu
+          - rust_target: aarch64-unknown-linux-gnu
+            firmware_target: betterframe-rpi5-aarch64
+            label: Raspberry Pi 5
             runs-on: blacksmith-8vcpu-ubuntu-2404-arm
-          - target: x86_64-unknown-linux-gnu
+          - rust_target: x86_64-unknown-linux-gnu
+            firmware_target: betterframe-pc-x86_64
+            label: PC x86_64
             runs-on: blacksmith-8vcpu-ubuntu-2404
     runs-on: ${{ matrix.runs-on }}
     # Trixie container matches Pi OS Trixie's glibc + apt packages.
@@ -174,29 +178,30 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.rust_target }}
 
       - name: cargo build --release
         working-directory: kiosk
         env:
-          BF_BUILD_ARCH: ${{ matrix.target }}
+          BF_BUILD_ARCH: ${{ matrix.rust_target }}
+          BF_FIRMWARE_TARGET: ${{ matrix.firmware_target }}
           BF_BUILD_VERSION: ${{ inputs.version }}
           BF_AXIOM_KEY: ${{ secrets.BF_AXIOM_KEY }}
           BF_AXIOM_DATASET: ${{ secrets.BF_AXIOM_DATASET }}
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.rust_target }}
 
       - name: Strip + rename
         working-directory: kiosk
         run: |
-          strip target/${{ matrix.target }}/release/betterframe-kiosk
-          cp target/${{ matrix.target }}/release/betterframe-kiosk \
-             betterframe-kiosk-${{ inputs.version }}-${{ matrix.target }}
+          strip target/${{ matrix.rust_target }}/release/betterframe-kiosk
+          cp target/${{ matrix.rust_target }}/release/betterframe-kiosk \
+             betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
 
       - name: Upload to GitHub Release (binary)
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag }}
-          files: kiosk/betterframe-kiosk-${{ inputs.version }}-${{ matrix.target }}
+          files: kiosk/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
 
       - name: Auto-import into BF server
         if: env.BF_AUTOIMPORT_URL != '' && env.BF_AUTOIMPORT_API_KEY != ''
@@ -205,15 +210,15 @@ jobs:
           BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}
         working-directory: kiosk
         run: |
-          bin="betterframe-kiosk-${{ inputs.version }}-${{ matrix.target }}"
+          bin="betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}"
           base64 -w 0 "$bin" > "${bin}.b64"
           jq -nc \
             --arg v "${{ inputs.version }}" \
             --arg c "${{ inputs.channel }}" \
-            --arg a "${{ matrix.target }}" \
-            --arg n "GitHub Actions build of ${{ inputs.tag }} (${{ github.sha }})" \
+            --arg t "${{ matrix.firmware_target }}" \
+            --arg n "GitHub Actions ${{ matrix.label }} build of ${{ inputs.tag }} (${{ github.sha }})" \
             --rawfile b "${bin}.b64" \
-            '{version:$v, channel:$c, arch:$a, release_notes:$n, content_b64:$b}' \
+            '{version:$v, channel:$c, target:$t, release_notes:$n, content_b64:$b}' \
             > "${bin}.import.json"
           for attempt in 1 2 3; do
             if curl -sSf --retry 2 --retry-delay 5 -X POST \
@@ -230,8 +235,8 @@ jobs:
       - name: Upload artifact (always)
         uses: actions/upload-artifact@v7
         with:
-          name: betterframe-kiosk-${{ matrix.target }}
-          path: kiosk/betterframe-kiosk-${{ inputs.version }}-${{ matrix.target }}
+          name: betterframe-kiosk-${{ matrix.firmware_target }}
+          path: kiosk/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
           retention-days: 14
 
   # ---- Flashable Pi OS Trixie image (aarch64 only) -------------------------
@@ -258,14 +263,14 @@ jobs:
       - name: Pull kiosk aarch64 binary from this run's artifact
         uses: actions/download-artifact@v8
         with:
-          name: betterframe-kiosk-aarch64-unknown-linux-gnu
+          name: betterframe-kiosk-betterframe-rpi5-aarch64
           path: staging/
 
       - name: Render BF logo for plymouth
         run: |
           sudo apt-get -y update
           sudo apt-get -y install --no-install-recommends librsvg2-bin
-          mv staging/betterframe-kiosk-${{ inputs.version }}-aarch64-unknown-linux-gnu \
+          mv staging/betterframe-kiosk-${{ inputs.version }}-betterframe-rpi5-aarch64 \
              staging/betterframe-kiosk
           chmod +x staging/betterframe-kiosk
           rsvg-convert -w 480 server/src/web-static/betterframe-logo.svg -o staging/logo.png

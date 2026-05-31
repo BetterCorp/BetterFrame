@@ -28,6 +28,7 @@ function generateCode(): string {
 export interface PairingInitiateInput {
   proposedName: string | null;
   hardwareModel: string | null;
+  firmwareTarget?: string | null;
   capabilities: string[];
   /** True iff kiosk runs our pre-built Pi image with the apply-config helper. */
   managedImage?: boolean;
@@ -57,6 +58,7 @@ export async function initiatePairing(
     code,
     kiosk_proposed_name: input.proposedName,
     kiosk_hardware_model: input.hardwareModel,
+    kiosk_firmware_target: input.firmwareTarget ?? null,
     kiosk_capabilities: input.capabilities,
     expires_at: expiresAt,
     extras: input.managedImage ? { managed_image: true } : {},
@@ -183,6 +185,7 @@ export async function confirmPairing(
       key_prefix: kioskKeyPrefix,
       capabilities: pc.kiosk_capabilities,
       hardware_model: pc.kiosk_hardware_model,
+      firmware_target: pc.kiosk_firmware_target,
     });
     // managed_image flag follows the new device (handled on row above via
     // capabilities/hw, but the explicit column is updated separately because
@@ -208,6 +211,7 @@ export async function confirmPairing(
       key_prefix: kioskKeyPrefix,
       capabilities: pc.kiosk_capabilities,
       hardware_model: pc.kiosk_hardware_model,
+      firmware_target: pc.kiosk_firmware_target,
       managed_image: pc.extras?.["managed_image"] === true,
     });
 

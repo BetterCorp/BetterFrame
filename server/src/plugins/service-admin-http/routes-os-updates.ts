@@ -16,6 +16,7 @@ import {
 import { getCoordinator } from "../../shared/coordinator-registry.js";
 import type { FirmwareChannel } from "../../shared/types.js";
 import { audit } from "../../shared/audit.js";
+import { currentTenantSchema, isDefaultTenant, withDefaultTenant } from "../../shared/default-tenant.js";
 
 const ALLOWED_CHANNELS: ReadonlySet<FirmwareChannel> = new Set(["stable", "beta", "dev"]);
 
@@ -27,15 +28,17 @@ function clamp(n: number, lo: number, hi: number): number {
 export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
   // ---- List page -----------------------------------------------------------
   app.get("/admin/os-updates", async (event) => {
+    if (!isDefaultTenant(event)) return new Response(null, { status: 404 });
     const user = event.context.user!;
-    const releases = await deps.repo.listOsUpdateReleases();
+    const releases = await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.listOsUpdateReleases());
     return htmlPage(OsUpdatePage({ user: user.username, releases }));
   });
 
   // ---- Yank ---------------------------------------------------------------
   app.post("/admin/os-updates/:id/yank", async (event) => {
+    if (!isDefaultTenant(event)) return new Response(null, { status: 404 });
     const id = String(getRouterParam(event, "id"));
-    await deps.repo.yankOsUpdateRelease(id);
+    await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.yankOsUpdateRelease(id));
     await audit(deps.repo, event as any, "os_update.yank", {
       resource_type: "os_update_release",
       resource_id: id,
@@ -53,6 +56,21 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
       throw createError({ statusCode: 400, statusMessage: "invalid channel" });
     }
     const before = await deps.repo.getKioskById(id);
+    if (!before) {
+      return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
+    }
+    if (targetRaw) {
+      const compatibility = before.os_update_compatibility?.trim();
+      if (!compatibility) {
+        throw createError({ statusCode: 400, statusMessage: "kiosk OS compatibility unknown; wait for kiosk check-in" });
+      }
+      const release = await withDefaultTenant(deps.repo, currentTenantSchema(event), () =>
+        deps.repo.getOsUpdateReleaseByVersionCompatibility(targetRaw, compatibility)
+      );
+      if (!release || release.yanked_at) {
+        throw createError({ statusCode: 400, statusMessage: "target version is not available for this kiosk OS compatibility" });
+      }
+    }
     await deps.repo.setKioskOsUpdatePref(id, {
       channel: channelRaw,
       target_version: targetRaw ? targetRaw : null,
@@ -70,7 +88,7 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
       });
       coord.sendToKiosk(id, { type: "os_check", force: false });
     }
-    const releases = await deps.repo.listOsUpdateReleases();
+    const releases = await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.listOsUpdateReleases());
     return htmlFragment(KioskOsUpdatePanel({ kiosk: k, releases }));
   });
 
@@ -83,9 +101,12 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Rollouts -----------------------------------------------------------
   app.get("/admin/os-updates/rollouts", async (event) => {
+    if (!isDefaultTenant(event)) return new Response(null, { status: 404 });
     const user = event.context.user!;
-    const rollouts = await deps.repo.listOsUpdateRollouts();
-    const releases = await deps.repo.listOsUpdateReleases();
+    const [rollouts, releases] = await withDefaultTenant(deps.repo, currentTenantSchema(event), async () => Promise.all([
+      deps.repo.listOsUpdateRollouts(),
+      deps.repo.listOsUpdateReleases(),
+    ]));
     const kiosks = await deps.repo.listKiosks();
     return htmlPage(OsUpdateRolloutsPage({
       user: user.username,
@@ -96,10 +117,11 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/os-updates/rollouts/new", async (event) => {
+    if (!isDefaultTenant(event)) return new Response(null, { status: 404 });
     const body = await readBody<Record<string, string | string[]>>(event);
     const releaseId = String(body?.["release_id"] ?? "");
     if (!releaseId) throw createError({ statusCode: 400, statusMessage: "release_id required" });
-    const release = await deps.repo.getOsUpdateRelease(releaseId);
+    const release = await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.getOsUpdateRelease(releaseId));
     if (!release) throw createError({ statusCode: 404, statusMessage: "release not found" });
     const percentage = clamp(Number(body?.["percentage"] ?? 100), 1, 100);
     const targetsRaw = body?.["target_kiosk_ids"];
@@ -108,15 +130,24 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
       : typeof targetsRaw === "string" && targetsRaw
         ? targetsRaw.split(",").map((s) => s.trim()).filter((s) => s !== "")
         : [];
+    if (targets.length > 0) {
+      for (const kioskId of targets) {
+        const kiosk = await deps.repo.getKioskById(kioskId);
+        if (!kiosk) throw createError({ statusCode: 400, statusMessage: `unknown kiosk '${kioskId}'` });
+        if (kiosk.os_update_compatibility !== release.compatibility) {
+          throw createError({ statusCode: 400, statusMessage: `kiosk '${kiosk.name}' does not match OS compatibility` });
+        }
+      }
+    }
     const user = event.context.user!;
-    const rollout = await deps.repo.createOsUpdateRollout({
+    const rollout = await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.createOsUpdateRollout({
       id: randomUUID(),
       release_id: releaseId,
       target_kiosk_ids: targets,
       percentage,
       created_by: user.id ?? null,
-    });
-    await deps.repo.updateOsUpdateRolloutState(rollout.id, "active");
+    }));
+    await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.updateOsUpdateRolloutState(rollout.id, "active"));
     await audit(deps.repo, event as any, "os_update.rollout.create", {
       resource_type: "os_update_rollout",
       resource_id: rollout.id,
@@ -125,7 +156,11 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
     const coord = getCoordinator();
     if (targets.length === 0) {
       const allKiosks = await deps.repo.listKiosks();
-      for (const k of allKiosks) coord.sendToKiosk(k.id, { type: "os_check", force: false });
+      for (const k of allKiosks) {
+        if (k.os_update_compatibility === release.compatibility) {
+          coord.sendToKiosk(k.id, { type: "os_check", force: false });
+        }
+      }
     } else {
       for (const id of targets) coord.sendToKiosk(id, { type: "os_check", force: false });
     }
@@ -133,13 +168,14 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/admin/os-updates/rollouts/:id/state", async (event) => {
+    if (!isDefaultTenant(event)) return new Response(null, { status: 404 });
     const id = String(getRouterParam(event, "id"));
     const body = await readBody<{ state: string }>(event);
     const state = body?.state;
     if (state !== "paused" && state !== "active" && state !== "complete") {
       throw createError({ statusCode: 400, statusMessage: "invalid state" });
     }
-    await deps.repo.updateOsUpdateRolloutState(id, state);
+    await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.updateOsUpdateRolloutState(id, state));
     return new Response(null, { status: 302, headers: { location: "/admin/os-updates/rollouts" } });
   });
 
@@ -182,7 +218,7 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
 
     let release;
     try {
-      release = await deps.repo.createOsUpdateRelease({
+      release = await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.createOsUpdateRelease({
         id: randomUUID(),
         version,
         channel,
@@ -192,7 +228,7 @@ export function registerOsUpdateRoutes(app: H3, deps: AdminDeps): void {
         sha256: stored.sha256,
         release_notes: body.release_notes ?? null,
         uploaded_by: event.context.user?.id || null,
-      });
+      }));
     } catch (err) {
       await deps.osUpdates.removeBundle(stored.path);
       throw createError({ statusCode: 409, statusMessage: (err as Error).message });

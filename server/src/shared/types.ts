@@ -355,6 +355,8 @@ export interface Kiosk {
   hardware_model: string | null;
   os_version: string | null;
   kiosk_app_version: string | null;
+  firmware_target: string | null;
+  os_update_compatibility: string | null;
   enabled: boolean;
   paired_at: string | null;
   last_seen_at: string | null;
@@ -509,6 +511,7 @@ export interface PairingCode {
   code: string;
   kiosk_proposed_name: string | null;
   kiosk_hardware_model: string | null;
+  kiosk_firmware_target: string | null;
   kiosk_capabilities: string[];
   issued_at: string;
   expires_at: string;

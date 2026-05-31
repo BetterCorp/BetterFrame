@@ -1,7 +1,7 @@
 [Unit]
 Description=BetterFrame Kiosk (cage + betterframe-kiosk)
 Documentation=https://github.com/BetterCorp/BetterFrame
-After=systemd-user-sessions.service plymouth-quit-wait.service network-online.target seatd.service
+After=systemd-user-sessions.service network-online.target seatd.service
 Wants=network-online.target
 Conflicts=getty@tty1.service
 After=getty@tty1.service

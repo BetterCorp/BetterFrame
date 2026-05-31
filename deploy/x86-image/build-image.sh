@@ -235,11 +235,11 @@ if [ "$bf_primary" = "B" ]; then
   set default=1
 fi
 menuentry "BetterFrame A" {
-  linux /vmlinuz root=LABEL=BF_ROOT_A ro splash loglevel=4 systemd.show_status=1 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  linux /vmlinuz root=LABEL=BF_ROOT_A ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
   initrd /initrd.img
 }
 menuentry "BetterFrame B" {
-  linux /vmlinuz root=LABEL=BF_ROOT_B ro splash loglevel=4 systemd.show_status=1 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  linux /vmlinuz root=LABEL=BF_ROOT_B ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
   initrd /initrd.img
 }
 menuentry "BetterFrame A debug shell" {

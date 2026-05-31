@@ -285,6 +285,9 @@ GRUB
 install -d -m 755 /boot/efi/EFI/debian /boot/grub
 cp /boot/efi/EFI/BOOT/grub.cfg /boot/efi/EFI/debian/grub.cfg
 cp /boot/efi/EFI/betterframe/grub.cfg /boot/grub/grub.cfg
+install -d -m 755 /boot/efi/boot/grub
+cp /boot/efi/EFI/BOOT/grub.cfg /boot/efi/grub.cfg
+cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/boot/grub/grub.cfg
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable --bootloader-id=BetterFrame --no-nvram
 grub-mkstandalone \
   -O x86_64-efi \
@@ -311,7 +314,12 @@ echo "==> Copying EFI slot A to slot B"
 mkdir -p "${WORK}/esp-b"
 mount "${LOOP}p2" "${WORK}/esp-b"
 cp -a "${WORK}/root/boot/efi/." "${WORK}/esp-b/"
-sed -i 's/BF_BOOT_A/BF_BOOT_B/g' "${WORK}/esp-b/EFI/BOOT/grub.cfg"
+for cfg in \
+  "${WORK}/esp-b/grub.cfg" \
+  "${WORK}/esp-b/EFI/BOOT/grub.cfg" \
+  "${WORK}/esp-b/EFI/debian/grub.cfg"; do
+  [ -f "$cfg" ] && sed -i 's/BF_BOOT_A/BF_BOOT_B/g' "$cfg"
+done
 umount "${WORK}/esp-b"
 
 sync

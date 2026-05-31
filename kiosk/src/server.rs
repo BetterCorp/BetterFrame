@@ -540,6 +540,37 @@ pub fn report_layout_change(
         .send();
 }
 
+pub fn report_web_change(
+    server: &str,
+    key: &str,
+    tenant_slug: &str,
+    kiosk_id: &str,
+    display_id: &str,
+    view_id: Option<&str>,
+    entity_id: Option<&str>,
+    url: &str,
+) {
+    let client = reqwest::blocking::Client::new();
+    let _ = client
+        .post(format!("{server}/api/kiosk/event"))
+        .header("Authorization", format!("Bearer {key}"))
+        .json(&serde_json::json!({
+            "topic": "web-change",
+            "source_type": "system",
+            "payload": {
+                "url": url,
+                "tenant_slug": tenant_slug,
+                "tenant_key": tenant_slug,
+                "kiosk_id": kiosk_id,
+                "display_id": display_id,
+                "view_id": view_id,
+                "entity_id": entity_id,
+            },
+        }))
+        .timeout(Duration::from_secs(5))
+        .send();
+}
+
 pub fn report_kiosk_log(server: &str, key: &str, level: &str, message: &str, payload: Value) {
     let client = reqwest::blocking::Client::new();
     let _ = client

@@ -108,12 +108,25 @@ struct WebEntry {
     webview: webkit6::WebView,
     state: WarmthState,
     cooling_until: Option<Instant>,
+    event_meta: Option<WebEventMeta>,
+    last_reported_url: Option<String>,
 }
 
 /// Key for the webview pool. "web:<url>" for remote pages, "html:<hash>" for
 /// inline HTML. Same content under either form across multiple cells/layouts
 /// shares one WebView.
 type WebKey = String;
+
+#[derive(Clone, PartialEq, Eq)]
+struct WebEventMeta {
+    server_url: String,
+    kiosk_key: String,
+    tenant_slug: String,
+    kiosk_id: String,
+    display_id: String,
+    view_id: Option<String>,
+    entity_id: Option<String>,
+}
 
 thread_local! {
     /// (camera_id, badge) → PipelineEntry. Pool shared across all displays.
@@ -1657,7 +1670,15 @@ fn render_layout(display_id: &str, layout_id: &str) {
                     none_cell()
                 } else {
                     let key = html_key(html);
-                    let _ = ensure_web(key.clone(), WebSource::Html(html), server_url, kiosk_key, None);
+                    let meta = web_event_meta(&bundle, display_id, cell, &server_url, &kiosk_key);
+                    let _ = ensure_web(
+                        key.clone(),
+                        WebSource::Html(html),
+                        &server_url,
+                        &kiosk_key,
+                        None,
+                        Some(meta),
+                    );
                     web_cells.push(WebCellPos {
                         key,
                         col: cell.col,
@@ -1677,9 +1698,10 @@ fn render_layout(display_id: &str, layout_id: &str) {
                     let wv = ensure_web(
                         key.clone(),
                         WebSource::Url(url),
-                        server_url,
-                        kiosk_key,
+                        &server_url,
+                        &kiosk_key,
                         cell.local_storage.as_ref(),
+                        Some(web_event_meta(&bundle, display_id, cell, &server_url, &kiosk_key)),
                     );
                     if let Some(ref smart) = cell.smart_url {
                         let decrypt_key =
@@ -2514,6 +2536,55 @@ fn html_key(html: &str) -> WebKey {
     format!("html:{:x}", h.finish())
 }
 
+fn web_event_meta(
+    bundle: &KioskBundle,
+    display_id: &str,
+    cell: &crate::bundle::BundleCell,
+    server_url: &str,
+    kiosk_key: &str,
+) -> WebEventMeta {
+    WebEventMeta {
+        server_url: server_url.to_string(),
+        kiosk_key: kiosk_key.to_string(),
+        tenant_slug: bundle.tenant_slug.clone(),
+        kiosk_id: bundle.kiosk_id.clone(),
+        display_id: display_id.to_string(),
+        view_id: cell.view_id.clone(),
+        entity_id: cell.entity_id.clone(),
+    }
+}
+
+fn report_web_change_for_key(key: &str, url: String) {
+    if url.trim().is_empty() {
+        return;
+    }
+
+    let report = WARM_WEBVIEWS.with(|m| {
+        let mut entries = m.borrow_mut();
+        let entry = entries.get_mut(key)?;
+        if entry.last_reported_url.as_deref() == Some(url.as_str()) {
+            return None;
+        }
+        entry.last_reported_url = Some(url.clone());
+        entry.event_meta.clone().map(|meta| (meta, url.clone()))
+    });
+
+    if let Some((meta, url)) = report {
+        std::thread::spawn(move || {
+            server::report_web_change(
+                &meta.server_url,
+                &meta.kiosk_key,
+                &meta.tenant_slug,
+                &meta.kiosk_id,
+                &meta.display_id,
+                meta.view_id.as_deref(),
+                meta.entity_id.as_deref(),
+                &url,
+            );
+        });
+    }
+}
+
 /// Return a WebView for the given pool key, reusing a cached one if present.
 /// On reuse, unparent first (GTK4 forbids attaching a widget with an existing
 /// parent). On miss, build, load, and insert into the pool as Warm.
@@ -2523,11 +2594,16 @@ fn ensure_web(
     server_url: &str,
     kiosk_key: &str,
     local_storage: Option<&std::collections::HashMap<String, String>>,
+    event_meta: Option<WebEventMeta>,
 ) -> webkit6::WebView {
     let cached = WARM_WEBVIEWS.with(|m| m.borrow().get(&key).map(|e| e.webview.clone()));
     if let Some(wv) = cached {
         WARM_WEBVIEWS.with(|m| {
             if let Some(e) = m.borrow_mut().get_mut(&key) {
+                if e.event_meta != event_meta {
+                    e.last_reported_url = None;
+                }
+                e.event_meta = event_meta.clone();
                 if e.state == WarmthState::Cooling {
                     info!("webview {key}: rescued from cooling → warm");
                     e.state = WarmthState::Warm;
@@ -2535,6 +2611,9 @@ fn ensure_web(
                 }
             }
         });
+        if let Some(url) = webkit6::prelude::WebViewExt::uri(&wv).map(|s| s.to_string()) {
+            report_web_change_for_key(&key, url);
+        }
         return wv;
     }
 
@@ -2564,6 +2643,18 @@ fn ensure_web(
             );
             ucm.add_style_sheet(&style);
         }
+    }
+
+    {
+        use webkit6::prelude::*;
+        let event_key = key.clone();
+        wv.connect_load_changed(move |wv, event| {
+            if event == webkit6::LoadEvent::Finished {
+                if let Some(url) = wv.uri().map(|s| s.to_string()) {
+                    report_web_change_for_key(&event_key, url);
+                }
+            }
+        });
     }
 
     if let Some(ls) = local_storage {
@@ -2605,6 +2696,8 @@ fn ensure_web(
                 webview: wv.clone(),
                 state: WarmthState::Warm,
                 cooling_until: None,
+                event_meta,
+                last_reported_url: None,
             },
         );
     });

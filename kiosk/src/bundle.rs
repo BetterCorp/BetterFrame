@@ -136,6 +136,10 @@ pub struct BundleLayout {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleCell {
+    #[serde(default, deserialize_with = "de_flexible_id_opt")]
+    pub view_id: Option<String>,
+    #[serde(default, deserialize_with = "de_flexible_id_opt")]
+    pub entity_id: Option<String>,
     pub row: u32,
     pub col: u32,
     pub row_span: u32,

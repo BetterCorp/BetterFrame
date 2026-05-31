@@ -66,6 +66,8 @@ export interface BundleCamera {
 }
 
 export interface BundleCell {
+  view_id: string;
+  entity_id: string | null;
   row: number;
   col: number;
   row_span: number;
@@ -274,6 +276,8 @@ export async function generateBundle(
           }
         }
         bundleCells.push({
+          view_id: c.id,
+          entity_id: c.entity_id,
           row: c.row,
           col: c.col,
           row_span: c.row_span,

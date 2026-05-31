@@ -8,10 +8,8 @@ set -euo pipefail
 # Pi-gen's built-in user setup reinstalls the firstboot wizard AFTER
 # custom stages run. We create the admin user ourselves to avoid that.
 if ! id -u bfadmin >/dev/null 2>&1; then
-  useradd -m -s /bin/bash -G sudo bfadmin
+  useradd -m -s /usr/sbin/nologin bfadmin
 fi
-echo "bfadmin:betterframe" | chpasswd
-passwd -e bfadmin
 
 # --- bfkiosk user ---
 if ! id -u bfkiosk >/dev/null 2>&1; then
@@ -55,6 +53,8 @@ install -m 755 /tmp/bf-files/betterframe-expand-data.sh \
   /usr/local/sbin/betterframe-expand-data.sh
 install -m 755 /tmp/bf-files/betterframe-apply-managed-config.sh \
   /usr/local/sbin/betterframe-apply-managed-config.sh
+install -m 755 /tmp/bf-files/randomize-image-users.sh \
+  /usr/local/sbin/randomize-image-users.sh
 install -d -m 755 /etc/sudoers.d
 cat > /etc/sudoers.d/betterframe-managed-config <<'SUDOERS'
 bfkiosk ALL=(root) NOPASSWD: /usr/local/sbin/betterframe-apply-managed-config.sh *
@@ -93,16 +93,6 @@ install -m 644 /tmp/bf-files/de.pengutronix.rauc.conf \
 # Replaces any default nftables config Debian ships.
 install -m 644 /tmp/bf-files/nftables.conf /etc/nftables.conf
 systemctl enable nftables.service
-
-# --- First-boot password rotation ---
-# Replaces the image-default bfadmin password with a per-device random one
-# the first time the kiosk boots. Stored at /etc/betterframe/admin-password
-# (0400 root) AND printed to tty1 banner once. See script for details.
-install -m 644 /tmp/bf-files/betterframe-firstboot.service \
-  /etc/systemd/system/betterframe-firstboot.service
-install -m 755 /tmp/bf-files/betterframe-firstboot.sh \
-  /usr/local/sbin/betterframe-firstboot.sh
-systemctl enable betterframe-firstboot.service
 
 # Default env file — operator may edit on first boot to point at their server.
 cat > /etc/default/betterframe-kiosk <<'EOF'
@@ -200,6 +190,7 @@ systemctl enable betterframe-kiosk.service
 systemctl enable betterframe-rauc-mark-good.service
 systemctl enable betterframe-expand-data.service
 systemctl enable rauc.service 2>/dev/null || true
+/usr/local/sbin/randomize-image-users.sh bfadmin bfkiosk
 
 # Boot to multi-user, no display manager, no welcome wizard, no getty on tty1.
 systemctl set-default multi-user.target

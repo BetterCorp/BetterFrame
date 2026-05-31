@@ -28,7 +28,6 @@ WorkingDirectory=/home/bfkiosk
 EnvironmentFile=-/etc/default/betterframe-kiosk
 Environment=XDG_SESSION_TYPE=wayland
 Environment=XDG_SESSION_CLASS=user
-Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=GST_DEBUG=1
 # Cursor: cage/wlroots draws a sprite in the gap between compositor start
 # and first kiosk frame. Collapse to 1px transparent + force software
@@ -43,7 +42,7 @@ Environment=WLR_NO_HARDWARE_CURSORS=1
 # Let the unprivileged kiosk process control the Pi fan PWM sysfs files.
 ExecStartPre=+/bin/sh -c 'for d in /sys/class/hwmon/hwmon*; do [ -e "$d/pwm1" ] || continue; chgrp bfkiosk "$d/pwm1" "$d/pwm1_enable" 2>/dev/null || true; chmod g+w "$d/pwm1" "$d/pwm1_enable" 2>/dev/null || true; done'
 ExecStartPre=+/usr/local/sbin/betterframe-firmware-rollback.sh
-ExecStart=/usr/bin/cage -s -- /opt/betterframe/kiosk/betterframe-kiosk
+ExecStart=/bin/sh -lc 'export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"; exec /usr/bin/cage -s -- /opt/betterframe/kiosk/betterframe-kiosk'
 Restart=always
 RestartSec=2
 # If cage/kiosk exits or crashes and systemd can't restart it after the

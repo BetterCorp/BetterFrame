@@ -79,9 +79,8 @@ cp "${REPO_ROOT}/deploy/systemd/betterframe-rauc-mark-good.service" "${WORK}/roo
 cp "${REPO_ROOT}/deploy/systemd/betterframe-rauc-mark-good.sh" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-expand-data.service" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-expand-data.sh" "${WORK}/root/tmp/bf-files/"
-cp "${REPO_ROOT}/deploy/systemd/betterframe-firstboot.service" "${WORK}/root/tmp/bf-files/"
-cp "${REPO_ROOT}/deploy/systemd/betterframe-firstboot.sh" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-apply-managed-config.sh" "${WORK}/root/tmp/bf-files/"
+cp "${REPO_ROOT}/deploy/scripts/randomize-image-users.sh" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/tmpfiles/betterframe-kiosk.conf" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/udev/90-betterframe-no-hid.rules" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/pam.d/cage" "${WORK}/root/tmp/bf-files/cage.pam"
@@ -92,6 +91,9 @@ cp "${REPO_ROOT}/deploy/dbus/de.pengutronix.rauc.service" "${WORK}/root/tmp/bf-f
 cp "${REPO_ROOT}/deploy/dbus/de.pengutronix.rauc.conf" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/nftables/nftables.conf" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/cursor-theme/betterframe-empty/cursor.theme" "${WORK}/root/tmp/bf-files/"
+cp "${REPO_ROOT}/deploy/plymouth/betterframe/betterframe.plymouth" "${WORK}/root/tmp/bf-files/"
+cp "${REPO_ROOT}/deploy/plymouth/betterframe/betterframe.script" "${WORK}/root/tmp/bf-files/"
+cp "${REPO_ROOT}/server/src/web-static/betterframe-logo.svg" "${WORK}/root/tmp/bf-files/"
 if [ -f "${REPO_ROOT}/deploy/rauc/ca-cert.pem" ]; then
   cp "${REPO_ROOT}/deploy/rauc/ca-cert.pem" "${WORK}/root/tmp/bf-files/rauc-keyring.pem"
 fi
@@ -127,9 +129,7 @@ apt-get -y install --no-install-recommends \
 locale-gen en_US.UTF-8 || true
 update-locale LANG=en_US.UTF-8 || true
 
-if ! id -u bfadmin >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo bfadmin; fi
-echo "bfadmin:betterframe" | chpasswd
-passwd -e bfadmin
+if ! id -u bfadmin >/dev/null 2>&1; then useradd -m -s /usr/sbin/nologin bfadmin; fi
 if ! id -u bfkiosk >/dev/null 2>&1; then useradd -m -s /usr/sbin/nologin bfkiosk; fi
 for grp in video render input audio systemd-journal; do
   getent group "$grp" >/dev/null && usermod -a -G "$grp" bfkiosk
@@ -149,9 +149,8 @@ install -m 644 /tmp/bf-files/betterframe-rauc-mark-good.service /etc/systemd/sys
 install -m 755 /tmp/bf-files/betterframe-rauc-mark-good.sh /usr/local/sbin/betterframe-rauc-mark-good.sh
 install -m 644 /tmp/bf-files/betterframe-expand-data.service /etc/systemd/system/betterframe-expand-data.service
 install -m 755 /tmp/bf-files/betterframe-expand-data.sh /usr/local/sbin/betterframe-expand-data.sh
-install -m 644 /tmp/bf-files/betterframe-firstboot.service /etc/systemd/system/betterframe-firstboot.service
-install -m 755 /tmp/bf-files/betterframe-firstboot.sh /usr/local/sbin/betterframe-firstboot.sh
 install -m 755 /tmp/bf-files/betterframe-apply-managed-config.sh /usr/local/sbin/betterframe-apply-managed-config.sh
+install -m 755 /tmp/bf-files/randomize-image-users.sh /usr/local/sbin/randomize-image-users.sh
 install -m 644 /tmp/bf-files/betterframe-kiosk.conf /etc/tmpfiles.d/betterframe-kiosk.conf
 install -m 644 /tmp/bf-files/90-betterframe-no-hid.rules /etc/udev/rules.d/90-betterframe-no-hid.rules
 
@@ -177,6 +176,12 @@ BF_ENABLE_OS_OTA=1
 BF_ENABLE_ONVIF_EVENTS=1
 BF_FIRMWARE_CHANNEL=dev
 EOF
+
+install -d -m 755 /usr/share/plymouth/themes/betterframe
+install -m 644 /tmp/bf-files/betterframe.plymouth /usr/share/plymouth/themes/betterframe/betterframe.plymouth
+install -m 644 /tmp/bf-files/betterframe.script /usr/share/plymouth/themes/betterframe/betterframe.script
+rsvg-convert -w 480 /tmp/bf-files/betterframe-logo.svg -o /usr/share/plymouth/themes/betterframe/logo.png
+plymouth-set-default-theme betterframe || true
 
 CURSOR_DIR=/usr/share/icons/betterframe-empty/cursors
 install -d -m 755 "$CURSOR_DIR"
@@ -205,13 +210,11 @@ NAutoVTs=0
 ReserveVT=0
 LOGIND
 
-systemctl enable systemd-timesyncd seatd nftables betterframe-kiosk betterframe-rauc-mark-good betterframe-expand-data betterframe-firstboot rauc 2>/dev/null || true
+systemctl enable systemd-timesyncd seatd nftables betterframe-kiosk betterframe-rauc-mark-good betterframe-expand-data rauc 2>/dev/null || true
 systemctl set-default multi-user.target
 for dm in lightdm gdm gdm3 sddm; do systemctl disable "$dm.service" 2>/dev/null || true; systemctl mask "$dm.service" 2>/dev/null || true; done
-# Keep a local debug console on PC images until the x86 boot path is proven.
-for tty in 1 3 4 5 6; do systemctl disable "getty@tty${tty}.service" 2>/dev/null || true; systemctl mask "getty@tty${tty}.service" 2>/dev/null || true; done
-systemctl enable getty@tty2.service 2>/dev/null || true
-systemctl mask serial-getty@.service ctrl-alt-del.target 2>/dev/null || true
+for tty in 1 2 3 4 5 6; do systemctl disable "getty@tty${tty}.service" 2>/dev/null || true; systemctl mask "getty@tty${tty}.service" 2>/dev/null || true; done
+systemctl mask serial-getty@.service getty@.service ctrl-alt-del.target emergency.service rescue.service emergency.target rescue.target 2>/dev/null || true
 systemctl disable ssh.service ssh.socket 2>/dev/null || true
 systemctl mask ssh.service ssh.socket 2>/dev/null || true
 
@@ -223,7 +226,7 @@ INITRD="$(basename "$(ls -1 /boot/initrd.img-* | sort -V | tail -n1)")"
 cp "/boot/${KERNEL}" /boot/efi/vmlinuz
 cp "/boot/${INITRD}" /boot/efi/initrd.img
 cat > /boot/efi/EFI/betterframe/grub.cfg <<'GRUB'
-set timeout=5
+set timeout=1
 set default=0
 if [ -f /EFI/betterframe/grubenv ]; then
   load_env -f /EFI/betterframe/grubenv bf_primary
@@ -232,11 +235,11 @@ if [ "$bf_primary" = "B" ]; then
   set default=1
 fi
 menuentry "BetterFrame A" {
-  linux /vmlinuz root=LABEL=BF_ROOT_A ro loglevel=7 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  linux /vmlinuz root=LABEL=BF_ROOT_A ro quiet splash plymouth.ignore-serial-consoles loglevel=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
   initrd /initrd.img
 }
 menuentry "BetterFrame B" {
-  linux /vmlinuz root=LABEL=BF_ROOT_B ro loglevel=7 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  linux /vmlinuz root=LABEL=BF_ROOT_B ro quiet splash plymouth.ignore-serial-consoles loglevel=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
   initrd /initrd.img
 }
 menuentry "BetterFrame A debug shell" {
@@ -258,6 +261,7 @@ if [ -f /usr/lib/shim/shimx64.efi.signed ] && [ -f /usr/lib/grub/x86_64-efi-sign
 fi
 
 apt-get clean
+/usr/local/sbin/randomize-image-users.sh bfadmin bfkiosk
 rm -rf /var/lib/apt/lists/* /tmp/bf-files /tmp/betterframe-kiosk /tmp/install-betterframe-x86.sh
 CHROOT
 

@@ -18,6 +18,7 @@ wlr-randr
 ca-certificates
 curl
 gnupg
+openssl
 rauc
 dosfstools
 nftables

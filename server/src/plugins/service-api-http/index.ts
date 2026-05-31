@@ -314,7 +314,11 @@ async function requireIoBox(
 async function getClusterKey(repo: Repository, secrets: SecretsApi): Promise<string | undefined> {
   const enc = await repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
   if (!enc) return undefined;
-  return secrets.decryptString(enc, "cluster");
+  try {
+    return secrets.decryptString(enc, "cluster");
+  } catch {
+    return undefined;
+  }
 }
 
 // ---- Pairing routes ---------------------------------------------------------

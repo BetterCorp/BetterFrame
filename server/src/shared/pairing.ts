@@ -239,7 +239,14 @@ export async function confirmPairing(
   // that don't understand encrypt_key yet). Remove once all kiosks are
   // on the new binary.
   const clusterKeyEncrypted = await repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
-  const clusterKey = clusterKeyEncrypted ? secrets.decryptString(clusterKeyEncrypted, "cluster") : undefined;
+  let clusterKey: string | undefined;
+  if (clusterKeyEncrypted) {
+    try {
+      clusterKey = secrets.decryptString(clusterKeyEncrypted, "cluster");
+    } catch {
+      clusterKey = undefined;
+    }
+  }
 
   await repo.markPairingCodeClaimed(input.code, kioskId, {
     kiosk_key_plaintext: kioskKeyPlaintext,

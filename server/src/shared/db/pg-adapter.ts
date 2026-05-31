@@ -8,6 +8,7 @@
  * Pool size: default 10 — configurable via pgPoolMax in sec-config.yaml.
  */
 import { Pool, type PoolClient } from "pg";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { DbAdapter, RunResult, Row, SqlValue } from "./db-adapter.js";
 
@@ -16,6 +17,7 @@ export class PgAdapter implements DbAdapter {
   private currentTxClient: PoolClient | null = null;
   private txDepth = 0;
   private searchPath = "public";
+  private readonly searchPathContext = new AsyncLocalStorage<string>();
 
   constructor(connectionString: string, poolMax: number = 10) {
     this.pool = new Pool({
@@ -71,7 +73,8 @@ export class PgAdapter implements DbAdapter {
     if (this.currentTxClient) return fn(this.currentTxClient);
     const client = await this.pool.connect();
     try {
-      await client.query(`SET search_path TO ${this.searchPath}, public`);
+      const searchPath = this.searchPathContext.getStore() ?? this.searchPath;
+      await client.query(`SET search_path TO ${searchPath}, public`);
       return await fn(client);
     } finally {
       client.release();
@@ -136,7 +139,9 @@ export class PgAdapter implements DbAdapter {
     this.currentTxClient = client;
     this.txDepth = 1;
     try {
+      const searchPath = this.searchPathContext.getStore() ?? this.searchPath;
       await client.query("BEGIN");
+      await client.query(`SET LOCAL search_path TO ${searchPath}, public`);
       const result = await fn();
       await client.query("COMMIT");
       return result;
@@ -156,7 +161,7 @@ export class PgAdapter implements DbAdapter {
     if (!/^[a-z_][a-z0-9_]*$/i.test(schema)) {
       throw new Error(`invalid schema name: ${schema}`);
     }
-    this.searchPath = schema;
+    this.searchPathContext.enterWith(schema);
   }
 
   async close(): Promise<void> {

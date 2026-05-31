@@ -208,8 +208,10 @@ LOGIND
 systemctl enable systemd-timesyncd seatd nftables betterframe-kiosk betterframe-rauc-mark-good betterframe-expand-data betterframe-firstboot rauc 2>/dev/null || true
 systemctl set-default multi-user.target
 for dm in lightdm gdm gdm3 sddm; do systemctl disable "$dm.service" 2>/dev/null || true; systemctl mask "$dm.service" 2>/dev/null || true; done
-for tty in 1 2 3 4 5 6; do systemctl disable "getty@tty${tty}.service" 2>/dev/null || true; systemctl mask "getty@tty${tty}.service" 2>/dev/null || true; done
-systemctl mask serial-getty@.service getty@.service ctrl-alt-del.target emergency.service rescue.service emergency.target rescue.target 2>/dev/null || true
+# Keep a local debug console on PC images until the x86 boot path is proven.
+for tty in 1 3 4 5 6; do systemctl disable "getty@tty${tty}.service" 2>/dev/null || true; systemctl mask "getty@tty${tty}.service" 2>/dev/null || true; done
+systemctl enable getty@tty2.service 2>/dev/null || true
+systemctl mask serial-getty@.service ctrl-alt-del.target 2>/dev/null || true
 systemctl disable ssh.service ssh.socket 2>/dev/null || true
 systemctl mask ssh.service ssh.socket 2>/dev/null || true
 
@@ -221,7 +223,7 @@ INITRD="$(basename "$(ls -1 /boot/initrd.img-* | sort -V | tail -n1)")"
 cp "/boot/${KERNEL}" /boot/efi/vmlinuz
 cp "/boot/${INITRD}" /boot/efi/initrd.img
 cat > /boot/efi/EFI/betterframe/grub.cfg <<'GRUB'
-set timeout=0
+set timeout=5
 set default=0
 if [ -f /EFI/betterframe/grubenv ]; then
   load_env -f /EFI/betterframe/grubenv bf_primary
@@ -230,11 +232,15 @@ if [ "$bf_primary" = "B" ]; then
   set default=1
 fi
 menuentry "BetterFrame A" {
-  linux /vmlinuz root=LABEL=BF_ROOT_A ro quiet splash plymouth.ignore-serial-consoles loglevel=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  linux /vmlinuz root=LABEL=BF_ROOT_A ro loglevel=7 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
   initrd /initrd.img
 }
 menuentry "BetterFrame B" {
-  linux /vmlinuz root=LABEL=BF_ROOT_B ro quiet splash plymouth.ignore-serial-consoles loglevel=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  linux /vmlinuz root=LABEL=BF_ROOT_B ro loglevel=7 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  initrd /initrd.img
+}
+menuentry "BetterFrame A debug shell" {
+  linux /vmlinuz root=LABEL=BF_ROOT_A rw loglevel=7 systemd.show_status=1 plymouth.enable=0 systemd.unit=multi-user.target
   initrd /initrd.img
 }
 GRUB
@@ -242,10 +248,13 @@ cat > /boot/efi/EFI/BOOT/grub.cfg <<'GRUB'
 search --no-floppy --label BF_BOOT_A --set=root
 configfile /EFI/betterframe/grub.cfg
 GRUB
+install -d -m 755 /boot/efi/EFI/debian /boot/grub
+cp /boot/efi/EFI/BOOT/grub.cfg /boot/efi/EFI/debian/grub.cfg
+cp /boot/efi/EFI/betterframe/grub.cfg /boot/grub/grub.cfg
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable --bootloader-id=BetterFrame --no-nvram
 if [ -f /usr/lib/shim/shimx64.efi.signed ] && [ -f /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed ]; then
-  cp /usr/lib/shim/shimx64.efi.signed /boot/efi/EFI/BOOT/BOOTX64.EFI
-  cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /boot/efi/EFI/BOOT/grubx64.efi
+  cp /usr/lib/shim/shimx64.efi.signed /boot/efi/EFI/BOOT/BOOTX64-SHIM.EFI
+  cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /boot/efi/EFI/BOOT/grubx64-signed.efi
 fi
 
 apt-get clean

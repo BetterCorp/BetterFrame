@@ -2,8 +2,8 @@
  * Tenant management routes — CRUD for tenants + tenant switching.
  * PG-only feature. On SQLite these routes return 404.
  */
-import { type H3, readBody, getRouterParam, getCookie } from "h3";
-import { htmlPage, redirectWithCookie } from "./html-response.js";
+import { type H3, readBody, getRouterParam } from "h3";
+import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { createTenantSchema } from "../../shared/db/init.js";
 import {
@@ -157,12 +157,34 @@ export function registerTenantRoutes(app: H3, deps: AdminDeps): void {
 
     // Validate the tenant exists and is active.
     const tenant = await deps.repo.getTenantBySlug(slug);
-    const targetSlug = tenant?.is_active ? tenant.slug : "default";
+    const target = tenant?.is_active ? tenant : await deps.repo.getTenantBySlug("default");
+    const targetSlug = target?.slug ?? "default";
 
-    // Set the bf_tenant cookie. MaxAge = 1 year (long-lived, session-like).
-    return redirectWithCookie(
-      "/admin/",
-      { name: "bf_tenant", value: targetSlug, maxAge: 365 * 24 * 60 * 60 },
+    if (target) {
+      await deps.repo.adapter.setSearchPath(target.schema_name);
+    }
+    const currentUser = event.context.user!;
+    const targetUser = await deps.repo.getUserById(currentUser.id)
+      ?? await deps.repo.getUserByUsername(currentUser.username);
+    if (!targetUser) {
+      return new Response("user not available in target tenant", { status: 401 });
+    }
+    const { cookieValue } = await deps.auth.createSession({
+      user: targetUser,
+      userAgent: event.req.headers.get("user-agent"),
+      ipAddress: event.req.headers.get("x-real-ip"),
+      totpPending: false,
+    });
+
+    const headers = new Headers({ location: "/admin/" });
+    headers.append(
+      "set-cookie",
+      `bf_tenant=${targetSlug}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${365 * 24 * 60 * 60}`,
     );
+    headers.append(
+      "set-cookie",
+      `${deps.cookieName}=${cookieValue}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${deps.auth.config.sessionMaxSeconds}`,
+    );
+    return new Response(null, { status: 302, headers });
   });
 }

@@ -291,14 +291,11 @@ cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/boot/grub/grub.cfg
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable --bootloader-id=BetterFrame --no-nvram
 grub-mkstandalone \
   -O x86_64-efi \
-  -o /boot/efi/EFI/BOOT/BOOTX64-UNSIGNED-STANDALONE.EFI \
+  -o /boot/efi/EFI/BOOT/BOOTX64.EFI \
   "boot/grub/grub.cfg=/tmp/betterframe-embedded-grub.cfg"
 if [ -f /usr/lib/shim/shimx64.efi.signed ] && [ -f /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed ]; then
-  cp /usr/lib/shim/shimx64.efi.signed /boot/efi/EFI/BOOT/BOOTX64.EFI
-  cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /boot/efi/EFI/BOOT/grubx64.efi
-else
-  echo "WARNING: signed shim/grub missing; using unsigned standalone GRUB fallback" >&2
-  cp /boot/efi/EFI/BOOT/BOOTX64-UNSIGNED-STANDALONE.EFI /boot/efi/EFI/BOOT/BOOTX64.EFI
+  cp /usr/lib/shim/shimx64.efi.signed /boot/efi/EFI/BOOT/BOOTX64-SHIM.EFI
+  cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /boot/efi/EFI/BOOT/grubx64-signed.efi
 fi
 
 apt-get clean

@@ -85,7 +85,7 @@ cp "${REPO_ROOT}/deploy/tmpfiles/betterframe-kiosk.conf" "${WORK}/root/tmp/bf-fi
 cp "${REPO_ROOT}/deploy/udev/90-betterframe-no-hid.rules" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/pam.d/cage" "${WORK}/root/tmp/bf-files/cage.pam"
 cp "${REPO_ROOT}/deploy/rauc/system-x86.conf" "${WORK}/root/tmp/bf-files/rauc-system.conf"
-cp "${REPO_ROOT}/deploy/rauc/betterframe-rauc-boot-grub.sh" "${WORK}/root/tmp/bf-files/betterframe-rauc-boot.sh"
+cp "${REPO_ROOT}/deploy/rauc/betterframe-rauc-boot-systemd.sh" "${WORK}/root/tmp/bf-files/betterframe-rauc-boot.sh"
 cp "${REPO_ROOT}/deploy/systemd/rauc.service" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/dbus/de.pengutronix.rauc.service" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/dbus/de.pengutronix.rauc.conf" "${WORK}/root/tmp/bf-files/"
@@ -120,6 +120,7 @@ apt-get -y install --no-install-recommends \
   linux-image-amd64 systemd-sysv dbus sudo locales ca-certificates curl gnupg \
   python3 initramfs-tools \
   grub-efi-amd64 grub-efi-amd64-bin grub-common shim-signed grub-efi-amd64-signed \
+  systemd-boot systemd-boot-efi systemd-boot-efi-amd64-signed \
   cage seatd plymouth plymouth-themes librsvg2-bin \
   libgtk-4-1 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libwebkitgtk-6.0-4 \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
@@ -247,6 +248,30 @@ menuentry "BetterFrame A debug shell" {
   initrd /initrd.img
 }
 GRUB
+install -d -m 755 /boot/efi/loader/entries
+cat > /boot/efi/loader/loader.conf <<'LOADER'
+default betterframe-a.conf
+timeout 3
+console-mode max
+LOADER
+cat > /boot/efi/loader/entries/betterframe-a.conf <<'LOADER'
+title BetterFrame A
+linux /vmlinuz
+initrd /initrd.img
+options root=LABEL=BF_ROOT_A ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+LOADER
+cat > /boot/efi/loader/entries/betterframe-b.conf <<'LOADER'
+title BetterFrame B
+linux /vmlinuz
+initrd /initrd.img
+options root=LABEL=BF_ROOT_B ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+LOADER
+cat > /boot/efi/loader/entries/betterframe-a-debug.conf <<'LOADER'
+title BetterFrame A debug shell
+linux /vmlinuz
+initrd /initrd.img
+options root=LABEL=BF_ROOT_A rw loglevel=7 systemd.show_status=1 plymouth.enable=0 init=/bin/bash
+LOADER
 cat > /boot/efi/EFI/BOOT/grub.cfg <<'GRUB'
 search --no-floppy --label BF_BOOT_A --set=root
 configfile /EFI/betterframe/grub.cfg
@@ -291,8 +316,18 @@ cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/boot/grub/grub.cfg
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable --bootloader-id=BetterFrame --no-nvram
 grub-mkstandalone \
   -O x86_64-efi \
-  -o /boot/efi/EFI/BOOT/BOOTX64.EFI \
+  -o /boot/efi/EFI/BOOT/BOOTX64-GRUB-STANDALONE.EFI \
   "boot/grub/grub.cfg=/tmp/betterframe-embedded-grub.cfg"
+systemd_boot="$(find /usr/lib -path '*systemd*boot*efi*' -name 'systemd-bootx64.efi.signed' | sort | head -n1)"
+if [ -z "$systemd_boot" ]; then
+  systemd_boot="$(find /usr/lib -path '*systemd*boot*efi*' -name 'systemd-bootx64.efi' | sort | head -n1)"
+fi
+if [ -n "$systemd_boot" ]; then
+  cp "$systemd_boot" /boot/efi/EFI/BOOT/BOOTX64.EFI
+else
+  echo "WARNING: signed systemd-boot missing; using unsigned standalone GRUB fallback" >&2
+  cp /boot/efi/EFI/BOOT/BOOTX64-GRUB-STANDALONE.EFI /boot/efi/EFI/BOOT/BOOTX64.EFI
+fi
 if [ -f /usr/lib/shim/shimx64.efi.signed ] && [ -f /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed ]; then
   cp /usr/lib/shim/shimx64.efi.signed /boot/efi/EFI/BOOT/BOOTX64-SHIM.EFI
   cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /boot/efi/EFI/BOOT/grubx64-signed.efi

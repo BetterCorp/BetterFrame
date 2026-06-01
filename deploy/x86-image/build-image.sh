@@ -11,6 +11,9 @@ WORK="$(mktemp -d)"
 trap 'set +e; cleanup' EXIT
 
 cleanup() {
+  if [ -d "${WORK}/root" ]; then
+    umount -R "${WORK}/root" 2>/dev/null || true
+  fi
   for p in dev/pts dev proc sys run boot/efi; do
     if mountpoint -q "${WORK}/root/${p}"; then umount -lf "${WORK}/root/${p}"; fi
   done
@@ -120,7 +123,7 @@ apt-get -y install --no-install-recommends \
   linux-image-amd64 systemd-sysv dbus sudo locales ca-certificates curl gnupg \
   python3 initramfs-tools \
   grub-efi-amd64 grub-efi-amd64-bin grub-common shim-signed grub-efi-amd64-signed \
-  systemd-boot systemd-boot-efi systemd-boot-efi-amd64-signed \
+  systemd-boot-efi systemd-boot-efi-amd64-signed \
   cage seatd plymouth plymouth-themes librsvg2-bin \
   libgtk-4-1 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libwebkitgtk-6.0-4 \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \

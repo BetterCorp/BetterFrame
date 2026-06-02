@@ -1,5 +1,5 @@
 [update]
-compatible=betterframe-rpi5-aarch64
+compatible=@COMPATIBILITY@
 version=@VERSION@
 description=BetterFrame OS @VERSION@
 build=@GIT_SHA@

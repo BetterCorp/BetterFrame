@@ -7,7 +7,8 @@
 #
 # Usage:
 #   build-bundle.sh <rootfs.ext4> <bootfs.vfat> <out.raucb> \
-#                   <version> <git_sha> <signing_cert.pem> <signing_key.pem>
+#                   <version> <git_sha> <signing_cert.pem> <signing_key.pem> \
+#                   [compatibility]
 set -euo pipefail
 
 ROOTFS_IN="${1:?rootfs.ext4 path required}"
@@ -17,6 +18,7 @@ VERSION="${4:?version required}"
 GIT_SHA="${5:?git sha required}"
 SIGNING_CERT="${6:?signing cert path required}"
 SIGNING_KEY="${7:?signing key path required}"
+COMPATIBILITY="${8:-betterframe-rpi5-aarch64}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST_IN="${SCRIPT_DIR}/manifest.raucm.in"
@@ -40,6 +42,7 @@ chmod +x "${STAGE}/hook.sh"
 echo "==> Rendering manifest"
 sed -e "s|@VERSION@|${VERSION}|g" \
     -e "s|@GIT_SHA@|${GIT_SHA}|g" \
+    -e "s|@COMPATIBILITY@|${COMPATIBILITY}|g" \
     "$MANIFEST_IN" > "${STAGE}/manifest.raucm"
 
 ls -la "$STAGE"

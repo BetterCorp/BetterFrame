@@ -4,6 +4,8 @@ set -euo pipefail
 KIOSK_BIN="${1:?kiosk binary path required}"
 OUT_IMG_XZ="${2:?output .img.xz path required}"
 VERSION="${3:?version required}"
+ROOTFS_OUT="${4:-}"
+BOOTFS_OUT="${5:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -59,6 +61,16 @@ mkfs.ext4 -F -L BF_ROOT_A "${LOOP}p3"
 mkfs.ext4 -F -L BF_ROOT_B "${LOOP}p4"
 mkfs.ext4 -F -L BF_DATA "${LOOP}p5"
 
+partuuid() {
+  blkid -s PARTUUID -o value "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+PARTUUID_BOOT_A="$(partuuid "${LOOP}p1")"
+PARTUUID_BOOT_B="$(partuuid "${LOOP}p2")"
+PARTUUID_ROOT_A="$(partuuid "${LOOP}p3")"
+PARTUUID_ROOT_B="$(partuuid "${LOOP}p4")"
+PARTUUID_DATA="$(partuuid "${LOOP}p5")"
+
 mkdir -p "${WORK}/root"
 mount "${LOOP}p3" "${WORK}/root"
 mkdir -p "${WORK}/root/boot/efi"
@@ -100,11 +112,18 @@ cp "${REPO_ROOT}/server/src/web-static/betterframe-logo.svg" "${WORK}/root/tmp/b
 if [ -f "${REPO_ROOT}/deploy/rauc/ca-cert.pem" ]; then
   cp "${REPO_ROOT}/deploy/rauc/ca-cert.pem" "${WORK}/root/tmp/bf-files/rauc-keyring.pem"
 fi
+sed -i \
+  -e "s|/dev/disk/by-partlabel/BF_BOOT_A|/dev/disk/by-partuuid/${PARTUUID_BOOT_A}|g" \
+  -e "s|/dev/disk/by-partlabel/BF_BOOT_B|/dev/disk/by-partuuid/${PARTUUID_BOOT_B}|g" \
+  -e "s|/dev/disk/by-partlabel/BF_ROOT_A|/dev/disk/by-partuuid/${PARTUUID_ROOT_A}|g" \
+  -e "s|/dev/disk/by-partlabel/BF_ROOT_B|/dev/disk/by-partuuid/${PARTUUID_ROOT_B}|g" \
+  "${WORK}/root/tmp/bf-files/rauc-system.conf" \
+  "${WORK}/root/tmp/bf-files/betterframe-rauc-boot.sh"
 
-cat > "${WORK}/root/etc/fstab" <<'FSTAB'
-LABEL=BF_BOOT_A  /boot/efi             vfat  defaults  0  2
-LABEL=BF_ROOT_A  /                    ext4  defaults,noatime  0  1
-LABEL=BF_DATA    /var/lib/betterframe ext4  defaults,noatime,nofail  0  2
+cat > "${WORK}/root/etc/fstab" <<FSTAB
+PARTUUID=${PARTUUID_BOOT_A}  /boot/efi             vfat  defaults  0  2
+PARTUUID=${PARTUUID_ROOT_A}  /                    ext4  defaults,noatime  0  1
+PARTUUID=${PARTUUID_DATA}    /var/lib/betterframe ext4  defaults,noatime,nofail  0  2
 FSTAB
 
 printf 'betterframe-kiosk\n' > "${WORK}/root/etc/hostname"
@@ -231,6 +250,7 @@ cp "/boot/${INITRD}" /boot/efi/initrd.img
 cat > /boot/efi/EFI/betterframe/grub.cfg <<'GRUB'
 set timeout=3
 set default=0
+search --no-floppy --partuuid @PARTUUID_BOOT_A@ --set=root
 if [ -f /EFI/betterframe/grubenv ]; then
   load_env -f /EFI/betterframe/grubenv bf_primary
 fi
@@ -238,30 +258,27 @@ if [ "$bf_primary" = "B" ]; then
   set default=1
 fi
 menuentry "BetterFrame A" {
-  linux /vmlinuz root=LABEL=BF_ROOT_A ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  linux /vmlinuz root=PARTUUID=@PARTUUID_ROOT_A@ ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
   initrd /initrd.img
 }
 menuentry "BetterFrame B" {
-  linux /vmlinuz root=LABEL=BF_ROOT_B ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  linux /vmlinuz root=PARTUUID=@PARTUUID_ROOT_B@ ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
   initrd /initrd.img
 }
 menuentry "BetterFrame A debug shell" {
-  linux /vmlinuz root=LABEL=BF_ROOT_A rw loglevel=7 systemd.show_status=1 plymouth.enable=0 init=/bin/bash
+  linux /vmlinuz root=PARTUUID=@PARTUUID_ROOT_A@ rw loglevel=7 systemd.show_status=1 plymouth.enable=0 init=/bin/bash
   initrd /initrd.img
 }
 GRUB
-cat > /boot/efi/EFI/BOOT/grub.cfg <<'GRUB'
-search --no-floppy --label BF_BOOT_A --set=root
-configfile /EFI/betterframe/grub.cfg
-GRUB
+cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/EFI/BOOT/grub.cfg
 cat > /tmp/betterframe-embedded-grub.cfg <<'GRUB'
-search --no-floppy --label BF_BOOT_A --set=bfboot
+search --no-floppy --partuuid @PARTUUID_BOOT_A@ --set=bfboot
 if [ -n "$bfboot" ]; then
   set root=$bfboot
   configfile /EFI/betterframe/grub.cfg
 fi
 
-search --no-floppy --label BF_BOOT_B --set=bfboot
+search --no-floppy --partuuid @PARTUUID_BOOT_B@ --set=bfboot
 if [ -n "$bfboot" ]; then
   set root=$bfboot
   configfile /EFI/betterframe/grub.cfg
@@ -270,26 +287,26 @@ fi
 set timeout=5
 set default=0
 menuentry "BetterFrame A fallback" {
-  search --no-floppy --label BF_BOOT_A --set=root
-  linux /vmlinuz root=LABEL=BF_ROOT_A ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  search --no-floppy --partuuid @PARTUUID_BOOT_A@ --set=root
+  linux /vmlinuz root=PARTUUID=@PARTUUID_ROOT_A@ ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
   initrd /initrd.img
 }
 menuentry "BetterFrame B fallback" {
-  search --no-floppy --label BF_BOOT_B --set=root
-  linux /vmlinuz root=LABEL=BF_ROOT_B ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  search --no-floppy --partuuid @PARTUUID_BOOT_B@ --set=root
+  linux /vmlinuz root=PARTUUID=@PARTUUID_ROOT_B@ ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
   initrd /initrd.img
 }
 menuentry "BetterFrame A fallback debug shell" {
-  search --no-floppy --label BF_BOOT_A --set=root
-  linux /vmlinuz root=LABEL=BF_ROOT_A rw loglevel=7 systemd.show_status=1 plymouth.enable=0 init=/bin/bash
+  search --no-floppy --partuuid @PARTUUID_BOOT_A@ --set=root
+  linux /vmlinuz root=PARTUUID=@PARTUUID_ROOT_A@ rw loglevel=7 systemd.show_status=1 plymouth.enable=0 init=/bin/bash
   initrd /initrd.img
 }
 GRUB
 install -d -m 755 /boot/efi/EFI/debian /boot/grub
-cp /boot/efi/EFI/BOOT/grub.cfg /boot/efi/EFI/debian/grub.cfg
+cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/EFI/debian/grub.cfg
 cp /boot/efi/EFI/betterframe/grub.cfg /boot/grub/grub.cfg
 install -d -m 755 /boot/efi/boot/grub
-cp /boot/efi/EFI/BOOT/grub.cfg /boot/efi/grub.cfg
+cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/grub.cfg
 cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/boot/grub/grub.cfg
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable --bootloader-id=BetterFrame --no-nvram
 grub-mkstandalone \
@@ -322,6 +339,12 @@ rm -rf /var/lib/apt/lists/* /tmp/bf-files /tmp/betterframe-kiosk /tmp/install-be
 CHROOT
 
 sed -i "s/@VERSION@/${VERSION}/g" "${WORK}/root/tmp/install-betterframe-x86.sh"
+sed -i \
+  -e "s/@PARTUUID_BOOT_A@/${PARTUUID_BOOT_A}/g" \
+  -e "s/@PARTUUID_BOOT_B@/${PARTUUID_BOOT_B}/g" \
+  -e "s/@PARTUUID_ROOT_A@/${PARTUUID_ROOT_A}/g" \
+  -e "s/@PARTUUID_ROOT_B@/${PARTUUID_ROOT_B}/g" \
+  "${WORK}/root/tmp/install-betterframe-x86.sh"
 chmod +x "${WORK}/root/tmp/install-betterframe-x86.sh"
 chroot "${WORK}/root" /tmp/install-betterframe-x86.sh
 
@@ -333,13 +356,19 @@ for cfg in \
   "${WORK}/esp-b/grub.cfg" \
   "${WORK}/esp-b/EFI/BOOT/grub.cfg" \
   "${WORK}/esp-b/EFI/debian/grub.cfg"; do
-  [ -f "$cfg" ] && sed -i 's/BF_BOOT_A/BF_BOOT_B/g' "$cfg"
+  [ -f "$cfg" ] && sed -i "s/${PARTUUID_BOOT_A}/${PARTUUID_BOOT_B}/g" "$cfg"
 done
 umount "${WORK}/esp-b"
 
 sync
 umount "${WORK}/root/run" "${WORK}/root/sys" "${WORK}/root/proc" "${WORK}/root/dev/pts" "${WORK}/root/dev" "${WORK}/root/boot/efi"
 umount "${WORK}/root"
+if [ -n "$ROOTFS_OUT" ]; then
+  dd if="${LOOP}p3" of="$ROOTFS_OUT" bs=4M status=none
+fi
+if [ -n "$BOOTFS_OUT" ]; then
+  dd if="${LOOP}p1" of="$BOOTFS_OUT" bs=4M status=none
+fi
 losetup -d "$LOOP"
 LOOP=""
 

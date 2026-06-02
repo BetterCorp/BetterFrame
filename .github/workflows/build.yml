@@ -503,6 +503,9 @@ jobs:
     if: ${{ inputs.build-image }}
     needs: binary
     runs-on: ubuntu-24.04
+    env:
+      HAS_RAUC_SECRETS: ${{ secrets.BF_RAUC_SIGNING_CERT != '' && secrets.BF_RAUC_SIGNING_KEY != '' }}
+      HAS_AUTOIMPORT: ${{ secrets.BF_AUTOIMPORT_URL != '' && secrets.BF_AUTOIMPORT_API_KEY != '' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -515,6 +518,7 @@ jobs:
           path: staging/
 
       - name: Build PC x86_64 UEFI image
+        id: x86build
         run: |
           set -e
           mv staging/betterframe-kiosk-${{ inputs.version }}-betterframe-pc-x86_64 \
@@ -524,14 +528,89 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             debootstrap xz-utils util-linux gdisk dosfstools e2fsprogs grub-common
           chmod +x deploy/x86-image/build-image.sh
+          img="${{ github.workspace }}/betterframe-client-${{ inputs.version }}-betterframe-pc-x86_64.img.xz"
+          rootfs="${{ github.workspace }}/x86-rootfs.ext4"
+          bootfs="${{ github.workspace }}/x86-bootfs.vfat"
           sudo deploy/x86-image/build-image.sh \
             "${{ github.workspace }}/staging/betterframe-kiosk" \
-            "${{ github.workspace }}/betterframe-client-${{ inputs.version }}-betterframe-pc-x86_64.img.xz" \
-            "${{ inputs.version }}"
-          sudo chown "$USER:" "${{ github.workspace }}/betterframe-client-${{ inputs.version }}-betterframe-pc-x86_64.img.xz"
+            "$img" \
+            "${{ inputs.version }}" \
+            "$rootfs" \
+            "$bootfs"
+          sudo chown "$USER:" "$img" "$rootfs" "$bootfs"
+          echo "image-path=$img" >> "$GITHUB_OUTPUT"
+          echo "rootfs-path=$rootfs" >> "$GITHUB_OUTPUT"
+          echo "bootfs-path=$bootfs" >> "$GITHUB_OUTPUT"
 
       - name: Upload PC x86_64 image to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag }}
-          files: betterframe-client-${{ inputs.version }}-betterframe-pc-x86_64.img.xz
+          files: ${{ steps.x86build.outputs.image-path }}
+
+      - name: Build PC x86_64 RAUC bundle
+        id: x86raucb
+        if: ${{ env.HAS_RAUC_SECRETS == 'true' }}
+        env:
+          BF_RAUC_SIGNING_CERT: ${{ secrets.BF_RAUC_SIGNING_CERT }}
+          BF_RAUC_SIGNING_KEY: ${{ secrets.BF_RAUC_SIGNING_KEY }}
+        run: |
+          set -e
+          sudo apt-get install -y --no-install-recommends rauc openssl jq
+          mkdir -p /tmp/rauc-signing
+          chmod 700 /tmp/rauc-signing
+          printf '%s\n' "$BF_RAUC_SIGNING_CERT" > /tmp/rauc-signing/cert.pem
+          printf '%s\n' "$BF_RAUC_SIGNING_KEY" > /tmp/rauc-signing/key.pem
+          chmod 600 /tmp/rauc-signing/key.pem
+          chmod +x deploy/rauc/build-bundle.sh
+          out="${{ github.workspace }}/betterframe-${{ inputs.version }}-betterframe-x86_64-generic.raucb"
+          deploy/rauc/build-bundle.sh \
+            "${{ steps.x86build.outputs.rootfs-path }}" \
+            "${{ steps.x86build.outputs.bootfs-path }}" \
+            "$out" \
+            "${{ inputs.version }}" \
+            "${{ github.sha }}" \
+            /tmp/rauc-signing/cert.pem \
+            /tmp/rauc-signing/key.pem \
+            betterframe-x86_64-generic
+          rm -rf /tmp/rauc-signing
+          echo "bundle-path=$out" >> "$GITHUB_OUTPUT"
+          echo "bundle-sha256=$(sha256sum "$out" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload PC x86_64 RAUC bundle to GitHub Release
+        if: ${{ steps.x86raucb.outputs.bundle-path != '' }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: ${{ steps.x86raucb.outputs.bundle-path }}
+
+      - name: Auto-import PC x86_64 OS bundle into BF server
+        if: ${{ steps.x86raucb.outputs.bundle-path != '' && env.HAS_AUTOIMPORT == 'true' }}
+        env:
+          BF_AUTOIMPORT_URL: ${{ secrets.BF_AUTOIMPORT_URL }}
+          BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}
+        run: |
+          set -e
+          sleep 15
+          tag="${{ inputs.tag }}"
+          repo="${{ github.repository }}"
+          asset_name="$(basename "${{ steps.x86raucb.outputs.bundle-path }}")"
+          asset_url="https://github.com/${repo}/releases/download/${tag}/${asset_name}"
+          for i in 1 2 3; do
+            if curl -sSf -o /dev/null -I "$asset_url" 2>/dev/null; then break; fi
+            echo "Asset not ready yet, retry $i..."
+            sleep 10
+          done
+          payload="$(jq -nc \
+            --arg v "${{ inputs.version }}" \
+            --arg c "${{ inputs.channel }}" \
+            --arg compat "betterframe-x86_64-generic" \
+            --arg sha "${{ steps.x86raucb.outputs.bundle-sha256 }}" \
+            --arg url "$asset_url" \
+            --arg n "GitHub Actions x86 OS build of ${{ inputs.tag }} (${{ github.sha }})" \
+            '{version:$v, channel:$c, compatibility:$compat, source_url:$url, sha256:$sha, release_notes:$n}')"
+          curl -sSf -X POST \
+            -H "Authorization: Bearer ${BF_AUTOIMPORT_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            "${BF_AUTOIMPORT_URL}/api/admin/os/import"

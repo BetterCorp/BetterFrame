@@ -1,8 +1,8 @@
 [Unit]
 Description=BetterFrame Kiosk (cage + betterframe-kiosk)
 Documentation=https://github.com/BetterCorp/BetterFrame
-After=systemd-user-sessions.service network-online.target seatd.service
-Wants=network-online.target
+After=systemd-user-sessions.service systemd-logind.service network-online.target seatd.service
+Wants=network-online.target seatd.service
 Conflicts=getty@tty1.service
 After=getty@tty1.service
 # After 10 fast restarts in 60s, back off so a broken binary doesn't burn CPU.
@@ -19,7 +19,7 @@ TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes
 TTYVTDisallocate=yes
-StandardInput=tty-fail
+StandardInput=tty
 StandardOutput=journal
 StandardError=journal
 UtmpIdentifier=tty1
@@ -29,6 +29,7 @@ EnvironmentFile=-/etc/default/betterframe-kiosk
 Environment=XDG_SESSION_TYPE=wayland
 Environment=XDG_SESSION_CLASS=user
 Environment=GST_DEBUG=1
+Environment=LIBSEAT_BACKEND=seatd
 # Cursor: cage/wlroots draws a sprite in the gap between compositor start
 # and first kiosk frame. Collapse to 1px transparent + force software
 # fallback so XCURSOR_SIZE actually applies (HW cursors ignore size on
@@ -41,6 +42,7 @@ Environment=XCURSOR_SIZE=1
 Environment=WLR_NO_HARDWARE_CURSORS=1
 # Let the unprivileged kiosk process control the Pi fan PWM sysfs files.
 ExecStartPre=+/bin/sh -c 'for d in /sys/class/hwmon/hwmon*; do [ -e "$d/pwm1" ] || continue; chgrp bfkiosk "$d/pwm1" "$d/pwm1_enable" 2>/dev/null || true; chmod g+w "$d/pwm1" "$d/pwm1_enable" 2>/dev/null || true; done'
+ExecStartPre=+/bin/sh -c 'uid="$(id -u bfkiosk)"; install -d -o bfkiosk -g bfkiosk -m 700 "/run/user/${uid}"'
 ExecStartPre=+/usr/local/sbin/betterframe-firmware-rollback.sh
 ExecStart=/bin/sh -lc 'export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"; exec /usr/bin/cage -s -- /opt/betterframe/kiosk/betterframe-kiosk'
 Restart=always

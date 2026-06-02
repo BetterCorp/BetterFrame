@@ -250,7 +250,6 @@ cp "/boot/${INITRD}" /boot/efi/initrd.img
 cat > /boot/efi/EFI/betterframe/grub.cfg <<'GRUB'
 set timeout=3
 set default=0
-search --no-floppy --partuuid @PARTUUID_BOOT_A@ --set=root
 if [ -f /EFI/betterframe/grubenv ]; then
   load_env -f /EFI/betterframe/grubenv bf_primary
 fi
@@ -308,7 +307,12 @@ cp /boot/efi/EFI/betterframe/grub.cfg /boot/grub/grub.cfg
 install -d -m 755 /boot/efi/boot/grub
 cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/grub.cfg
 cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/boot/grub/grub.cfg
-grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable --bootloader-id=BetterFrame --no-nvram
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable --bootloader-id=BetterFrame --uefi-secure-boot --no-nvram
+cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/EFI/BOOT/grub.cfg
+cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/EFI/debian/grub.cfg
+cp /boot/efi/EFI/betterframe/grub.cfg /boot/grub/grub.cfg
+cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/grub.cfg
+cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/boot/grub/grub.cfg
 grub-mkstandalone \
   -O x86_64-efi \
   -o /boot/efi/EFI/BOOT/BOOTX64-GRUB-STANDALONE.EFI \

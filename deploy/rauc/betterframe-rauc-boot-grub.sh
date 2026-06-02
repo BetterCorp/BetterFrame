@@ -26,14 +26,6 @@ root_dev_to_slot() {
   esac
 }
 
-other_slot() {
-  case "$1" in
-    A) printf 'B' ;;
-    B) printf 'A' ;;
-    *) exit 2 ;;
-  esac
-}
-
 mounted_at() {
   local dev resolved
   dev="$1"
@@ -66,19 +58,16 @@ with_boot_mounted() {
 
 read_primary_from_mount() {
   local mountpoint="$1"
-  if [ -f "${mountpoint}/EFI/betterframe/grubenv" ]; then
-    grub-editenv "${mountpoint}/EFI/betterframe/grubenv" list \
-      | awk -F= '$1 == "bf_primary" { print $2; exit }'
-  fi
+  grub-editenv "${mountpoint}/EFI/betterframe/grubenv" list 2>/dev/null \
+    | awk -F= '$1 == "bf_primary" { print $2; exit }'
 }
 
 write_primary_to_mount() {
   local mountpoint="$1"
   local primary="$2"
   install -d -m 755 "${mountpoint}/EFI/betterframe"
-  if [ ! -f "${mountpoint}/EFI/betterframe/grubenv" ]; then
-    grub-editenv "${mountpoint}/EFI/betterframe/grubenv" create
-  fi
+  [ -f "${mountpoint}/EFI/betterframe/grubenv" ] \
+    || grub-editenv "${mountpoint}/EFI/betterframe/grubenv" create
   grub-editenv "${mountpoint}/EFI/betterframe/grubenv" set "bf_primary=${primary}"
   sync -f "${mountpoint}/EFI/betterframe/grubenv" 2>/dev/null || sync
 }

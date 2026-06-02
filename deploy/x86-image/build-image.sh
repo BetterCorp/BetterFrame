@@ -311,12 +311,10 @@ cp /usr/lib/shim/shimx64.efi.signed /boot/efi/EFI/BOOT/BOOTX64.EFI
 cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /boot/efi/EFI/BOOT/grubx64.efi
 cp /usr/lib/shim/shimx64.efi.signed /boot/efi/EFI/debian/shimx64.efi
 cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /boot/efi/EFI/debian/grubx64.efi
-for helper in mmx64.efi fbx64.efi; do
-  if [ -f "/usr/lib/shim/${helper}.signed" ]; then
-    cp "/usr/lib/shim/${helper}.signed" "/boot/efi/EFI/BOOT/${helper}"
-    cp "/usr/lib/shim/${helper}.signed" "/boot/efi/EFI/debian/${helper}"
-  fi
-done
+if [ -f /usr/lib/shim/mmx64.efi.signed ]; then
+  cp /usr/lib/shim/mmx64.efi.signed /boot/efi/EFI/BOOT/mmx64.efi
+  cp /usr/lib/shim/mmx64.efi.signed /boot/efi/EFI/debian/mmx64.efi
+fi
 
 apt-get clean
 /usr/local/sbin/randomize-image-users.sh bfadmin bfkiosk

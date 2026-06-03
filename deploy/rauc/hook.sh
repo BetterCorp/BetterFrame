@@ -63,6 +63,13 @@ patch_x86_grub_cfg() {
   sed -i "/BetterFrame B/,/}/s|root=PARTUUID=[^ ]*|root=PARTUUID=${root_b_uuid}|g" "$cfg"
 }
 
+patch_x86_loader_entry() {
+  local entry="$1"
+  local root_uuid="$2"
+  [ -f "$entry" ] || return 0
+  sed -i "s|root=PARTUUID=[^ ]*|root=PARTUUID=${root_uuid}|g" "$entry"
+}
+
 write_x86_rauc_system_conf() {
   local path="$1"
   local boot_a_uuid="$2"
@@ -143,6 +150,12 @@ case "$RAUC_SLOT_CLASS" in
       patch_x86_grub_cfg "${MNT}/EFI/BOOT/grub.cfg" "$BOOT_UUID" "$ROOT_A_UUID" "$ROOT_B_UUID"
       patch_x86_grub_cfg "${MNT}/EFI/debian/grub.cfg" "$BOOT_UUID" "$ROOT_A_UUID" "$ROOT_B_UUID"
       patch_x86_grub_cfg "${MNT}/grub.cfg" "$BOOT_UUID" "$ROOT_A_UUID" "$ROOT_B_UUID"
+      patch_x86_loader_entry "${MNT}/loader/entries/betterframe-a.conf" "$ROOT_A_UUID"
+      patch_x86_loader_entry "${MNT}/loader/entries/betterframe-b.conf" "$ROOT_B_UUID"
+      patch_x86_loader_entry "${MNT}/loader/entries/betterframe-a-debug.conf" "$ROOT_A_UUID"
+      if [ -f "${MNT}/loader/loader.conf" ]; then
+        sed -i "s/^default .*/default betterframe-$(printf '%s' "$LETTER" | tr '[:upper:]' '[:lower:]').conf/" "${MNT}/loader/loader.conf"
+      fi
       echo "hook: patched x86 bootfs slot ${LETTER} -> boot PARTUUID=${BOOT_UUID}"
     fi
     ;;

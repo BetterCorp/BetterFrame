@@ -100,7 +100,7 @@ cp "${REPO_ROOT}/deploy/tmpfiles/betterframe-kiosk.conf" "${WORK}/root/tmp/bf-fi
 cp "${REPO_ROOT}/deploy/udev/90-betterframe-no-hid.rules" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/pam.d/cage" "${WORK}/root/tmp/bf-files/cage.pam"
 cp "${REPO_ROOT}/deploy/rauc/system-x86.conf" "${WORK}/root/tmp/bf-files/rauc-system.conf"
-cp "${REPO_ROOT}/deploy/rauc/betterframe-rauc-boot-grub.sh" "${WORK}/root/tmp/bf-files/betterframe-rauc-boot.sh"
+cp "${REPO_ROOT}/deploy/rauc/betterframe-rauc-boot-systemd.sh" "${WORK}/root/tmp/bf-files/betterframe-rauc-boot.sh"
 cp "${REPO_ROOT}/deploy/systemd/rauc.service" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/dbus/de.pengutronix.rauc.service" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/dbus/de.pengutronix.rauc.conf" "${WORK}/root/tmp/bf-files/"
@@ -247,6 +247,30 @@ KERNEL="$(basename "$(ls -1 /boot/vmlinuz-* | sort -V | tail -n1)")"
 INITRD="$(basename "$(ls -1 /boot/initrd.img-* | sort -V | tail -n1)")"
 cp "/boot/${KERNEL}" /boot/efi/vmlinuz
 cp "/boot/${INITRD}" /boot/efi/initrd.img
+install -d -m 755 /boot/efi/loader/entries
+cat > /boot/efi/loader/loader.conf <<'LOADER'
+default betterframe-a.conf
+timeout 3
+console-mode max
+LOADER
+cat > /boot/efi/loader/entries/betterframe-a.conf <<'LOADER'
+title BetterFrame A
+linux /vmlinuz
+initrd /initrd.img
+options root=PARTUUID=@PARTUUID_ROOT_A@ ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+LOADER
+cat > /boot/efi/loader/entries/betterframe-b.conf <<'LOADER'
+title BetterFrame B
+linux /vmlinuz
+initrd /initrd.img
+options root=PARTUUID=@PARTUUID_ROOT_B@ ro loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+LOADER
+cat > /boot/efi/loader/entries/betterframe-a-debug.conf <<'LOADER'
+title BetterFrame A debug shell
+linux /vmlinuz
+initrd /initrd.img
+options root=PARTUUID=@PARTUUID_ROOT_A@ rw loglevel=7 systemd.show_status=1 plymouth.enable=0 init=/bin/bash
+LOADER
 cat > /boot/efi/EFI/betterframe/grub.cfg <<'GRUB'
 set timeout=3
 set default=0
@@ -325,13 +349,31 @@ if [ ! -f /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed ]; then
   echo "ERROR: grubx64.efi.signed is missing; cannot build a Secure Boot image" >&2
   exit 1
 fi
+mkdir -p /tmp/systemd-boot-debs /tmp/systemd-boot-extract
+(
+  cd /tmp/systemd-boot-debs
+  apt-get download systemd-boot-efi-amd64-signed systemd-boot-efi
+)
+for deb in /tmp/systemd-boot-debs/*.deb; do
+  dpkg-deb -x "$deb" /tmp/systemd-boot-extract
+done
+systemd_boot="$(find /tmp/systemd-boot-extract -name 'systemd-bootx64.efi.signed' | sort | head -n1)"
+if [ -z "$systemd_boot" ]; then
+  systemd_boot="$(find /tmp/systemd-boot-extract -name 'systemd-bootx64.efi' | sort | head -n1)"
+fi
+if [ -z "$systemd_boot" ]; then
+  echo "ERROR: signed systemd-boot EFI binary is missing" >&2
+  exit 1
+fi
 
 # Removable-media Secure Boot starts at EFI/BOOT/BOOTX64.EFI. That must be
-# Microsoft-signed shim; shim then validates Debian-signed GRUB and kernel.
+# Microsoft-signed shim; shim then validates Debian-signed systemd-boot.
 cp /usr/lib/shim/shimx64.efi.signed /boot/efi/EFI/BOOT/BOOTX64.EFI
-cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /boot/efi/EFI/BOOT/grubx64.efi
+cp "$systemd_boot" /boot/efi/EFI/BOOT/grubx64.efi
 cp /usr/lib/shim/shimx64.efi.signed /boot/efi/EFI/debian/shimx64.efi
-cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /boot/efi/EFI/debian/grubx64.efi
+cp "$systemd_boot" /boot/efi/EFI/debian/grubx64.efi
+cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /boot/efi/EFI/BOOT/grubx64-grub-signed.efi
+cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /boot/efi/EFI/debian/grubx64-grub-signed.efi
 if [ -f /usr/lib/shim/mmx64.efi.signed ]; then
   cp /usr/lib/shim/mmx64.efi.signed /boot/efi/EFI/BOOT/mmx64.efi
   cp /usr/lib/shim/mmx64.efi.signed /boot/efi/EFI/debian/mmx64.efi

@@ -1,0 +1,27 @@
+Function,ESP32-S3 GPIO,Net,Firmware Status,Notes
+Status LED,GPIO2,LED_STATUS,Existing default,Matches BF_STATUS_LED_PIN=2
+W5500 CS,GPIO10,ETH_CS,Existing iobox_eth,Matches platformio.ini
+W5500 MOSI,GPIO11,SPI_MOSI,Existing iobox_eth,Matches platformio.ini
+W5500 SCK,GPIO12,SPI_SCK,Existing iobox_eth,Matches platformio.ini
+W5500 MISO,GPIO13,SPI_MISO,Existing iobox_eth,Matches platformio.ini
+W5500 INT,GPIO14,ETH_INT,New firmware define needed,Useful for interrupt-driven Ethernet
+W5500 RESET,GPIO15,ETH_RST,New firmware define needed,Useful for deterministic reset
+RS485 DE / spare,GPIO16,RS485_DE,Optional,Expose on header
+RS485 TX,GPIO17,RS485_TX,Optional,Current README suggested RS485 TX/RX
+RS485 RX,GPIO18,RS485_RX,Optional,Current README suggested RS485 TX/RX
+USB host D-,GPIO19,USB_HOST_DM,USB HID host needed,Dedicated to USB host
+USB host D+,GPIO20,USB_HOST_DP,USB HID host needed,Dedicated to USB host
+GPIO header,GPIO4,GPIO4,Optional,ADC/touch capable
+GPIO header,GPIO5,GPIO5,Optional,ADC/touch capable
+GPIO header,GPIO6,GPIO6,Optional,General GPIO
+GPIO header,GPIO7,GPIO7,Optional,General GPIO
+GPIO header,GPIO8,GPIO8,Optional,General GPIO
+GPIO header,GPIO9,GPIO9,Optional,General GPIO
+GPIO header,GPIO21,GPIO21,Optional,General GPIO
+GPIO header,GPIO38,GPIO38,Optional,General GPIO
+GPIO header,GPIO45,GPIO45,Optional,Strap-sensitive; use carefully
+GPIO header,GPIO46,GPIO46,Optional,Strap-sensitive; use carefully
+I2C SDA,GPIO47,I2C_SDA,Optional,Expose with pullups optional
+I2C SCL,GPIO48,I2C_SCL,Optional,Expose with pullups optional
+Boot,GPIO0,GPIO0_BOOT,Required,10k pull-up and boot button to GND
+Reset,EN,EN,Required,10k pull-up and reset button to GND

@@ -1,0 +1,24 @@
+Designator,Qty,Function,Preferred Part,LCSC / Supplier Notes,Assembly Notes
+U1,1,ESP32-S3 MCU module,ESP32-S3-WROOM-1-N16 or ESP32-S3-WROOM-1-N16R8,LCSC commonly stocks ESP32-S3-WROOM modules,Keep antenna keepout clear
+U2,1,4-port USB 2.0 hub,GL850G-HHY22,LCSC C136617,Use datasheet strap and crystal reference circuit
+U3,1,SPI Ethernet controller,W5500,LCSC C32843,3V3 device with 25MHz crystal
+U4,1,802.3af isolated PoE 5V module,Silvertel AG9905M / AG9905-MTB,DigiKey/Mouser/Silvertel; likely manual assembly,5V 9W output; confirm footprint before layout
+J1,1,PoE RJ45 magjack,PoE-capable 10/100 RJ45 with integrated magnetics,LCSC alternative required by final layout,Must expose PoE center taps/spare-pair pins
+U5,1,3V3 regulator,5V to 3V3 buck or high-current LDO >=800mA,Pick stocked JLC/LCSC part during layout,Avoid weak AMS1117 if thermal margin is poor
+U6-U9,4,USB VBUS current switch,TPS2553 / AP2331 / AP22802 class,Pick stocked JLC/LCSC part,Set current limit for HID budget
+U10-U14,5,USB ESD protection,USBLC6-2SC6 or equivalent,LCSC C7519,Place close to connectors
+Y1,1,W5500 crystal,25MHz crystal,LCSC stocked 3225/5032,Load caps from crystal CL and W5500 ref
+Y2,1,USB hub crystal,12MHz crystal,LCSC stocked 3225/5032,Load caps from GL850G ref
+J_USB1-J_USB4,4,USB-A host connector,USB-A female through-hole or SMT,LCSC stocked connector,Use shell pads and mechanical anchors
+J_GPIO1,1,GPIO header,2x5 2.54mm header,LCSC stocked,3V3 GPIO only
+J_GPIO2,1,Power/serial/GPIO header,2x5 2.54mm header,LCSC stocked,Expose 5V carefully
+J_PROG,1,UART programming header,1x6 2.54mm header,LCSC stocked,U0TXD/U0RXD/EN/GPIO0
+SW1,1,Reset button,Tactile switch,LCSC stocked,EN to GND
+SW2,1,Boot button,Tactile switch,LCSC stocked,GPIO0 to GND
+D1,1,Status LED,0603 LED,LCSC stocked,GPIO2 indicator
+R_LED,1,LED resistor,1k 0603,LCSC stocked,Adjust brightness
+C_BULK_5V,1,5V bulk cap,220uF low ESR,LCSC stocked,Near PoE module output / USB switches
+C_USB1-C_USB4,4,USB VBUS bulk cap,47uF to 120uF,LCSC stocked,One per USB port
+C_DECOUPLE,30,Decoupling capacitors,100nF 0603,LCSC stocked,One per IC supply cluster
+R_PULLUPS,8,Pullups,10k 0603,LCSC stocked,EN GPIO0 ETH reset straps as needed
+FB1,1,5V ferrite bead optional,600R@100MHz bead,LCSC stocked,Optional noise partition

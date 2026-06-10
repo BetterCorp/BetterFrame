@@ -33,7 +33,7 @@ import {
   IoBoxModelEditPage,
   IoBoxSerialsPage,
   IoBoxDetailPage,
-  renderCell,
+  renderCellSidebarResponse,
   renderGrid,
   renderCameraLabels,
   renderKioskLabels,
@@ -235,11 +235,19 @@ function elementInputOptions(body: Record<string, string | undefined>): Record<s
   const mode = body["keyboard_mode"] === "all" || body["keyboard_mode"] === "alphanumeric" || body["keyboard_mode"] === "custom"
     ? body["keyboard_mode"]
     : "disabled";
+  const events: Record<string, unknown> = {};
+  for (const kind of ["click", "double_click", "hold"] as const) {
+    const action = (body[`${kind}_action`] ?? "").trim();
+    const paramsRaw = (body[`${kind}_params_json`] ?? "").trim();
+    if (!action) continue;
+    events[kind] = { action, params: parseJsonFormField(paramsRaw, {}) };
+  }
   return {
     keyboard_mode: mode,
     keyboard_allowlist: parseList(body["keyboard_allowlist"] ?? ""),
     mouse_enabled: body["mouse_enabled"] === "1",
     ptz_enabled: body["ptz_enabled"] === "1",
+    events,
   };
 }
 
@@ -1546,20 +1554,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
 
-  // GET a single cell in read mode (used by htmx Cancel button in inline edit).
-  app.get("/admin/layouts/:id/cells/:cellId", async (event) => {
-    const layoutId = (getRouterParam(event, "id") ?? "");
-    const cellId = (getRouterParam(event, "cellId") ?? "");
-    const cell = await deps.repo.getLayoutCellById(cellId);
-    if (!cell || cell.layout_id !== layoutId) {
-      return new Response("Not Found", { status: 404 });
-    }
-    const cameras = await deps.repo.listCameras();
-    const entities = await deps.repo.listEntities();
-    return htmlFragment(renderCell(layoutId, cell, entities, cameras, "read"));
-  });
-
-  // GET a single cell in edit mode (htmx swap target for cell click).
+  // GET a single cell for the editor sidebar (htmx swap target for cell click).
   app.get("/admin/layouts/:id/cells/:cellId/edit", async (event) => {
     const layoutId = (getRouterParam(event, "id") ?? "");
     const cellId = (getRouterParam(event, "cellId") ?? "");
@@ -1569,7 +1564,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
     const cameras = await deps.repo.listCameras();
     const entities = await deps.repo.listEntities();
-    return htmlFragment(renderCell(layoutId, cell, entities, cameras, "edit"));
+    const cells = await deps.repo.layoutCells(layoutId);
+    return htmlFragment(renderCellSidebarResponse(layoutId, cell.id, cells, entities, cameras));
   });
 
   // Update a cell's entity binding + dimensions. Legacy content_type/web/html
@@ -1649,24 +1645,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     notifyKiosks();
 
     if (isHtmxRequest(event)) {
-      if (spansChanged) {
-        const cells = await deps.repo.layoutCells(layoutId);
-        const cameras = await deps.repo.listCameras();
-        const entities = await deps.repo.listEntities();
-        const body = String(renderGrid(layoutId, cells, entities, cameras));
-        return new Response(body, {
-          headers: {
-            "content-type": "text/html; charset=utf-8",
-            "hx-retarget": "#layout-grid",
-            "hx-reswap": "innerHTML",
-          },
-        });
-      }
-      const cell = await deps.repo.getLayoutCellById(cellId);
-      if (!cell) return new Response("", { headers: { "content-type": "text/html; charset=utf-8" } });
       const cameras = await deps.repo.listCameras();
       const entities = await deps.repo.listEntities();
-      return htmlFragment(renderCell(layoutId, cell, entities, cameras, "read"));
+      const cells = await deps.repo.layoutCells(layoutId);
+      return htmlFragment(renderCellSidebarResponse(layoutId, cellId, cells, entities, cameras));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
@@ -1730,6 +1712,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       const cells = await deps.repo.layoutCells(layoutId);
       const cameras = await deps.repo.listCameras();
       const entities = await deps.repo.listEntities();
+      if ((getRequestHeader(event, "hx-target") ?? "") === "layout-cell-sidebar") {
+        return htmlFragment(renderCellSidebarResponse(layoutId, null, cells, entities, cameras));
+      }
       return htmlFragment(renderGrid(layoutId, cells, entities, cameras));
     }
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
@@ -2311,6 +2296,46 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       metadata: { version: kiosk.managed_config_version + 1 },
     });
 
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+  });
+
+  app.post("/admin/kiosks/:id/windows-policy", async (event) => {
+    const id = (getRouterParam(event, "id") ?? "");
+    const kiosk = await deps.repo.getKioskById(id);
+    if (!kiosk) throw new Error("kiosk not found");
+    if (!kiosk.capabilities?.includes("windows")) throw new Error("kiosk is not a Windows client");
+    const body = await readBody<Record<string, string>>(event);
+    let prev: Record<string, unknown> = {};
+    if (kiosk.managed_config_json) {
+      try { prev = JSON.parse(kiosk.managed_config_json) as Record<string, unknown>; } catch { /* corrupt stored config: rebuild from form */ }
+    }
+    const selectedNames = parseList(body?.["selected_display_names"] ?? "");
+    const cfg = {
+      ...prev,
+      windows_policy: {
+        controls: {
+          display_power: body?.["display_power"] === "1",
+          host_sleep_wake: body?.["host_sleep_wake"] === "1",
+          volume: body?.["volume"] === "1",
+          host_reboot: body?.["host_reboot"] === "1",
+          app_restart: body?.["app_restart"] === "1",
+        },
+        displays: {
+          mode: body?.["display_mode"] === "selected" ? "selected" : "all",
+          selected_display_names: selectedNames,
+        },
+      },
+    };
+    await deps.repo.updateKiosk(id, {
+      managed_config_json: JSON.stringify(cfg),
+      managed_config_version: kiosk.managed_config_version + 1,
+      managed_config_error: null,
+    });
+    await audit(deps.repo, event as any, "kiosk.windows_policy.update", {
+      resource_type: "kiosk",
+      resource_id: String(id),
+      metadata: { version: kiosk.managed_config_version + 1 },
+    });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 

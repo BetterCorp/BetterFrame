@@ -219,6 +219,7 @@ export async function generateBundle(
   async function buildLayouts(displayId: string, defaultLayoutId: string | null): Promise<BundleLayout[]> {
     const layouts = await repo.layoutsForDisplayId(displayId);
     const result: BundleLayout[] = [];
+    const virtualLayouts = new Map<string, BundleLayout>();
     for (const l of layouts) {
       const cells = await repo.layoutCells(l.id);
       let gridCols = 1;
@@ -275,7 +276,7 @@ export async function generateBundle(
               : cellInputOptions;
           }
         }
-        bundleCells.push({
+        const bundleCell: BundleCell = {
           view_id: c.id,
           entity_id: c.entity_id,
           row: c.row,
@@ -311,7 +312,39 @@ export async function generateBundle(
           })() : undefined,
           local_storage: cellLocalStorage,
           input_options: cellInputOptions,
-        });
+        };
+        bundleCells.push(bundleCell);
+        if (c.entity_id != null && !virtualLayouts.has(c.entity_id)) {
+          const ent = await repo.getEntityById(c.entity_id);
+          if (ent) {
+            // Cell-level click/hold actions (e.g. switch-to-fullscreen) must not
+            // fire again inside the fullscreen layout itself.
+            const { events: _cellEvents, ...fullscreenInputOptions } =
+              (bundleCell.input_options ?? {}) as Record<string, unknown>;
+            virtualLayouts.set(c.entity_id, {
+              id: ent.id,
+              name: `Full Screen: ${ent.name}`,
+              grid_cols: 1,
+              grid_rows: 1,
+              priority: "normal",
+              cooling_timeout_seconds: l.cooling_timeout_seconds,
+              idle_timeout_seconds: l.idle_timeout_seconds,
+              preload_camera_ids: [],
+              resets_idle_timer: true,
+              is_default: false,
+              cells: [{
+                ...bundleCell,
+                view_id: `virtual:${ent.id}`,
+                row: 0,
+                col: 0,
+                row_span: 1,
+                col_span: 1,
+                input_options: fullscreenInputOptions,
+              }],
+              input_options: ent.input_options_json,
+            });
+          }
+        }
       }
       result.push({
         id: l.id,
@@ -327,6 +360,10 @@ export async function generateBundle(
         cells: bundleCells,
         input_options: l.input_options_json,
       });
+    }
+    const realLayoutIds = new Set(result.map((layout) => layout.id));
+    for (const [entityId, layout] of virtualLayouts) {
+      if (!realLayoutIds.has(entityId)) result.push(layout);
     }
     return result;
   }

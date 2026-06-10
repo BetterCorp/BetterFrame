@@ -51,7 +51,7 @@ export const kioskHeartbeat = av.object(
   { unknownKeys: "strip" },
 );
 
-export const eventSourceType = av.enum_(["onvif", "gpio", "synthetic", "system"] as const);
+export const eventSourceType = av.enum_(["onvif", "gpio", "synthetic", "system", "io", "interaction"] as const);
 
 export const kioskEvent = av.object(
   {

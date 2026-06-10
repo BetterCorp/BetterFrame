@@ -159,7 +159,7 @@ export interface Entity {
 export type DesiredPowerState = "follow_layout" | "on" | "standby";
 export type ActualPowerState = "awake" | "standby" | "unknown";
 export type LabelRole = "consume" | "operate";
-export type EventSourceType = "onvif" | "gpio" | "synthetic" | "system" | "io";
+export type EventSourceType = "onvif" | "gpio" | "synthetic" | "system" | "io" | "interaction";
 
 export interface User {
   id: string;

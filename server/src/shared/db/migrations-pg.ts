@@ -926,4 +926,9 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `UPDATE kiosks SET firmware_target = 'betterframe-rpi5-aarch64'
     WHERE firmware_target IS NULL
       AND hardware_model ILIKE '%Raspberry Pi 5%'`,
+
+  // ---- 'interaction' source_type: must be appended here (not edited into the
+  // earlier constraint migrations) so tenants already past that version get it.
+  `ALTER TABLE event_log DROP CONSTRAINT IF EXISTS event_log_source_type_check`,
+  `ALTER TABLE event_log ADD CONSTRAINT event_log_source_type_check CHECK(source_type IN ('onvif', 'gpio', 'synthetic', 'system', 'io', 'interaction'))`,
 ];

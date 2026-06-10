@@ -2113,6 +2113,62 @@ function ManagedConfigCard(props: { kiosk: Kiosk }) {
   );
 }
 
+function WindowsPolicyCard(props: { kiosk: Kiosk }) {
+  const k = props.kiosk;
+  let cfg: any = {};
+  if (k.managed_config_json) {
+    try { cfg = JSON.parse(k.managed_config_json); } catch { /* ignore */ }
+  }
+  const policy = cfg.windows_policy ?? {};
+  const controls = policy.controls ?? {};
+  const displays = policy.displays ?? {};
+  const pending = k.managed_config_version > k.managed_config_applied_version;
+  return (
+    <div class="card" style="margin-bottom:1.5rem">
+      <h2 style="margin:0 0 1rem; font-size:1.1rem">Windows Kiosk Policy</h2>
+      <div style="font-size:0.85rem; color:#666; margin-bottom:0.75rem">
+        Version: {String(k.managed_config_version)}
+        {" · Applied: "}{String(k.managed_config_applied_version)}
+        {pending ? <span style="color:#b06; margin-left:0.5rem">pending push...</span> : null}
+        {k.managed_config_error ? <div style="color:#b00; margin-top:0.25rem">Last error: {k.managed_config_error}</div> : null}
+      </div>
+      <form method="post" action={`/admin/kiosks/${k.id}/windows-policy`}>
+        <h3 style="margin:0 0 0.5rem; font-size:0.95rem">Host Controls</h3>
+        <label style="display:block; margin-bottom:0.5rem">
+          <input type="checkbox" name="display_power" value="1" checked={controls.display_power === true} /> Allow display standby/wake
+        </label>
+        <label style="display:block; margin-bottom:0.5rem">
+          <input type="checkbox" name="host_sleep_wake" value="1" checked={controls.host_sleep_wake === true} /> Allow host sleep/wake
+        </label>
+        <label style="display:block; margin-bottom:0.5rem">
+          <input type="checkbox" name="volume" value="1" checked={controls.volume === true} /> Allow volume control
+        </label>
+        <label style="display:block; margin-bottom:0.5rem">
+          <input type="checkbox" name="host_reboot" value="1" checked={controls.host_reboot === true} /> Allow host reboot
+        </label>
+        <label style="display:block; margin-bottom:1rem">
+          <input type="checkbox" name="app_restart" value="1" checked={controls.app_restart !== false} /> Allow app restart
+        </label>
+
+        <h3 style="margin:1rem 0 0.5rem; font-size:0.95rem">Display Takeover</h3>
+        <div class="form-group">
+          <label>Mode</label>
+          <select name="display_mode" class="form-input">
+            <option value="all" selected={displays.mode !== "selected"}>All reported displays</option>
+            <option value="selected" selected={displays.mode === "selected"}>Selected display names only</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Selected Display Names</label>
+          <textarea name="selected_display_names" class="form-input" rows="3" placeholder={`\\\\.\\DISPLAY1`}>{Array.isArray(displays.selected_display_names) ? displays.selected_display_names.join("\n") : ""}</textarea>
+          <div class="form-hint">One Windows display name per line. Use the names reported in this kiosk's Displays table.</div>
+        </div>
+        <button type="submit" class="btn btn-primary">Save &amp; Push</button>
+      </form>
+    </div>
+  );
+}
+
 export function KioskEditPage(props: KioskEditProps) {
   const k = props.kiosk;
   const logging = parseKioskLogging(k.logging_json);
@@ -2544,6 +2600,8 @@ export function KioskEditPage(props: KioskEditProps) {
           </div>
         </div>
 
+        {k.capabilities?.includes("windows") ? <WindowsPolicyCard kiosk={k} /> : null}
+
         {k.managed_image ? <ManagedConfigCard kiosk={k} /> : null}
 
         {/* Kiosk application logs */}
@@ -2823,6 +2881,15 @@ export const LAYOUT_BUILDER_CSS = `
 .layout-cell-edit-form .btn { font-size: 0.75rem; padding: 0.25rem 0.6rem; }
 .layout-cell-edit-form-actions { display: flex; gap: 0.35rem; margin-top: 0.5rem; flex-wrap: wrap; }
 .layout-cell-edit-form .span-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; }
+.layout-editor-shell { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 1rem; align-items: start; }
+.layout-editor-sidebar { position: sticky; top: 1rem; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; padding: 0.9rem; min-height: 220px; }
+.layout-editor-sidebar-empty { color: #666; font-size: 0.85rem; line-height: 1.4; }
+.layout-minimap { display: grid; gap: 1px; background: #111827; border: 1px solid #111827; width: 100%; max-width: 260px; aspect-ratio: 1 / 1; margin-bottom: 0.9rem; }
+.layout-minimap-pixel { background: #374151; min-width: 0; min-height: 0; }
+.layout-minimap-pixel.empty { background: #1f2937; }
+.layout-minimap-pixel.selected { background: #16a34a; }
+.layout-editor-sidebar h3 { margin: 0 0 0.75rem; font-size: 1rem; }
+@media (max-width: 1100px) { .layout-editor-shell { grid-template-columns: 1fr; } .layout-editor-sidebar { position: static; } }
 .layout-empty { display: flex; align-items: center; justify-content: center; aspect-ratio: 16/9; background: #f3f4f6; border-radius: 4px; }
 .layout-empty-add { background: #2563eb; color: #fff; border: none; width: 80px; height: 80px; border-radius: 50%; cursor: pointer; font-size: 36px; line-height: 1; padding: 0; }
 .layout-empty-add:hover { background: #1e40af; }
@@ -2862,17 +2929,233 @@ function cellGridStyle(c: LayoutCell): string {
   return `grid-column:${String(c.col + 1)} / span ${String(c.col_span)}; grid-row:${String(c.row + 1)} / span ${String(c.row_span)};`;
 }
 
+function actionParamsText(inputOptions: Record<string, unknown>, kind: "click" | "double_click" | "hold"): string {
+  const events = inputOptions["events"];
+  if (!events || typeof events !== "object") return "{}";
+  const event = (events as Record<string, unknown>)[kind];
+  if (!event || typeof event !== "object") return "{}";
+  const params = (event as Record<string, unknown>)["params"];
+  return JSON.stringify(params && typeof params === "object" ? params : {}, null, 2);
+}
+
+function actionName(inputOptions: Record<string, unknown>, kind: "click" | "double_click" | "hold"): string {
+  const events = inputOptions["events"];
+  if (!events || typeof events !== "object") return "";
+  const event = (events as Record<string, unknown>)[kind];
+  if (!event || typeof event !== "object") return "";
+  const action = (event as Record<string, unknown>)["action"];
+  return typeof action === "string" ? action : "";
+}
+
+function renderMiniMap(cells: LayoutCell[], selectedCellId: string): string {
+  let gridCols = 1;
+  let gridRows = 1;
+  for (const c of cells) {
+    const right = c.col + c.col_span;
+    const bottom = c.row + c.row_span;
+    if (right > gridCols) gridCols = right;
+    if (bottom > gridRows) gridRows = bottom;
+  }
+  const slots: Array<{ occupied: boolean; selected: boolean }> = [];
+  for (let row = 0; row < gridRows; row += 1) {
+    for (let col = 0; col < gridCols; col += 1) {
+      const owner = cells.find((cell) =>
+        row >= cell.row && row < cell.row + cell.row_span
+        && col >= cell.col && col < cell.col + cell.col_span
+      );
+      slots.push({ occupied: !!owner, selected: owner?.id === selectedCellId });
+    }
+  }
+  return (
+    <div
+      class="layout-minimap"
+      aria-hidden="true"
+      style={`grid-template-columns:repeat(${String(gridCols)}, minmax(0, 1fr)); grid-template-rows:repeat(${String(gridRows)}, minmax(0, 1fr))`}
+    >
+      {slots.map((slot) => (
+        <div class={`layout-minimap-pixel${slot.occupied ? "" : " empty"}${slot.selected ? " selected" : ""}`}></div>
+      ))}
+    </div>
+  );
+}
+
+export function renderCellSidebar(
+  layoutId: string,
+  selected: LayoutCell | null,
+  cells: LayoutCell[],
+  entities: Entity[],
+  cameras: Camera[],
+): string {
+  if (!selected) {
+    return (
+      <div id="layout-cell-sidebar" class="layout-editor-sidebar">
+        <div class="layout-editor-sidebar-empty">Select a block to edit its content, fit, input, and click actions.</div>
+      </div>
+    );
+  }
+
+  const entityById = new Map<string, Entity>();
+  for (const e of entities) entityById.set(e.id, e);
+  const c = selected;
+  const cellGetUrl = `/admin/layouts/${String(layoutId)}/cells/${String(c.id)}`;
+  const deleteUrl = `${cellGetUrl}/delete`;
+  const inputOptions = c.input_options_json ?? {};
+  const keyboardMode = String(inputOptions["keyboard_mode"] ?? "disabled");
+  const allowlist = Array.isArray(inputOptions["keyboard_allowlist"]) ? inputOptions["keyboard_allowlist"].join(", ") : "";
+  const actionKinds = [
+    ["click", "Click"],
+    ["double_click", "Double Click"],
+    ["hold", "Hold"],
+  ] as const;
+
+  return (
+    <div id="layout-cell-sidebar" class="layout-editor-sidebar">
+      {renderMiniMap(cells, String(c.id))}
+      <h3>Block Configuration</h3>
+      <form class="layout-cell-edit-form" hx-post={cellGetUrl} hx-target="#layout-cell-sidebar" hx-swap="outerHTML">
+        <div class="form-group">
+          <label>Entity</label>
+          <select name="entity_id" class="form-input">
+            <option value="">-- Empty --</option>
+            {entities.map((e) => (
+              <option value={String(e.id)} selected={c.entity_id === e.id}>
+                [{entityTypeLabel(e.type)}] {entityDisplayName(e)}
+              </option>
+            ))}
+          </select>
+          <div class="form-hint" style="font-size:0.7rem">
+            <a href="/admin/entities/new" target="_blank">+ New entity</a>
+          </div>
+        </div>
+
+        <div class="form-group" style={(c.entity_id != null && entityById.get(c.entity_id)?.type === "camera") ? "" : "display:none"}>
+          <label>Stream</label>
+          <select name="stream_selector" class="form-input">
+            <option value="auto" selected={c.stream_selector === "auto"}>Auto</option>
+            <option value="main" selected={c.stream_selector === "main"}>Main</option>
+            <option value="sub" selected={c.stream_selector === "sub"}>Sub</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Fit</label>
+          <select name="fit" class="form-input">
+            <option value="cover" selected={c.fit === "cover"}>Cover (fill, crop overflow)</option>
+            <option value="contain" selected={c.fit === "contain"}>Contain (letterbox)</option>
+            <option value="fill" selected={c.fit === "fill"}>Fill (stretch)</option>
+          </select>
+        </div>
+
+        <div class="form-group" id={`smart-url-${String(c.id)}`}>
+          <label style="font-weight:600">Smart URL Steps</label>
+          <div style="font-size:0.7rem;color:#666;margin-bottom:0.5rem">
+            Auto-login / navigate sequences. Leave empty for direct URL load.
+          </div>
+          <div id={`steps-${String(c.id)}`}>
+            {((c.options?.["smart_url"] as any)?.steps ?? []).map((step: any, idx: number) => (
+              <div style="display:grid;grid-template-columns:100px 1fr auto;gap:4px;margin-bottom:4px;align-items:center">
+                <select name={`step_${idx}_type`} class="form-input" style="font-size:0.75rem">
+                  {["navigate","fill","click","wait","wait_for","javascript"].map((t) => (
+                    <option value={t} selected={step.type === t}>{t}</option>
+                  ))}
+                </select>
+                <input name={`step_${idx}_value`} type="text" class="form-input" style="font-size:0.75rem"
+                  placeholder={step.type === "navigate" ? "URL" : step.type === "fill" ? "selector=value" : step.type === "click" ? "CSS selector" : step.type === "wait" ? "ms" : step.type === "javascript" ? "JS code" : "selector"}
+                  value={step.type === "fill" ? `${step.selector ?? ""}=${step.value ?? ""}` : step.url ?? step.selector ?? step.script ?? (step.delay_ms != null ? String(step.delay_ms) : "")} />
+                <button type="button" class="btn btn-sm btn-danger" style="padding:2px 6px"
+                  onclick={`this.closest('div').remove()`}>x</button>
+              </div>
+            ))}
+          </div>
+          <button type="button" class="btn btn-sm btn-ghost" style="font-size:0.75rem"
+            onclick={`var d=document.createElement('div');d.style='display:grid;grid-template-columns:100px 1fr auto;gap:4px;margin-bottom:4px;align-items:center';var n=document.querySelectorAll('#steps-${String(c.id)} > div').length;d.innerHTML='<select name=\"step_'+n+'_type\" class=\"form-input\" style=\"font-size:0.75rem\"><option value=\"navigate\">navigate</option><option value=\"fill\">fill</option><option value=\"click\">click</option><option value=\"wait\">wait</option><option value=\"wait_for\">wait_for</option><option value=\"javascript\">javascript</option></select><input name=\"step_'+n+'_value\" type=\"text\" class=\"form-input\" style=\"font-size:0.75rem\" placeholder=\"value\"><button type=\"button\" class=\"btn btn-sm btn-danger\" style=\"padding:2px 6px\" onclick=\"this.closest(\\'div\\').remove()\">x</button>';document.getElementById('steps-${String(c.id)}').appendChild(d)`}
+          >+ Add Step</button>
+          <div style="margin-top:0.5rem">
+            <label style="font-size:0.7rem">Login detect URL (re-run steps when redirected here)</label>
+            <input name="smart_url_login_detect" type="text" class="form-input" style="font-size:0.75rem"
+              value={(c.options?.["smart_url"] as any)?.login_detect_url ?? ""} placeholder="e.g. /login" />
+          </div>
+        </div>
+
+        <div class="form-group span-grid">
+          <div>
+            <label>Width</label>
+            <input name="col_span" type="number" class="form-input" min="1" value={String(c.col_span)} />
+          </div>
+          <div>
+            <label>Height</label>
+            <input name="row_span" type="number" class="form-input" min="1" value={String(c.row_span)} />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>ioBOX Keyboard</label>
+          <select name="keyboard_mode" class="form-input">
+            <option value="disabled" selected={keyboardMode === "disabled"}>Disabled</option>
+            <option value="all" selected={keyboardMode === "all"}>All keys</option>
+            <option value="alphanumeric" selected={keyboardMode === "alphanumeric"}>Alphanumeric</option>
+            <option value="custom" selected={keyboardMode === "custom"}>Custom</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Allowed Keys</label>
+          <input name="keyboard_allowlist" class="form-input" value={allowlist} placeholder="Enter, Digit1, ArrowLeft" />
+        </div>
+        <label style="display:block; font-size:0.75rem; margin-bottom:0.25rem">
+          <input type="checkbox" name="mouse_enabled" value="1" checked={inputOptions["mouse_enabled"] === true} /> Mouse
+        </label>
+        <label style="display:block; font-size:0.75rem">
+          <input type="checkbox" name="ptz_enabled" value="1" checked={inputOptions["ptz_enabled"] === true} /> PTZ
+        </label>
+
+        <div class="card" style="box-shadow:none; border:1px solid #eee; margin:0.8rem 0; padding:0.8rem">
+          <h4 style="margin:0 0 0.6rem; font-size:0.85rem">Block Events</h4>
+          {actionKinds.map(([kind, label]) => (
+            <div class="form-group">
+              <label>{label} Action</label>
+              <input name={`${kind}_action`} class="form-input" value={actionName(inputOptions, kind)} placeholder="layout.switch" />
+              <textarea name={`${kind}_params_json`} class="form-input" rows="3" style="margin-top:0.25rem" placeholder={`{"layout_id":"..."}`}>{actionParamsText(inputOptions, kind)}</textarea>
+            </div>
+          ))}
+        </div>
+
+        <div class="layout-cell-edit-form-actions">
+          <button type="submit" class="btn btn-primary">Save</button>
+          <button type="button" class="btn btn-danger" hx-post={deleteUrl} hx-target="#layout-cell-sidebar" hx-swap="outerHTML" hx-confirm="Delete this cell?">Delete</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+export function renderCellSidebarResponse(
+  layoutId: string,
+  selectedCellId: string | null,
+  cells: LayoutCell[],
+  entities: Entity[],
+  cameras: Camera[],
+): string {
+  const selected = selectedCellId ? cells.find((cell) => cell.id === selectedCellId) ?? null : null;
+  return (
+    <>
+      {renderCellSidebar(layoutId, selected, cells, entities, cameras)}
+      <div id="layout-grid" hx-swap-oob="innerHTML">
+        {renderGrid(layoutId, cells, entities, cameras, selectedCellId)}
+      </div>
+    </>
+  );
+}
+
 /**
- * Render a single cell, either in read-only display mode or edit mode (form
- * inline inside the cell). Returns a `<div class="layout-cell" ...>` element
- * suitable for hx-swap="outerHTML" against itself.
+ * Render a single cell in the layout grid. Clicking it loads the cell into the
+ * editor sidebar. Returns a `<div class="layout-cell" ...>` element.
  */
 export function renderCell(
   layoutId: string,
   c: LayoutCell,
   entities: Entity[],
   cameras: Camera[],
-  mode: "read" | "edit",
+  selected = false,
 ): string {
   const cameraById = new Map<string, Camera>();
   for (const cam of cameras) cameraById.set(cam.id, cam);
@@ -2885,138 +3168,7 @@ export function renderCell(
   const deleteUrl = `${cellGetUrl}/delete`;
   const resizeUrl = `${cellGetUrl}/resize`;
 
-  if (mode === "edit") {
-    const inputOptions = c.input_options_json ?? {};
-    const keyboardMode = String(inputOptions["keyboard_mode"] ?? "disabled");
-    const allowlist = Array.isArray(inputOptions["keyboard_allowlist"]) ? inputOptions["keyboard_allowlist"].join(", ") : "";
-    return (
-      <div class="layout-cell editing" style={style} id={`cell-${String(c.id)}`}>
-        <form
-          class="layout-cell-edit-form"
-          hx-post={cellGetUrl}
-          hx-target={`#cell-${String(c.id)}`}
-          hx-swap="outerHTML"
-        >
-          <div class="form-group">
-            <label>Entity</label>
-            <select name="entity_id" class="form-input">
-              <option value="">-- Empty --</option>
-              {entities.map((e) => (
-                <option value={String(e.id)} selected={c.entity_id === e.id}>
-                  [{entityTypeLabel(e.type)}] {entityDisplayName(e)}
-                </option>
-              ))}
-            </select>
-            <div class="form-hint" style="font-size:0.7rem">
-              <a href="/admin/entities/new" target="_blank">+ New entity</a>
-            </div>
-          </div>
-
-          <div class="form-group" style={(c.entity_id != null && entityById.get(c.entity_id)?.type === "camera") ? "" : "display:none"}>
-            <label>Stream</label>
-            <select name="stream_selector" class="form-input">
-              <option value="auto" selected={c.stream_selector === "auto"}>Auto</option>
-              <option value="main" selected={c.stream_selector === "main"}>Main</option>
-              <option value="sub" selected={c.stream_selector === "sub"}>Sub</option>
-            </select>
-          </div>
-
-          <div class="form-group">
-            <label>Fit</label>
-            <select name="fit" class="form-input">
-              <option value="cover" selected={c.fit === "cover"}>Cover (fill, crop overflow)</option>
-              <option value="contain" selected={c.fit === "contain"}>Contain (letterbox)</option>
-              <option value="fill" selected={c.fit === "fill"}>Fill (stretch)</option>
-            </select>
-          </div>
-
-          {/* Smart URL step builder — shown for web/dashboard cells */}
-          <div class="form-group" id={`smart-url-${String(c.id)}`}>
-            <label style="font-weight:600">Smart URL Steps</label>
-            <div style="font-size:0.7rem;color:#666;margin-bottom:0.5rem">
-              Auto-login / navigate sequences. Leave empty for direct URL load.
-            </div>
-            <div id={`steps-${String(c.id)}`}>
-              {((c.options?.["smart_url"] as any)?.steps ?? []).map((step: any, idx: number) => (
-                <div style="display:grid;grid-template-columns:100px 1fr auto;gap:4px;margin-bottom:4px;align-items:center">
-                  <select name={`step_${idx}_type`} class="form-input" style="font-size:0.75rem">
-                    {["navigate","fill","click","wait","wait_for","javascript"].map((t) => (
-                      <option value={t} selected={step.type === t}>{t}</option>
-                    ))}
-                  </select>
-                  <input name={`step_${idx}_value`} type="text" class="form-input" style="font-size:0.75rem"
-                    placeholder={step.type === "navigate" ? "URL" : step.type === "fill" ? "selector=value" : step.type === "click" ? "CSS selector" : step.type === "wait" ? "ms" : step.type === "javascript" ? "JS code" : "selector"}
-                    value={step.type === "fill" ? `${step.selector ?? ""}=${step.value ?? ""}` : step.url ?? step.selector ?? step.script ?? (step.delay_ms != null ? String(step.delay_ms) : "")} />
-                  <button type="button" class="btn btn-sm btn-danger" style="padding:2px 6px"
-                    onclick={`this.closest('div').remove()`}>×</button>
-                </div>
-              ))}
-            </div>
-            <button type="button" class="btn btn-sm btn-ghost" style="font-size:0.75rem"
-              onclick={`var d=document.createElement('div');d.style='display:grid;grid-template-columns:100px 1fr auto;gap:4px;margin-bottom:4px;align-items:center';var n=document.querySelectorAll('#steps-${String(c.id)} > div').length;d.innerHTML='<select name=\"step_'+n+'_type\" class=\"form-input\" style=\"font-size:0.75rem\"><option value=\"navigate\">navigate</option><option value=\"fill\">fill</option><option value=\"click\">click</option><option value=\"wait\">wait</option><option value=\"wait_for\">wait_for</option><option value=\"javascript\">javascript</option></select><input name=\"step_'+n+'_value\" type=\"text\" class=\"form-input\" style=\"font-size:0.75rem\" placeholder=\"value\"><button type=\"button\" class=\"btn btn-sm btn-danger\" style=\"padding:2px 6px\" onclick=\"this.closest(\\'div\\').remove()\">×</button>';document.getElementById('steps-${String(c.id)}').appendChild(d)`}
-            >+ Add Step</button>
-            <div style="margin-top:0.5rem">
-              <label style="font-size:0.7rem">Login detect URL (re-run steps when redirected here)</label>
-              <input name="smart_url_login_detect" type="text" class="form-input" style="font-size:0.75rem"
-                value={(c.options?.["smart_url"] as any)?.login_detect_url ?? ""} placeholder="e.g. /login" />
-            </div>
-          </div>
-
-          <div class="form-group span-grid">
-            <div>
-              <label>Width</label>
-              <input name="col_span" type="number" class="form-input" min="1" value={String(c.col_span)} />
-            </div>
-            <div>
-              <label>Height</label>
-              <input name="row_span" type="number" class="form-input" min="1" value={String(c.row_span)} />
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label>ioBOX Keyboard</label>
-            <select name="keyboard_mode" class="form-input">
-              <option value="disabled" selected={keyboardMode === "disabled"}>Disabled</option>
-              <option value="all" selected={keyboardMode === "all"}>All keys</option>
-              <option value="alphanumeric" selected={keyboardMode === "alphanumeric"}>Alphanumeric</option>
-              <option value="custom" selected={keyboardMode === "custom"}>Custom</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Allowed Keys</label>
-            <input name="keyboard_allowlist" class="form-input" value={allowlist} placeholder="Enter, Digit1, ArrowLeft" />
-          </div>
-          <label style="display:block; font-size:0.75rem; margin-bottom:0.25rem">
-            <input type="checkbox" name="mouse_enabled" value="1" checked={inputOptions["mouse_enabled"] === true} /> Mouse
-          </label>
-          <label style="display:block; font-size:0.75rem">
-            <input type="checkbox" name="ptz_enabled" value="1" checked={inputOptions["ptz_enabled"] === true} /> PTZ
-          </label>
-
-          <div class="layout-cell-edit-form-actions">
-            <button type="submit" class="btn btn-primary">Save</button>
-            <button
-              type="button"
-              class="btn btn-ghost"
-              hx-get={cellGetUrl}
-              hx-target={`#cell-${String(c.id)}`}
-              hx-swap="outerHTML"
-            >Cancel</button>
-            <button
-              type="button"
-              class="btn btn-danger"
-              hx-post={deleteUrl}
-              hx-target="#layout-grid"
-              hx-swap="innerHTML"
-              hx-confirm="Delete this cell?"
-            >Delete</button>
-          </div>
-        </form>
-      </div>
-    );
-  }
-
-  // Read mode. Empty when no entity is bound.
+  // Empty when no entity is bound.
   const ent = c.entity_id != null ? entityById.get(c.entity_id) ?? null : null;
   const isEmpty = !ent && (
     c.content_type === "none"
@@ -3028,12 +3180,12 @@ export function renderCell(
 
   return (
     <div
-      class="layout-cell"
+      class={`layout-cell${selected ? " bf-selected" : ""}`}
       id={`cell-${String(c.id)}`}
       data-cell-id={String(c.id)}
       style={style}
       hx-get={cellEditUrl}
-      hx-target="this"
+      hx-target="#layout-cell-sidebar"
       hx-swap="outerHTML"
       hx-trigger="click"
     >
@@ -3099,6 +3251,7 @@ export function renderGrid(
   cells: LayoutCell[],
   entities: Entity[],
   cameras: Camera[],
+  selectedCellId: string | null = null,
 ): string {
   if (cells.length === 0) {
     return (
@@ -3143,7 +3296,7 @@ export function renderGrid(
         data-layout-editor={String(layoutId)}
         style={`grid-template-columns:repeat(${String(gridCols)}, minmax(0, 1fr)); grid-template-rows:repeat(${String(gridRows)}, minmax(80px, 1fr))`}
       >
-        {cells.map((c) => renderCell(layoutId, c, entities, cameras, "read"))}
+        {cells.map((c) => renderCell(layoutId, c, entities, cameras, selectedCellId === c.id))}
       </div>
       <script src="/static/layout-editor.js" />
     </>
@@ -3254,7 +3407,7 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
           <p style="color:#666; font-size:0.85rem; margin-bottom:1rem">
             Hover a side <strong>+</strong> to add a neighbour or expand the cell.
             Expanding pushes cells in that direction out of the way. Click a cell
-            to edit content in-place.
+            to edit it in the sidebar.
           </p>
           <div class="layout-quick-actions">
             {LAYOUT_QUICK_PRESETS.map((preset) => (
@@ -3269,8 +3422,11 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
               </form>
             ))}
           </div>
-          <div id="layout-grid">
-            {renderGrid(l.id, cells, props.entities, props.cameras)}
+          <div class="layout-editor-shell">
+            <div id="layout-grid">
+              {renderGrid(l.id, cells, props.entities, props.cameras)}
+            </div>
+            {renderCellSidebar(l.id, null, cells, props.entities, props.cameras)}
           </div>
         </div>
 

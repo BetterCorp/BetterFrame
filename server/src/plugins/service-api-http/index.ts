@@ -998,8 +998,9 @@ function registerKioskRoutes(
     const fresh = await repo.getKioskById(kiosk.id);
     const updateSchedule = normalizeUpdateSchedule(await repo.getSetupExtra("update_schedule"));
     let pendingConfig: { version: number; config: unknown } | undefined;
+    const isWindowsClient = Array.isArray(fresh?.capabilities) && fresh.capabilities.includes("windows");
     if (
-      fresh?.managed_image
+      (fresh?.managed_image || isWindowsClient)
       && fresh.managed_config_version > fresh.managed_config_applied_version
       && fresh.managed_config_json
     ) {

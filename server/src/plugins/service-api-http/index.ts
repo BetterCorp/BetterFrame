@@ -881,7 +881,9 @@ function registerKioskRoutes(
     // successful apply (kiosk omits it). verifyKioskKey returns just {id};
     // re-read the full row to check the managed_image flag.
     const kioskFull = await repo.getKioskById(kiosk.id);
-    if (kioskFull?.managed_image && typeof body.managed_config_applied_version === "number") {
+    const acceptsManagedConfig = Boolean(kioskFull?.managed_image)
+      || (Array.isArray(kioskFull?.capabilities) && kioskFull.capabilities.includes("windows"));
+    if (acceptsManagedConfig && typeof body.managed_config_applied_version === "number") {
       const patch: Record<string, unknown> = {
         managed_config_applied_version: body.managed_config_applied_version,
         managed_config_applied_at: new Date().toISOString(),
@@ -890,7 +892,7 @@ function registerKioskRoutes(
         patch["managed_config_error"] = body.managed_config_error ?? null;
       }
       await repo.updateKiosk(kiosk.id, patch as any);
-    } else if (kioskFull?.managed_image && body.managed_config_error !== undefined) {
+    } else if (acceptsManagedConfig && body.managed_config_error !== undefined) {
       await repo.updateKiosk(kiosk.id, {
         managed_config_error: body.managed_config_error ?? null,
       } as any);

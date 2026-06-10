@@ -6,6 +6,7 @@ server/lib/
 server/bsb-plugin.json
 nodered/lib/
 kiosk/target/
+windows-client/target/
 iobox-firmware/.pio/
 
 # BSB generated

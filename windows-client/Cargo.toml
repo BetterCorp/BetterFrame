@@ -1,0 +1,25 @@
+[package]
+name = "betterframe-windows-client"
+version = "0.1.0"
+edition = "2024"
+description = "BetterFrame Windows kiosk agent and desktop app"
+license = "AGPL-3.0-only OR Commercial"
+
+[dependencies]
+dirs = "6"
+futures-util = "0.3"
+hostname = "0.4"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+urlencoding = "2"
+windows-sys = { version = "0.52", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_UI_WindowsAndMessaging",
+] }

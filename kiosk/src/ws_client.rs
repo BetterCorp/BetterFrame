@@ -282,18 +282,6 @@ async fn handle_message(
         let _ = tx.send(ServerMsg::OsCheck { force });
     } else if text.contains("\"type\":\"update_cancel\"") {
         let _ = tx.send(ServerMsg::CancelUpdates);
-    } else if text.contains("\"type\":\"fan\"") {
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
-            return;
-        };
-        let pwm = if msg.get("mode").and_then(|v| v.as_str()) == Some("auto") {
-            None
-        } else if let Some(value) = msg.get("pwm").and_then(|v| v.as_u64()) {
-            Some(value.min(255) as u32)
-        } else {
-            return;
-        };
-        let _ = tx.send(ServerMsg::Fan(pwm));
     } else if text.contains("\"type\":\"volume-set\"") {
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
             return;

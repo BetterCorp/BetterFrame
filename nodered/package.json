@@ -20,7 +20,6 @@
       "bf-trigger-web-change": "src/bf-trigger-web-change.js",
       "bf-layout-switch": "src/bf-layout-switch.js",
       "bf-power": "src/bf-power.js",
-      "bf-fan": "src/bf-fan.js",
       "bf-cameras": "src/bf-cameras.js",
       "bf-config-get": "src/bf-config-get.js",
       "bf-config-set": "src/bf-config-set.js",

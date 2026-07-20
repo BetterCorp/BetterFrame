@@ -338,6 +338,27 @@ EOF
       printf '\n# BetterFrame: disable firmware rainbow splash\ndisable_splash=1\n' >> "${CONFIG}"
       REBOOT_NEEDED=1
     fi
+    if ! grep -q "^# BetterFrame: Pi 5 fan curve" "${CONFIG}"; then
+      cat >> "${CONFIG}" <<'EOF'
+
+[all]
+# BetterFrame: Pi 5 fan curve (<30C off, 30-40C 50%, >40C full)
+dtparam=cooling_fan=on
+dtparam=fan_temp0=30000
+dtparam=fan_temp0_hyst=0
+dtparam=fan_temp0_speed=128
+dtparam=fan_temp1=40001
+dtparam=fan_temp1_hyst=0
+dtparam=fan_temp1_speed=255
+dtparam=fan_temp2=60000
+dtparam=fan_temp2_hyst=0
+dtparam=fan_temp2_speed=255
+dtparam=fan_temp3=70000
+dtparam=fan_temp3_hyst=0
+dtparam=fan_temp3_speed=255
+EOF
+      REBOOT_NEEDED=1
+    fi
   fi
 fi
 

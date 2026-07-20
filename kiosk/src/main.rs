@@ -15,7 +15,6 @@ mod remote_debug;
 mod server;
 #[cfg(target_os = "linux")]
 mod tailscale;
-mod thermal;
 mod ui;
 mod update_guard;
 mod ws_client;
@@ -26,8 +25,6 @@ pub enum ServerMsg {
     ReloadBundle,
     Standby(Option<String>),
     Wake(Option<String>),
-    /// Some(0..=255) = manual PWM. None = restore auto.
-    Fan(Option<u32>),
     /// Switch to a specific layout by ID, optionally scoped to one display.
     SwitchLayout {
         display_id: Option<String>,

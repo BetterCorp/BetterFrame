@@ -41,7 +41,6 @@ use crate::os_update;
 use crate::pipeline;
 use crate::remote_debug;
 use crate::server;
-use crate::thermal;
 use crate::ws_client;
 use crate::ServerMsg;
 
@@ -274,9 +273,6 @@ fn activate(app: &Application) {
             ui_tx: std::sync::Arc::new(std::sync::Mutex::new(Some(tx.clone()))),
         });
 
-        // Automatic fan control based on CPU temperature thresholds.
-        thermal::start();
-
         // Spawn WS client in a separate thread for live updates
         let server_ws = server.clone();
         let key_ws = key.clone();
@@ -349,13 +345,6 @@ fn activate(app: &Application) {
                     ServerMsg::Wake(display_id) => {
                         let _ = tx_for_reload.send(WorkerMsg::Wake(display_id));
                         delayed_heartbeat(&server_for_reload, &key_for_reload);
-                    }
-                    ServerMsg::Fan(pwm) => {
-                        thermal::set_manual_override();
-                        if !hwmon::set_fan(pwm) {
-                            warn!("fan command failed");
-                        }
-                        send_heartbeat_now(&server_for_reload, &key_for_reload);
                     }
                     ServerMsg::VolumeSet(vol) => {
                         crate::audio::set_volume(vol);

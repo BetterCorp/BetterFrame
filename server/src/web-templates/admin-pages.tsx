@@ -2302,6 +2302,7 @@ export function KioskEditPage(props: KioskEditProps) {
               <div>RAM: {mbPair(k.memory_used_mb, k.memory_total_mb)}</div>
               <div>Disk: {k.disk_free_mb != null && k.disk_total_mb != null ? `${String(k.disk_free_mb)} MB free / ${String(k.disk_total_mb)} MB` : "—"} {k.disk_used_percent != null ? `(${k.disk_used_percent.toFixed(1)}%)` : ""}</div>
               <div>PWM: {k.fan_pwm != null ? `${k.fan_pwm}/255` : "—"}</div>
+              <div>Fan policy: &lt;30°C off · 30–40°C 50% · &gt;40°C full</div>
             </div>
             {(() => {
               const parts = (() => {
@@ -2340,45 +2341,6 @@ export function KioskEditPage(props: KioskEditProps) {
                 </div>
               );
             })()}
-            <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
-              <button
-                type="button"
-                class="btn btn-sm btn-ghost"
-                {...{
-                  "hx-post": `/admin/kiosks/${String(k.id)}/fan`,
-                  "hx-vals": JSON.stringify({ mode: "auto" }),
-                  "hx-swap": "none",
-                }}
-              >Auto</button>
-              <button
-                type="button"
-                class="btn btn-sm btn-ghost"
-                {...{
-                  "hx-post": `/admin/kiosks/${String(k.id)}/fan`,
-                  "hx-vals": JSON.stringify({ pwm: "0" }),
-                  "hx-swap": "none",
-                }}
-              >Off</button>
-              <button
-                type="button"
-                class="btn btn-sm btn-ghost"
-                {...{
-                  "hx-post": `/admin/kiosks/${String(k.id)}/fan`,
-                  "hx-vals": JSON.stringify({ pwm: "128" }),
-                  "hx-swap": "none",
-                }}
-              >50%</button>
-              <button
-                type="button"
-                class="btn btn-sm btn-ghost"
-                {...{
-                  "hx-post": `/admin/kiosks/${String(k.id)}/fan`,
-                  "hx-vals": JSON.stringify({ pwm: "255" }),
-                  "hx-swap": "none",
-                }}
-              >Full</button>
-            </div>
-
             <div style="margin-top:1rem; padding-top:0.75rem; border-top:1px solid #f0f0f0; display:flex; gap:0.5rem; align-items:center">
               <div style="font-size:0.8rem; font-weight:600">Power</div>
               <button type="button" class="btn btn-sm btn-ghost" style="color:#c00" {...{

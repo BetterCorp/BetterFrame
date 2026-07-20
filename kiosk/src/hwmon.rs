@@ -1,20 +1,14 @@
-//! Pi5 hwmon — read CPU temp + fan RPM, override fan PWM.
+//! Pi5 hwmon — read CPU temperature and fan telemetry.
 //!
 //! Read paths:
 //!   - /sys/class/thermal/thermal_zone0/temp (millideg C)
 //!   - /sys/class/hwmon/hwmon*/fan1_input    (RPM)
 //!   - /sys/class/hwmon/hwmon*/pwm1          (0-255 current)
 //!
-//! Override:
-//!   - echo 1 > pwm1_enable  (manual)
-//!   - echo N > pwm1         (0-255)
-//!   - echo 2 > pwm1_enable  (auto / cooling_device controlled)
-
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
-use tracing::warn;
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct HwInfo {
@@ -55,36 +49,6 @@ pub fn read() -> HwInfo {
         disk_used_percent: disk.map(|d| d.2),
         partitions: read_partitions(),
     }
-}
-
-/// Set fan PWM (0-255). If pwm is None → restore auto mode.
-pub fn set_fan(pwm: Option<u32>) -> bool {
-    let Some(dir) = find_fan_hwmon() else {
-        warn!("hwmon: no fan device found");
-        return false;
-    };
-    let pwm_enable = dir.join("pwm1_enable");
-    let pwm_path = dir.join("pwm1");
-
-    match pwm {
-        Some(value) => {
-            let v = value.min(255);
-            if fs::write(&pwm_enable, "1").is_err() {
-                warn!("hwmon: cannot write pwm1_enable");
-                return false;
-            }
-            if fs::write(&pwm_path, v.to_string()).is_err() {
-                warn!("hwmon: cannot write pwm1");
-                return false;
-            }
-            true
-        }
-        None => fs::write(&pwm_enable, "2").is_ok(),
-    }
-}
-
-pub fn read_temp_c() -> Option<f32> {
-    read_temp()
 }
 
 fn read_temp() -> Option<f32> {
@@ -185,7 +149,7 @@ fn find_fan_hwmon() -> Option<PathBuf> {
     let entries = fs::read_dir("/sys/class/hwmon").ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.join("pwm1").exists() {
+        if path.join("pwm1").exists() && path.join("fan1_input").exists() {
             return Some(path);
         }
     }

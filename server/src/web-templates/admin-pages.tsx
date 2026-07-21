@@ -2297,11 +2297,11 @@ export function KioskEditPage(props: KioskEditProps) {
             <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Hardware</div>
             <div style="display:flex; gap:1.5rem; flex-wrap:wrap; font-size:0.85rem; color:#666; margin-bottom:0.75rem">
               <div>CPU: {k.cpu_temp_c != null ? `${k.cpu_temp_c.toFixed(1)}°C` : "—"}</div>
-              <div>Fan: {k.fan_rpm != null ? `${k.fan_rpm} RPM` : "—"}</div>
+              <div>Fan: {k.fan_rpm ?? 0} RPM</div>
               <div>CPU Load: {percentText(k.cpu_load_percent)}</div>
               <div>RAM: {mbPair(k.memory_used_mb, k.memory_total_mb)}</div>
               <div>Disk: {k.disk_free_mb != null && k.disk_total_mb != null ? `${String(k.disk_free_mb)} MB free / ${String(k.disk_total_mb)} MB` : "—"} {k.disk_used_percent != null ? `(${k.disk_used_percent.toFixed(1)}%)` : ""}</div>
-              <div>PWM: {k.fan_pwm != null ? `${k.fan_pwm}/255` : "—"}</div>
+              <div>PWM: {k.fan_pwm ?? 0}/255</div>
               <div>Fan policy: &lt;30°C off · 30–40°C 50% · &gt;40°C full</div>
             </div>
             {(() => {
@@ -3914,10 +3914,8 @@ export function SystemHealthPage(props: SystemHealthPageProps) {
                       {k.disk_used_percent != null ? <span style="color:#999"> ({k.disk_used_percent.toFixed(1)}%)</span> : ""}
                     </td>
                     <td style="font-size:0.85rem">
-                      {k.fan_rpm != null ? `${String(k.fan_rpm)} RPM` : "—"}
-                      {k.fan_pwm != null && (
-                        <span style="color:#999"> ({String(k.fan_pwm)}/255)</span>
-                      )}
+                      {String(k.fan_rpm ?? 0)} RPM
+                      <span style="color:#999"> ({String(k.fan_pwm ?? 0)}/255)</span>
                     </td>
                     <td style="font-size:0.85rem">
                       {row.bundleMismatch ? (

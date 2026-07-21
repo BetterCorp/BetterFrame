@@ -118,6 +118,11 @@ echo "==> Patching rootfs /etc/fstab"
 ROOTFS_LOOP="$(losetup -f --show "$WORK/rootfs.ext4")"
 mkdir -p "$WORK/mnt-root"
 mount "$ROOTFS_LOOP" "$WORK/mnt-root"
+if ! grep -qsh '^CONFIG_SQUASHFS=y$' "$WORK/mnt-root"/boot/config-* &&
+   ! find "$WORK/mnt-root/lib/modules" -path '*/kernel/fs/squashfs/squashfs.ko*' -print -quit | grep -q .; then
+  echo "ERROR: target kernel lacks SquashFS support required by RAUC" >&2
+  exit 1
+fi
 cat > "$WORK/mnt-root/etc/fstab" <<FSTAB
 LABEL=BF_BOOT_A  /boot/firmware  vfat  defaults  0  2
 PARTUUID=${PARTUUID_ROOT_A}  /               ext4  defaults,noatime  0  1

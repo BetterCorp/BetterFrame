@@ -20,5 +20,6 @@ curl
 gnupg
 openssl
 rauc
+kmod
 dosfstools
 nftables

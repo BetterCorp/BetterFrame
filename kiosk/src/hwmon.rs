@@ -8,7 +8,11 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Once;
 use std::time::Duration;
+use tracing::{info, warn};
+
+static LEGACY_FAN_CONTROL: Once = Once::new();
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct HwInfo {
@@ -35,6 +39,7 @@ pub struct PartitionInfo {
 }
 
 pub fn read() -> HwInfo {
+    LEGACY_FAN_CONTROL.call_once(start_legacy_fan_control);
     let memory = read_memory();
     let disk = read_disk();
     HwInfo {
@@ -48,6 +53,49 @@ pub fn read() -> HwInfo {
         disk_free_mb: disk.map(|d| d.1),
         disk_used_percent: disk.map(|d| d.2),
         partitions: read_partitions(),
+    }
+}
+
+/// Control fans on older installs whose service still grants PWM access.
+/// Fresh images leave sysfs root-owned and use the native Pi firmware curve.
+// ponytail: remove after every kiosk has received the native fan-curve OS update.
+fn start_legacy_fan_control() {
+    let Some(dir) = find_fan_hwmon() else {
+        return;
+    };
+    if fs::write(dir.join("pwm1_enable"), "1").is_err() {
+        return;
+    }
+
+    std::thread::Builder::new()
+        .name("fan-control".into())
+        .spawn(move || {
+            info!("fan: controlling legacy writable PWM device");
+            let pwm_path = dir.join("pwm1");
+            let mut last = None;
+            loop {
+                if let Some(target) = read_temp().map(fan_pwm_for_temp) {
+                    if last != Some(target) {
+                        if let Err(err) = fs::write(&pwm_path, target.to_string()) {
+                            warn!("fan: PWM write failed: {err}");
+                            return;
+                        }
+                        last = Some(target);
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        })
+        .expect("spawn fan control thread");
+}
+
+fn fan_pwm_for_temp(temp_c: f32) -> u32 {
+    if temp_c < 30.0 {
+        0
+    } else if temp_c <= 40.0 {
+        128
+    } else {
+        255
     }
 }
 
@@ -198,4 +246,17 @@ fn read_partitions() -> Vec<PartitionInfo> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fan_pwm_for_temp;
+
+    #[test]
+    fn fan_curve_matches_policy() {
+        assert_eq!(fan_pwm_for_temp(29.9), 0);
+        assert_eq!(fan_pwm_for_temp(30.0), 128);
+        assert_eq!(fan_pwm_for_temp(40.0), 128);
+        assert_eq!(fan_pwm_for_temp(40.1), 255);
+    }
 }

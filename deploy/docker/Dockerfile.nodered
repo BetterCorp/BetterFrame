@@ -4,7 +4,7 @@
 # package at /usr/src/betterframe-nodes. settings.js points nodesDir
 # there so Node-RED scans it on boot. Survives /data volume mount.
 
-FROM nodered/node-red:5.0.4-22
+FROM nodered/node-red:5.0.4-24
 
 LABEL org.opencontainers.image.source="https://github.com/BetterCorp/BetterFrame" \
       org.opencontainers.image.licenses="AGPL-3.0-only OR LicenseRef-BetterFrame-Commercial"

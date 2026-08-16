@@ -3,7 +3,7 @@
  * service-coordinator-ws sets the implementation in its init().
  */
 export interface CoordinatorApi {
-  sendToKiosk(kioskId: string, message: object): boolean;
+  sendToKiosk(kioskId: string, message: object, queueWhenOffline?: boolean): boolean;
   requestKiosk<T = unknown>(kioskId: string, message: object, timeoutMs?: number): Promise<T>;
   broadcastAll(message: object): void;
   notifyBundleChanged(): void;

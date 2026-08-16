@@ -241,6 +241,7 @@ export type EventSinkMode = "auto" | "server" | string;
 export interface Camera {
   id: string;
   name: string;
+  camera_number: string | null;
   type: CameraType;
   rtsp_url: string | null;
   onvif_host: string | null;
@@ -261,6 +262,8 @@ export interface Camera {
   cloud_stream_type: string | null;
   event_callback_nonce: string | null;
   event_callback_token_hash: string | null;
+  /** BetterFrame-owned SimpleVMS settings keyed by plugin/profile. */
+  recording_config_json: Record<string, unknown>;
 }
 
 export interface CameraStream {
@@ -398,6 +401,13 @@ export interface Kiosk {
   network_interfaces_json: string | null;
   logging_json: string | null;
   renderer_telemetry_json: string | null;
+  operator_console_enabled: boolean;
+  operator_console_host: string | null;
+  operator_console_port: number;
+  operator_tools_json: string | null;
+  simple_vms_enabled: boolean;
+  simple_vms_storage_path: string | null;
+  simple_vms_settings_json: string | null;
   // Managed-image device config. Only meaningful when managed_image=true; for
   // BYO-OS kiosks these fields stay at defaults and the admin UI hides them.
   managed_image: boolean;

@@ -31,7 +31,7 @@ use gtk4::{
 use tracing::{info, warn};
 
 use crate::ServerMsg;
-use crate::bundle::{BundleDisplayWithLayouts, KioskBundle};
+use crate::bundle::{BundleCell, BundleDisplayWithLayouts, KioskBundle};
 use crate::cec;
 use crate::firmware;
 use crate::gpio;
@@ -56,6 +56,26 @@ struct DisplayState {
     web_layer: gtk::Fixed,
     web_positions: Vec<WebCellPos>,
     grid_dims: (u32, u32),
+    focus_overrides: HashMap<String, FocusOverride>,
+    fullscreen_override: Option<FocusOverride>,
+    display_cleared: bool,
+    override_generation: u64,
+}
+
+#[derive(Clone)]
+struct FocusOverride {
+    camera_id: String,
+    stream: String,
+    generation: u64,
+}
+
+pub struct OperatorFocusRequest {
+    pub display_id: String,
+    pub camera_id: String,
+    pub stream: String,
+    pub cell_id: Option<String>,
+    pub fullscreen: bool,
+    pub duration_seconds: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -271,7 +291,11 @@ fn activate(app: &Application) {
             server_url: server.clone(),
             kiosk_key: key.clone(),
             ui_tx: std::sync::Arc::new(std::sync::Mutex::new(Some(tx.clone()))),
+            operator_auth: crate::operator_console::shared_auth(),
         });
+        if let Some(bundle) = server::load_cached_bundle() {
+            local_server::sync_simple_vms(&bundle);
+        }
 
         // Spawn WS client in a separate thread for live updates
         let server_ws = server.clone();
@@ -328,6 +352,7 @@ fn activate(app: &Application) {
                         match server::fetch_bundle(&server_for_reload, &key_for_reload) {
                             Some(bundle) => {
                                 set_reported_bundle_version(&bundle.version);
+                                local_server::sync_simple_vms(&bundle);
                                 let _ = tx_for_reload.send(WorkerMsg::RenderBundle(
                                     bundle,
                                     server_for_reload.clone(),
@@ -367,6 +392,18 @@ fn activate(app: &Application) {
                             layout_id,
                         });
                         delayed_heartbeat(&server_for_reload, &key_for_reload);
+                    }
+                    ServerMsg::OperatorFocus(request) => {
+                        let (reply, _) = mpsc::channel();
+                        let _ = tx_for_reload.send(WorkerMsg::OperatorFocus(request, reply));
+                    }
+                    ServerMsg::OperatorClear(display_id) => {
+                        let (reply, _) = mpsc::channel();
+                        let _ = tx_for_reload.send(WorkerMsg::OperatorClear(display_id, reply));
+                    }
+                    ServerMsg::OperatorRestore(display_id) => {
+                        let (reply, _) = mpsc::channel();
+                        let _ = tx_for_reload.send(WorkerMsg::OperatorRestore(display_id, reply));
                     }
                     #[cfg(target_os = "linux")]
                     ServerMsg::TailscaleAuth(key) => {
@@ -476,6 +513,15 @@ fn activate(app: &Application) {
                         switch_layout_anywhere(&layout_id);
                     }
                 }
+                WorkerMsg::OperatorFocus(request, reply) => {
+                    let _ = reply.send(operator_focus(request));
+                }
+                WorkerMsg::OperatorClear(display_id, reply) => {
+                    let _ = reply.send(operator_clear(&display_id));
+                }
+                WorkerMsg::OperatorRestore(display_id, reply) => {
+                    let _ = reply.send(operator_restore(&display_id));
+                }
                 WorkerMsg::Standby(display_id) => standby_display(display_id.as_deref()),
                 WorkerMsg::Wake(display_id) => wake_display(display_id.as_deref()),
                 WorkerMsg::ShowTerminalCode(code) => show_terminal_code_overlay(&code),
@@ -495,6 +541,12 @@ pub enum WorkerMsg {
         display_id: Option<String>,
         layout_id: String,
     },
+    OperatorFocus(
+        OperatorFocusRequest,
+        mpsc::Sender<Result<serde_json::Value, String>>,
+    ),
+    OperatorClear(String, mpsc::Sender<Result<serde_json::Value, String>>),
+    OperatorRestore(String, mpsc::Sender<Result<serde_json::Value, String>>),
     Standby(Option<String>),
     Wake(Option<String>),
     ShowTerminalCode(String),
@@ -1353,6 +1405,10 @@ fn render_bundle(
                 web_layer,
                 web_positions: Vec::new(),
                 grid_dims: (1, 1),
+                focus_overrides: HashMap::new(),
+                fullscreen_override: None,
+                display_cleared: false,
+                override_generation: 0,
             },
         );
     }
@@ -1409,6 +1465,10 @@ fn switch_layout_anywhere(layout_id: &str) {
 
 /// Render a specific layout id on a specific display.
 fn render_layout(display_id: &str, layout_id: &str) {
+    render_layout_inner(display_id, layout_id, false);
+}
+
+fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: bool) {
     if is_terminal_overlay_active() {
         info!("render_layout: deferred — terminal auth overlay active");
         return;
@@ -1443,7 +1503,7 @@ fn render_layout(display_id: &str, layout_id: &str) {
             .or_else(|| bd.layouts.iter().find(|l| l.is_default))
     });
 
-    let Some(layout) = layout else {
+    let Some(base_layout) = layout else {
         warn!("render_layout: no usable layout on display {display_id}");
         DISPLAYS.with(|ds| {
             if let Some(st) = ds.borrow_mut().get_mut(display_id) {
@@ -1459,24 +1519,35 @@ fn render_layout(display_id: &str, layout_id: &str) {
 
     // Update per-display layout id BEFORE recomputing warm-cameras so the
     // union across displays is correct.
-    let previous_layout_id = DISPLAYS.with(|ds| {
-        let prev = ds
-            .borrow()
-            .get(display_id)
-            .and_then(|s| s.current_layout_id.clone());
-        if let Some(st) = ds.borrow_mut().get_mut(display_id) {
-            st.current_layout_id = Some(layout.id.clone());
+    let (previous_layout_id, had_override) = DISPLAYS.with(|ds| {
+        let mut displays = ds.borrow_mut();
+        let Some(st) = displays.get_mut(display_id) else {
+            return (None, false);
+        };
+        let prev = st.current_layout_id.clone();
+        let had_override = !st.focus_overrides.is_empty()
+            || st.fullscreen_override.is_some()
+            || st.display_cleared;
+        st.current_layout_id = Some(base_layout.id.clone());
+        if !preserve_override {
+            st.focus_overrides.clear();
+            st.fullscreen_override = None;
+            st.display_cleared = false;
         }
-        prev
+        (prev, had_override)
     });
 
-    if previous_layout_id.as_deref() == Some(layout.id.as_str()) {
+    let layout_changed = previous_layout_id.as_deref() != Some(base_layout.id.as_str());
+    if !layout_changed && !preserve_override && !had_override {
         info!(
             "layout '{}' already active on display {}; reset idle timer",
-            layout.name, display_id
+            base_layout.name, display_id
         );
         return;
     }
+
+    let mut layout = base_layout.clone();
+    apply_operator_overrides(display_id, &mut layout);
 
     info!(
         "rendering layout '{}' (id {}) on display {} ({}x{} grid, {} cells)",
@@ -1490,20 +1561,22 @@ fn render_layout(display_id: &str, layout_id: &str) {
 
     // Notify the server when the active layout actually changes so Node-RED
     // sees idle reverts + any other kiosk-initiated switch.
-    let layout_name = layout.name.clone();
-    let layout_id_for_report = layout.id.clone();
-    let display_id_for_report = display_id.to_string();
-    let server = server_url.clone();
-    let key = kiosk_key.clone();
-    std::thread::spawn(move || {
-        server::report_layout_change(
-            &server,
-            &key,
-            &display_id_for_report,
-            &layout_id_for_report,
-            &layout_name,
-        );
-    });
+    if layout_changed {
+        let layout_name = layout.name.clone();
+        let layout_id_for_report = layout.id.clone();
+        let display_id_for_report = display_id.to_string();
+        let server = server_url.clone();
+        let key = kiosk_key.clone();
+        std::thread::spawn(move || {
+            server::report_layout_change(
+                &server,
+                &key,
+                &display_id_for_report,
+                &layout_id_for_report,
+                &layout_name,
+            );
+        });
+    }
 
     if layout.cells.is_empty() {
         warn!("layout has no cells");
@@ -1767,6 +1840,207 @@ fn render_layout(display_id: &str, layout_id: &str) {
     });
 
     schedule_webview_positions(&display_id_owned);
+}
+
+fn cell_id(cell: &BundleCell) -> String {
+    cell.view_id
+        .clone()
+        .unwrap_or_else(|| format!("r{}c{}", cell.row, cell.col))
+}
+
+fn apply_operator_overrides(display_id: &str, layout: &mut crate::bundle::BundleLayout) {
+    let snapshot = DISPLAYS.with(|ds| {
+        ds.borrow().get(display_id).map(|st| {
+            (
+                st.focus_overrides.clone(),
+                st.fullscreen_override.clone(),
+                st.display_cleared,
+            )
+        })
+    });
+    let Some((overrides, fullscreen, cleared)) = snapshot else {
+        return;
+    };
+    if cleared {
+        for cell in &mut layout.cells {
+            cell.content_type = "none".to_string();
+            cell.camera_id = None;
+        }
+        return;
+    }
+    if let Some(focus) = fullscreen {
+        let mut cell = layout.cells.first().cloned().unwrap_or(BundleCell {
+            view_id: None,
+            entity_id: None,
+            row: 0,
+            col: 0,
+            row_span: 1,
+            col_span: 1,
+            content_type: "none".to_string(),
+            camera_id: None,
+            stream_selector: None,
+            web_url: None,
+            html_content: None,
+            cooling_timeout_seconds: None,
+            fit: "cover".to_string(),
+            smart_url: None,
+            local_storage: None,
+            input_options: None,
+        });
+        layout.grid_cols = 1;
+        layout.grid_rows = 1;
+        cell.row = 0;
+        cell.col = 0;
+        cell.row_span = 1;
+        cell.col_span = 1;
+        cell.content_type = "camera".to_string();
+        cell.camera_id = Some(focus.camera_id);
+        cell.stream_selector = Some(focus.stream);
+        layout.cells = vec![cell];
+        return;
+    }
+    for cell in &mut layout.cells {
+        if let Some(focus) = overrides.get(&cell_id(cell)) {
+            cell.content_type = "camera".to_string();
+            cell.camera_id = Some(focus.camera_id.clone());
+            cell.stream_selector = Some(focus.stream.clone());
+            cell.web_url = None;
+            cell.html_content = None;
+        }
+    }
+}
+
+fn operator_focus(request: OperatorFocusRequest) -> Result<serde_json::Value, String> {
+    let bundle = CURRENT_BUNDLE
+        .with(|current| current.borrow().clone())
+        .ok_or_else(|| "no bundle cached yet".to_string())?;
+    if !bundle.cameras.iter().any(|camera| {
+        camera.id == request.camera_id && camera.enabled && camera.simple_vms_managed
+    }) {
+        return Err("camera is not available to this kiosk".to_string());
+    }
+    let displays = bundle.normalized_displays();
+    let display = displays
+        .iter()
+        .find(|display| display.id == request.display_id)
+        .ok_or_else(|| "display not found".to_string())?;
+    let active_layout_id = DISPLAYS.with(|states| {
+        states
+            .borrow()
+            .get(&request.display_id)
+            .and_then(|state| state.current_layout_id.clone())
+    });
+    let active_layout_id = active_layout_id.ok_or_else(|| "display has no active layout".to_string())?;
+    let layout = display
+        .layouts
+        .iter()
+        .find(|layout| layout.id == active_layout_id)
+        .ok_or_else(|| "active layout not found".to_string())?;
+    let selected_cell = if request.fullscreen {
+        None
+    } else if let Some(id) = request.cell_id.as_deref() {
+        layout.cells.iter().find(|cell| cell_id(cell) == id).map(cell_id)
+    } else {
+        layout
+            .cells
+            .iter()
+            .find(|cell| cell.content_type == "none" || cell.camera_id.is_none())
+            .or_else(|| layout.cells.first())
+            .map(cell_id)
+    };
+    if !request.fullscreen && selected_cell.is_none() {
+        return Err("layout has no target cell".to_string());
+    }
+
+    let generation = DISPLAYS.with(|states| {
+        let mut states = states.borrow_mut();
+        let state = states
+            .get_mut(&request.display_id)
+            .ok_or_else(|| "display is not active".to_string())?;
+        state.override_generation += 1;
+        let generation = state.override_generation;
+        state.display_cleared = false;
+        let focus = FocusOverride {
+            camera_id: request.camera_id.clone(),
+            stream: request.stream.clone(),
+            generation,
+        };
+        if request.fullscreen {
+            state.fullscreen_override = Some(focus);
+        } else if let Some(cell) = selected_cell.as_ref() {
+            state.focus_overrides.insert(cell.clone(), focus);
+        }
+        Ok::<u64, String>(generation)
+    })?;
+
+    render_layout_inner(&request.display_id, &active_layout_id, true);
+    if let Some(seconds) = request.duration_seconds {
+        let display_id = request.display_id.clone();
+        let cell = selected_cell.clone();
+        let fullscreen = request.fullscreen;
+        gtk::glib::timeout_add_local_once(Duration::from_secs(seconds), move || {
+            let layout_id = DISPLAYS.with(|states| {
+                let mut states = states.borrow_mut();
+                let state = states.get_mut(&display_id)?;
+                let current = if fullscreen {
+                    state.fullscreen_override.as_ref()
+                } else {
+                    cell.as_ref().and_then(|id| state.focus_overrides.get(id))
+                };
+                if current.is_none_or(|focus| focus.generation != generation) {
+                    return None;
+                }
+                if fullscreen {
+                    state.fullscreen_override = None;
+                } else if let Some(id) = cell.as_ref() {
+                    state.focus_overrides.remove(id);
+                }
+                state.current_layout_id.clone()
+            });
+            if let Some(layout_id) = layout_id {
+                render_layout_inner(&display_id, &layout_id, true);
+            }
+        });
+    }
+    Ok(serde_json::json!({ "ok": true, "cell_id": selected_cell }))
+}
+
+fn operator_clear(display_id: &str) -> Result<serde_json::Value, String> {
+    let layout_id = DISPLAYS.with(|states| {
+        let mut states = states.borrow_mut();
+        let state = states
+            .get_mut(display_id)
+            .ok_or_else(|| "display is not active".to_string())?;
+        state.override_generation += 1;
+        state.focus_overrides.clear();
+        state.fullscreen_override = None;
+        state.display_cleared = true;
+        state
+            .current_layout_id
+            .clone()
+            .ok_or_else(|| "display has no active layout".to_string())
+    })?;
+    render_layout_inner(display_id, &layout_id, true);
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+fn operator_restore(display_id: &str) -> Result<serde_json::Value, String> {
+    let layout_id = DISPLAYS.with(|states| {
+        let mut states = states.borrow_mut();
+        let state = states
+            .get_mut(display_id)
+            .ok_or_else(|| "display is not active".to_string())?;
+        state.override_generation += 1;
+        state.focus_overrides.clear();
+        state.fullscreen_override = None;
+        state.display_cleared = false;
+        state
+            .current_layout_id
+            .clone()
+            .ok_or_else(|| "display has no active layout".to_string())
+    })?;
+    render_layout_inner(display_id, &layout_id, true);
+    Ok(serde_json::json!({ "ok": true }))
 }
 
 /// Swap the overlay's grid content with a per-cell morph animation.

@@ -89,6 +89,9 @@ mount -t tmpfs tmpfs "${WORK}/root/run"
 cp "$KIOSK_BIN" "${WORK}/root/tmp/betterframe-kiosk"
 mkdir -p "${WORK}/root/tmp/bf-files"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-kiosk.service" "${WORK}/root/tmp/bf-files/"
+cp "${REPO_ROOT}/deploy/systemd/betterframe-mediamtx.service" "${WORK}/root/tmp/bf-files/"
+cp "${REPO_ROOT}/deploy/mediamtx.yml" "${WORK}/root/tmp/bf-files/"
+cp "${REPO_ROOT}/deploy/mediamtx.version" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-firmware-rollback.sh" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-rauc-mark-good.service" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-rauc-mark-good.sh" "${WORK}/root/tmp/bf-files/"
@@ -158,12 +161,24 @@ done
 
 install -d -o bfkiosk -g bfkiosk -m 755 /opt/betterframe/kiosk
 install -m 755 /tmp/betterframe-kiosk /opt/betterframe/kiosk/betterframe-kiosk
+MEDIAMTX_VERSION="$(cat /tmp/bf-files/mediamtx.version)"
+MEDIAMTX_ARCHIVE="mediamtx_v${MEDIAMTX_VERSION}_linux_amd64.tar.gz"
+curl -fsSLO "https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/${MEDIAMTX_ARCHIVE}"
+curl -fsSLO "https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/checksums.sha256"
+grep " ${MEDIAMTX_ARCHIVE}$" checksums.sha256 | sha256sum -c -
+tar -xzf "${MEDIAMTX_ARCHIVE}" mediamtx
+install -d -m 755 /opt/betterframe/mediamtx
+install -m 755 mediamtx /opt/betterframe/mediamtx/mediamtx
+rm -f mediamtx "${MEDIAMTX_ARCHIVE}" checksums.sha256
 install -d -o bfkiosk -g bfkiosk -m 755 /var/lib/betterframe/kiosk
+install -d -o bfkiosk -g bfkiosk -m 750 /var/lib/betterframe/recordings
 install -d -m 755 /etc/betterframe
 printf '%s\n' "@VERSION@" > /etc/betterframe/os-version
 printf '%s\n' "betterframe-x86_64-generic" > /etc/betterframe/os-compatibility
 
 install -m 644 /tmp/bf-files/betterframe-kiosk.service /etc/systemd/system/betterframe-kiosk.service
+install -m 644 /tmp/bf-files/betterframe-mediamtx.service /etc/systemd/system/betterframe-mediamtx.service
+install -m 644 /tmp/bf-files/mediamtx.yml /etc/betterframe/mediamtx.yml
 install -m 644 /tmp/bf-files/cage.pam /etc/pam.d/cage
 install -m 755 /tmp/bf-files/betterframe-firmware-rollback.sh /usr/local/sbin/betterframe-firmware-rollback.sh
 install -m 644 /tmp/bf-files/betterframe-rauc-mark-good.service /etc/systemd/system/betterframe-rauc-mark-good.service
@@ -242,7 +257,7 @@ NAutoVTs=0
 ReserveVT=0
 LOGIND
 
-systemctl enable systemd-timesyncd seatd nftables betterframe-seal-key betterframe-kiosk betterframe-rauc-mark-good betterframe-expand-data rauc 2>/dev/null || true
+systemctl enable systemd-timesyncd seatd nftables betterframe-seal-key betterframe-mediamtx betterframe-kiosk betterframe-rauc-mark-good betterframe-expand-data rauc 2>/dev/null || true
 systemctl set-default multi-user.target
 for dm in lightdm gdm gdm3 sddm; do systemctl disable "$dm.service" 2>/dev/null || true; systemctl mask "$dm.service" 2>/dev/null || true; done
 for tty in 1 2 3 4 5 6; do systemctl disable "getty@tty${tty}.service" 2>/dev/null || true; systemctl mask "getty@tty${tty}.service" 2>/dev/null || true; done

@@ -24,6 +24,13 @@ const bundleCamera = av.object(
   {
     id,
     name: av.string().minLength(1).maxLength(128),
+    camera_number: av.nullable(av.string().maxLength(128)),
+    labels: av.array(av.string().maxLength(128)),
+    capabilities: av.array(av.string().maxLength(128)),
+    enabled: av.bool(),
+    last_seen_at: av.nullable(av.string().maxLength(64)),
+    simple_vms_managed: av.bool(),
+    recording_config: av.record(av.any()),
     type: av.string().minLength(1).maxLength(32),
     onvif_host: av.nullable(av.string().maxLength(255)),
     onvif_port: av.nullable(av.int().min(1).max(65535)),
@@ -141,6 +148,29 @@ const gpioBinding = av.object(
   { unknownKeys: "reject" },
 );
 
+const operatorTool = av.object(
+  {
+    label: av.string().minLength(1).maxLength(128),
+    url: av.string().minLength(1).maxLength(2048),
+  },
+  { unknownKeys: "reject" },
+);
+
+const operatorConsole = av.object(
+  {
+    enabled: av.bool(),
+    host: av.nullable(av.string().maxLength(255)),
+    port: av.int().min(1).max(65535),
+    tools: av.array(operatorTool),
+    simple_vms: av.object({
+      enabled: av.bool(),
+      storage_path: av.nullable(av.string().maxLength(1024)),
+      settings: av.record(av.any()),
+    }, { unknownKeys: "reject" }),
+  },
+  { unknownKeys: "reject" },
+);
+
 export const kioskBundle = av.object(
   {
     kiosk_id: id,
@@ -150,6 +180,7 @@ export const kioskBundle = av.object(
     displays: av.array(bundleDisplayWithLayouts),
     cameras: av.array(bundleCamera),
     gpio_bindings: av.array(gpioBinding),
+    operator_console: operatorConsole,
     version: av.string().minLength(1).maxLength(128),
   },
   { unknownKeys: "reject" },

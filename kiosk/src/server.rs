@@ -124,6 +124,10 @@ fn state_dir() -> PathBuf {
     fallback
 }
 
+pub fn state_file(name: &str) -> PathBuf {
+    state_dir().join(name)
+}
+
 fn migrate_legacy_state(persistent: &PathBuf) {
     let Some(home) = dirs::home_dir() else {
         return;

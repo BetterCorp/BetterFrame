@@ -164,6 +164,45 @@ async fn handle_message(
         let _ = writer
             .send(Message::Text(r#"{"type":"pong"}"#.to_string()))
             .await;
+    } else if text.contains("\"type\":\"operator-enrollment-create\"") {
+        let msg = serde_json::from_str::<serde_json::Value>(text).unwrap_or_default();
+        let request_id = msg.get("request_id").and_then(|value| value.as_str()).unwrap_or("");
+        let name = msg.get("name").and_then(|value| value.as_str()).unwrap_or("Operator station");
+        let response = match crate::operator_console::shared_auth().create_enrollment(name) {
+            Ok(enrollment) => serde_json::json!({
+                "type": "operator-enrollment-response",
+                "request_id": request_id,
+                "ok": true,
+                "code": enrollment.code,
+                "expires_at": enrollment.expires_at,
+            }),
+            Err(error) => serde_json::json!({
+                "type": "operator-enrollment-response",
+                "request_id": request_id,
+                "ok": false,
+                "error": error,
+            }),
+        };
+        ws_send(writer, response).await;
+    } else if text.contains("\"type\":\"operator-stations-list\"") {
+        let msg = serde_json::from_str::<serde_json::Value>(text).unwrap_or_default();
+        ws_send(writer, serde_json::json!({
+            "type": "operator-stations-response",
+            "request_id": msg.get("request_id").and_then(|value| value.as_str()).unwrap_or(""),
+            "ok": true,
+            "stations": crate::operator_console::shared_auth().list(),
+        })).await;
+    } else if text.contains("\"type\":\"operator-station-revoke\"") {
+        let msg = serde_json::from_str::<serde_json::Value>(text).unwrap_or_default();
+        let request_id = msg.get("request_id").and_then(|value| value.as_str()).unwrap_or("");
+        let id = msg.get("station_id").and_then(|value| value.as_str()).unwrap_or("");
+        let result = crate::operator_console::shared_auth().revoke(id);
+        ws_send(writer, serde_json::json!({
+            "type": "operator-station-revoke-response",
+            "request_id": request_id,
+            "ok": result.is_ok(),
+            "error": result.err(),
+        })).await;
     } else if text.contains("\"type\":\"onvif-action-request\"") {
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
             warn!("ws: onvif action request was not valid JSON");
@@ -259,6 +298,33 @@ async fn handle_message(
                 layout_id,
             });
         }
+    } else if text.contains("\"type\":\"operator-focus\"") {
+        let msg = serde_json::from_str::<serde_json::Value>(text).unwrap_or_default();
+        let display_id = msg.get("display_id").and_then(flexible_id_from_value);
+        let camera_id = msg.get("camera_id").and_then(flexible_id_from_value);
+        let stream = msg.get("stream").and_then(|value| value.as_str()).unwrap_or("auto");
+        if let (Some(display_id), Some(camera_id)) = (display_id, camera_id) {
+            let _ = tx.send(ServerMsg::OperatorFocus(crate::ui::OperatorFocusRequest {
+                display_id,
+                camera_id,
+                stream: stream.to_string(),
+                cell_id: msg.get("cell_id").and_then(flexible_id_from_value),
+                fullscreen: msg.get("fullscreen").and_then(|value| value.as_bool()).unwrap_or(false),
+                duration_seconds: msg.get("duration_seconds").and_then(|value| value.as_u64()),
+            }));
+        }
+    } else if text.contains("\"type\":\"operator-clear\"") {
+        if let Some(display_id) = serde_json::from_str::<serde_json::Value>(text).ok()
+            .and_then(|msg| msg.get("display_id").and_then(flexible_id_from_value))
+        {
+            let _ = tx.send(ServerMsg::OperatorClear(display_id));
+        }
+    } else if text.contains("\"type\":\"operator-restore\"") {
+        if let Some(display_id) = serde_json::from_str::<serde_json::Value>(text).ok()
+            .and_then(|msg| msg.get("display_id").and_then(flexible_id_from_value))
+        {
+            let _ = tx.send(ServerMsg::OperatorRestore(display_id));
+        }
     } else if text.contains("\"type\":\"tailscale-auth\"") {
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
             return;
@@ -268,6 +334,11 @@ async fn handle_message(
         }
     } else if text.contains("\"type\":\"reboot\"") {
         let _ = tx.send(ServerMsg::Reboot);
+    } else if text.contains("\"type\":\"operator-console-restart\"") {
+        tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            std::process::exit(0);
+        });
     } else if text.contains("\"type\":\"firmware_check\"") {
         let force = serde_json::from_str::<serde_json::Value>(text)
             .ok()

@@ -1,0 +1,20 @@
+[Unit]
+Description=BetterFrame local media gateway and recorder
+After=network-online.target
+Wants=network-online.target
+Before=betterframe-kiosk.service
+
+[Service]
+Type=simple
+User=bfkiosk
+Group=bfkiosk
+ExecStart=/opt/betterframe/mediamtx/mediamtx /etc/betterframe/mediamtx.yml
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/betterframe
+
+[Install]
+WantedBy=multi-user.target

@@ -55,6 +55,7 @@ function tokenMatchesExpected(token: string, expected: string | undefined): bool
 }
 
 const OPERATOR_MUTATIONS = [
+  /^\/api\/displays\/[^/]+\/(?:focus|clear|restore)$/,
   /^\/admin\/displays\/[^/]+\/layout(?:\/[^/]+)?$/,
   /^\/admin\/displays\/[^/]+\/power\/(?:standby|wake)$/,
   /^\/admin\/kiosks\/[^/]+\/power\/(?:standby|wake)$/,
@@ -140,7 +141,7 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
       return;
     }
 
-    if (path.startsWith("/admin") || path.startsWith("/api/admin")) {
+    if (path.startsWith("/admin") || path.startsWith("/api/admin") || path.startsWith("/api/displays/")) {
       // ---- Bearer API key (admin scope) -------------------------------------
       // Lets Node-RED nodes + scripted automation hit /admin/* without owning
       // a session cookie. Must come BEFORE the cookie redirect so a missing

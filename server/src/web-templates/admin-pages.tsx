@@ -1606,6 +1606,10 @@ export function CameraEditPage(props: CameraEditProps) {
               <label for="name">Name</label>
               <input id="name" name="name" type="text" class="form-input" value={cam.name} required maxlength="128" />
             </div>
+            <div class="form-group">
+              <label for="camera_number">Camera Number</label>
+              <input id="camera_number" name="camera_number" type="text" class="form-input" value={cam.camera_number ?? ""} maxlength="128" placeholder="e.g. 0142" />
+            </div>
             {cam.type === "rtsp" && (() => {
               const mainStream = props.streams.find((s) => s.role === "main") ?? props.streams[0];
               const parts = parseRtspUrl(mainStream?.rtsp_uri ?? cam.rtsp_url ?? "");
@@ -1666,6 +1670,11 @@ export function CameraEditPage(props: CameraEditProps) {
                 <input type="checkbox" name="enabled" value="1" checked={cam.enabled} />
                 {" "}Enabled
               </label>
+            </div>
+            <div class="form-group">
+              <label for="recording_config_json">SimpleVMS Recording Configuration</label>
+              <textarea id="recording_config_json" name="recording_config_json" class="form-input" rows="8">{JSON.stringify(cam.recording_config_json ?? {}, null, 2)}</textarea>
+              <div class="form-hint">BetterFrame-owned dynamic camera, stream, and plugin values. The kiosk validates these against the installed SimpleVMS schema.</div>
             </div>
             {cam.type === "onvif" && (
               <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
@@ -2169,6 +2178,49 @@ function WindowsPolicyCard(props: { kiosk: Kiosk }) {
   );
 }
 
+function OperatorConsoleCard(props: { kiosk: Kiosk }) {
+  const k = props.kiosk;
+  let tools: Array<{ label: string; url: string }> = [];
+  let vmsSettings: Record<string, unknown> = {};
+  try { tools = JSON.parse(k.operator_tools_json || "[]"); } catch { /* show empty */ }
+  try { vmsSettings = JSON.parse(k.simple_vms_settings_json || "{}"); } catch { /* show empty */ }
+  const origin = k.operator_console_host
+    ? `https://${k.operator_console_host}:${String(k.operator_console_port)}/operator/`
+    : null;
+  return (
+    <div class="card" style="margin-bottom:1.5rem">
+      <h2 style="margin:0 0 .5rem; font-size:1.1rem">Operator Console</h2>
+      <p class="form-hint">Kiosk-hosted CCTV console. Station keys persist in the browser and the client exposes no logout action.</p>
+      <form method="post" action={`/admin/kiosks/${k.id}/operator-console`}>
+        <label style="display:block; margin-bottom:.75rem"><input type="checkbox" name="operator_console_enabled" value="1" checked={k.operator_console_enabled} /> Enable Operator Console</label>
+        <div style="display:grid; grid-template-columns:2fr 1fr; gap:.75rem">
+          <div class="form-group"><label>Stable hostname or static IP</label><input name="operator_console_host" class="form-input" value={k.operator_console_host ?? ""} placeholder="wall-01.local" /></div>
+          <div class="form-group"><label>HTTPS port</label><input name="operator_console_port" type="number" class="form-input" value="18443" readonly /></div>
+        </div>
+        <div class="form-group"><label>Monitor 2 links</label><textarea name="operator_tools" class="form-input" rows="4" placeholder="Incidents|https://incident.example/">{tools.map((tool) => `${tool.label}|${tool.url}`).join("\n")}</textarea><div class="form-hint">One <code>Label|https://URL</code> entry per line.</div></div>
+        <hr style="border:0;border-top:1px solid #eee;margin:1rem 0" />
+        <label style="display:block; margin-bottom:.75rem"><input type="checkbox" name="simple_vms_enabled" value="1" checked={k.simple_vms_enabled} /> Enable co-located SimpleVMS (managed x86-64 only)</label>
+        <div class="form-group"><label>Dedicated recording mount</label><input name="simple_vms_storage_path" class="form-input" value={k.simple_vms_storage_path ?? ""} placeholder="/var/lib/betterframe/recordings" /></div>
+        <div class="form-group"><label>Dynamic SimpleVMS settings</label><textarea name="simple_vms_settings_json" class="form-input" rows="6">{JSON.stringify(vmsSettings, null, 2)}</textarea></div>
+        <button type="submit" class="btn btn-primary">Save &amp; Push</button>
+        {origin ? <a class="btn btn-ghost" style="margin-left:.5rem" href={origin} target="_blank" rel="noopener">Open Console</a> : null}
+        {k.operator_console_host ? <a class="btn btn-ghost" style="margin-left:.5rem" href={`http://${k.operator_console_host}:18090/local/operator-certificate.crt`}>Download trust certificate</a> : null}
+      </form>
+      {k.operator_console_enabled ? (
+        <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #eee">
+          <form hx-post={`/admin/kiosks/${k.id}/operator-console/enroll`} hx-target={`#operator-enroll-${k.id}`} hx-swap="innerHTML" style="display:flex;gap:.5rem;align-items:end">
+            <div class="form-group" style="flex:1;margin:0"><label>Station name</label><input name="name" class="form-input" value="CCTV Operator" maxlength="128" /></div>
+            <button class="btn" type="submit">Generate one-time code</button>
+          </form>
+          <div id={`operator-enroll-${k.id}`} style="margin-top:.75rem"></div>
+          <button class="btn btn-ghost" style="margin-top:.75rem" type="button" hx-get={`/admin/kiosks/${k.id}/operator-console/stations`} hx-target={`#operator-stations-${k.id}`} hx-swap="innerHTML">Refresh enrolled stations</button>
+          <div id={`operator-stations-${k.id}`} style="margin-top:.5rem"></div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function KioskEditPage(props: KioskEditProps) {
   const k = props.kiosk;
   const logging = parseKioskLogging(k.logging_json);
@@ -2417,6 +2469,8 @@ export function KioskEditPage(props: KioskEditProps) {
         )}
 
         {(props.kiosk.local_key && props.kiosk.local_port) && KioskLocalPanel({ kiosk: props.kiosk })}
+
+        {OperatorConsoleCard({ kiosk: props.kiosk })}
 
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Tailscale VPN</h2>

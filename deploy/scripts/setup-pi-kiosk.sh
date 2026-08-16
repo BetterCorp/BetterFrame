@@ -191,6 +191,23 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
   install -d -o bfkiosk -g bfkiosk -m 755 "${BIN_DST_DIR}"
   install -m 755 "${BIN_SRC}" "${BIN_DST}"
   install -d -o bfkiosk -g bfkiosk -m 755 /var/lib/betterframe/kiosk
+  install -d -o bfkiosk -g bfkiosk -m 750 /var/lib/betterframe/recordings
+
+  MEDIAMTX_VERSION="$(cat "${REPO_ROOT}/deploy/mediamtx.version")"
+  case "$(uname -m)" in
+    x86_64) MEDIAMTX_ARCH=amd64 ;;
+    aarch64) MEDIAMTX_ARCH=arm64 ;;
+    armv7l) MEDIAMTX_ARCH=armv7 ;;
+    *) echo "error: unsupported MediaMTX architecture $(uname -m)" >&2; exit 1 ;;
+  esac
+  MEDIAMTX_ARCHIVE="mediamtx_v${MEDIAMTX_VERSION}_linux_${MEDIAMTX_ARCH}.tar.gz"
+  MEDIAMTX_TMP="$(mktemp -d)"
+  curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/${MEDIAMTX_ARCHIVE}" -o "${MEDIAMTX_TMP}/${MEDIAMTX_ARCHIVE}"
+  curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/checksums.sha256" -o "${MEDIAMTX_TMP}/checksums.sha256"
+  (cd "${MEDIAMTX_TMP}" && grep " ${MEDIAMTX_ARCHIVE}$" checksums.sha256 | sha256sum -c - && tar -xzf "${MEDIAMTX_ARCHIVE}" mediamtx)
+  install -d -m 755 /opt/betterframe/mediamtx
+  install -m 755 "${MEDIAMTX_TMP}/mediamtx" /opt/betterframe/mediamtx/mediamtx
+  rm -rf "${MEDIAMTX_TMP}"
   echo "    installed → ${BIN_DST}"
 
   # --------------------------------------------------------------------------
@@ -274,6 +291,10 @@ for name in ['default','left_ptr','arrow','watch','hand2','text','xterm',
   install -m 644 "${REPO_ROOT}/deploy/pam.d/cage" /etc/pam.d/cage
   install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-kiosk.service" \
     /etc/systemd/system/betterframe-kiosk.service
+  install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-mediamtx.service" \
+    /etc/systemd/system/betterframe-mediamtx.service
+  install -d -m 755 /etc/betterframe
+  install -m 644 "${REPO_ROOT}/deploy/mediamtx.yml" /etc/betterframe/mediamtx.yml
   install -m 755 "${REPO_ROOT}/deploy/systemd/betterframe-firmware-rollback.sh" \
     /usr/local/sbin/betterframe-firmware-rollback.sh
   install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-rauc-mark-good.service" \
@@ -296,6 +317,7 @@ EOF
 
   systemctl daemon-reload
   systemctl enable betterframe-kiosk.service
+  systemctl enable --now betterframe-mediamtx.service
   systemctl enable betterframe-rauc-mark-good.service
   # Restart picks up new binary on re-run.
   systemctl restart betterframe-kiosk.service || true

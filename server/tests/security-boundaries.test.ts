@@ -33,6 +33,9 @@ test("ONVIF callback tokens reject tampering and cross-camera reuse", () => {
 test("operator access defaults closed for privileged and new admin routes", () => {
   assert.equal(operatorMayAccess("/admin/displays/display-a", "GET"), true);
   assert.equal(operatorMayAccess("/admin/displays/display-a/layout/layout-a", "POST"), true);
+  assert.equal(operatorMayAccess("/api/displays/display-a/focus", "POST"), true);
+  assert.equal(operatorMayAccess("/api/displays/display-a/restore", "POST"), true);
+  assert.equal(operatorMayAccess("/admin/kiosks/kiosk-a/operator-console/enroll", "POST"), false);
   assert.equal(operatorMayAccess("/admin/kiosks/kiosk-a/logs", "GET"), false);
   assert.equal(operatorMayAccess("/admin/users", "GET"), false);
   assert.equal(operatorMayAccess("/admin/future-feature", "GET"), false);

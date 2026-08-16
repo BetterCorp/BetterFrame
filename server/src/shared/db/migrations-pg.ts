@@ -936,4 +936,13 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS os_update_state TEXT NOT NULL DEFAULT 'confirmed'`,
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS gpu_load_percent REAL`,
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS renderer_telemetry_json JSONB`,
+  `ALTER TABLE cameras ADD COLUMN IF NOT EXISTS camera_number TEXT`,
+  `ALTER TABLE cameras ADD COLUMN IF NOT EXISTS recording_config_json JSONB NOT NULL DEFAULT '{}'`,
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS operator_console_enabled BOOLEAN NOT NULL DEFAULT false`,
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS operator_console_host TEXT`,
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS operator_console_port INTEGER NOT NULL DEFAULT 18443`,
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS operator_tools_json JSONB NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS simple_vms_enabled BOOLEAN NOT NULL DEFAULT false`,
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS simple_vms_storage_path TEXT`,
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS simple_vms_settings_json JSONB NOT NULL DEFAULT '{}'`,
 ];

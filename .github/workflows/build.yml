@@ -342,6 +342,8 @@ jobs:
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/systemd/betterframe-kiosk.service \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/systemd/betterframe-mediamtx.service deploy/mediamtx.yml deploy/mediamtx.version \
+             deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/systemd/betterframe-firmware-rollback.sh \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/systemd/betterframe-rauc-mark-good.service \

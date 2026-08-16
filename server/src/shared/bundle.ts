@@ -42,6 +42,13 @@ function resolvePlaybackCredentials(
 export interface BundleCamera {
   id: string;
   name: string;
+  camera_number: string | null;
+  labels: string[];
+  capabilities: string[];
+  enabled: boolean;
+  last_seen_at: string | null;
+  simple_vms_managed: boolean;
+  recording_config: Record<string, unknown>;
   type: string;
   onvif_host: string | null;
   onvif_port: number | null;
@@ -161,6 +168,17 @@ export interface KioskBundle {
   displays: BundleDisplayWithLayouts[];
   cameras: BundleCamera[];
   gpio_bindings: BundleGpioBinding[];
+  operator_console: {
+    enabled: boolean;
+    host: string | null;
+    port: number;
+    tools: Array<{ label: string; url: string }>;
+    simple_vms: {
+      enabled: boolean;
+      storage_path: string | null;
+      settings: Record<string, unknown>;
+    };
+  };
   version: string;
 }
 
@@ -209,7 +227,13 @@ export async function generateBundle(
   for (const d of displays) {
     for (const l of await repo.layoutsForDisplayId(d.id)) allLayoutIds.add(l.id);
   }
-  const cameras = await repo.camerasForLayoutIds([...allLayoutIds]);
+  const layoutCameras = await repo.camerasForLayoutIds([...allLayoutIds]);
+  const scope = await repo.bundleScope(kioskId);
+  const operateCameras = await repo.camerasForLabelIds(scope.operateLabelIds);
+  const operateCameraIds = new Set(operateCameras.map((camera) => camera.id));
+  const cameraById = new Map(layoutCameras.map((camera) => [camera.id, camera]));
+  for (const camera of operateCameras) cameraById.set(camera.id, camera);
+  const cameras = [...cameraById.values()].sort((a, b) => a.name.localeCompare(b.name));
   const stableEncryptedValues = new Map<string, string>();
 
   function encryptForBundle(plaintext: string, key: string, stableContext: string): string {
@@ -442,6 +466,13 @@ export async function generateBundle(
     bundleCameras.push({
       id: cam.id,
       name: cam.name,
+      camera_number: cam.camera_number,
+      labels: await repo.cameraLabelNames(cam.id),
+      capabilities: cam.capabilities,
+      enabled: cam.enabled,
+      last_seen_at: cam.last_seen_at,
+      simple_vms_managed: operateCameraIds.has(cam.id),
+      recording_config: cam.recording_config_json,
       type: cam.type,
       onvif_host: cam.onvif_host,
       onvif_port: cam.onvif_port,
@@ -500,6 +531,17 @@ export async function generateBundle(
     displays: bundleDisplays,
     cameras: bundleCameras,
     gpio_bindings: gpioBindings,
+    operator_console: {
+      enabled: kiosk.operator_console_enabled,
+      host: kiosk.operator_console_host,
+      port: kiosk.operator_console_port,
+      tools: parseOperatorTools(kiosk.operator_tools_json),
+      simple_vms: {
+        enabled: kiosk.simple_vms_enabled,
+        storage_path: kiosk.simple_vms_storage_path,
+        settings: parseJsonObject(kiosk.simple_vms_settings_json),
+      },
+    },
     version: "",
   };
 
@@ -513,6 +555,34 @@ export async function generateBundle(
   });
   span?.end();
   return bundle;
+}
+
+function parseJsonObject(raw: string | null): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return value != null && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseOperatorTools(raw: string | null): Array<{ label: string; url: string }> {
+  if (!raw) return [];
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const label = String((item as Record<string, unknown>)["label"] ?? "").trim();
+      const url = String((item as Record<string, unknown>)["url"] ?? "").trim();
+      return label && /^https?:\/\//i.test(url) ? [{ label, url }] : [];
+    });
+  } catch {
+    return [];
+  }
 }
 
 function stripDisplayKioskPrefix(displayName: string, kioskName: string): string {

@@ -1062,6 +1062,7 @@ export class Repository {
 
   async createCamera(input: {
     name: string;
+    camera_number?: string | null;
     type: CameraType;
     rtsp_url?: string | null;
     onvif_host?: string | null;
@@ -1074,12 +1075,13 @@ export class Repository {
     const id = uuidv7();
     await this._run(
       `INSERT INTO cameras
-         (id, name, type, rtsp_url, onvif_host, onvif_port, onvif_username,
+         (id, name, camera_number, type, rtsp_url, onvif_host, onvif_port, onvif_username,
           onvif_password, capabilities, stream_policy)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.name,
+        input.camera_number ?? null,
         input.type,
         input.rtsp_url ?? null,
         input.onvif_host ?? null,

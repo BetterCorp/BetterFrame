@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>BetterFrame Operational Workspace</title>
+  <link rel="stylesheet" href="/operator/app.css">
+</head>
+<body class="work-body">
+  <header class="work-header">
+    <div class="brand">BetterFrame <span>Operations</span></div>
+    <a href="/operator/">Camera console</a>
+  </header>
+  <main>
+    <section id="wall-overview" class="overview-grid"></section>
+    <section>
+      <h1>Operational tools</h1>
+      <div id="tool-grid" class="tool-grid"></div>
+    </section>
+    <section id="playback-panel" class="panel control-card">
+      <h1>Playback and export</h1>
+      <p id="vms-state" class="muted">Loading SimpleVMS…</p>
+      <div id="playback-controls" class="filters hidden">
+        <select id="playback-camera"></select>
+        <input id="playback-start" type="datetime-local">
+        <select id="playback-duration"><option value="60">1 minute</option><option value="300">5 minutes</option></select>
+        <button id="playback-load">Load recording</button>
+        <a id="playback-download" class="work-link hidden" download>Export MP4</a>
+      </div>
+      <div class="video-shell"><video id="playback-video" controls playsinline></video></div>
+    </section>
+  </main>
+  <script src="/operator/work.js" defer></script>
+</body>
+</html>

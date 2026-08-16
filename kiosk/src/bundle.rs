@@ -60,6 +60,8 @@ pub struct KioskBundle {
     pub cameras: Vec<BundleCamera>,
     #[serde(default)]
     pub gpio_bindings: Vec<BundleGpioBinding>,
+    #[serde(default)]
+    pub operator_console: OperatorConsoleConfig,
     pub version: String,
 }
 
@@ -199,6 +201,20 @@ pub struct BundleCamera {
     #[serde(deserialize_with = "de_flexible_id")]
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub camera_number: Option<String>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub last_seen_at: Option<String>,
+    #[serde(default)]
+    pub simple_vms_managed: bool,
+    #[serde(default)]
+    pub recording_config: serde_json::Value,
     #[serde(rename = "type")]
     pub cam_type: String,
     #[serde(default)]
@@ -225,6 +241,44 @@ pub struct BundleCamera {
     pub event_sink: Option<String>,
     #[serde(default)]
     pub event_callback_token: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct OperatorConsoleConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default = "default_operator_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub tools: Vec<OperatorTool>,
+    #[serde(default)]
+    pub simple_vms: SimpleVmsConfig,
+}
+
+fn default_operator_port() -> u16 {
+    18443
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct OperatorTool {
+    pub label: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SimpleVmsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub storage_path: Option<String>,
+    #[serde(default)]
+    pub settings: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

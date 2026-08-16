@@ -1947,8 +1947,20 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
     const patch: Record<string, unknown> = {
       name: body?.["name"],
+      camera_number: (body?.["camera_number"] ?? "").trim() || null,
       enabled: body?.["enabled"] === "1",
     };
+    if (body?.["recording_config_json"] != null) {
+      try {
+        const parsed = JSON.parse(body["recording_config_json"] || "{}");
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("recording config must be an object");
+        }
+        patch["recording_config_json"] = parsed;
+      } catch (err) {
+        throw new Error(`Invalid recording configuration: ${(err as Error).message}`);
+      }
+    }
     if (cam?.type === "rtsp") {
       patch["rtsp_url"] = null;
       patch["onvif_host"] = body?.["rtsp_host"] || null;
@@ -2235,6 +2247,125 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       }
     }
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+  });
+
+  app.post("/admin/kiosks/:id/operator-console", async (event) => {
+    const id = getRouterParam(event, "id") ?? "";
+    const kiosk = await deps.repo.getKioskById(id);
+    if (!kiosk) throw new Error("kiosk not found");
+    const body = await readBody<Record<string, string>>(event);
+    const enabled = body?.["operator_console_enabled"] === "1";
+    const host = (body?.["operator_console_host"] ?? "").trim() || null;
+    const port = Number(body?.["operator_console_port"] ?? "18443");
+    if (enabled && !host) throw new Error("Operator Console requires a stable hostname or static IP");
+    if (port !== 18443) throw new Error("Managed kiosk images expose the Operator Console on port 18443");
+
+    const simpleVmsEnabled = body?.["simple_vms_enabled"] === "1";
+    const storagePath = (body?.["simple_vms_storage_path"] ?? "").trim() || null;
+    if (simpleVmsEnabled && kiosk.firmware_target !== "betterframe-pc-x86_64") {
+      throw new Error("Co-located SimpleVMS is supported only on managed x86-64 kiosks");
+    }
+    if (simpleVmsEnabled && !storagePath) throw new Error("SimpleVMS requires a dedicated recording mount");
+    if (simpleVmsEnabled && storagePath !== "/var/lib/betterframe/recordings" && !storagePath?.startsWith("/var/lib/betterframe/recordings/")) {
+      throw new Error("SimpleVMS storage must be mounted at /var/lib/betterframe/recordings");
+    }
+
+    let settings: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(body?.["simple_vms_settings_json"] || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("must be an object");
+      settings = parsed as Record<string, unknown>;
+    } catch (err) {
+      throw new Error(`Invalid SimpleVMS settings: ${(err as Error).message}`);
+    }
+
+    const tools = (body?.["operator_tools"] ?? "").split(/\r?\n/).flatMap((line) => {
+      const separator = line.indexOf("|");
+      if (separator < 1) return [];
+      const label = line.slice(0, separator).trim();
+      const url = line.slice(separator + 1).trim();
+      if (!label || !/^https?:\/\//i.test(url)) return [];
+      return [{ label, url }];
+    });
+
+    await deps.repo.updateKiosk(id, {
+      operator_console_enabled: enabled,
+      operator_console_host: host,
+      operator_console_port: port,
+      operator_tools_json: JSON.stringify(tools),
+      simple_vms_enabled: simpleVmsEnabled,
+      simple_vms_storage_path: storagePath,
+      simple_vms_settings_json: JSON.stringify(settings),
+    } as any);
+    getCoordinator().notifyKioskBundleChanged(id);
+    getCoordinator().sendToKiosk(id, { type: "operator-console-restart" });
+    await audit(deps.repo, event as any, "kiosk.operator_console.update", {
+      resource_type: "kiosk",
+      resource_id: id,
+      metadata: { enabled, simple_vms_enabled: simpleVmsEnabled },
+    });
+    return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+  });
+
+  app.post("/admin/kiosks/:id/operator-console/enroll", async (event) => {
+    const id = getRouterParam(event, "id") ?? "";
+    const body = await readBody<Record<string, string>>(event);
+    const name = (body?.["name"] ?? "Operator station").trim().slice(0, 128) || "Operator station";
+    try {
+      const response = await getCoordinator().requestKiosk<{
+        ok?: boolean;
+        code?: string;
+        expires_at?: number;
+        error?: string;
+      }>(id, { type: "operator-enrollment-create", name }, 10_000);
+      if (!response.ok || !response.code) throw new Error(response.error || "kiosk rejected enrollment");
+      return htmlFragment(`<div class="alert alert-success"><strong>Station code:</strong> <code style="font-size:1.3rem;letter-spacing:.15rem">${escapeHtml(response.code)}</code><div style="font-size:.8rem;margin-top:.4rem">Single use; expires in 10 minutes.</div></div>`);
+    } catch (err) {
+      return htmlFragment(`<div class="alert alert-error">${escapeHtml((err as Error).message)}</div>`);
+    }
+  });
+
+  const operatorStationsFragment = (kioskId: string, stations: Array<{ id: string; name: string; created_at: number; revoked: boolean }>) => {
+    if (!stations.length) return `<div class="form-hint">No enrolled stations.</div>`;
+    return stations.map((station) => `<div style="display:flex;align-items:center;gap:.5rem;padding:.45rem 0;border-bottom:1px solid #eee">
+      <span style="flex:1"><strong>${escapeHtml(station.name)}</strong><br><small>${escapeHtml(new Date(station.created_at * 1000).toLocaleString())}${station.revoked ? " · revoked" : ""}</small></span>
+      ${station.revoked ? "" : `<form hx-post="/admin/kiosks/${encodeURIComponent(kioskId)}/operator-console/stations/${encodeURIComponent(station.id)}/revoke" hx-target="#operator-stations-${encodeURIComponent(kioskId)}" hx-swap="innerHTML"><button class="btn btn-danger" type="submit">Revoke</button></form>`}
+    </div>`).join("");
+  };
+
+  const fetchOperatorStations = async (kioskId: string) => {
+    const response = await getCoordinator().requestKiosk<{
+      ok?: boolean;
+      stations?: Array<{ id: string; name: string; created_at: number; revoked: boolean }>;
+      error?: string;
+    }>(kioskId, { type: "operator-stations-list" }, 10_000);
+    if (!response.ok) throw new Error(response.error || "kiosk rejected station list");
+    return response.stations ?? [];
+  };
+
+  app.get("/admin/kiosks/:id/operator-console/stations", async (event) => {
+    const id = getRouterParam(event, "id") ?? "";
+    try {
+      return htmlFragment(operatorStationsFragment(id, await fetchOperatorStations(id)));
+    } catch (err) {
+      return htmlFragment(`<div class="alert alert-error">${escapeHtml((err as Error).message)}</div>`);
+    }
+  });
+
+  app.post("/admin/kiosks/:id/operator-console/stations/:stationId/revoke", async (event) => {
+    const id = getRouterParam(event, "id") ?? "";
+    const stationId = getRouterParam(event, "stationId") ?? "";
+    try {
+      const response = await getCoordinator().requestKiosk<{ ok?: boolean; error?: string }>(
+        id,
+        { type: "operator-station-revoke", station_id: stationId },
+        10_000,
+      );
+      if (!response.ok) throw new Error(response.error || "kiosk rejected revocation");
+      return htmlFragment(operatorStationsFragment(id, await fetchOperatorStations(id)));
+    } catch (err) {
+      return htmlFragment(`<div class="alert alert-error">${escapeHtml((err as Error).message)}</div>`);
+    }
   });
 
   // Managed-image device config — admin pushes hostname/timezone/network/wifi
@@ -2907,6 +3038,45 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const attachedLayouts = await deps.repo.listLayoutsForDisplay(id);
     return jsonResponse({ display: { ...display, attached_layouts: attachedLayouts } });
   });
+
+  app.post("/api/displays/:id/focus", async (event) => {
+    const id = getRouterParam(event, "id") ?? "";
+    const display = await deps.repo.getDisplayById(id);
+    if (!display?.kiosk_id) return jsonResponse({ error: "display_not_found" }, 404);
+    const body = (await readBody<Record<string, unknown>>(event)) ?? {};
+    const cameraId = String(body["camera_id"] ?? "").trim();
+    const stream = String(body["stream"] ?? "auto");
+    const duration = body["duration_seconds"] == null ? null : Number(body["duration_seconds"]);
+    const target = body["target"] && typeof body["target"] === "object"
+      ? body["target"] as Record<string, unknown>
+      : {};
+    if (!cameraId || !["main", "sub", "auto"].includes(stream)) {
+      return jsonResponse({ error: "invalid_focus" }, 400);
+    }
+    if (duration != null && ![30, 60, 120].includes(duration)) {
+      return jsonResponse({ error: "invalid_duration" }, 400);
+    }
+    const sent = getCoordinator().sendToKiosk(display.kiosk_id, {
+      type: "operator-focus",
+      display_id: id,
+      camera_id: cameraId,
+      stream,
+      fullscreen: target["kind"] === "fullscreen",
+      cell_id: target["cell_id"] ?? null,
+      duration_seconds: duration,
+    }, false);
+    return sent ? jsonResponse({ ok: true }, 202) : jsonResponse({ error: "kiosk_offline" }, 503);
+  });
+
+  for (const [path, type] of [["clear", "operator-clear"], ["restore", "operator-restore"]] as const) {
+    app.post(`/api/displays/:id/${path}`, async (event) => {
+      const id = getRouterParam(event, "id") ?? "";
+      const display = await deps.repo.getDisplayById(id);
+      if (!display?.kiosk_id) return jsonResponse({ error: "display_not_found" }, 404);
+      const sent = getCoordinator().sendToKiosk(display.kiosk_id, { type, display_id: id }, false);
+      return sent ? jsonResponse({ ok: true }, 202) : jsonResponse({ error: "kiosk_offline" }, 503);
+    });
+  }
 
   app.get("/api/admin/kiosks", async (_event) => {
     const kiosks = await deps.repo.listKiosks();

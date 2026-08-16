@@ -9,6 +9,7 @@ mod hwmon;
 mod local_server;
 mod onvif_actions;
 mod onvif_events;
+mod operator_console;
 mod os_update;
 mod pipeline;
 mod remote_debug;
@@ -30,6 +31,9 @@ pub enum ServerMsg {
         display_id: Option<String>,
         layout_id: String,
     },
+    OperatorFocus(ui::OperatorFocusRequest),
+    OperatorClear(String),
+    OperatorRestore(String),
     /// Audio controls from admin.
     VolumeSet(u32),
     VolumeMute(bool),

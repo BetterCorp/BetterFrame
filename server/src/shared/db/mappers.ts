@@ -162,6 +162,7 @@ export function rowToCamera(r: Row): Camera {
   return {
     id: s(r["id"]),
     name: s(r["name"]),
+    camera_number: sn(r["camera_number"]),
     type: s(r["type"]) as CameraType,
     rtsp_url: sn(r["rtsp_url"]),
     onvif_host: sn(r["onvif_host"]),
@@ -182,6 +183,7 @@ export function rowToCamera(r: Row): Camera {
     cloud_stream_type: sn(r["cloud_stream_type"]),
     event_callback_nonce: sn(r["event_callback_nonce"]),
     event_callback_token_hash: sn(r["event_callback_token_hash"]),
+    recording_config_json: j<Record<string, unknown>>(r["recording_config_json"], {}),
   };
 }
 
@@ -415,6 +417,13 @@ export function rowToKiosk(r: Row): Kiosk {
     network_interfaces_json: jsn(r["network_interfaces_json"]),
     logging_json: jsn(r["logging_json"]),
     renderer_telemetry_json: jsn(r["renderer_telemetry_json"]),
+    operator_console_enabled: b(r["operator_console_enabled"]),
+    operator_console_host: sn(r["operator_console_host"]),
+    operator_console_port: n(r["operator_console_port"] ?? 18443),
+    operator_tools_json: jsn(r["operator_tools_json"]),
+    simple_vms_enabled: b(r["simple_vms_enabled"]),
+    simple_vms_storage_path: sn(r["simple_vms_storage_path"]),
+    simple_vms_settings_json: jsn(r["simple_vms_settings_json"]),
     managed_image: b(r["managed_image"]),
     managed_config_json: jsn(r["managed_config_json"]),
     managed_config_version: n(r["managed_config_version"] ?? 0),

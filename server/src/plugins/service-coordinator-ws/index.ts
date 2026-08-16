@@ -136,10 +136,11 @@ function parseCookieValue(header: string, name: string): string | null {
 const MESSAGE_QUEUE_CAP = 100;
 const offlineQueues = new Map<string, string[]>();
 
-function sendToKiosk(kioskId: string, message: object): boolean {
+function sendToKiosk(kioskId: string, message: object, queueWhenOffline = true): boolean {
   const k = connectedKiosks.get(kioskId);
   const payload = JSON.stringify(message);
   if (!k || k.ws.readyState !== WebSocket.OPEN) {
+    if (!queueWhenOffline) return false;
     // Queue for later delivery.
     let q = offlineQueues.get(kioskId);
     if (!q) { q = []; offlineQueues.set(kioskId, q); }
@@ -383,6 +384,9 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
                 || msg["type"] === "onvif-action-response"
                 || msg["type"] === "rotate-local-key-response"
                 || msg["type"] === "iobox-control-response"
+                || msg["type"] === "operator-enrollment-response"
+                || msg["type"] === "operator-stations-response"
+                || msg["type"] === "operator-station-revoke-response"
               ) {
                 const requestId = typeof msg["request_id"] === "string" ? msg["request_id"] : "";
                 const pending = pendingRequests.get(requestId);

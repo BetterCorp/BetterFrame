@@ -32,7 +32,7 @@
   </div>
   <div class="form-tips">
     Triggers on kiosk WS connect/disconnect and heartbeats with hardware telemetry.
-    Listens on <code>POST /in/kiosk.changed</code> internally — no upstream
+    Listens on <code>POST /api/internal/kiosk.changed</code> internally — no upstream
     <code>http in</code> node required.
     Emits <code>msg.payload = {kiosk_id, kiosk_name, event, cpu_temp_c?, fan_rpm?, fan_pwm?}</code> for the selected tenant.
     Leave Kiosk ID blank to receive events from all kiosks.
@@ -41,7 +41,7 @@
 
 <script type="text/html" data-help-name="bf-trigger-kiosk-changed">
   <p>Fires on kiosk WS connect/disconnect and heartbeats with hardware telemetry.</p>
-  <p>Listens on <code>POST /in/kiosk.changed</code> internally — no upstream
+  <p>Listens on <code>POST /api/internal/kiosk.changed</code> internally — no upstream
   <code>http in</code> node needed.</p>
   <p>Select a <b>BF</b> config to scope this trigger to one tenant.</p>
   <p>Optional <b>Kiosk ID</b> filter limits this node to a single kiosk.</p>

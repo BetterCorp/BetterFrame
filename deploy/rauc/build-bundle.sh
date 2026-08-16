@@ -21,7 +21,11 @@ SIGNING_KEY="${7:?signing key path required}"
 COMPATIBILITY="${8:-betterframe-rpi5-aarch64}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MANIFEST_IN="${SCRIPT_DIR}/manifest.raucm.in"
+if [ "$COMPATIBILITY" = "betterframe-x86_64-generic" ]; then
+  MANIFEST_IN="${SCRIPT_DIR}/manifest-x86.raucm.in"
+else
+  MANIFEST_IN="${SCRIPT_DIR}/manifest.raucm.in"
+fi
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -30,7 +34,9 @@ STAGE="${WORK_DIR}/bundle"
 mkdir -p "$STAGE"
 
 cp "$ROOTFS_IN" "${STAGE}/rootfs.ext4"
-cp "$BOOTFS_IN" "${STAGE}/bootfs.vfat"
+if [ "$COMPATIBILITY" != "betterframe-x86_64-generic" ]; then
+  cp "$BOOTFS_IN" "${STAGE}/bootfs.vfat"
+fi
 
 # Per-slot install hook: patches cmdline.txt root=PARTUUID (bootfs) and
 # /etc/fstab (rootfs) for the actual target slot at install time. Without
@@ -61,9 +67,7 @@ echo "==> Verifying bundle"
 # repo path isn't available (still validates structure, just not chain).
 CA_CERT="${SCRIPT_DIR}/ca-cert.pem"
 if [ ! -f "$CA_CERT" ]; then CA_CERT="$SIGNING_CERT"; fi
-rauc info --keyring="$CA_CERT" "$OUT_RAUCB" || {
-  echo "WARNING: rauc info verify failed (bundle may still be valid — kiosk verifies at install time)"
-}
+rauc info --keyring="$CA_CERT" "$OUT_RAUCB"
 
 echo
 echo "==> Bundle: $(ls -la "$OUT_RAUCB")"

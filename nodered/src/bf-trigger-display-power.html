@@ -32,7 +32,7 @@
   </div>
   <div class="form-tips">
     Fires on <code>display.power.changed</code> (wake/standby).
-    Listens on <code>POST /in/display.power.changed</code> internally — no upstream
+    Listens on <code>POST /api/internal/display.power.changed</code> internally — no upstream
     <code>http in</code> node required.
     Emits <code>msg.payload = {display_id, kiosk_id, state}</code> for the selected tenant.
     Leave Display ID blank to receive events from all displays.
@@ -41,7 +41,7 @@
 
 <script type="text/html" data-help-name="bf-trigger-display-power">
   <p>Fires when a display's power state changes (admin wake/standby command).</p>
-  <p>Listens on <code>POST /in/display.power.changed</code> internally — no upstream
+  <p>Listens on <code>POST /api/internal/display.power.changed</code> internally — no upstream
   <code>http in</code> node needed. The BetterFrame server's nodered-bridge POSTs
   events to that path directly.</p>
   <p>Select a <b>BF</b> config to scope this trigger to one tenant.</p>

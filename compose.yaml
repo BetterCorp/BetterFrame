@@ -1,0 +1,78 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.server
+      args:
+        BF_SERVER_VERSION: ${BF_SERVER_VERSION:-dev}
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      BF_PG_HOST: postgres
+      BF_PG_PORT: "5432"
+      BF_PG_DB: ${BF_PG_DB:-betterframe}
+      BF_PG_USER: ${BF_PG_USER:-betterframe}
+      BF_PG_PASSWORD: ${BF_PG_PASSWORD:?set BF_PG_PASSWORD}
+      BF_NODERED_URL: http://nodered:1880
+      BF_SELF_URL: http://server:18080
+      BF_NODERED_MANAGER_SECRET: ${BF_NODERED_MANAGER_SECRET:?set BF_NODERED_MANAGER_SECRET to at least 32 characters}
+    volumes:
+      - betterframe-data:/var/lib/betterframe
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [betterframe]
+
+  angie:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.angie
+    restart: unless-stopped
+    ports:
+      - "${BF_HTTP_PORT:-80}:80"
+    depends_on: [server, nodered]
+    networks: [betterframe]
+
+  nodered:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.nodered
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      BF_NODERED_MANAGER_SECRET: ${BF_NODERED_MANAGER_SECRET:?set BF_NODERED_MANAGER_SECRET to at least 32 characters}
+      BF_NODERED_MAX_TENANTS: "50"
+      BF_NODERED_TENANT_MEMORY_MB: ${BF_NODERED_TENANT_MEMORY_MB:-256}
+    volumes:
+      - nrdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:1880/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    networks: [betterframe]
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${BF_PG_USER:-betterframe}
+      POSTGRES_PASSWORD: ${BF_PG_PASSWORD:?set BF_PG_PASSWORD}
+      POSTGRES_DB: ${BF_PG_DB:-betterframe}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${BF_PG_USER:-betterframe}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [betterframe]
+
+volumes:
+  betterframe-data:
+  nrdata:
+  pgdata:
+
+networks:
+  betterframe:

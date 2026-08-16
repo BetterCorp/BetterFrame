@@ -142,6 +142,9 @@ export function registerTenantRoutes(app: H3, deps: AdminDeps): void {
     if (tenant.slug === "default") {
       return new Response(null, { status: 302, headers: { location: "/admin/tenants" } });
     }
+    if (!await deps.nodered.deleteTenant(id)) {
+      return new Response("Node-RED tenant archival failed", { status: 503 });
+    }
     await deps.repo.deleteTenant(id);
     // Note: does NOT drop the PG schema. That's intentional for data safety.
     deps.scheduleNoderedReconcile();

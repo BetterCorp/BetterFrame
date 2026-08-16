@@ -37,9 +37,13 @@ pub enum ServerMsg {
     Reboot,
     TailscaleAuth(String),
     /// Server-pushed "go check for a firmware update now".
-    FirmwareCheck { force: bool },
+    FirmwareCheck {
+        force: bool,
+    },
     /// Server-pushed "go check for an OS update now".
-    OsCheck { force: bool },
+    OsCheck {
+        force: bool,
+    },
     /// Server-pushed update preference change; cancel any in-flight updater.
     CancelUpdates,
     /// Show terminal auth code on screen (overlay).
@@ -69,6 +73,7 @@ fn main() {
     }
 
     gstreamer::init().expect("Failed to init GStreamer");
+    gstgtk4::plugin_register_static().expect("Failed to register gtk4paintablesink");
 
     // Demote Pi5 hw H265 decoder — rejects non-standard resolutions like 960x1080
     if let Some(factory) = gstreamer::ElementFactory::find("v4l2slh265dec") {

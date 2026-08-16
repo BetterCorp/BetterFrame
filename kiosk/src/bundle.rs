@@ -223,6 +223,8 @@ pub struct BundleCamera {
     pub event_source: Option<String>,
     #[serde(default)]
     pub event_sink: Option<String>,
+    #[serde(default)]
+    pub event_callback_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

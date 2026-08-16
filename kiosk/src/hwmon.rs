@@ -18,6 +18,7 @@ static LEGACY_FAN_CONTROL: Once = Once::new();
 pub struct HwInfo {
     pub cpu_temp_c: Option<f32>,
     pub cpu_load_percent: Option<f32>,
+    pub gpu_load_percent: Option<f32>,
     pub fan_rpm: Option<u32>,
     pub fan_pwm: Option<u32>,
     pub memory_total_mb: Option<u64>,
@@ -45,6 +46,7 @@ pub fn read() -> HwInfo {
     HwInfo {
         cpu_temp_c: read_temp(),
         cpu_load_percent: read_cpu_load_percent(),
+        gpu_load_percent: read_gpu_load_percent(),
         fan_rpm: read_u32_in_hwmon("fan1_input"),
         fan_pwm: read_u32_in_hwmon("pwm1"),
         memory_total_mb: memory.map(|m| m.0),
@@ -54,6 +56,19 @@ pub fn read() -> HwInfo {
         disk_used_percent: disk.map(|d| d.2),
         partitions: read_partitions(),
     }
+}
+
+fn read_gpu_load_percent() -> Option<f32> {
+    let cards = fs::read_dir("/sys/class/drm").ok()?;
+    for card in cards.flatten() {
+        let path = card.path().join("device/gpu_busy_percent");
+        if let Ok(raw) = fs::read_to_string(path) {
+            if let Ok(value) = raw.trim().parse::<f32>() {
+                return Some(value.clamp(0.0, 100.0));
+            }
+        }
+    }
+    None
 }
 
 /// Control fans on older installs whose service still grants PWM access.

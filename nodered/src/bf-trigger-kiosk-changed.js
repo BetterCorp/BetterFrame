@@ -3,7 +3,7 @@
  * heartbeat with hardware telemetry).
  *
  * Topic filter: `kiosk.changed`. Server's nodered-bridge POSTs to
- * `${noderedUrl}/in/kiosk.changed` directly. This node self-registers its
+ * `${noderedUrl}/api/internal/kiosk.changed` directly. This node self-registers its
  * own POST handler — no upstream `http in` node required.
  *
  * Optional config:

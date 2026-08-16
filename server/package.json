@@ -16,14 +16,13 @@
     "clean": "bsb-plugin-cli clean",
     "start": "bsb-plugin-cli start",
     "dev": "cross-env NODE_OPTIONS=\"--import tsx\" bsb-plugin-cli dev",
-    "test": "bsb-plugin-cli test",
+    "test": "cross-env TSX_TSCONFIG_PATH=tsconfig.test.json node --import tsx --test tests/*.test.ts",
     "schemas:export": "node --enable-source-maps lib/scripts/export-schemas.js"
   },
   "bsb": {},
   "dependencies": {
     "@anyvali/js": "^0.2.0",
     "@bsb/base": "^9.1.11",
-    "@types/ws": "^8.18.1",
     "argon2": "^0.44.0",
     "h3": "^2.0.1-rc.22",
     "jsx-htmx": "^2.0.2",
@@ -37,6 +36,7 @@
   "devDependencies": {
     "@types/node": "^25.0.0",
     "@types/pg": "^8.20.0",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
   },

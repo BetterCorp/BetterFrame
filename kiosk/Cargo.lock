@@ -756,6 +756,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "gdk4-wayland"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd34518488cd624a85e75e82540bc24c72cfeb0aea6bad7faed683ca3977dba0"
+dependencies = [
+ "gdk4",
+ "gdk4-wayland-sys",
+ "gio",
+ "glib",
+ "libc",
+]
+
+[[package]]
+name = "gdk4-wayland-sys"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c7a0f2332c531d62ee3f14f5e839ac1abac59e9b052adf1495124c00d89a34b"
+dependencies = [
+ "glib-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "gdk4-win32"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -988,11 +1012,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4cb890d0df1814d2f61ad7d5a4db8ec4fed0e2ac287af26d3c342be1dfae75b"
 dependencies = [
  "async-channel",
+ "gdk4-wayland",
  "gdk4-win32",
  "gst-plugin-version-helper",
  "gstreamer",
+ "gstreamer-allocators",
  "gstreamer-base",
  "gstreamer-gl",
+ "gstreamer-gl-wayland",
  "gstreamer-video",
  "gtk4",
  "once_cell",
@@ -1032,6 +1059,32 @@ dependencies = [
  "pin-project-lite",
  "smallvec",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gstreamer-allocators"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45f3c36aa5bc98e5dbfd19a27536373167ab1ad734ffafb84d5d65203fe75208"
+dependencies = [
+ "glib",
+ "gstreamer",
+ "gstreamer-allocators-sys",
+ "libc",
+ "once_cell",
+]
+
+[[package]]
+name = "gstreamer-allocators-sys"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c005b6cfae0c7e97b0ea95921f561fc8a8786b734cec25c29363a52305074a10"
+dependencies = [
+ "glib-sys",
+ "gobject-sys",
+ "gstreamer-sys",
+ "libc",
+ "system-deps",
 ]
 
 [[package]]
@@ -1087,6 +1140,31 @@ dependencies = [
  "gstreamer-base-sys",
  "gstreamer-sys",
  "gstreamer-video-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
+name = "gstreamer-gl-wayland"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "603a0b0744c5810932f9c2cb40f0922378202a8875f3db55627049acfe68faf1"
+dependencies = [
+ "glib",
+ "gstreamer",
+ "gstreamer-gl",
+ "gstreamer-gl-wayland-sys",
+ "libc",
+]
+
+[[package]]
+name = "gstreamer-gl-wayland-sys"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9701def285d8cdf69664c44ac759b92d18254e1faa5cfadea18810cc289e5cb9"
+dependencies = [
+ "glib-sys",
+ "gstreamer-gl-sys",
  "libc",
  "system-deps",
 ]

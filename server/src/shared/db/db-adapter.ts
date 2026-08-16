@@ -24,5 +24,6 @@ export interface DbAdapter {
   transaction<T>(fn: () => Promise<T>): Promise<T>;
   dialect(): "postgres";
   setSearchPath(schema: string): Promise<void>;
+  withSearchPath<T>(schema: string, fn: () => T | Promise<T>): Promise<T>;
   close(): Promise<void>;
 }

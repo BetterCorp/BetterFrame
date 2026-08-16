@@ -2,7 +2,7 @@
  * bf-trigger-display-power — fires when a display's power state changes.
  *
  * Topic filter: `display.power.changed`. Server's `nodered-bridge.forward`
- * POSTs to `${noderedUrl}/in/display.power.changed` directly. This node
+ * POSTs to `${noderedUrl}/api/internal/display.power.changed` directly. This node
  * registers its own POST handler on Node-RED's user-facing HTTP server —
  * no upstream `http in` node required.
  *

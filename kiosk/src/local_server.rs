@@ -103,10 +103,7 @@ pub fn start(state: LocalServerState) {
         info!("local-server: disabled by BF_KIOSK_LOCAL_DISABLE=1");
         return;
     }
-    let port: u16 = std::env::var("BF_KIOSK_LOCAL_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(18090);
+    let port = local_port();
     let _ = ACTIVE_LOCAL_KEY.set(state.local_key.clone());
 
     std::thread::spawn(move || {
@@ -121,7 +118,10 @@ pub fn start(state: LocalServerState) {
                 .route("/local/iobox/event", post(local_iobox_event_handler))
                 .route("/local/layout/:id", get(local_layout_handler))
                 .route("/local/snapshot/:camera_id", get(local_snapshot_handler))
-                .route("/oce/:tenant/:camera_id", post(onvif_event_callback))
+                .route(
+                    "/oce/:tenant/:camera_id/:callback_token",
+                    post(onvif_event_callback),
+                )
                 .route("/local/onvif/:camera_id", post(local_onvif_handler))
                 .route(
                     "/local/onvif/:camera_id/ptz/stop",
@@ -170,10 +170,17 @@ async fn local_info_handler(
         return (StatusCode::UNAUTHORIZED, "bad key").into_response();
     }
     Json(LocalInfo {
-        kiosk_local_port: 18090,
+        kiosk_local_port: local_port(),
         server_url: state.server_url.clone(),
     })
     .into_response()
+}
+
+fn local_port() -> u16 {
+    std::env::var("BF_KIOSK_LOCAL_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(18090)
 }
 
 async fn local_iobox_check_handler(
@@ -596,9 +603,12 @@ fn capture_jpeg_blocking(
 /// subscription) and the camera was told the callback URL by the kiosk.
 async fn onvif_event_callback(
     State(state): State<LocalServerState>,
-    Path((_tenant, camera_id)): Path<(String, String)>,
+    Path((_tenant, camera_id, callback_token)): Path<(String, String, String)>,
     body: String,
 ) -> Response {
+    if !crate::onvif_events::callback_token_matches(&camera_id, &callback_token) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let events = crate::onvif_events::parse_notification_messages(&body);
     if events.is_empty() {
         // Could be a subscription confirmation or an empty notify — just ACK.

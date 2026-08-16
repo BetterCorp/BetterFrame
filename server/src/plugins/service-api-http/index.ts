@@ -31,13 +31,14 @@ import { getCoordinator } from "../../shared/coordinator-registry.js";
 import { normalizeUpdateSchedule, updateScheduleAllowsNow } from "../../shared/update-schedule.js";
 import { normalizeFirmwareTarget } from "../../shared/firmware-targets.js";
 import { withDefaultTenant } from "../../shared/default-tenant.js";
+import { onvifCallbackTokenMatches } from "../../shared/onvif-callback-token.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { AuthApi } from "../../shared/auth.js";
 import type { SecretsApi } from "../../shared/secrets.js";
 import type { FirmwareChannel } from "../../shared/types.js";
 import {
   PairInitiateBody, PairClaimBody, HeartbeatBody, EventBody,
-  KioskLogsBody, FirmwareAppliedBody, OsAppliedBody,
+  KioskLogsBody, FirmwareAppliedBody, OsAppliedBody, OsStatusBody,
   IoBoxAnnounceBody, IoBoxPairClaimBody, IoBoxHeartbeatBody, IoBoxEventBody,
   validateBody,
 } from "../../shared/api-schemas.js";
@@ -206,16 +207,37 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       },
     });
 
+    // Keep the verified device schema active for the complete H3 middleware
+    // and route chain. Setting AsyncLocalStorage inside an auth helper alone
+    // does not cross back over the caller's await continuation.
+    app.use(async (event, next) => {
+      const path = new URL(event.req.url).pathname;
+      if (path.startsWith("/api/kiosk/")) {
+        const token = extractBearerToken(event);
+        const kiosk = token ? await auth.verifyKioskKey(token) : null;
+        if (!kiosk) return new Response(null, { status: 401 });
+        (event.context as any).verifiedKiosk = kiosk;
+        return repo.adapter.withSearchPath(kiosk.schema_name, next);
+      }
+      if (path.startsWith("/api/iobox/") &&
+          path !== "/api/iobox/announce" && path !== "/api/iobox/pair/claim") {
+        const token = extractBearerToken(event);
+        const box = token ? await auth.verifyIoBoxKey(token) : null;
+        if (!box) return new Response(null, { status: 401 });
+        (event.context as any).verifiedIoBox = box;
+        return repo.adapter.withSearchPath(box.schema_name, next);
+      }
+      return repo.adapter.withSearchPath("public", next);
+    });
+
     app.get("/api/kiosk/_check", async (event) => {
-      const token = extractBearerToken(event);
-      if (!token) return new Response(null, { status: 401 });
-      const kiosk = await auth.verifyKioskKey(token);
-      if (!kiosk) return new Response(null, { status: 401 });
+      const kiosk = (event.context as any).verifiedKiosk;
       return new Response(null, {
         status: 200,
         headers: {
           "x-betterframe-kiosk-id": String(kiosk.id),
-          "x-betterframe-tenant": kiosk.tenant_slug,
+          "x-betterframe-tenant": kiosk.tenant_id,
+          "x-betterframe-tenant-slug": kiosk.tenant_slug,
         },
       });
     });
@@ -279,37 +301,33 @@ function extractBearerToken(event: any): string | null {
 
 async function requireKiosk(
   event: any,
-  repo: Repository,
-  auth: AuthApi,
+  _repo: Repository,
+  _auth: AuthApi,
 ): Promise<{
   id: string;
+  tenant_id: string;
   tenant_slug: string;
   tenant_name: string | null;
   schema_name: string;
 }> {
-  const token = extractBearerToken(event);
-  if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-  const kiosk = await auth.verifyKioskKey(token);
+  const kiosk = event.context.verifiedKiosk;
   if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
-  await repo.adapter.setSearchPath(kiosk.schema_name);
   return kiosk;
 }
 
 async function requireIoBox(
   event: any,
-  repo: Repository,
-  auth: AuthApi,
+  _repo: Repository,
+  _auth: AuthApi,
 ): Promise<{
   id: string;
+  tenant_id: string;
   tenant_slug: string;
   tenant_name: string | null;
   schema_name: string;
 }> {
-  const token = extractBearerToken(event);
-  if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-  const box = await auth.verifyIoBoxKey(token);
+  const box = event.context.verifiedIoBox;
   if (!box) throw createError({ statusCode: 401, statusMessage: "Invalid ioBOX key" });
-  await repo.adapter.setSearchPath(box.schema_name);
   return box;
 }
 
@@ -796,13 +814,10 @@ function registerKioskRoutes(
   osUpdates: OsUpdateApi,
   mqtt: MqttBridge,
 ): void {
+  const onvifCallbackGuard = createRateLimiter({ windowMs: 60_000, max: 300 });
   // Bundle delivery
   app.get("/api/kiosk/bundle", async (event) => {
-    const token = extractBearerToken(event);
-    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-    const kiosk = await auth.verifyKioskKey(token);
-    if (!kiosk) return { bf_kiosk_deleted: true };
-    await repo.adapter.setSearchPath(kiosk.schema_name);
+    const kiosk = await requireKiosk(event, repo, auth);
 
     event.context.obs?.log.info("bundle fetch for kiosk {id}", { id: String(kiosk.id) });
     const clusterKey = await getClusterKey(repo, secrets);
@@ -831,11 +846,7 @@ function registerKioskRoutes(
 
   // Heartbeat
   app.post("/api/kiosk/heartbeat", async (event) => {
-    const token = extractBearerToken(event);
-    if (!token) throw createError({ statusCode: 401, statusMessage: "Bearer token required" });
-    const kiosk = await auth.verifyKioskKey(token);
-    if (!kiosk) return { bf_kiosk_deleted: true };
-    await repo.adapter.setSearchPath(kiosk.schema_name);
+    const kiosk = await requireKiosk(event, repo, auth);
     event.context.obs?.log.info("heartbeat from kiosk {id}", { id: String(kiosk.id) });
 
     const body = validateBody(HeartbeatBody, await readBody(event));
@@ -854,6 +865,7 @@ function registerKioskRoutes(
       os_update_compatibility: body.os_update_compatibility?.trim() || null,
       cpu_temp_c: body.cpu_temp_c ?? null,
       cpu_load_percent: body.cpu_load_percent ?? null,
+      gpu_load_percent: body.gpu_load_percent ?? null,
       fan_rpm: body.fan_rpm ?? null,
       fan_pwm: body.fan_pwm ?? null,
       memory_total_mb: body.memory_total_mb ?? null,
@@ -874,6 +886,10 @@ function registerKioskRoutes(
       partitions_json: Array.isArray(body.partitions)
         ? JSON.stringify(body.partitions)
         : null,
+      renderer_telemetry_json: JSON.stringify({
+        gpu_load_percent: body.gpu_load_percent ?? null,
+        pipelines: body.pipeline_stats,
+      }),
     });
 
     // Managed-config echo: kiosk reports the version it has successfully
@@ -905,6 +921,8 @@ function registerKioskRoutes(
       bundle_version: body.bundle_version,
       cpu_temp_c: body.cpu_temp_c,
       cpu_load_percent: body.cpu_load_percent,
+      gpu_load_percent: body.gpu_load_percent,
+      pipeline_stats: body.pipeline_stats,
       fan_rpm: body.fan_rpm,
       fan_pwm: body.fan_pwm,
       memory_total_mb: body.memory_total_mb,
@@ -1125,7 +1143,7 @@ function registerKioskRoutes(
       "web-change",
     ]);
     const markForwarded = () => { repo.markEventForwarded(eventId); };
-    const tenantInfo = { tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name, tenant_id: kiosk.tenant_slug };
+    const tenantInfo = { tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name, tenant_id: kiosk.tenant_id };
     if (flatTopics.has(body.topic)) {
       const out = { kiosk_id: kiosk.id, ...(body.payload ?? {}), source: "kiosk" };
       nodered.forward(body.topic, out, tenantInfo, markForwarded);
@@ -1161,19 +1179,25 @@ function registerKioskRoutes(
   // ---- ONVIF push callback (camera → server directly) ----------------------
   // Cameras that can't reach a kiosk push SOAP Notify envelopes here.
   // No auth — cameras can't send Bearer tokens. Path contains camera UUID.
-  app.post("/oce/:tenantSlug/:cameraId", async (event) => {
+  app.post("/oce/:tenantSlug/:cameraId/:callbackToken", async (event) => {
     const tenantSlug = getRouterParam(event, "tenantSlug") ?? "default";
     const cameraId = getRouterParam(event, "cameraId") ?? "";
+    const callbackToken = getRouterParam(event, "callbackToken") ?? "";
+    const ip = remoteIp(event) ?? "unknown";
+    if (!onvifCallbackGuard.take(`oce:${ip}`)) {
+      throw createError({ statusCode: 429, statusMessage: "rate limited" });
+    }
+    const tenant = await repo.getTenantBySlug(tenantSlug);
+    if (!tenant?.is_active) throw createError({ statusCode: 404, statusMessage: "not found" });
+    await repo.adapter.setSearchPath(tenant.schema_name);
+    const cam = await repo.getCameraById(cameraId);
+    if (!cam || !onvifCallbackTokenMatches(callbackToken, cam.event_callback_token_hash)) {
+      throw createError({ statusCode: 404, statusMessage: "not found" });
+    }
     const rawBody = await readBody<string>(event);
     const xml = typeof rawBody === "string" ? rawBody : String(rawBody ?? "");
     if (!xml || !cameraId) {
       return { ok: true, count: 0 };
-    }
-
-    const cam = await repo.getCameraById(cameraId);
-    if (!cam) {
-      event.context.obs?.log.warn("onvif-callback: unknown camera {id}", { id: cameraId });
-      return { ok: false, error: "unknown camera" };
     }
 
     // Find which kiosk manages this camera's events (for attribution).
@@ -1468,11 +1492,12 @@ function registerKioskRoutes(
     // Support Range requests for resumable downloads.
     const rangeHeader = getRequestHeader(event, "range");
     if (rangeHeader) {
-      const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+      const match = rangeHeader.match(/^bytes=(\d+)-(\d*)$/);
       if (match) {
         const start = Number(match[1]);
-        const end = match[2] ? Number(match[2]) : totalSize - 1;
-        if (start >= totalSize) {
+        const requestedEnd = match[2] ? Number(match[2]) : totalSize - 1;
+        const end = Math.min(requestedEnd, totalSize - 1);
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start >= totalSize || start > end) {
           return new Response(null, { status: 416, headers: { "content-range": `bytes */${totalSize}` } });
         }
         const rangeBundle = await osUpdates.streamBundle(release.artifact_path, start, end);
@@ -1488,6 +1513,7 @@ function registerKioskRoutes(
           },
         });
       }
+      return new Response(null, { status: 416, headers: { "content-range": `bytes */${totalSize}` } });
     }
 
     return new Response(bundle.body, {
@@ -1507,7 +1533,7 @@ function registerKioskRoutes(
     const kiosk = await requireKiosk(event, repo, auth);
 
     const body = validateBody(OsAppliedBody, await readBody(event));
-    await repo.recordKioskOsUpdateAttempt(kiosk.id, body.version, body.error ?? null);
+    await repo.recordKioskOsUpdateAttempt(kiosk.id, body.version, body.error ?? null, body.error ? "failed" : "pending_reboot");
     await repo.insertEvent({
       source_kiosk_id: kiosk.id,
       source_camera_id: null,
@@ -1519,6 +1545,22 @@ function registerKioskRoutes(
         message: body.error ? "os update failed" : "os update applied",
         context: { version: body.version, error: body.error ?? null },
       },
+      forwarded_to_nodered: false,
+    });
+    return { ok: true };
+  });
+
+  app.post("/api/kiosk/os/status", async (event) => {
+    const kiosk = await requireKiosk(event, repo, auth);
+    const body = validateBody(OsStatusBody, await readBody(event));
+    await repo.recordKioskOsUpdateAttempt(kiosk.id, body.version, body.error ?? null, body.state);
+    await repo.insertEvent({
+      source_kiosk_id: kiosk.id,
+      source_camera_id: null,
+      source_type: "system",
+      topic: "kiosk.os-update",
+      property_op: body.state,
+      payload: { version: body.version, state: body.state, error: body.error ?? null },
       forwarded_to_nodered: false,
     });
     return { ok: true };

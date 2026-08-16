@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -30,6 +30,7 @@ use gtk4::{
 };
 use tracing::{info, warn};
 
+use crate::ServerMsg;
 use crate::bundle::{BundleDisplayWithLayouts, KioskBundle};
 use crate::cec;
 use crate::firmware;
@@ -42,7 +43,6 @@ use crate::pipeline;
 use crate::remote_debug;
 use crate::server;
 use crate::ws_client;
-use crate::ServerMsg;
 
 /// Per-display runtime state. Kept inside a thread-local hashmap keyed by
 /// display id, so all the idle/sleep/layout tracking is local to that display
@@ -89,6 +89,7 @@ struct PipelineEntry {
     cooling_until: Option<Instant>,
     last_buffer_at: Arc<AtomicU64>,
     stream_status: Arc<AtomicU8>,
+    pipeline_stats: Arc<pipeline::PipelineStats>,
     /// Epoch millis when this pipeline was first detected as stalled.
     /// NOT reset by in-place restart — only cleared when frames resume.
     first_stall_at: Arc<AtomicU64>,
@@ -216,8 +217,7 @@ fn activate(app: &Application) {
                 info!("pairing code: {code} (expires {expires})");
                 let _ = tx.send(WorkerMsg::ShowPairingCode(code.clone()));
 
-                if let Some((name, key)) =
-                    server::poll_claim_until_expiry(&server, &code, &expires)
+                if let Some((name, key)) = server::poll_claim_until_expiry(&server, &code, &expires)
                 {
                     info!("paired as: {name}");
                     let _ = tx.send(WorkerMsg::ShowPairingProgress);
@@ -397,7 +397,12 @@ fn activate(app: &Application) {
                     }
                     ServerMsg::OsCheck { force } => {
                         if force || server::auto_updates_allowed() {
-                            maybe_apply_os_update(&server_for_reload, &key_for_reload, &tx_for_reload, force);
+                            maybe_apply_os_update(
+                                &server_for_reload,
+                                &key_for_reload,
+                                &tx_for_reload,
+                                force,
+                            );
                         } else {
                             info!("os-update: outside configured update window");
                         }
@@ -425,15 +430,18 @@ fn activate(app: &Application) {
 
         let tx_progress = tx.clone();
         let mut first_iter = true;
+        let mut confirmation_reported = false;
         loop {
             let heartbeat_ok = send_heartbeat_now(&server, &key);
             if first_iter && heartbeat_ok {
                 firmware::mark_firmware_applied();
                 mark_kiosk_healthy();
-                mark_rauc_slot_good();
                 cleanup_stale_files();
                 apply_boot_audio_default();
                 first_iter = false;
+            }
+            if heartbeat_ok && !confirmation_reported && os_update::boot_is_confirmed() {
+                confirmation_reported = os_update::report_confirmed(&server, &key);
             }
             if server::auto_updates_allowed() {
                 maybe_apply_os_update(&server, &key, &tx_progress, false);
@@ -641,7 +649,13 @@ fn send_heartbeat_now(server_url: &str, kiosk_key: &str) -> bool {
         })
         .collect();
     let hw = hwmon::read();
-    server::heartbeat(server_url, kiosk_key, bundle_version.as_deref(), &displays, &hw)
+    server::heartbeat(
+        server_url,
+        kiosk_key,
+        bundle_version.as_deref(),
+        &displays,
+        &hw,
+    )
 }
 
 fn mark_kiosk_healthy() {
@@ -657,15 +671,6 @@ fn mark_kiosk_healthy() {
 /// /proc/device-tree/chosen/bootloader/partition via our custom bootloader
 /// backend — we just shell out and ignore non-zero exit (e.g. running
 /// kiosk on a non-RAUC image).
-fn mark_rauc_slot_good() {
-    use std::process::Command;
-    let _ = Command::new("rauc")
-        .args(["status", "mark-good"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-}
-
 fn set_hostname_from_name(name: &str) {
     let hostname: String = name
         .chars()
@@ -1068,9 +1073,8 @@ fn install_idle_watchdog() {
                 };
 
                 if idle_to > 0 && elapsed >= Duration::from_secs(idle_to) {
-                    let cur_resets_idle = current_layout
-                        .map(|l| l.resets_idle_timer)
-                        .unwrap_or(false);
+                    let cur_resets_idle =
+                        current_layout.map(|l| l.resets_idle_timer).unwrap_or(false);
                     if let (Some(cur_id), Some(def_id)) = (&st.current_layout_id, &default_id) {
                         if cur_id != def_id && cur_resets_idle {
                             act.revert_to = Some(def_id.clone());
@@ -1297,7 +1301,12 @@ fn render_bundle(
     for (i, bd) in displays.iter().enumerate() {
         let existing = DISPLAYS.with(|ds| ds.borrow_mut().remove(&bd.id));
         let (window, was_asleep, existing_overlay, existing_web_layer) = match existing {
-            Some(st) => (st.window, st.is_asleep, Some(st.content_overlay), Some(st.web_layer)),
+            Some(st) => (
+                st.window,
+                st.is_asleep,
+                Some(st.content_overlay),
+                Some(st.web_layer),
+            ),
             None => {
                 let w = ApplicationWindow::builder()
                     .application(app)
@@ -1705,7 +1714,13 @@ fn render_layout(display_id: &str, layout_id: &str) {
                         &server_url,
                         &kiosk_key,
                         cell.local_storage.as_ref(),
-                        Some(web_event_meta(&bundle, display_id, cell, &server_url, &kiosk_key)),
+                        Some(web_event_meta(
+                            &bundle,
+                            display_id,
+                            cell,
+                            &server_url,
+                            &kiosk_key,
+                        )),
                     );
                     if let Some(ref smart) = cell.smart_url {
                         let decrypt_key =
@@ -2019,7 +2034,10 @@ fn recompute_global_state() {
             .as_ref()
             .map(|(_, is_asleep)| *is_asleep)
             .unwrap_or(false);
-        if let Some(cur_id) = active_entry.as_ref().and_then(|(layout_id, _)| layout_id.as_ref()) {
+        if let Some(cur_id) = active_entry
+            .as_ref()
+            .and_then(|(layout_id, _)| layout_id.as_ref())
+        {
             if let Some(layout) = bd.layouts.iter().find(|l| l.id.as_str() == cur_id.as_str()) {
                 let t = layout.cooling_timeout_seconds.unwrap_or(0);
                 let t = if t == 0 { DEFAULT_COOLING_SECS } else { t };
@@ -2184,9 +2202,16 @@ fn expire_cooling_pipelines() {
                     }
                     warn!(
                         "camera {} ({}): stream stalled (no frames for {}s) → restarting in-place",
-                        k.0, k.1, STALL_THRESHOLD_MS / 1000
+                        k.0,
+                        k.1,
+                        STALL_THRESHOLD_MS / 1000
                     );
-                    pipeline::restart(&e.pipeline, &e.last_buffer_at, &e.stream_status);
+                    pipeline::restart(
+                        &e.pipeline,
+                        &e.last_buffer_at,
+                        &e.stream_status,
+                        &e.pipeline_stats,
+                    );
                 } else if e.first_stall_at.load(Ordering::Relaxed) > 0 {
                     e.first_stall_at.store(0, Ordering::Relaxed);
                 }
@@ -2241,7 +2266,9 @@ fn heal_stalled_streams() {
             if let Some(e) = warm.remove(k) {
                 warn!(
                     "camera {} ({}): stalled >{}s — dropping pipeline for re-render",
-                    k.0, k.1, HEAL_THRESHOLD_MS / 1000
+                    k.0,
+                    k.1,
+                    HEAL_THRESHOLD_MS / 1000
                 );
                 pipeline::stop(&e.pipeline);
                 dropped_cam_ids.push(k.0.clone());
@@ -2478,9 +2505,13 @@ fn ensure_warm(
     let key: PoolKey = (cam_id.to_string(), desired_badge);
 
     let cached = WARM_CAMERAS.with(|w| {
-        w.borrow()
-            .get(&key)
-            .map(|e| (e.pipeline.clone(), e.paintable.clone(), e.stream_status.clone()))
+        w.borrow().get(&key).map(|e| {
+            (
+                e.pipeline.clone(),
+                e.paintable.clone(),
+                e.stream_status.clone(),
+            )
+        })
     });
     if let Some((_pipe, paintable, status)) = cached {
         // Promote out of Cooling if we're rendering it again.
@@ -2499,7 +2530,7 @@ fn ensure_warm(
         return Some((paintable, desired_badge, status));
     }
 
-    let (pipe, sink, last_buffer, status) = pipeline::create_camera_pipeline(
+    let (pipe, sink, last_buffer, status, pipeline_stats) = pipeline::create_camera_pipeline(
         &cam.name,
         &uri,
         cam.playback_username.as_deref(),
@@ -2518,6 +2549,7 @@ fn ensure_warm(
                 cooling_until: None,
                 last_buffer_at: last_buffer,
                 stream_status: status_clone,
+                pipeline_stats,
                 first_stall_at: Arc::new(AtomicU64::new(0)),
             },
         );
@@ -2994,7 +3026,9 @@ fn apply_webview_positions(display_id: &str) -> bool {
     }
     DISPLAYS.with(|ds| {
         let ds = ds.borrow();
-        let Some(st) = ds.get(display_id) else { return true };
+        let Some(st) = ds.get(display_id) else {
+            return true;
+        };
 
         let width = st.window.allocated_width();
         let height = st.window.allocated_height();
@@ -3014,7 +3048,9 @@ fn apply_webview_positions(display_id: &str) -> bool {
             let pool = m.borrow();
 
             for pos in &st.web_positions {
-                let Some(entry) = pool.get(&pos.key) else { continue };
+                let Some(entry) = pool.get(&pos.key) else {
+                    continue;
+                };
                 let x = (pos.col as f64 / grid_cols as f64) * width as f64;
                 let y = (pos.row as f64 / grid_rows as f64) * height as f64;
                 let w = (pos.col_span as f64 / grid_cols as f64) * width as f64;
@@ -3022,7 +3058,8 @@ fn apply_webview_positions(display_id: &str) -> bool {
 
                 entry.webview.set_size_request(w as i32, h as i32);
 
-                if entry.webview.parent().as_ref() == Some(st.web_layer.upcast_ref::<gtk::Widget>()) {
+                if entry.webview.parent().as_ref() == Some(st.web_layer.upcast_ref::<gtk::Widget>())
+                {
                     st.web_layer.move_(&entry.webview, x, y);
                 } else {
                     if entry.webview.parent().is_some() {
@@ -3035,7 +3072,9 @@ fn apply_webview_positions(display_id: &str) -> bool {
 
             for (key, entry) in pool.iter() {
                 if !active_keys.contains(key.as_str()) {
-                    if entry.webview.parent().as_ref() == Some(st.web_layer.upcast_ref::<gtk::Widget>()) {
+                    if entry.webview.parent().as_ref()
+                        == Some(st.web_layer.upcast_ref::<gtk::Widget>())
+                    {
                         entry.webview.set_visible(false);
                     }
                 }

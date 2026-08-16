@@ -8,6 +8,7 @@ import { LoginPage, TotpPage, RecoveryPage } from "../../web-templates/auth-page
 import { audit } from "../../shared/audit.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
 import { LoginBody, TotpBody, validateBody } from "../../shared/api-schemas.js";
+import { csrfRequestIsValid, requestOriginIsValid } from "../../shared/csrf.js";
 
 
 export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
@@ -15,6 +16,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
   // wired via deps.auth.config.loginLockoutThreshold. In-function so the BSB
   // schema extractor doesn't evaluate at module load.
   const loginGuard = createRateLimiter({ windowMs: 60_000, max: 8 });
+  const secondFactorGuard = createRateLimiter({ windowMs: 60_000, max: 8 });
   // ---- Login ----------------------------------------------------------------
 
   app.get("/auth/login", (event) => {
@@ -24,6 +26,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/auth/login", async (event) => {
+    if (!requestOriginIsValid(event)) return new Response("invalid request origin", { status: 403 });
     const ip = getRequestHeader(event, "x-real-ip")
       ?? getRequestHeader(event, "x-forwarded-for")?.split(",")[0]?.trim()
       ?? "anon";
@@ -90,8 +93,11 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
     });
 
     const totpPending = user.totp_enabled;
-    const { cookieValue } = await deps.auth.createSession({
+    const originTenant = event.context.tenant;
+    if (!originTenant) throw new Error("login tenant was not resolved");
+    const { session, cookieValue } = await deps.auth.createSession({
       user,
+      originTenantId: originTenant.id,
       userAgent: getRequestHeader(event, "user-agent") ?? null,
       ipAddress: getRequestHeader(event, "x-forwarded-for")
         ?? getRequestHeader(event, "x-real-ip")
@@ -99,11 +105,15 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       totpPending,
     });
 
-    const cookie = { name: deps.cookieName, value: cookieValue, maxAge: deps.auth.config.sessionMaxSeconds };
+    const secure = getRequestHeader(event, "x-forwarded-proto") === "https";
+    const cookies = [
+      { name: deps.cookieName, value: cookieValue, maxAge: deps.auth.config.sessionMaxSeconds, secure },
+      { name: "betterframe_csrf", value: session.csrf_token, maxAge: deps.auth.config.sessionMaxSeconds, httpOnly: false, secure },
+    ];
     if (totpPending) {
-      return redirectWithCookie("/auth/totp", cookie);
+      return redirectWithCookie("/auth/totp", cookies);
     }
-    return redirectWithCookie("/admin/", cookie);
+    return redirectWithCookie("/admin/", cookies);
   });
 
   // ---- TOTP -----------------------------------------------------------------
@@ -129,6 +139,15 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
     if (!resolved || !resolved.session.totp_pending) {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
+    if (!csrfRequestIsValid(event, resolved.session)) {
+      return new Response("invalid CSRF token", { status: 403 });
+    }
+    if (!secondFactorGuard.take(`totp:${resolved.session.id}`)) {
+      return new Response("Too many attempts. Try again in a minute.", {
+        status: 429,
+        headers: { "retry-after": "60" },
+      });
+    }
 
     let totpBody: { code: string };
     try {
@@ -153,7 +172,8 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       return htmlPage(TotpPage({ error: "Invalid code. Try again." }));
     }
 
-    await deps.repo.setSessionTotpPending(session.id, false);
+    await deps.repo.adapter.withSearchPath(resolved.tenant.schema_name, () =>
+      deps.repo.setSessionTotpPending(session.id, false));
     return new Response(null, { status: 302, headers: { location: "/admin/" } });
   });
 
@@ -180,6 +200,15 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
     if (!resolved || !resolved.session.totp_pending) {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }
+    if (!csrfRequestIsValid(event, resolved.session)) {
+      return new Response("invalid CSRF token", { status: 403 });
+    }
+    if (!secondFactorGuard.take(`recovery:${resolved.session.id}`)) {
+      return new Response("Too many attempts. Try again in a minute.", {
+        status: 429,
+        headers: { "retry-after": "60" },
+      });
+    }
 
     const body = await readBody<{ code?: string }>(event);
     const code = (body?.code ?? "").trim().toUpperCase().replace(/\s/g, "");
@@ -196,11 +225,12 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       return htmlPage(RecoveryPage({ error: "Invalid recovery code." }));
     }
 
-    await deps.repo.updateUser(user.id, {
-      recovery_codes_hashed: result.remaining,
+    await deps.repo.adapter.withSearchPath(resolved.tenant.schema_name, async () => {
+      await deps.repo.updateUser(user.id, {
+        recovery_codes_hashed: result.remaining,
+      });
+      await deps.repo.setSessionTotpPending(session.id, false);
     });
-
-    await deps.repo.setSessionTotpPending(session.id, false);
     return new Response(null, { status: 302, headers: { location: "/admin/" } });
   });
 
@@ -211,9 +241,13 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
     if (cookie) {
       const resolved = await deps.auth.resolveSession(cookie);
       if (resolved) {
-        await deps.auth.revokeSession(resolved.session.id);
+        if (!csrfRequestIsValid(event, resolved.session)) {
+          return new Response("invalid CSRF token", { status: 403 });
+        }
+        await deps.repo.adapter.withSearchPath(resolved.tenant.schema_name, () =>
+          deps.auth.revokeSession(resolved.session.id));
       }
     }
-    return redirectClearCookie("/auth/login", deps.cookieName);
+    return redirectClearCookie("/auth/login", [deps.cookieName, "betterframe_csrf"]);
   });
 }

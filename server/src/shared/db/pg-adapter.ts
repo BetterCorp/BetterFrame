@@ -14,10 +14,10 @@ import type { DbAdapter, RunResult, Row, SqlValue } from "./db-adapter.js";
 
 export class PgAdapter implements DbAdapter {
   private readonly pool: Pool;
-  private currentTxClient: PoolClient | null = null;
-  private txDepth = 0;
-  private searchPath = "public";
-  private readonly searchPathContext = new AsyncLocalStorage<string>();
+  private readonly context = new AsyncLocalStorage<{
+    searchPath: string;
+    transaction?: { client: PoolClient; depth: number };
+  }>();
 
   constructor(connectionString: string, poolMax: number = 10) {
     this.pool = new Pool({
@@ -70,10 +70,11 @@ export class PgAdapter implements DbAdapter {
   }
 
   private async runner<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
-    if (this.currentTxClient) return fn(this.currentTxClient);
+    const current = this.context.getStore();
+    if (current?.transaction) return fn(current.transaction.client);
     const client = await this.pool.connect();
     try {
-      const searchPath = this.searchPathContext.getStore() ?? this.searchPath;
+      const searchPath = current?.searchPath ?? "public";
       await client.query(`SET search_path TO ${searchPath}, public`);
       return await fn(client);
     } finally {
@@ -119,38 +120,37 @@ export class PgAdapter implements DbAdapter {
   }
 
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.currentTxClient) {
+    const current = this.context.getStore() ?? { searchPath: "public" };
+    if (current.transaction) {
       // Already in a transaction — use a savepoint.
-      this.txDepth += 1;
-      const name = `sp_${this.txDepth}`;
-      await this.currentTxClient.query(`SAVEPOINT ${name}`);
+      current.transaction.depth += 1;
+      const name = `sp_${current.transaction.depth}`;
+      await current.transaction.client.query(`SAVEPOINT ${name}`);
       try {
         const result = await fn();
-        await this.currentTxClient.query(`RELEASE SAVEPOINT ${name}`);
-        this.txDepth -= 1;
+        await current.transaction.client.query(`RELEASE SAVEPOINT ${name}`);
+        current.transaction.depth -= 1;
         return result;
       } catch (err) {
-        try { await this.currentTxClient.query(`ROLLBACK TO SAVEPOINT ${name}`); } catch { /* ignore */ }
-        this.txDepth -= 1;
+        try { await current.transaction.client.query(`ROLLBACK TO SAVEPOINT ${name}`); } catch { /* ignore */ }
+        current.transaction.depth -= 1;
         throw err;
       }
     }
     const client = await this.pool.connect();
-    this.currentTxClient = client;
-    this.txDepth = 1;
     try {
-      const searchPath = this.searchPathContext.getStore() ?? this.searchPath;
       await client.query("BEGIN");
-      await client.query(`SET LOCAL search_path TO ${searchPath}, public`);
-      const result = await fn();
+      await client.query(`SET LOCAL search_path TO ${current.searchPath}, public`);
+      const result = await this.context.run(
+        { ...current, transaction: { client, depth: 1 } },
+        fn,
+      );
       await client.query("COMMIT");
       return result;
     } catch (err) {
       try { await client.query("ROLLBACK"); } catch { /* ignore */ }
       throw err;
     } finally {
-      this.currentTxClient = null;
-      this.txDepth = 0;
       client.release();
     }
   }
@@ -158,11 +158,19 @@ export class PgAdapter implements DbAdapter {
   dialect(): "postgres" { return "postgres"; }
 
   async setSearchPath(schema: string): Promise<void> {
-    if (!/^[a-z_][a-z0-9_]*$/i.test(schema)) {
-      throw new Error(`invalid schema name: ${schema}`);
-    }
-    this.searchPathContext.enterWith(schema);
-    this.searchPath = schema;
+    this.assertSchema(schema);
+    const current = this.context.getStore();
+    this.context.enterWith({ ...(current ?? {}), searchPath: schema });
+  }
+
+  async withSearchPath<T>(schema: string, fn: () => T | Promise<T>): Promise<T> {
+    this.assertSchema(schema);
+    const current = this.context.getStore();
+    return this.context.run({ ...(current ?? {}), searchPath: schema }, fn);
+  }
+
+  private assertSchema(schema: string): void {
+    if (!/^[a-z_][a-z0-9_]*$/i.test(schema)) throw new Error(`invalid schema name: ${schema}`);
   }
 
   async close(): Promise<void> {

@@ -5,7 +5,7 @@
  *
  * The server's api-http `/api/kiosk/events` endpoint persists each kiosk
  * event then calls `nodered.forward(topic, payload)` which POSTs to
- * `${noderedUrl}/in/<topic>`. This node self-registers a POST handler at a
+ * `${noderedUrl}/api/internal/<topic>`. This node self-registers a POST handler at a
  * fixed route — no upstream `http in` node required.
  *
  * Optional config:
@@ -20,7 +20,7 @@ const { eventIdentity } = require("./_identity.js");
 
 module.exports = function (RED) {
   // Fixed ingest route. Server-side forwarders that want this node to receive
-  // their event should POST to /in/camera.event. (Previous releases used a
+  // their event should POST to /api/internal/camera.event. (Previous releases used a
   // glob-pattern filter over upstream http-in messages; that path is gone.)
   const TOPIC = "camera.event";
   const ROUTE = "/api/internal/" + TOPIC;

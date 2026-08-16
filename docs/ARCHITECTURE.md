@@ -1,143 +1,83 @@
-# BetterFrame — Architecture
+# BetterFrame architecture
 
-## Goals
+BetterFrame is a live-only video-wall system. The server coordinates layouts,
+events, and fleet state; kiosks fetch RTSP directly from cameras or NVRs. There
+is no recording path.
 
-- Display up to 32 cameras simultaneously on a Pi 5 driving HDMI.
-- Mixed cells: cameras, web pages (iframe), and custom HTML.
-- Layouts switch with no perceptible latency, driven by API or camera events.
-- Layout templates (named regions) compile to a pixel grid at runtime.
-- Cameras configured via raw RTSP or ONVIF (auto-discover streams + capabilities).
-- API-key-protected REST API for everything except local kiosk reads.
-- Single display in v1; data model already supports multi-display.
+## Components
 
-## Process layout
+- **Server:** TypeScript BSB services backed by PostgreSQL. Each tenant has a
+  separate schema; request-local database context prevents concurrent requests
+  from sharing `search_path` state.
+- **Angie edge:** the only public service. It authenticates admin, kiosk, and
+  Node-RED surfaces and passes a verified tenant ID downstream.
+- **Node-RED manager:** runs one Node-RED child process, Unix UID, data
+  directory, credential secret, and loopback port per active tenant. Tenant
+  deletion archives its flow directory before removing runtime state.
+- **Linux kiosk:** Rust, GTK4, WebKitGTK, and GStreamer. It opens one fullscreen
+  window per detected display and maintains warm camera/web pools for layout
+  switching.
+- **Windows client:** native fullscreen windows with RTSP camera cells rendered
+  by GStreamer `d3d11videosink`. Web and HTML cells remain Linux-only.
 
-Two processes on the Pi, coordinating over a local WebSocket:
+## Video path
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                         Raspberry Pi 5                           │
-│                                                                  │
-│  ┌────────────────────────────┐    ┌───────────────────────────┐ │
-│  │   Kiosk (Rust + GTK4)      │    │   Backend (FastAPI)       │ │
-│  │                            │    │                           │ │
-│  │   Decoder pool (warm/hot)  │◄───┤   - SQLite                │ │
-│  │   Grid renderer (GTK4)     │    │   - ONVIF service         │ │
-│  │   WebKitGTK pool           │ WS │   - Layout API            │ │
-│  │                            │    │   - Event rules engine    │ │
-│  └──────────────┬─────────────┘    │   - API key auth          │ │
-│                 │                  │   - Static admin UI       │ │
-│                 │ RTSP             └────────────┬──────────────┘ │
-└─────────────────┼───────────────────────────────┼────────────────┘
-                  ▼                               │
-       ┌─────────────────┐                        ▼
-       │   IP cameras    │                LAN clients (port 8080)
-       │  RTSP / ONVIF   │
-       └─────────────────┘
+```text
+camera/NVR -> RTSP -> GStreamer decodebin -> gtk4paintablesink -> display
 ```
 
-## Why these choices
+The Linux sink is built with DMA-BUF and Wayland support and no longer inserts
+an unconditional `videoconvert`. Actual decoder names, hardware-decoder status,
+processed/dropped frames, pipeline restarts, and GPU load are reported with the
+kiosk heartbeat. Decoder choice still depends on the installed GStreamer
+plugins and driver, so verify the decoder field on target hardware.
 
-**Rust kiosk + Python backend.** Rust where the latency budget is tight
-(pipeline state changes, decoder management, render loop). Python where the
-ecosystem matters (`onvif-zeep`, FastAPI, alembic). They communicate via
-WebSocket so neither is locked to the other's runtime.
+Small cells select the substream by default; large cells select the main stream.
+Per-cell overrides win. The design target is 32 camera cells per display, but
+the operational limit is the measured decoder/GPU capacity of the deployed
+machine.
 
-**SQLite, not Postgres.** Total dataset is hundreds of rows. WAL mode handles
-the kiosk-as-reader case fine, atomic schema migrations are easy, single-file
-backup is trivial.
+## Tenant and authentication boundaries
 
-**GStreamer for video.** Only realistic choice on Linux for hardware-accelerated
-multi-camera. Pi 5 V4L2 M2M decoder is exposed via `v4l2h264dec`; `gstreamer-rs`
-bindings are mature.
+- Session cookies contain the issuing tenant ID and are HMAC-signed. Tenant
+  users cannot switch schemas; only the default-tenant platform administrator
+  can administer another tenant.
+- Browser mutations require a session-bound CSRF cookie and same-origin browser
+  request. Operator routes are an explicit allowlist and default closed.
+- API keys and kiosk/ioBOX keys resolve only inside their verified tenant.
+- ONVIF callbacks use a per-camera HMAC token stored as a hash and verify the
+  tenant, camera, and token together.
+- Remote logs/terminal require an admin with completed TOTP and a development
+  firmware channel. Debug scripts use a per-response CSP nonce.
 
-## Stream warmth model
+## Node-RED routing
 
-Each `(camera_id, stream_type)` pair is in one of four states:
+The server reconciles active tenants into the manager over its private control
+API. Angie first authenticates `/nrdp/` and `/dash/`, then forwards the verified
+tenant UUID. Public HTTP-in endpoints must include the tenant slug:
 
-| State    | RTSP open | Decoder running | Visible | Promote cost |
-|----------|-----------|-----------------|---------|--------------|
-| Hot      | yes       | yes             | yes     | 0            |
-| Warm     | yes       | yes (paused)    | no      | ~1 frame     |
-| Cooling  | yes       | yes             | no      | 0            |
-| Cold     | no        | no              | no      | 1-3 seconds  |
-
-The kiosk computes the needed warm set on every layout activation:
-
-```
-warm_set =
-    streams_used_by_active_layout
-  ∪ streams_in_layout_preload_list
-  ∪ streams_used_by_priority_hot_layouts (always-on)
-  ∪ streams_currently_in_cooling_window
+```text
+/in/public/<tenant-slug>/<node-red-path>
 ```
 
-Anything outside that set transitions to cooling, then cold when its timeout
-expires.
+Kiosk-authenticated `/in/kiosk/*` and `/dash/*` requests derive their tenant
+from the kiosk key. Runtime admin endpoints cannot be reached through public
+HTTP-in paths.
 
-## Layout templates
+## Offline behavior and updates
 
-Templates define named regions in a normalized 12×12 grid. Layouts reference a
-template and bind cameras or content to its named regions.
+Kiosks cache encrypted pairing state and bundles. x86 systems seal the storage
+key with TPM2 when available; Windows uses machine-scope DPAPI.
 
-```yaml
-templates:
-  - id: 1-big-7-small
-    regions:
-      - { name: main,  x: 0, y: 0, w: 8, h: 8 }
-      - { name: tr-1,  x: 8, y: 0, w: 4, h: 2 }
-      - { name: tr-2,  x: 8, y: 2, w: 4, h: 2 }
-      # ...
+Production OS updates use signed RAUC A/B bundles. Pi uses firmware tryboot;
+x86 uses one shared ESP and RAUC's GRUB backend with two root slots. A boot is
+reported confirmed only after the kiosk heartbeat marker causes
+`rauc status mark-good` to succeed. See [full-os-ota.md](full-os-ota.md).
 
-layouts:
-  - id: front-overview
-    template_id: 1-big-7-small
-    bindings:
-      main:  { type: camera, camera_id: 1, stream: main }
-      tr-1:  { type: camera, camera_id: 2, stream: sub  }
-      br-3:  { type: web,    url: "http://homeassistant.local/dashboard" }
-    priority: hot
-    cooling_timeout_seconds: 300
-    preload_camera_ids: [4, 5]
-```
+## Production validation
 
-Templates compile to pixel rectangles at the kiosk based on actual display
-resolution. Cells under 20% of total display area default to sub-stream;
-≥20% default to main; per-cell override always wins.
-
-## Event rules engine
-
-ONVIF cameras with event support get a persistent PullPoint subscription managed
-by the backend. Events are normalized to `{camera_id, topic, payload}` and
-matched against rules:
-
-```yaml
-event_rules:
-  - when:
-      camera_id: 5
-      topic: "tns1:RuleEngine/CellMotionDetector/Motion"
-      property_op: "Changed"
-    do:
-      action: activate_layout
-      layout_id: front-door-zoom
-      revert_after_seconds: 60
-      revert_to: previous
-    cooldown_seconds: 30
-```
-
-External systems fire synthetic events via `POST /api/events/trigger`, so
-non-ONVIF inputs work through the same engine.
-
-## Auth
-
-- **Kiosk → backend**: WebSocket on `127.0.0.1:8000`, no auth (loopback only).
-- **LAN → backend**: HTTP on `0.0.0.0:8080`, every route requires `X-API-Key`.
-
-Two listeners, two middleware stacks, same FastAPI app.
-
-## Multi-display readiness
-
-Schema includes `display_id` on `layouts` and a `displays` table. v1 hard-codes
-a single display row. The kiosk↔backend protocol includes `display_id` in
-every activation message. Adding a second display later: new `displays` row,
-new kiosk instance bound to it, no API changes.
+Before a wall is accepted, test its real codecs, resolutions, frame rates, NVR
+connection limits, cabling, GPUs, and display topology at 32 streams, then 64,
+then the target six-screen layout for 72 hours. Acceptance requires hardware
+decoders, stable GPU memory/temperature, acceptable dropped frames, reconnects,
+and a demonstrated failed-update rollback.

@@ -6,6 +6,7 @@ import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { SetupPage } from "../../web-templates/auth-pages.js";
 import { SetupBody, validateBody } from "../../shared/api-schemas.js";
+import { requestOriginIsValid } from "../../shared/csrf.js";
 
 export function registerSetupRoutes(app: H3, deps: AdminDeps): void {
   app.get("/setup", async () => {
@@ -16,6 +17,7 @@ export function registerSetupRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.post("/setup", async (event) => {
+    if (!requestOriginIsValid(event)) return new Response("invalid request origin", { status: 403 });
     if (await deps.repo.isSetupComplete()) {
       return new Response(null, { status: 302, headers: { location: "/admin/" } });
     }

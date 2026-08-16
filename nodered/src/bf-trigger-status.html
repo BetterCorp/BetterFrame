@@ -32,7 +32,7 @@
   </div>
   <div class="form-tips">
     Fires on <code>kiosk.status</code> heartbeats with hardware telemetry.
-    Listens on <code>POST /in/kiosk.status</code> internally — no upstream
+    Listens on <code>POST /api/internal/kiosk.status</code> internally — no upstream
     <code>http in</code> node required.
     Emits <code>msg.payload = {kiosk_id, kiosk_name, cpu_temp_c, fan_rpm, fan_pwm}</code> for the selected tenant.
     Leave Kiosk ID blank to receive heartbeats from all kiosks.
@@ -42,7 +42,7 @@
 <script type="text/html" data-help-name="bf-trigger-status">
   <p>Pure telemetry stream from kiosk WS heartbeats — separate from the
   connect/disconnect envelope on <code>kiosk.changed</code>.</p>
-  <p>Listens on <code>POST /in/kiosk.status</code> internally — no upstream
+  <p>Listens on <code>POST /api/internal/kiosk.status</code> internally — no upstream
   <code>http in</code> node needed.</p>
   <p>Select a <b>BF</b> config to scope this trigger to one tenant.</p>
   <p>Optional <b>Kiosk ID</b> filter limits this node to a single kiosk.</p>

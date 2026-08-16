@@ -1,0 +1,11 @@
+[Unit]
+Description=Provision BetterFrame TPM-sealed storage key
+Before=betterframe-kiosk.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/betterframe-seal-key.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

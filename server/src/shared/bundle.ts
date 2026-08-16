@@ -10,6 +10,7 @@ import type { Repository } from "./db/repository.js";
 import type { SecretsApi } from "./secrets.js";
 import type { Camera, CameraStream } from "./types.js";
 import { parseRtspUri, stripRtspCredentials } from "./rtsp.js";
+import { createOnvifCallbackToken } from "./onvif-callback-token.js";
 
 function resolvePlaybackCredentials(
   cam: Camera,
@@ -50,6 +51,7 @@ export interface BundleCamera {
   playback_password_encrypted: string | null;
   event_source: string;
   event_sink: string;
+  event_callback_token: string;
   stream_policy: string;
   streams: Array<{
     id: string;
@@ -389,7 +391,17 @@ export async function generateBundle(
   // ONVIF event ownership: for "auto" cameras, first kiosk to fetch bundle
   // claims ownership in the bundle output so the kiosk knows to subscribe.
   // We do NOT persist this to the cameras table — the DB stays "auto".
+  const callbackTokens = new Map<string, string>();
   for (const cam of cameras) {
+    const callback = createOnvifCallbackToken(
+      secrets,
+      cam.id,
+      cam.event_callback_nonce ?? undefined,
+    );
+    if (cam.event_callback_nonce !== callback.nonce || cam.event_callback_token_hash !== callback.hash) {
+      await repo.setCameraEventCallbackToken(cam.id, callback.nonce, callback.hash);
+    }
+    callbackTokens.set(cam.id, callback.token);
     if (cam.type === "onvif" && cam.event_source === "auto") {
       cam.event_source = `kiosk:${kioskId}`;
     }
@@ -439,6 +451,7 @@ export async function generateBundle(
       playback_password_encrypted: playbackPwEncrypted,
       event_source: cam.event_source,
       event_sink: cam.event_sink,
+      event_callback_token: callbackTokens.get(cam.id)!,
       stream_policy: cam.stream_policy,
       streams: effectiveStreams.map((s) => ({
         id: s.id,

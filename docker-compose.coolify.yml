@@ -4,8 +4,8 @@
 #
 # Point Coolify resource at this file instead of docker-compose.yml.
 #
-# Server config is baked into the image at build time from
-# sec-config.template.yaml + Coolify build args (secrets).
+# Server config is rendered at container start from runtime environment and
+# secret-file variables.
 
 version: "3.8"
 
@@ -20,6 +20,14 @@ services:
     restart: unless-stopped
     environment:
       - TZ=UTC
+      - BF_PG_HOST=postgres
+      - BF_PG_PORT=5432
+      - BF_PG_DB=${BF_PG_DB:-betterframe}
+      - BF_PG_USER=${BF_PG_USER:-betterframe}
+      - BF_PG_PASSWORD=${BF_PG_PASSWORD:?set BF_PG_PASSWORD}
+      - BF_NODERED_URL=http://nodered:1880
+      - BF_SELF_URL=http://server:18080
+      - BF_NODERED_MANAGER_SECRET=${BF_NODERED_MANAGER_SECRET:?set BF_NODERED_MANAGER_SECRET to at least 32 characters}
     volumes:
       - betterframe-data:/var/lib/betterframe
     expose:
@@ -61,13 +69,16 @@ services:
     restart: unless-stopped
     environment:
       - TZ=UTC
+      - BF_NODERED_MANAGER_SECRET=${BF_NODERED_MANAGER_SECRET:?set BF_NODERED_MANAGER_SECRET to at least 32 characters}
+      - BF_NODERED_MAX_TENANTS=50
+      - BF_NODERED_TENANT_MEMORY_MB=${BF_NODERED_TENANT_MEMORY_MB:-256}
     volumes:
       - nrdata:/data
     expose:
       - "1880"
     healthcheck:
       # Node-RED root admin path returns 200 once the runtime is up.
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:1880/nrdp/ || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:1880/healthz || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -81,10 +92,10 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_USER=${BF_PG_USER:-betterframe}
-      - POSTGRES_PASSWORD=${BF_PG_PASSWORD:-betterframe}
+      - POSTGRES_PASSWORD=${BF_PG_PASSWORD:?set BF_PG_PASSWORD}
       - POSTGRES_DB=${BF_PG_DB:-betterframe}
     volumes:
-      - pgdata:/var/lib/postgresql
+      - pgdata:/var/lib/postgresql/data
     expose:
       - "5432"
     healthcheck:

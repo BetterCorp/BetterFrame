@@ -1,8 +1,7 @@
 # BSB runtime configuration — template for Docker builds.
 #
-# Placeholders (${VAR}) are replaced by envsubst during docker build.
-# Defaults come from Dockerfile ARG declarations, not from this file.
-# Set overrides via Coolify build args or docker build --build-arg.
+# Placeholders (${VAR}) are replaced by envsubst when the container starts.
+# Inject secrets with runtime environment variables or their `_FILE` variants.
 #
 # For native (non-Docker) installs, copy to sec-config.yaml and
 # replace ${VAR} placeholders with actual values.
@@ -45,7 +44,9 @@ default:
         noderedUrl: ${BF_NODERED_URL}
         selfUrl: ${BF_SELF_URL}
         systemdCredsDir: ""
-        firmwareSigningKey: "${BF_FIRMWARE_SIGNING_KEY}"
+        # Read from BF_FIRMWARE_SIGNING_KEY at runtime so multiline PEM is
+        # never interpolated into YAML.
+        firmwareSigningKey: ""
         firmwareImportApiKey: "${BF_FIRMWARE_IMPORT_API_KEY}"
         otaImportApiKey: "${BF_OTA_IMPORT_API_KEY}"
 

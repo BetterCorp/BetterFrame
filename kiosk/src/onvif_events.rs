@@ -42,6 +42,7 @@ static GENERATION: Mutex<Option<Arc<()>>> = Mutex::new(None);
 /// Subscription status per camera — reported in heartbeat for admin visibility.
 static STATUS: Mutex<Option<HashMap<String, SubStatus>>> = Mutex::new(None);
 static PUSH_RENEW_UNSUPPORTED: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+static CALLBACK_TOKENS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
 #[derive(Clone, serde::Serialize)]
 pub struct SubStatus {
@@ -58,7 +59,6 @@ fn iso_now() -> String {
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| String::from("1970-01-01T00:00:00Z"))
 }
-
 
 fn set_status(cam_id: &str, state: &'static str, error: Option<String>) {
     set_status_with_sink(cam_id, state, error, None);
@@ -133,7 +133,9 @@ pub fn needs_refresh() -> bool {
             return true;
         }
         if let Some(ref sub_at) = status.subscribed_at {
-            if let Ok(ts) = time::OffsetDateTime::parse(sub_at, &time::format_description::well_known::Rfc3339) {
+            if let Ok(ts) =
+                time::OffsetDateTime::parse(sub_at, &time::format_description::well_known::Rfc3339)
+            {
                 if (now - ts).whole_seconds() > 24 * 3600 {
                     return true;
                 }
@@ -146,6 +148,21 @@ pub fn needs_refresh() -> bool {
 /// Get current subscription statuses for all cameras. Used by heartbeat.
 pub fn get_statuses() -> HashMap<String, SubStatus> {
     STATUS.lock().unwrap().clone().unwrap_or_default()
+}
+
+pub fn callback_token_matches(camera_id: &str, candidate: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    let tokens = CALLBACK_TOKENS.lock().unwrap();
+    let Some(expected) = tokens.as_ref().and_then(|tokens| tokens.get(camera_id)) else {
+        return false;
+    };
+    let actual_hash = Sha256::digest(candidate.as_bytes());
+    let expected_hash = Sha256::digest(expected.as_bytes());
+    actual_hash
+        .iter()
+        .zip(expected_hash.iter())
+        .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+        == 0
 }
 
 /// Start event subscription workers for ONVIF cameras assigned to this kiosk.
@@ -176,6 +193,18 @@ pub fn start(
         })
         .cloned()
         .collect();
+
+    *CALLBACK_TOKENS.lock().unwrap() = Some(
+        onvif_cams
+            .iter()
+            .filter_map(|camera| {
+                camera
+                    .event_callback_token
+                    .clone()
+                    .map(|token| (camera.id.clone(), token))
+            })
+            .collect(),
+    );
 
     if onvif_cams.is_empty() {
         return;
@@ -374,17 +403,24 @@ fn run_subscription(
         let interfaces = read_local_interfaces();
         let (cb_url, sink_label) = if let Some(kiosk_ip) = is_same_subnet(host, &interfaces) {
             let url = format!(
-                "http://{}:{}/oce/{}/{}",
-                kiosk_ip, local_port, tenant_slug, cam.id
+                "http://{}:{}/oce/{}/{}/{}",
+                kiosk_ip,
+                local_port,
+                tenant_slug,
+                cam.id,
+                cam.event_callback_token.as_deref().unwrap_or("")
             );
-            info!("onvif-events: cam {} same subnet, callback={url}", cam.id);
+            info!("onvif-events: cam {} using kiosk push callback", cam.id);
             (url, "push:kiosk")
         } else {
-            let url = format!("{}/oce/{}/{}", server, tenant_slug, cam.id);
-            info!(
-                "onvif-events: cam {} different subnet, server callback={url}",
-                cam.id
+            let url = format!(
+                "{}/oce/{}/{}/{}",
+                server,
+                tenant_slug,
+                cam.id,
+                cam.event_callback_token.as_deref().unwrap_or("")
             );
+            info!("onvif-events: cam {} using server push callback", cam.id);
             (url, "push:server")
         };
         Some((cb_url, sink_label))
@@ -407,7 +443,7 @@ fn run_subscription(
             );
         } else if let Some((ref cb_url, sink_label)) = callback_url {
             info!(
-                "onvif-events: cam {} trying push subscription, callback={cb_url}",
+                "onvif-events: cam {} trying {sink_label} subscription",
                 cam.id
             );
             match create_push_subscription(&event_url, cb_url, user, pass) {
@@ -661,7 +697,13 @@ fn soap_post_body(
     Ok((status, text, challenge))
 }
 
-fn soap_error(kind: &str, url: &str, action: &str, status: reqwest::StatusCode, text: &str) -> String {
+fn soap_error(
+    kind: &str,
+    url: &str,
+    action: &str,
+    status: reqwest::StatusCode,
+    text: &str,
+) -> String {
     let fault = extract_soap_fault(text);
     let preview = sanitized_xml_preview(text, 900);
     let action_tail = action.rsplit('/').next().unwrap_or(action);
@@ -691,7 +733,10 @@ fn redact_tag(input: &str, tag: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
     loop {
-        let Some(start_rel) = rest.find(&format!(":{tag}>")).or_else(|| rest.find(&format!("<{tag}>"))) else {
+        let Some(start_rel) = rest
+            .find(&format!(":{tag}>"))
+            .or_else(|| rest.find(&format!("<{tag}>")))
+        else {
             out.push_str(rest);
             break;
         };
@@ -1327,8 +1372,8 @@ pub fn decrypt_cluster_public(ciphertext: &str, key: &str) -> Option<String> {
 
 fn decrypt_cluster(ciphertext: &str, cluster_key_b64u: &str) -> Option<String> {
     use aes_gcm::{
-        aead::{Aead, KeyInit},
         Aes256Gcm, Key, Nonce,
+        aead::{Aead, KeyInit},
     };
     use base64::Engine;
 

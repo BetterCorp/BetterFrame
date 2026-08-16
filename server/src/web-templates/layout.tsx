@@ -148,7 +148,10 @@ export function Layout(props: PageProps) {
           <main class="content">{props.children}</main>
           {!props.minimal && (
             <footer class="app-footer">
-              <span>Copyright BetterCorp (PTY) Ltd 2016 - 2026 - All Rights Reserved</span>
+              <span>
+                Copyright BetterCorp (PTY) Ltd 2016 - 2026 · {" "}
+                <a href="https://github.com/BetterCorp/BetterFrame">Source</a> · AGPL-3.0 or commercial
+              </span>
               <span>Server: <code>{version}</code></span>
             </footer>
           )}

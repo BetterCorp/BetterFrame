@@ -5,31 +5,43 @@ use std::process::{Child, Command};
 use std::ptr::{null, null_mut};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
 
 use futures_util::{SinkExt, StreamExt};
+use gstreamer::prelude::*;
+use gstreamer_video::prelude::*;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{info, warn};
-use windows_sys::Win32::Foundation::{BOOL, COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{
+    BOOL, COLORREF, HWND, LPARAM, LRESULT, LocalFree, RECT, WPARAM,
+};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreatePen, CreateSolidBrush, DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_TOP, DT_VCENTER,
     DeleteObject, DrawTextW, EndPaint, EnumDisplayMonitors, FillRect, GetMonitorInfoW, HBRUSH, HDC,
     InvalidateRect, LineTo, MONITORINFOEXW, MoveToEx, PAINTSTRUCT, PS_SOLID, SelectObject,
     SetBkMode, SetTextColor, UpdateWindow,
 };
+use windows_sys::Win32::Security::Cryptography::{
+    CRYPT_INTEGER_BLOB, CRYPTPROTECT_LOCAL_MACHINE, CryptProtectData, CryptUnprotectData,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-    GetMessageW, GetSystemMetrics, HMENU, HWND_BROADCAST, MSG, PostQuitMessage, RegisterClassW,
-    SC_MONITORPOWER, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWMAXIMIZED, SendMessageW, ShowWindow,
-    TranslateMessage, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT,
-    WM_SYSCOMMAND, WNDCLASSW, WS_EX_TOPMOST, WS_POPUP,
+    GetClientRect, GetMessageW, GetSystemMetrics, HMENU, HWND_BROADCAST, MSG, PostQuitMessage,
+    RegisterClassW, SC_MONITORPOWER, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWMAXIMIZED, SendMessageW,
+    ShowWindow, TranslateMessage, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_PAINT, WM_SYSCOMMAND, WNDCLASSW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 const DEFAULT_SERVER_URL: &str = "http://localhost";
 const AGENT_TASK_NAME: &str = "BetterFrameWindowsAgent";
 const APP_TASK_NAME: &str = "BetterFrameWindowsApp";
+const PROTECTED_MAGIC: &[u8; 4] = b"BFW1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WindowsPolicy {
@@ -95,6 +107,8 @@ impl Default for WindowsDisplayPolicy {
 struct ClientState {
     server_url: String,
     kiosk_key: Option<String>,
+    #[serde(default)]
+    encrypt_key: Option<String>,
     kiosk_id: Option<String>,
     kiosk_name: Option<String>,
     bundle_version: Option<String>,
@@ -117,6 +131,7 @@ struct PairClaimResponse {
     kiosk_id: Option<serde_json::Value>,
     kiosk_name: Option<String>,
     kiosk_key: Option<String>,
+    encrypt_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +150,8 @@ struct KioskBundle {
     kiosk_id: String,
     kiosk_name: String,
     displays: Vec<BundleDisplay>,
+    #[serde(default)]
+    cameras: Vec<BundleCamera>,
     version: String,
 }
 
@@ -165,10 +182,29 @@ struct BundleCell {
     col_span: u32,
     content_type: String,
     camera_id: Option<String>,
+    stream_selector: Option<String>,
     web_url: Option<String>,
     html_content: Option<String>,
     #[serde(default)]
     input_options: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BundleCamera {
+    id: String,
+    name: String,
+    #[serde(default)]
+    playback_username: Option<String>,
+    #[serde(default)]
+    playback_password_encrypted: Option<String>,
+    #[serde(default)]
+    streams: Vec<BundleStream>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BundleStream {
+    role: String,
+    rtsp_uri: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,6 +234,13 @@ struct MouseDown {
 }
 
 static WINDOWS: OnceLock<Mutex<HashMap<isize, WindowState>>> = OnceLock::new();
+
+struct CameraPipeline {
+    pipeline: gstreamer::Pipeline,
+    overlay: gstreamer_video::VideoOverlay,
+}
+
+static CAMERA_PIPELINES: OnceLock<Mutex<HashMap<String, CameraPipeline>>> = OnceLock::new();
 
 #[derive(Debug)]
 enum AgentCommand {
@@ -386,7 +429,7 @@ async fn pair(server_url: &str) -> Result<ClientState, String> {
             "proposed_name": hostname::get().ok().and_then(|h| h.into_string().ok()).unwrap_or_else(|| "Windows Kiosk".to_string()),
             "hardware_model": "Windows Desktop",
             "firmware_target": "windows-x64",
-            "capabilities": ["windows", "desktop_app", "mouse", "keyboard", "app_restart", "display_select"],
+            "capabilities": ["windows", "desktop_app", "rtsp", "d3d11", "mouse", "keyboard", "app_restart", "display_select"],
             "managed_image": false
         }))
         .send()
@@ -415,6 +458,7 @@ async fn pair(server_url: &str) -> Result<ClientState, String> {
                 return Ok(ClientState {
                     server_url: server_url.to_string(),
                     kiosk_key: claim.kiosk_key,
+                    encrypt_key: claim.encrypt_key,
                     kiosk_id: claim.kiosk_id.map(flexible_id),
                     kiosk_name: claim.kiosk_name,
                     bundle_version: None,
@@ -706,6 +750,7 @@ fn restart_app(slot: &Arc<Mutex<Option<Child>>>) -> Result<(), String> {
 }
 
 fn run_app() -> Result<(), String> {
+    gstreamer::init().map_err(|error| format!("GStreamer initialization failed: {error}"))?;
     let policy = load_policy();
     let displays = query_native_displays();
     let targets: Vec<NativeDisplay> = displays
@@ -847,6 +892,7 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_DESTROY => {
+            remove_camera_pipelines(hwnd);
             unsafe { PostQuitMessage(0) };
             0
         }
@@ -868,7 +914,9 @@ fn paint_window(hwnd: HWND) {
             .get()
             .and_then(|w| w.lock().unwrap().get(&hwnd).map(|st| st.display_id.clone()))
         {
-            paint_layout(hdc, ps.rcPaint, &display_id);
+            let mut client_rect = std::mem::zeroed();
+            GetClientRect(hwnd, &mut client_rect);
+            paint_layout(hwnd, hdc, client_rect, &display_id);
         } else {
             draw_centered(hdc, ps.rcPaint, "BetterFrame Windows Kiosk");
         }
@@ -876,7 +924,7 @@ fn paint_window(hwnd: HWND) {
     }
 }
 
-fn paint_layout(hdc: HDC, rect: RECT, display_id: &str) {
+fn paint_layout(hwnd: HWND, hdc: HDC, rect: RECT, display_id: &str) {
     let state = load_state();
     let bundle = load_bundle();
     let Some((display, layout)) = active_layout_for_display(bundle.as_ref(), &state, display_id)
@@ -912,6 +960,7 @@ fn paint_layout(hdc: HDC, rect: RECT, display_id: &str) {
         SelectObject(hdc, old_pen);
         DeleteObject(pen as _);
     }
+    sync_camera_pipelines(hwnd, rect, layout, &bundle, state.encrypt_key.as_deref());
 }
 
 fn query_displays() -> Vec<DisplayReport> {
@@ -1028,18 +1077,27 @@ fn handle_pointer_event(display_id: &str, x: i32, y: i32, kind: &str) {
     else {
         return;
     };
-    let native = query_native_displays()
-        .into_iter()
-        .find(|d| {
-            d.report.index
-                == bundle
-                    .displays
-                    .iter()
-                    .position(|bd| bd.id == display.id)
-                    .unwrap_or(0)
+    let width = WINDOWS
+        .get()
+        .and_then(|windows| windows.lock().ok())
+        .and_then(|windows| {
+            windows
+                .iter()
+                .find(|(_, value)| value.display_id == display_id)
+                .map(|(hwnd, _)| *hwnd)
         })
-        .unwrap_or_else(primary_native_display);
-    let Some(cell) = cell_at_point(layout, native.rect, x, y) else {
+        .map(|hwnd| {
+            let mut rect = unsafe { std::mem::zeroed() };
+            unsafe { GetClientRect(hwnd, &mut rect) };
+            rect
+        })
+        .unwrap_or(RECT {
+            left: 0,
+            top: 0,
+            right: 1,
+            bottom: 1,
+        });
+    let Some(cell) = cell_at_point(layout, width, x, y) else {
         return;
     };
     if let Some((action, params)) = configured_cell_action(cell, kind) {
@@ -1115,6 +1173,223 @@ fn report_interaction_event(
             .timeout(Duration::from_secs(5))
             .send();
     });
+}
+
+fn sync_camera_pipelines(
+    hwnd: HWND,
+    canvas: RECT,
+    layout: &BundleLayout,
+    bundle: &KioskBundle,
+    encrypt_key: Option<&str>,
+) {
+    let registry = CAMERA_PIPELINES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut pipelines = registry.lock().unwrap();
+    let prefix = format!("{hwnd}:");
+    let mut wanted = std::collections::HashSet::new();
+    let camera_cells = layout
+        .cells
+        .iter()
+        .filter(|cell| cell.content_type == "camera")
+        .count();
+
+    for (index, cell) in layout.cells.iter().enumerate() {
+        if cell.content_type != "camera" {
+            continue;
+        }
+        let Some(camera_id) = cell.camera_id.as_deref() else {
+            continue;
+        };
+        let Some(camera) = bundle.cameras.iter().find(|camera| camera.id == camera_id) else {
+            continue;
+        };
+        let view_key = cell.view_id.clone().unwrap_or_else(|| index.to_string());
+        let key = format!("{prefix}{}:{view_key}:{}", layout.id, bundle.version);
+        wanted.insert(key.clone());
+        let target = cell_rect(
+            canvas,
+            layout.grid_cols.max(1) as i32,
+            layout.grid_rows.max(1) as i32,
+            cell,
+        );
+        if let Some(existing) = pipelines.get(&key) {
+            let _ = existing.overlay.set_render_rectangle(
+                target.left,
+                target.top,
+                (target.right - target.left).max(1),
+                (target.bottom - target.top).max(1),
+            );
+            continue;
+        }
+
+        let requested = cell.stream_selector.as_deref().unwrap_or("auto");
+        let role = if requested == "auto" {
+            if camera_cells > 4 { "sub" } else { "main" }
+        } else {
+            requested
+        };
+        let Some(stream) = camera
+            .streams
+            .iter()
+            .find(|stream| stream.role == role)
+            .or_else(|| camera.streams.iter().find(|stream| stream.role == "main"))
+            .or_else(|| camera.streams.first())
+        else {
+            continue;
+        };
+        let password = camera
+            .playback_password_encrypted
+            .as_deref()
+            .and_then(|ciphertext| {
+                encrypt_key.and_then(|key| decrypt_camera_password(ciphertext, key))
+            });
+        match create_windows_camera_pipeline(
+            hwnd,
+            &stream.rtsp_uri,
+            camera.playback_username.as_deref(),
+            password.as_deref(),
+            target,
+        ) {
+            Ok(pipeline) => {
+                pipelines.insert(key, pipeline);
+            }
+            Err(error) => warn!("camera {} playback failed: {error}", camera.name),
+        }
+    }
+
+    pipelines.retain(|key, pipeline| {
+        let keep = !key.starts_with(&prefix) || wanted.contains(key);
+        if !keep {
+            let _ = pipeline.pipeline.set_state(gstreamer::State::Null);
+        }
+        keep
+    });
+}
+
+fn create_windows_camera_pipeline(
+    hwnd: HWND,
+    uri: &str,
+    username: Option<&str>,
+    password: Option<&str>,
+    target: RECT,
+) -> Result<CameraPipeline, String> {
+    let pipeline = gstreamer::Pipeline::new();
+    let mut source_builder = gstreamer::ElementFactory::make("rtspsrc")
+        .property("location", uri)
+        .property("latency", 300u32)
+        .property_from_str("protocols", "tcp");
+    if let Some(username) = username.filter(|value| !value.is_empty()) {
+        source_builder = source_builder.property("user-id", username);
+    }
+    if let Some(password) = password.filter(|value| !value.is_empty()) {
+        source_builder = source_builder.property("user-pw", password);
+    }
+    let source = source_builder.build().map_err(|error| error.to_string())?;
+    let decode = gstreamer::ElementFactory::make("decodebin")
+        .build()
+        .map_err(|error| error.to_string())?;
+    let sink = gstreamer::ElementFactory::make("d3d11videosink")
+        .property("sync", false)
+        .build()
+        .map_err(|_| {
+            "d3d11videosink is unavailable; install the GStreamer MSVC runtime".to_string()
+        })?;
+    pipeline
+        .add_many([&source, &decode, &sink])
+        .map_err(|error| error.to_string())?;
+
+    let decode_weak = decode.downgrade();
+    source.connect_pad_added(move |_, pad| {
+        let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+        if !caps.to_string().contains("media=(string)video") {
+            return;
+        }
+        let Some(decode) = decode_weak.upgrade() else {
+            return;
+        };
+        if let Some(target) = decode.static_pad("sink") {
+            if !target.is_linked() {
+                let _ = pad.link(&target);
+            }
+        }
+    });
+    let sink_weak = sink.downgrade();
+    decode.connect_pad_added(move |_, pad| {
+        let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+        if !caps
+            .structure(0)
+            .map(|value| value.name().starts_with("video/"))
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let Some(sink) = sink_weak.upgrade() else {
+            return;
+        };
+        if let Some(target) = sink.static_pad("sink") {
+            if !target.is_linked() {
+                let _ = pad.link(&target);
+            }
+        }
+    });
+
+    let overlay = sink
+        .dynamic_cast::<gstreamer_video::VideoOverlay>()
+        .map_err(|_| "D3D11 sink does not support video overlay".to_string())?;
+    unsafe { overlay.set_window_handle(hwnd as usize) };
+    overlay
+        .set_render_rectangle(
+            target.left,
+            target.top,
+            (target.right - target.left).max(1),
+            (target.bottom - target.top).max(1),
+        )
+        .map_err(|error| error.to_string())?;
+    pipeline
+        .set_state(gstreamer::State::Playing)
+        .map_err(|error| format!("start pipeline: {error:?}"))?;
+    Ok(CameraPipeline { pipeline, overlay })
+}
+
+fn remove_camera_pipelines(hwnd: HWND) {
+    let Some(registry) = CAMERA_PIPELINES.get() else {
+        return;
+    };
+    let prefix = format!("{hwnd}:");
+    registry.lock().unwrap().retain(|key, pipeline| {
+        if !key.starts_with(&prefix) {
+            return true;
+        }
+        let _ = pipeline.pipeline.set_state(gstreamer::State::Null);
+        false
+    });
+}
+
+fn decrypt_camera_password(ciphertext: &str, key: &str) -> Option<String> {
+    use aes_gcm::{
+        Aes256Gcm, Key, Nonce,
+        aead::{Aead, KeyInit},
+    };
+    use base64::Engine;
+    let parts: Vec<_> = ciphertext.split('.').collect();
+    if parts.len() != 4 || parts[0] != "v1" {
+        return None;
+    }
+    let codec = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let iv = codec.decode(parts[1]).ok()?;
+    let tag = codec.decode(parts[2]).ok()?;
+    let mut encrypted = codec.decode(parts[3]).ok()?;
+    let key = codec.decode(key).ok()?;
+    if iv.len() != 12 || tag.len() != 16 || key.len() != 32 {
+        return None;
+    }
+    encrypted.extend_from_slice(&tag);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+    String::from_utf8(
+        cipher
+            .decrypt(Nonce::from_slice(&iv), encrypted.as_ref())
+            .ok()?,
+    )
+    .ok()
 }
 
 fn query_native_displays() -> Vec<NativeDisplay> {
@@ -1356,9 +1631,9 @@ fn policy_path() -> PathBuf {
 }
 
 fn load_state() -> ClientState {
-    fs::read_to_string(state_path())
+    read_protected_or_plain(&state_path())
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_else(|| ClientState {
             server_url: DEFAULT_SERVER_URL.to_string(),
             ..ClientState::default()
@@ -1367,19 +1642,104 @@ fn load_state() -> ClientState {
 
 fn save_state(state: &ClientState) -> Result<(), String> {
     fs::create_dir_all(state_dir()).map_err(|e| format!("create state dir: {e}"))?;
-    fs::write(state_path(), serde_json::to_vec_pretty(state).unwrap())
-        .map_err(|e| format!("write state: {e}"))
+    write_protected(&state_path(), &serde_json::to_vec(state).unwrap())
 }
 
 fn load_bundle() -> Option<KioskBundle> {
-    fs::read_to_string(bundle_path())
+    read_protected_or_plain(&bundle_path())
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
 fn save_bundle(bundle: &KioskBundle) -> Result<(), String> {
-    fs::write(bundle_path(), serde_json::to_vec_pretty(bundle).unwrap())
-        .map_err(|e| format!("write bundle: {e}"))
+    write_protected(&bundle_path(), &serde_json::to_vec(bundle).unwrap())
+}
+
+fn protect_machine(plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: plaintext.len().try_into().map_err(|_| "state too large")?,
+        pbData: plaintext.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: null_mut(),
+    };
+    let ok = unsafe {
+        CryptProtectData(
+            &input,
+            null(),
+            null(),
+            null(),
+            null(),
+            CRYPTPROTECT_LOCAL_MACHINE,
+            &mut output,
+        )
+    };
+    if ok == 0 {
+        return Err("CryptProtectData failed".to_string());
+    }
+    let protected =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    unsafe { LocalFree(output.pbData as _) };
+    let mut result = Vec::with_capacity(PROTECTED_MAGIC.len() + protected.len());
+    result.extend_from_slice(PROTECTED_MAGIC);
+    result.extend_from_slice(&protected);
+    Ok(result)
+}
+
+fn unprotect_machine(protected: &[u8]) -> Result<Vec<u8>, String> {
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: protected.len().try_into().map_err(|_| "state too large")?,
+        pbData: protected.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: null_mut(),
+    };
+    let ok =
+        unsafe { CryptUnprotectData(&input, null_mut(), null(), null(), null(), 0, &mut output) };
+    if ok == 0 {
+        return Err("CryptUnprotectData failed".to_string());
+    }
+    let plaintext =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    unsafe { LocalFree(output.pbData as _) };
+    Ok(plaintext)
+}
+
+fn read_protected_or_plain(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let bytes = fs::read(path).map_err(|error| format!("read state: {error}"))?;
+    if bytes.starts_with(PROTECTED_MAGIC) {
+        unprotect_machine(&bytes[PROTECTED_MAGIC.len()..])
+    } else {
+        Ok(bytes)
+    }
+}
+
+fn write_protected(path: &std::path::Path, plaintext: &[u8]) -> Result<(), String> {
+    let bytes = protect_machine(plaintext)?;
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, bytes).map_err(|error| format!("write protected state: {error}"))?;
+    let from = wide_path(temporary.as_os_str());
+    let to = wide_path(path.as_os_str());
+    if unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        return Err(format!(
+            "commit protected state: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+fn wide_path(value: &OsStr) -> Vec<u16> {
+    value.encode_wide().chain(std::iter::once(0)).collect()
 }
 
 fn ensure_default_policy() -> Result<(), String> {

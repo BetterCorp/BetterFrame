@@ -6,7 +6,7 @@
  */
 
 export type UserRole = "admin" | "operator";
-export type ApiKeyScope = "read" | "control" | "admin";
+export type ApiKeyScope = "read" | "control" | "admin" | "debug";
 export type CameraType = "rtsp" | "onvif" | "cloud";
 export type StreamRole = "main" | "sub" | "other";
 export type StreamSelector = "auto" | "main" | "sub";
@@ -259,6 +259,8 @@ export interface Camera {
   cloud_vendor_camera_id: string | null;
   cloud_stream_url: string | null;
   cloud_stream_type: string | null;
+  event_callback_nonce: string | null;
+  event_callback_token_hash: string | null;
 }
 
 export interface CameraStream {
@@ -364,6 +366,7 @@ export interface Kiosk {
   display_id: string | null; // deprecated — displays now point to kiosks via kiosk_id
   cpu_temp_c: number | null;
   cpu_load_percent: number | null;
+  gpu_load_percent: number | null;
   fan_rpm: number | null;
   fan_pwm: number | null;
   memory_total_mb: number | null;
@@ -381,6 +384,7 @@ export interface Kiosk {
   os_update_last_attempt_at: string | null;
   os_update_last_attempt_version: string | null;
   os_update_last_error: string | null;
+  os_update_state: "installed" | "pending_reboot" | "confirmed" | "rolled_back" | "failed";
   audio_default_volume_percent: number;
   local_key: string | null;
   local_port: number | null;
@@ -393,6 +397,7 @@ export interface Kiosk {
   reported_hostname: string | null;
   network_interfaces_json: string | null;
   logging_json: string | null;
+  renderer_telemetry_json: string | null;
   // Managed-image device config. Only meaningful when managed_image=true; for
   // BYO-OS kiosks these fields stay at defaults and the admin UI hides them.
   managed_image: boolean;

@@ -1,0 +1,15 @@
+[update]
+compatible=@COMPATIBILITY@
+version=@VERSION@
+description=BetterFrame OS @VERSION@
+build=@GIT_SHA@
+
+[bundle]
+format=plain
+
+[hooks]
+filename=hook.sh
+
+[image.rootfs]
+filename=rootfs.ext4
+hooks=post-install

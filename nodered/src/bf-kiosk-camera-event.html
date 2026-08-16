@@ -33,7 +33,7 @@
   <div class="form-tips">
     Fires on kiosk-forwarded camera events (ONVIF motion, line crossing, GPIO pulses
     tagged to a camera, etc.).
-    Listens on <code>POST /in/camera.event</code> internally — no upstream
+    Listens on <code>POST /api/internal/camera.event</code> internally — no upstream
     <code>http in</code> node required.
     Emits <code>msg = {topic, kiosk_id, camera_id, source_type, payload}</code> for the selected tenant.
     Leave Camera ID blank to receive events from all cameras.
@@ -42,7 +42,7 @@
 
 <script type="text/html" data-help-name="bf-kiosk-camera-event">
   <p>Fires on kiosk-originated camera events that the BetterFrame server has
-  authenticated and forwarded. Listens on <code>POST /in/camera.event</code>
+  authenticated and forwarded. Listens on <code>POST /api/internal/camera.event</code>
   internally — no upstream <code>http in</code> node needed.</p>
   <p>Select a <b>BF</b> config to scope this trigger to one tenant.</p>
   <p>Optional <b>Camera ID</b> filter limits this node to a single camera.

@@ -50,17 +50,17 @@ Every BetterFrame trigger node now requires selecting a `bf-server-config`.
 The trigger only emits events whose `tenant_slug` matches that config.
 
 The BetterFrame server's `nodered-bridge.forward(topic, payload)` posts
-events directly to `http://<nodered-host>:1880/in/<topic>`. Each trigger
+events to the authenticated tenant runtime at `/api/internal/<topic>`. Each trigger
 node listens on its own fixed topic:
 
 | Node | Internal route |
 | --- | --- |
-| `bf-trigger-display-power` | `POST /in/display.power.changed` |
-| `bf-trigger-layout-changed` | `POST /in/layout.changed` |
-| `bf-trigger-kiosk-changed` | `POST /in/kiosk.changed` |
-| `bf-trigger-camera-changed` | `POST /in/camera.changed` |
-| `bf-trigger-status` | `POST /in/kiosk.status` |
-| `bf-kiosk-camera-event` | `POST /in/camera.event` |
+| `bf-trigger-display-power` | `POST /api/internal/display.power.changed` |
+| `bf-trigger-layout-changed` | `POST /api/internal/layout.changed` |
+| `bf-trigger-kiosk-changed` | `POST /api/internal/kiosk.changed` |
+| `bf-trigger-camera-changed` | `POST /api/internal/camera.changed` |
+| `bf-trigger-status` | `POST /api/internal/kiosk.status` |
+| `bf-kiosk-camera-event` | `POST /api/internal/camera.event` |
 
 The server emits these topics from coordinator-ws (kiosk WS lifecycle) and
 the admin routes (layout/power/camera mutations). Multiple instances of the
@@ -69,7 +69,7 @@ handlers in registration order.
 
 If the Angie proxy fronts Node-RED, the otherwise-unmatched root paths
 (public HTTP-in URLs) and the `/in/kiosk/<topic>` (kiosk-key gated) /
-`/in/public/<topic>` (public, rate-limited) routes are still available
+`/in/public/<tenant-slug>/<topic>` (public, rate-limited) routes are still available
 for user-authored flows that use stock `http in` nodes — those layers
 strip the prefix before proxying. The trigger nodes' fixed
 `/in/<topic>` routes are reserved for internal server-to-Node-RED

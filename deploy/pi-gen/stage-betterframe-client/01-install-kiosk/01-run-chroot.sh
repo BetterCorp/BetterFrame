@@ -60,6 +60,10 @@ cat > /etc/sudoers.d/betterframe-managed-config <<'SUDOERS'
 bfkiosk ALL=(root) NOPASSWD: /usr/local/sbin/betterframe-apply-managed-config.sh *
 SUDOERS
 chmod 440 /etc/sudoers.d/betterframe-managed-config
+cat > /etc/sudoers.d/betterframe-reboot <<'SUDOERS'
+bfkiosk ALL=(root) NOPASSWD: /usr/sbin/reboot 0 tryboot, /usr/bin/systemctl reboot
+SUDOERS
+chmod 440 /etc/sudoers.d/betterframe-reboot
 install -d -m 755 /etc/tmpfiles.d
 install -m 644 /tmp/bf-files/betterframe-kiosk.conf /etc/tmpfiles.d/betterframe-kiosk.conf
 install -d -m 755 /etc/udev/rules.d
@@ -104,14 +108,12 @@ cat > /etc/default/betterframe-kiosk <<'EOF'
 # → frame-eu.betterportal.net):
 # BETTERFRAME_SERVER=https://frame.example.com
 
-# Enable kiosk-app OTA. This image is curated and signed by us — fresh dev
-# builds auto-deploy once they land in the BF server (via the build workflow's
-# auto-import step). Set to 0 to pin a kiosk to its current binary.
-BF_ENABLE_APP_OTA=1
+# Legacy app-only OTA stays off on A/B images. Use signed full-OS bundles so
+# the runtime and its system libraries roll back together.
+BF_ENABLE_APP_OTA=0
 
 # Enable full-OS RAUC OTA. The image ships with A/B partitions + rauc
-# preinstalled. Set to 0 to pin OS version manually (kiosk-app updates
-# still flow via BF_ENABLE_APP_OTA).
+# preinstalled. Set to 0 to pin OS version manually.
 BF_ENABLE_OS_OTA=1
 
 # Enable ONVIF event subscriptions: kiosk subscribes to PullPoint on
@@ -121,9 +123,8 @@ BF_ENABLE_OS_OTA=1
 BF_ENABLE_ONVIF_EVENTS=1
 
 # Firmware channel for this image. Controls terminal access (dev only)
-# and which update channel the kiosk polls. Change to "stable" or "beta"
-# for production deployments.
-BF_FIRMWARE_CHANNEL=dev
+# and which update channel the kiosk polls. Release CI fills this value.
+BF_FIRMWARE_CHANNEL=@CHANNEL@
 EOF
 
 # Plymouth boot splash

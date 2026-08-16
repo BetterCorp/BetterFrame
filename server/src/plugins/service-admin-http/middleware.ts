@@ -13,6 +13,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { type H3, getCookie, getRequestPath } from "h3";
 import type { AdminDeps } from "./index.js";
 import type { User, Session, Tenant } from "../../shared/types.js";
+import { csrfRequestIsValid } from "../../shared/csrf.js";
 
 declare module "h3" {
   interface H3EventContext {
@@ -22,6 +23,8 @@ declare module "h3" {
     obs?: import("@bsb/base").Observable;
     /** Current tenant (PG multi-tenant mode). Undefined for SQLite. */
     tenant?: Tenant;
+    /** Tenant that issued the authenticated session. */
+    originTenant?: Tenant;
     tenantHeaderError?: "unknown tenant" | "inactive tenant";
   }
 }
@@ -51,45 +54,49 @@ function tokenMatchesExpected(token: string, expected: string | undefined): bool
   return timingSafeEqual(a, b);
 }
 
-async function resolveSessionAcrossTenants(
-  cookie: string,
-  deps: AdminDeps,
-): Promise<{ user: User; session: Session } | null> {
-  if (deps.repo.adapter.dialect() !== "postgres") {
-    return deps.auth.resolveSession(cookie);
-  }
+const OPERATOR_MUTATIONS = [
+  /^\/admin\/displays\/[^/]+\/layout(?:\/[^/]+)?$/,
+  /^\/admin\/displays\/[^/]+\/power\/(?:standby|wake)$/,
+  /^\/admin\/kiosks\/[^/]+\/power\/(?:standby|wake)$/,
+  /^\/admin\/kiosks\/[^/]+\/volume$/,
+  /^\/admin\/account\/(?:password|totp\/(?:begin|confirm|disable))$/,
+];
 
-  const tenants = await deps.repo.listTenants();
-  const schemas = tenants
-    .filter((tenant) => tenant.is_active)
-    .map((tenant) => tenant.schema_name);
-  if (!schemas.includes("public")) schemas.unshift("public");
+const OPERATOR_READS = [
+  /^\/admin\/?$/,
+  /^\/admin\/account$/,
+  /^\/admin\/(?:cameras|displays|entities|health|iobox|kiosks|labels|layouts)(?:\/.*)?$/,
+  /^\/api\/admin\/(?:_check|cameras|displays|entities|kiosks|layouts)(?:\/.*)?$/,
+];
 
-  for (const schema of schemas) {
-    await deps.repo.adapter.setSearchPath(schema);
-    const resolved = await deps.auth.resolveSession(cookie);
-    if (resolved) return resolved;
-  }
-  return null;
+function isUnsafeMethod(method: string): boolean {
+  return !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase());
+}
+
+export function operatorMayAccess(path: string, method: string): boolean {
+  if (/\/kiosks\/[^/]+\/(?:logs|terminal)$/.test(path)) return false;
+  const patterns = isUnsafeMethod(method) ? OPERATOR_MUTATIONS : OPERATOR_READS;
+  return patterns.some((pattern) => pattern.test(path));
 }
 
 export function registerMiddleware(app: H3, deps: AdminDeps): void {
   // Tenant resolution middleware — sets search_path for PG multi-tenant.
   // Runs before auth so that DB queries in auth resolution use the right schema.
-  app.use(async (event) => {
-    if (deps.repo.adapter.dialect() !== "postgres") return;
+  app.use(async (event, next) => {
+    if (deps.repo.adapter.dialect() !== "postgres") return next();
 
     const path = getRequestPath(event);
     // Skip tenant resolution for paths that don't query tenant-scoped data.
-    if (path.startsWith("/static/") || path === "/healthz" || path === "/readyz" || path === "/version") return;
+    if (path.startsWith("/static/") || path === "/healthz" || path === "/readyz" || path === "/version") return next();
 
+    let schema = "public";
     const headerSlug = (event.req.headers.get("x-betterframe-tenant") ?? "").trim().toLowerCase();
     if (headerSlug) {
       const tenant = await deps.repo.getTenantBySlug(headerSlug);
       if (tenant?.is_active) {
         event.context.tenant = tenant;
-        await deps.repo.adapter.setSearchPath(tenant.schema_name);
-        return;
+        schema = tenant.schema_name;
+        return deps.repo.adapter.withSearchPath(schema, next);
       }
       event.context.tenantHeaderError = tenant ? "inactive tenant" : "unknown tenant";
     }
@@ -98,15 +105,15 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
     const tenant = await deps.repo.getTenantBySlug(tenantSlug);
     if (tenant && tenant.is_active) {
       event.context.tenant = tenant;
-      await deps.repo.adapter.setSearchPath(tenant.schema_name);
+      schema = tenant.schema_name;
     } else {
       const defaultTenant = await deps.repo.getTenantBySlug("default");
       if (defaultTenant) {
         event.context.tenant = defaultTenant;
+        schema = defaultTenant.schema_name;
       }
-      // Reset to public if we had a bad cookie.
-      await deps.repo.adapter.setSearchPath("public");
     }
+    return deps.repo.adapter.withSearchPath(schema, next);
   });
 
   app.use(async (event) => {
@@ -118,7 +125,6 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
       path === "/healthz" ||
       path === "/readyz" ||
       path === "/version" ||
-      path === "/api/admin/_check" ||
       path === "/"
     ) {
       return;
@@ -168,18 +174,32 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
       if (!cookie) {
         return new Response(null, { status: 302, headers: { location: "/auth/login" } });
       }
-      const resolved = await resolveSessionAcrossTenants(cookie, deps);
-      if (event.context.tenant) {
-        await deps.repo.adapter.setSearchPath(event.context.tenant.schema_name);
-      }
+      const requestedTenant = event.context.tenant;
+      const resolved = await deps.auth.resolveSession(cookie);
       if (!resolved) {
         return new Response(null, { status: 302, headers: { location: "/auth/login" } });
       }
       if (resolved.session.totp_pending) {
         return new Response(null, { status: 302, headers: { location: "/auth/totp" } });
       }
+      const platformAdmin = resolved.user.role === "admin" && resolved.tenant.slug === "default";
+      const targetTenant = requestedTenant ?? resolved.tenant;
+      if (targetTenant.id !== resolved.tenant.id && !platformAdmin) {
+        return new Response("tenant access denied", { status: 403 });
+      }
+      if (path.startsWith("/admin/tenants") && !platformAdmin) {
+        return new Response("platform administrator required", { status: 403 });
+      }
+      if (resolved.user.role === "operator" && !operatorMayAccess(path, event.req.method)) {
+        return new Response("administrator required", { status: 403 });
+      }
+      if (isUnsafeMethod(event.req.method) && !csrfRequestIsValid(event, resolved.session)) {
+        return new Response("invalid CSRF token", { status: 403 });
+      }
       event.context.user = resolved.user;
       event.context.session = resolved.session;
+      event.context.originTenant = resolved.tenant;
+      event.context.tenant = targetTenant;
       return;
     }
   });

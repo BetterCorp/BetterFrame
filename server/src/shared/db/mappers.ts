@@ -180,6 +180,8 @@ export function rowToCamera(r: Row): Camera {
     cloud_vendor_camera_id: sn(r["cloud_vendor_camera_id"]),
     cloud_stream_url: sn(r["cloud_stream_url"]),
     cloud_stream_type: sn(r["cloud_stream_type"]),
+    event_callback_nonce: sn(r["event_callback_nonce"]),
+    event_callback_token_hash: sn(r["event_callback_token_hash"]),
   };
 }
 
@@ -385,6 +387,7 @@ export function rowToKiosk(r: Row): Kiosk {
     display_id: sn(r["display_id"]),
     cpu_temp_c: nn(r["cpu_temp_c"]),
     cpu_load_percent: nn(r["cpu_load_percent"]),
+    gpu_load_percent: nn(r["gpu_load_percent"]),
     fan_rpm: nn(r["fan_rpm"]),
     fan_pwm: nn(r["fan_pwm"]),
     memory_total_mb: nn(r["memory_total_mb"]),
@@ -402,6 +405,7 @@ export function rowToKiosk(r: Row): Kiosk {
     os_update_last_attempt_at: sn(r["os_update_last_attempt_at"]),
     os_update_last_attempt_version: sn(r["os_update_last_attempt_version"]),
     os_update_last_error: sn(r["os_update_last_error"]),
+    os_update_state: s(r["os_update_state"] ?? "confirmed") as Kiosk["os_update_state"],
     audio_default_volume_percent: n(r["audio_default_volume_percent"] ?? 50),
     local_key: sn(r["local_key"]),
     local_port: nn(r["local_port"]),
@@ -410,6 +414,7 @@ export function rowToKiosk(r: Row): Kiosk {
     reported_hostname: sn(r["reported_hostname"]),
     network_interfaces_json: jsn(r["network_interfaces_json"]),
     logging_json: jsn(r["logging_json"]),
+    renderer_telemetry_json: jsn(r["renderer_telemetry_json"]),
     managed_image: b(r["managed_image"]),
     managed_config_json: jsn(r["managed_config_json"]),
     managed_config_version: n(r["managed_config_version"] ?? 0),

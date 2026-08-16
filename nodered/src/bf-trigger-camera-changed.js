@@ -3,7 +3,7 @@
  * or deleted in admin.
  *
  * Topic filter: `camera.changed`. Server's nodered-bridge POSTs to
- * `${noderedUrl}/in/camera.changed` directly. This node self-registers its
+ * `${noderedUrl}/api/internal/camera.changed` directly. This node self-registers its
  * own POST handler — no upstream `http in` node required.
  *
  * Optional config:

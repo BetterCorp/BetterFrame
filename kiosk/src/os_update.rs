@@ -29,6 +29,7 @@
 //! a hardcoded default matching deploy/rauc/system.conf.
 
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,7 +42,9 @@ use tracing::{info, warn};
 pub const DEFAULT_COMPATIBILITY: &str = "betterframe-rpi5-aarch64";
 static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-pub fn compatibility_public() -> String { compatibility() }
+pub fn compatibility_public() -> String {
+    compatibility()
+}
 
 fn compatibility() -> String {
     if let Ok(s) = fs::read_to_string("/etc/betterframe/os-compatibility") {
@@ -79,7 +82,9 @@ fn cleanup_partial_update() {
     }
 }
 
-pub fn current_os_version_public() -> String { current_os_version() }
+pub fn current_os_version_public() -> String {
+    current_os_version()
+}
 
 fn current_os_version() -> String {
     if let Ok(s) = fs::read_to_string("/etc/betterframe/os-version") {
@@ -182,9 +187,7 @@ pub fn apply(
 
     let max_retries = 5;
     for attempt in 1..=max_retries {
-        let existing_bytes = fs::metadata(&bundle_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let existing_bytes = fs::metadata(&bundle_path).map(|m| m.len()).unwrap_or(0);
 
         // If we already have the full file from a previous attempt, skip download.
         if existing_bytes >= info.size_bytes {
@@ -226,18 +229,24 @@ pub fn apply(
         if status != 200 && status != 206 {
             return Err(format!("download HTTP {status}"));
         }
+        let resumed = existing_bytes > 0 && status == 206;
+        if existing_bytes > 0 && !resumed {
+            warn!("os-update: server ignored Range; restarting download");
+        }
 
         // Stream chunks to disk.
         use std::io::Write;
         let mut file = fs::OpenOptions::new()
             .create(true)
-            .append(true)
+            .write(true)
+            .append(resumed)
+            .truncate(!resumed)
             .open(&bundle_path)
             .map_err(|e| format!("open bundle file: {e}"))?;
 
         let mut reader = resp;
         let mut buf = vec![0u8; 256 * 1024]; // 256KB chunks
-        let mut downloaded = existing_bytes;
+        let mut downloaded = if resumed { existing_bytes } else { 0 };
         let mut stream_ok = true;
 
         loop {
@@ -248,12 +257,16 @@ pub fn apply(
             match std::io::Read::read(&mut reader, &mut buf) {
                 Ok(0) => break, // EOF
                 Ok(n) => {
-                    file.write_all(&buf[..n]).map_err(|e| format!("write chunk: {e}"))?;
+                    file.write_all(&buf[..n])
+                        .map_err(|e| format!("write chunk: {e}"))?;
                     downloaded += n as u64;
                     let pct = ((downloaded as f64 / info.size_bytes as f64) * 90.0) as u8;
                     on_progress("Downloading", pct);
                     if downloaded % (50 * 1024 * 1024) < (256 * 1024) as u64 {
-                        info!("os-update: {downloaded} / {} bytes ({pct}%)", info.size_bytes);
+                        info!(
+                            "os-update: {downloaded} / {} bytes ({pct}%)",
+                            info.size_bytes
+                        );
                     }
                 }
                 Err(e) => {
@@ -273,18 +286,22 @@ pub fn apply(
             info!("os-update: retrying in 10s...");
             std::thread::sleep(Duration::from_secs(10));
         } else {
-            return Err(format!("download incomplete after {max_retries} attempts ({downloaded}/{} bytes)", info.size_bytes));
+            return Err(format!(
+                "download incomplete after {max_retries} attempts ({downloaded}/{} bytes)",
+                info.size_bytes
+            ));
         }
     }
 
     on_progress("Verifying", 90);
     // 2. sha256 verify the complete file on disk.
-    let file_size = fs::metadata(&bundle_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let file_size = fs::metadata(&bundle_path).map(|m| m.len()).unwrap_or(0);
     if file_size != info.size_bytes {
         let _ = fs::remove_file(&bundle_path);
-        return Err(format!("size mismatch: expected {}, got {file_size}", info.size_bytes));
+        return Err(format!(
+            "size mismatch: expected {}, got {file_size}",
+            info.size_bytes
+        ));
     }
 
     let mut hasher = Sha256::new();
@@ -305,7 +322,10 @@ pub fn apply(
     let got_sha = hex_lower(&digest);
     if got_sha != info.sha256 {
         let _ = fs::remove_file(&bundle_path);
-        return Err(format!("sha256 mismatch: expected {}, got {got_sha}", info.sha256));
+        return Err(format!(
+            "sha256 mismatch: expected {}, got {got_sha}",
+            info.sha256
+        ));
     }
 
     on_progress("Installing", 95);
@@ -356,10 +376,33 @@ pub fn apply(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| {
-            let _ = report_applied(server, key, &info.version, Some(&format!("rauc spawn: {e}")));
+            let _ = report_applied(
+                server,
+                key,
+                &info.version,
+                Some(&format!("rauc spawn: {e}")),
+            );
             format!("rauc spawn: {e}")
         })?;
-    let output = loop {
+    let mut child_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "rauc stdout missing".to_string())?;
+    let mut child_stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "rauc stderr missing".to_string())?;
+    let stdout_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = child_stdout.read_to_end(&mut bytes);
+        bytes
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = child_stderr.read_to_end(&mut bytes);
+        bytes
+    });
+    let status = loop {
         if cancel_requested() {
             let _ = child.kill();
             let _ = child.wait();
@@ -373,7 +416,7 @@ pub fn apply(
             return Err("os update canceled after channel change".to_string());
         }
         match child.try_wait() {
-            Ok(Some(_)) => break child.wait_with_output().map_err(|e| format!("rauc wait: {e}"))?,
+            Ok(Some(status)) => break status,
             Ok(None) => std::thread::sleep(Duration::from_secs(1)),
             Err(e) => {
                 let _ = fs::remove_file(&bundle_path);
@@ -381,13 +424,10 @@ pub fn apply(
             }
         }
     };
-    if !output.status.success() {
-        let msg = format_command_failure(
-            "rauc install",
-            output.status,
-            &output.stdout,
-            &output.stderr,
-        );
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    if !status.success() {
+        let msg = format_command_failure("rauc install", status, &stdout, &stderr);
         warn!("os-update: {msg}");
         let _ = report_applied(server, key, &info.version, Some(&msg));
         let _ = fs::remove_file(&bundle_path);
@@ -407,31 +447,72 @@ pub fn apply(
     // RAUC's custom bootloader backend has already armed tryboot for the
     // freshly-written slot. Reboot picks it up. On failure to reach the
     // new slot, tryboot rolls back automatically on the next power cycle.
-    match Command::new("systemctl").arg("reboot").status() {
-        Ok(_) => {
+    let mut reboot = if compatibility().contains("rpi") {
+        let mut command = Command::new("sudo");
+        command.args(["-n", "/usr/sbin/reboot", "0", "tryboot"]);
+        command
+    } else {
+        let mut command = Command::new("sudo");
+        command.args(["-n", "/usr/bin/systemctl", "reboot"]);
+        command
+    };
+    match reboot.status() {
+        Ok(status) if status.success() => {
             // systemctl reboot returns before the reboot completes; sleep
             // briefly so we don't race main() into a re-entry.
             std::thread::sleep(Duration::from_secs(30));
             std::process::exit(0);
         }
-        Err(e) => Err(format!("systemctl reboot: {e}")),
+        Ok(status) => {
+            let message = format!("privileged reboot failed: {status}");
+            let _ = report_applied(server, key, &info.version, Some(&message));
+            Err(message)
+        }
+        Err(e) => {
+            let message = format!("privileged reboot: {e}");
+            let _ = report_applied(server, key, &info.version, Some(&message));
+            Err(message)
+        }
     }
 }
 
-fn report_applied(server: &str, key: &str, version: &str, error: Option<&str>) -> Result<(), String> {
+fn report_applied(
+    server: &str,
+    key: &str,
+    version: &str,
+    error: Option<&str>,
+) -> Result<(), String> {
     let payload = if let Some(err) = error {
-        serde_json::json!({ "version": version, "error": err })
+        serde_json::json!({ "version": version, "state": "failed", "error": err })
     } else {
-        serde_json::json!({ "version": version })
+        serde_json::json!({ "version": version, "state": "pending_reboot" })
     };
     reqwest::blocking::Client::new()
-        .post(format!("{server}/api/kiosk/os/applied"))
+        .post(format!("{server}/api/kiosk/os/status"))
         .header("Authorization", format!("Bearer {key}"))
         .json(&payload)
         .timeout(Duration::from_secs(5))
         .send()
         .map(|_| ())
         .map_err(|e| format!("report applied: {e}"))
+}
+
+pub fn report_confirmed(server: &str, key: &str) -> bool {
+    let version =
+        fs::read_to_string("/etc/betterframe/os-version").unwrap_or_else(|_| "unknown".to_string());
+    reqwest::blocking::Client::new()
+        .post(format!("{server}/api/kiosk/os/status"))
+        .header("Authorization", format!("Bearer {key}"))
+        .json(&serde_json::json!({ "version": version.trim(), "state": "confirmed" }))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .map(|response| response.status().is_success())
+        .unwrap_or(false)
+}
+
+pub fn boot_is_confirmed() -> bool {
+    std::path::Path::new("/run/betterframe/rauc-confirmed").exists()
+        || !std::path::Path::new("/etc/rauc/system.conf").exists()
 }
 
 fn format_command_failure(

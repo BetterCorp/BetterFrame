@@ -92,7 +92,11 @@ export async function claimPairing(
 
   if (!kioskKey || !pc.consumed_by_kiosk_id) { obs?.log.warn("claim {code}: consumed but missing key/id", { code }); return { status: "pending" }; }
 
-  const kiosk = await repo.getKioskById(pc.consumed_by_kiosk_id);
+  const tenantSchema = typeof extras["tenant_schema"] === "string" ? extras["tenant_schema"] : "public";
+  const kiosk = await repo.adapter.withSearchPath(
+    tenantSchema,
+    () => repo.getKioskById(pc.consumed_by_kiosk_id!),
+  );
   const clusterKey = extras["cluster_key"] as string | undefined;
   const encryptKey = extras["encrypt_key"] as string | undefined;
 
@@ -128,6 +132,7 @@ export interface PairingConfirmInput {
   replaceKioskId?: string;
   /** Bypass replacement-target sanity checks (hardware_model / capabilities / managed_image). */
   force?: boolean;
+  tenant?: { id: string; slug: string; schemaName: string };
 }
 
 export async function confirmPairing(
@@ -256,6 +261,9 @@ export async function confirmPairing(
     kiosk_key_plaintext: kioskKeyPlaintext,
     cluster_key: clusterKey,
     encrypt_key: kioskEncryptKey,
+    tenant_id: input.tenant?.id ?? "default",
+    tenant_slug: input.tenant?.slug ?? "default",
+    tenant_schema: input.tenant?.schemaName ?? "public",
   });
 
   obs?.log.info("created kiosk {name} id {id}", { name: kioskName, id: String(kioskId) });

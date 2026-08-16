@@ -9,7 +9,7 @@ import { TOTP, Secret } from "otpauth";
 
 import type { Repository } from "./db/repository.js";
 import type { SecretsApi } from "./secrets.js";
-import type { ApiKey, ApiKeyScope, Session, User } from "./types.js";
+import type { ApiKey, ApiKeyScope, Session, Tenant, User } from "./types.js";
 
 // ---- Public interface -------------------------------------------------------
 
@@ -40,11 +40,12 @@ export interface AuthApi {
   consumeRecoveryCode(code: string, hashedCodes: string[]): Promise<{ ok: boolean; remaining: string[] }>;
   createSession(input: {
     user: User;
+    originTenantId: string;
     userAgent: string | null;
     ipAddress: string | null;
     totpPending: boolean;
   }): Promise<{ session: Session; cookieValue: string }>;
-  resolveSession(cookieValue: string): Promise<{ session: Session; user: User } | null>;
+  resolveSession(cookieValue: string): Promise<{ session: Session; user: User; tenant: Tenant } | null>;
   revokeSession(sid: string): Promise<void>;
   createApiKey(input: {
     name: string;
@@ -54,12 +55,14 @@ export interface AuthApi {
   verifyApiKey(plaintext: string, ip: string | null): Promise<ApiKey | null>;
   verifyKioskKey(plaintext: string): Promise<{
     id: string;
+    tenant_id: string;
     tenant_slug: string;
     tenant_name: string | null;
     schema_name: string;
   } | null>;
   verifyIoBoxKey(plaintext: string): Promise<{
     id: string;
+    tenant_id: string;
     tenant_slug: string;
     tenant_name: string | null;
     schema_name: string;
@@ -183,28 +186,30 @@ export function createAuth(
 
   const cookieKey = secrets.deriveKey("cookie");
 
-  function cookieMac(sid: string): string {
-    return createHmac("sha256", cookieKey).update(sid).digest("hex");
+  function cookieMac(payload: string): string {
+    return createHmac("sha256", cookieKey).update(payload).digest("hex");
   }
 
-  function signCookie(sid: string): string {
-    return `${sid}.${cookieMac(sid)}`;
+  function signCookie(tenantId: string, sid: string): string {
+    const payload = `${tenantId}.${sid}`;
+    return `${payload}.${cookieMac(payload)}`;
   }
 
-  function unsignCookie(cookieValue: string): string | null {
-    const dot = cookieValue.indexOf(".");
-    if (dot < 0) return null;
-    const sid = cookieValue.slice(0, dot);
-    const mac = cookieValue.slice(dot + 1);
-    const expected = cookieMac(sid);
+  function unsignCookie(cookieValue: string): { tenantId: string; sid: string } | null {
+    const parts = cookieValue.split(".");
+    if (parts.length !== 3) return null;
+    const [tenantId, sid, mac] = parts;
+    if (!tenantId || !sid || !mac || !/^[a-zA-Z0-9_-]+$/.test(tenantId) || !/^[a-f0-9]{64}$/.test(sid)) return null;
+    const expected = cookieMac(`${tenantId}.${sid}`);
     const a = Buffer.from(mac, "hex");
     const b = Buffer.from(expected, "hex");
     if (a.length !== b.length) return null;
-    return timingSafeEqual(a, b) ? sid : null;
+    return timingSafeEqual(a, b) ? { tenantId, sid } : null;
   }
 
   async function createSession(input: {
     user: User;
+    originTenantId: string;
     userAgent: string | null;
     ipAddress: string | null;
     totpPending: boolean;
@@ -223,14 +228,18 @@ export function createAuth(
       ip_address: input.ipAddress,
       expires_at: expiresAt,
     });
-    return { session, cookieValue: signCookie(id) };
+    return { session, cookieValue: signCookie(input.originTenantId, id) };
   }
 
   async function resolveSession(
     cookieValue: string,
-  ): Promise<{ session: Session; user: User } | null> {
-    const sid = unsignCookie(cookieValue);
-    if (!sid) return null;
+  ): Promise<{ session: Session; user: User; tenant: Tenant } | null> {
+    const signed = unsignCookie(cookieValue);
+    if (!signed) return null;
+    const tenant = await repo.getTenantById(signed.tenantId);
+    if (!tenant?.is_active) return null;
+    await repo.adapter.setSearchPath(tenant.schema_name);
+    const sid = signed.sid;
     const session = await repo.getSessionById(sid);
     if (!session) return null;
     if (session.revoked_at) return null;
@@ -244,7 +253,7 @@ export function createAuth(
     const user = await repo.getUserById(session.user_id);
     if (!user || !user.is_active) return null;
     await repo.touchSession(sid, now.toISOString());
-    return { session, user };
+    return { session, user, tenant };
   }
 
   async function revokeSession(sid: string): Promise<void> {
@@ -287,6 +296,7 @@ export function createAuth(
 
   async function verifyKioskKey(plaintext: string): Promise<{
     id: string;
+    tenant_id: string;
     tenant_slug: string;
     tenant_name: string | null;
     schema_name: string;
@@ -302,6 +312,7 @@ export function createAuth(
         if (await verifyPassword(plaintext, cand.key_hash)) {
           return {
             id: cand.id,
+            tenant_id: "default",
             tenant_slug: "default",
             tenant_name: "Default",
             schema_name: "public",
@@ -318,6 +329,7 @@ export function createAuth(
         if (await verifyPassword(plaintext, cand.key_hash)) {
           return {
             id: cand.id,
+            tenant_id: tenant.id,
             tenant_slug: tenant.slug,
             tenant_name: tenant.name,
             schema_name: tenant.schema_name,
@@ -331,6 +343,7 @@ export function createAuth(
 
   async function verifyIoBoxKey(plaintext: string): Promise<{
     id: string;
+    tenant_id: string;
     tenant_slug: string;
     tenant_name: string | null;
     schema_name: string;
@@ -346,6 +359,7 @@ export function createAuth(
         if (cand.key_hash && await verifyPassword(plaintext, cand.key_hash)) {
           return {
             id: cand.id,
+            tenant_id: "default",
             tenant_slug: "default",
             tenant_name: "Default",
             schema_name: "public",
@@ -362,6 +376,7 @@ export function createAuth(
         if (cand.key_hash && await verifyPassword(plaintext, cand.key_hash)) {
           return {
             id: cand.id,
+            tenant_id: tenant.id,
             tenant_slug: tenant.slug,
             tenant_name: tenant.name,
             schema_name: tenant.schema_name,

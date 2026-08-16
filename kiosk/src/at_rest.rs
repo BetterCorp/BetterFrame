@@ -12,10 +12,13 @@
 //! board to decrypt. Defeats casual SD extraction; doesn't defeat an
 //! attacker who has both — at that point they ARE the kiosk.
 //!
-//! Format: `magic[4] || nonce[12] || ciphertext+tag` ("BFE1" magic).
-//! AES-256-GCM. Key derived via HKDF-SHA256 from the hardware id.
+//! Format: `magic[4] || nonce[12] || ciphertext+tag`. `BFE1` uses the legacy
+//! board/machine ID; `BFE2` uses a TPM-sealed random secret. Existing BFE1
+//! files are re-encrypted as BFE2 when first read on a TPM-enabled image.
 
 use std::fs;
+use std::process::Command;
+use std::sync::OnceLock;
 
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
@@ -25,16 +28,40 @@ use hkdf::Hkdf;
 use rand::RngCore;
 use sha2::Sha256;
 
-const MAGIC: &[u8; 4] = b"BFE1";
+const LEGACY_MAGIC: &[u8; 4] = b"BFE1";
+const TPM_MAGIC: &[u8; 4] = b"BFE2";
 const HKDF_SALT: &[u8] = b"betterframe-at-rest-v1";
 const HKDF_INFO: &[u8] = b"file-encryption";
 
-/// Read a value uniquely tied to THIS Pi. Pi 5 firmware exposes the CPU
-/// serial via device-tree; older kernels stash it in /proc/cpuinfo. On
-/// non-Pi dev machines fall back to /etc/machine-id (per-install rather
-/// than per-board, but still doesn't ship with the source repo). Always
-/// returns a non-empty string so derive_key never panics.
-fn hardware_id() -> String {
+fn active_key() -> &'static ([u8; 4], [u8; 32]) {
+    static ACTIVE: OnceLock<([u8; 4], [u8; 32])> = OnceLock::new();
+    ACTIVE.get_or_init(|| {
+        let sealed = std::path::Path::new("/var/lib/betterframe/at-rest.cred");
+        if sealed.is_file() {
+            let output = Command::new("systemd-creds")
+                .args(["--name=betterframe-at-rest", "decrypt"])
+                .arg(sealed)
+                .arg("-")
+                .output()
+                .expect("TPM-sealed at-rest key could not be decrypted");
+            if !output.status.success() || output.stdout.is_empty() {
+                panic!("TPM-sealed at-rest key could not be decrypted");
+            }
+            (*TPM_MAGIC, derive_key(&output.stdout))
+        } else {
+            (*LEGACY_MAGIC, *legacy_key())
+        }
+    })
+}
+
+fn legacy_key() -> &'static [u8; 32] {
+    static LEGACY: OnceLock<[u8; 32]> = OnceLock::new();
+    LEGACY.get_or_init(|| derive_key(read_hardware_id().as_bytes()))
+}
+
+/// Pi firmware exposes the CPU serial via device-tree; older kernels use
+/// /proc/cpuinfo. Non-Pi systems fall back to the per-install machine ID.
+fn read_hardware_id() -> String {
     if let Ok(s) = fs::read_to_string("/proc/device-tree/serial-number") {
         let trimmed = s.trim_end_matches('\0').trim();
         if !trimmed.is_empty() {
@@ -62,27 +89,27 @@ fn hardware_id() -> String {
     "betterframe-dev-fallback".to_string()
 }
 
-fn derive_key() -> [u8; 32] {
-    let hw = hardware_id();
-    let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), hw.as_bytes());
+fn derive_key(material: &[u8]) -> [u8; 32] {
+    let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), material);
     let mut out = [0u8; 32];
-    hk.expand(HKDF_INFO, &mut out).expect("HKDF expand: 32 bytes ≤ 255*32");
+    hk.expand(HKDF_INFO, &mut out)
+        .expect("HKDF expand: 32 bytes ≤ 255*32");
     out
 }
 
 /// Encrypt plaintext for on-disk storage. Each call uses a fresh random
 /// nonce (AES-GCM is unsafe to reuse a nonce under the same key).
 pub fn encrypt_for_disk(plaintext: &[u8]) -> Vec<u8> {
-    let key_bytes = derive_key();
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+    let (magic, key_bytes) = active_key();
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key_bytes));
     let mut nonce_bytes = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, plaintext)
         .expect("AES-GCM encrypt: only fails on >2^36 byte input");
-    let mut out = Vec::with_capacity(MAGIC.len() + nonce_bytes.len() + ciphertext.len());
-    out.extend_from_slice(MAGIC);
+    let mut out = Vec::with_capacity(magic.len() + nonce_bytes.len() + ciphertext.len());
+    out.extend_from_slice(magic);
     out.extend_from_slice(&nonce_bytes);
     out.extend_from_slice(&ciphertext);
     out
@@ -92,21 +119,24 @@ pub fn encrypt_for_disk(plaintext: &[u8]) -> Vec<u8> {
 /// "decrypt failed" — caller decides whether to treat unrecognized data
 /// as legacy plaintext (migration path).
 pub fn decrypt_from_disk(blob: &[u8]) -> Result<Vec<u8>, String> {
-    if blob.len() < MAGIC.len() + 12 + 16 {
+    if blob.len() < LEGACY_MAGIC.len() + 12 + 16 {
         return Err("blob too short".to_string());
     }
-    if &blob[..MAGIC.len()] != MAGIC {
-        return Err("missing BFE1 magic".to_string());
-    }
-    let key_bytes = derive_key();
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
-    let nonce = Nonce::from_slice(&blob[MAGIC.len()..MAGIC.len() + 12]);
+    let key_bytes = match &blob[..LEGACY_MAGIC.len()] {
+        magic if magic == LEGACY_MAGIC => legacy_key(),
+        magic if magic == TPM_MAGIC && active_key().0 == *TPM_MAGIC => &active_key().1,
+        magic if magic == TPM_MAGIC => return Err("TPM credential missing".to_string()),
+        _ => return Err("missing BetterFrame encryption magic".to_string()),
+    };
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key_bytes));
+    let nonce = Nonce::from_slice(&blob[LEGACY_MAGIC.len()..LEGACY_MAGIC.len() + 12]);
     cipher
-        .decrypt(nonce, &blob[MAGIC.len() + 12..])
+        .decrypt(nonce, &blob[LEGACY_MAGIC.len() + 12..])
         .map_err(|e| format!("AES-GCM decrypt: {e}"))
 }
 
-/// Read a file and decrypt if it's a BFE1 blob; otherwise return it raw.
+/// Read a file and decrypt if it is a BetterFrame encrypted blob; otherwise
+/// return it raw.
 /// Lets us migrate existing kiosks (which have plaintext kiosk.key on disk
 /// from before this module shipped) without losing pairing: read plaintext
 /// → caller uses it → caller eventually overwrites via `write_encrypted`
@@ -114,7 +144,13 @@ pub fn decrypt_from_disk(blob: &[u8]) -> Result<Vec<u8>, String> {
 pub fn read_maybe_encrypted(path: &std::path::Path) -> Option<Vec<u8>> {
     let bytes = fs::read(path).ok()?;
     match decrypt_from_disk(&bytes) {
-        Ok(pt) => Some(pt),
+        Ok(pt) => {
+            if bytes.starts_with(LEGACY_MAGIC) && active_key().0 == *TPM_MAGIC {
+                let _ = write_encrypted(path, &pt);
+            }
+            Some(pt)
+        }
+        Err(_) if bytes.starts_with(LEGACY_MAGIC) || bytes.starts_with(TPM_MAGIC) => None,
         Err(_) => Some(bytes), // assume legacy plaintext
     }
 }
@@ -144,8 +180,8 @@ mod tests {
     fn round_trip_short() {
         let pt = b"hello world";
         let ct = encrypt_for_disk(pt);
-        assert_ne!(&ct[..MAGIC.len() + 12], pt);
-        assert_eq!(&ct[..MAGIC.len()], MAGIC);
+        assert_ne!(&ct[..LEGACY_MAGIC.len() + 12], pt);
+        assert_eq!(&ct[..LEGACY_MAGIC.len()], &active_key().0);
         let back = decrypt_from_disk(&ct).expect("decrypt");
         assert_eq!(back, pt);
     }
@@ -155,7 +191,8 @@ mod tests {
         let pt = serde_json::to_vec(&serde_json::json!({
             "kiosk_id": 42,
             "cameras": [{"id": 1, "rtsp": "rtsp://u:p@host/path"}],
-        })).unwrap();
+        }))
+        .unwrap();
         let ct = encrypt_for_disk(&pt);
         let back = decrypt_from_disk(&ct).expect("decrypt");
         assert_eq!(back, pt);

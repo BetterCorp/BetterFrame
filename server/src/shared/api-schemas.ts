@@ -57,6 +57,7 @@ export const HeartbeatBody = av.object(
     displays: av.array(HeartbeatDisplay).default([]),
     cpu_temp_c: av.nullable(av.number().min(-40).max(150)).default(null),
     cpu_load_percent: av.nullable(av.number().min(0).max(100)).default(null),
+    gpu_load_percent: av.nullable(av.number().min(0).max(100)).default(null),
     fan_rpm: av.nullable(av.int().min(0).max(50000)).default(null),
     fan_pwm: av.nullable(av.int().min(0).max(255)).default(null),
     memory_total_mb: av.nullable(av.int().min(0)).default(null),
@@ -73,6 +74,7 @@ export const HeartbeatBody = av.object(
     managed_config_applied_version: av.optional(av.int().min(0)),
     managed_config_error: av.optional(av.nullable(av.string().maxLength(4096))),
     onvif_subscriptions: av.optional(av.any()),
+    pipeline_stats: av.array(av.any()).default([]),
   },
   { unknownKeys: "strip" },
 );
@@ -116,6 +118,15 @@ export const FirmwareAppliedBody = av.object(
 export const OsAppliedBody = av.object(
   {
     version: av.string().minLength(1).maxLength(64),
+    error: av.optional(av.string().maxLength(4096)),
+  },
+  { unknownKeys: "strip" },
+);
+
+export const OsStatusBody = av.object(
+  {
+    version: av.string().minLength(1).maxLength(64),
+    state: av.enum_(["installed", "pending_reboot", "confirmed", "rolled_back", "failed"] as const),
     error: av.optional(av.string().maxLength(4096)),
   },
   { unknownKeys: "strip" },

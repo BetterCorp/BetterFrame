@@ -275,23 +275,34 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           socket.destroy();
           return;
         }
-        // Auth: try API key from query param, then session cookie.
+        // Auth: an explicit debug API key, or an admin session bound to the
+        // selected tenant. The kiosk lookup below proves tenant ownership.
         const adminToken = url.searchParams.get("token");
         const cookieHeader = req.headers.cookie ?? "";
         try {
+          const targetSlug = (url.searchParams.get("tenant")
+            ?? parseCookieValue(cookieHeader, "bf_tenant")
+            ?? "default").trim().toLowerCase();
+          const targetTenant = await repo.getTenantBySlug(targetSlug);
+          if (!targetTenant?.is_active) throw new Error("unknown or inactive tenant");
           let authed = false;
           if (adminToken) {
+            await repo.adapter.setSearchPath(targetTenant.schema_name);
             const key = await auth.verifyApiKey(adminToken, null);
-            if (key) authed = true;
+            if (key?.scopes.includes("admin") && key.scopes.includes("debug")) authed = true;
           }
           if (!authed && cookieHeader) {
             const cookieVal = parseCookieValue(cookieHeader, cookieName);
             if (cookieVal) {
               const result = await auth.resolveSession(cookieVal);
-              if (result) authed = true;
+              const platformAdmin = result?.user.role === "admin" && result.tenant.slug === "default";
+              if (result?.user.role === "admin" && result.user.totp_enabled && !result.session.totp_pending &&
+                  (result.tenant.id === targetTenant.id || platformAdmin)) authed = true;
             }
           }
           if (!authed) throw new Error("unauthorized");
+          await repo.adapter.setSearchPath(targetTenant.schema_name);
+          if (!await repo.getKioskById(kioskId)) throw new Error("kiosk not owned by tenant");
         } catch (authErr) {
           obs.log.warn("admin debug WS auth failed for kiosk {id}: {err} (cookie present: {hasCookie}, cookieName: {cn})", {
             id: kioskId,
@@ -359,7 +370,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
               event: "connected",
               source: "server",
             },
-            { tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name },
+            { tenant_id: kiosk.tenant_id, tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name },
           );
 
           ws.on("message", (data) => {
@@ -419,7 +430,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
                     event: "heartbeat",
                     source: "server",
                   },
-                  { tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name },
+                  { tenant_id: kiosk.tenant_id, tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name },
                 );
                 // Dedicated status topic — same payload sans the event marker
                 // so bf-trigger-status can listen on a heartbeat-only channel
@@ -427,7 +438,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
                 nodered.forward(
                   "kiosk.status",
                   { ...telemetry, source: "server" },
-                  { tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name },
+                  { tenant_id: kiosk.tenant_id, tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name },
                 );
               }
             } catch {
@@ -452,7 +463,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
                 event: "disconnected",
                 source: "server",
               },
-              { tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name },
+              { tenant_id: kiosk.tenant_id, tenant_slug: kiosk.tenant_slug, tenant_name: kiosk.tenant_name },
             );
           });
         });

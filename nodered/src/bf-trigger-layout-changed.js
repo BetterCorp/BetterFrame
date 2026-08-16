@@ -2,7 +2,7 @@
  * bf-trigger-layout-changed — fires when a display switches to a new layout.
  *
  * Topic filter: `layout.changed`. Server's nodered-bridge POSTs to
- * `${noderedUrl}/in/layout.changed` directly. This node self-registers its
+ * `${noderedUrl}/api/internal/layout.changed` directly. This node self-registers its
  * own POST handler — no upstream `http in` node required.
  *
  * Optional config:

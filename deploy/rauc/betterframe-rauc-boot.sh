@@ -115,12 +115,13 @@ get_primary_from_mount() {
   ' "${mountpoint}/autoboot.txt"
 }
 
-write_primary_to_mount() {
+write_config_to_mount() {
   local mountpoint="$1"
   local primary_slot="$2"
+  local trial_slot="$3"
   local primary_part try_part
   primary_part="$(slot_to_part "$primary_slot")"
-  try_part="$(slot_to_part "$(other_slot "$primary_slot")")"
+  try_part="$(slot_to_part "$trial_slot")"
   cat > "${mountpoint}/autoboot.txt" <<EOF
 [all]
 tryboot_a_b=1
@@ -140,11 +141,17 @@ get_primary() {
 }
 
 set_primary() {
-  local primary_slot="$1"
-  local secondary_slot
+  local trial_slot="$1"
+  local primary_slot secondary_slot
+  primary_slot="$(read_current_slot)"
+  if [ "$trial_slot" = "$primary_slot" ]; then
+    primary_slot="$(other_slot "$trial_slot")"
+  fi
   secondary_slot="$(other_slot "$primary_slot")"
-  with_boot_mounted "$primary_slot" write_primary_to_mount "$primary_slot"
-  with_boot_mounted "$secondary_slot" write_primary_to_mount "$primary_slot"
+  with_boot_mounted "$primary_slot" write_config_to_mount "$primary_slot" "$trial_slot"
+  with_boot_mounted "$secondary_slot" write_config_to_mount "$primary_slot" "$trial_slot"
+  mkdir -p "$STATE_DIR"
+  printf 'pending=%s\n' "$trial_slot" > "$STATE_FILE"
 }
 
 get_state() {
@@ -167,6 +174,14 @@ set_state() {
   else
     grep -vx "${slot}=bad" "$STATE_FILE" 2>/dev/null > "${STATE_FILE}.tmp" || true
     mv "${STATE_FILE}.tmp" "$STATE_FILE"
+    local current secondary
+    current="$(read_current_slot 2>/dev/null || true)"
+    if [ "$current" = "$slot" ]; then
+      secondary="$(other_slot "$slot")"
+      with_boot_mounted "$slot" write_config_to_mount "$slot" "$secondary"
+      with_boot_mounted "$secondary" write_config_to_mount "$slot" "$secondary"
+      rm -f "$STATE_FILE"
+    fi
   fi
 }
 

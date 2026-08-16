@@ -175,7 +175,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     );
 
     const firmware = initFirmware(
-      { dataDir, signingKeyPem: this.config.firmwareSigningKey || undefined },
+      { dataDir, signingKeyPem: this.config.firmwareSigningKey || process.env["BF_FIRMWARE_SIGNING_KEY"] || undefined },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
     const osUpdates = initOsUpdates({ dataDir });
@@ -243,40 +243,16 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     registerAbleSignRoutes(app, deps);
 
     app.get("/api/admin/_check", async (event) => {
-      const tenantHeader = (event.req.headers.get("x-betterframe-tenant") ?? "").trim().toLowerCase();
-      if (tenantHeader) {
-        const tenant = await deps.repo.getTenantBySlug(tenantHeader);
-        if (!tenant) return new Response("unknown tenant", { status: 401 });
-        if (!tenant.is_active) return new Response("inactive tenant", { status: 401 });
-        await deps.repo.adapter.setSearchPath(tenant.schema_name);
-      } else {
-        await deps.repo.adapter.setSearchPath("public");
-      }
-
-      const authz = event.req.headers.get("authorization");
-      if (authz?.startsWith("Bearer ")) {
-        return deps.auth.verifyApiKey(authz.slice(7), event.req.headers.get("x-real-ip")).then((key) => {
-          if (!key || !key.scopes.includes("admin")) return new Response(null, { status: 401 });
-          return new Response(null, {
-            status: 200,
-            headers: { "x-betterframe-api-key": key.key_prefix },
-          });
-        });
-      }
-
-      const cookie = event.req.headers.get("cookie") ?? "";
-      const match = cookie.match(new RegExp(`${deps.cookieName}=([^;]+)`));
-      if (!match) return new Response(null, { status: 401 });
-      const resolved = await deps.auth.resolveSession(match[1]!);
-      if (!resolved || resolved.session.totp_pending) {
-        return new Response(null, { status: 401 });
-      }
-      if (resolved.user.role !== "admin") {
-        return new Response(null, { status: 403 });
-      }
+      if (!event.context.user || !event.context.tenant) return new Response(null, { status: 401 });
+      if (event.context.user.role !== "admin") return new Response(null, { status: 403 });
       return new Response(null, {
         status: 200,
-        headers: { "x-betterframe-user": resolved.user.username },
+        headers: {
+          "x-betterframe-user": event.context.user.username,
+          "x-betterframe-tenant": event.context.tenant.id,
+          "x-betterframe-tenant-slug": event.context.tenant.slug,
+          "x-betterframe-role": event.context.user.role,
+        },
       });
     });
 
@@ -430,6 +406,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       await repo.adapter.setSearchPath(tenant.schema_name);
       const apiKey = await this.getOrMintNoderedApiKey(repo, secrets, auth, tenant.slug);
       configs.push({
+        tenant_id: tenant.id,
         tenant_slug: tenant.slug,
         tenant_name: tenant.name,
         api_key: apiKey,

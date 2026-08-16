@@ -931,4 +931,9 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   // earlier constraint migrations) so tenants already past that version get it.
   `ALTER TABLE event_log DROP CONSTRAINT IF EXISTS event_log_source_type_check`,
   `ALTER TABLE event_log ADD CONSTRAINT event_log_source_type_check CHECK(source_type IN ('onvif', 'gpio', 'synthetic', 'system', 'io', 'interaction'))`,
+  `ALTER TABLE cameras ADD COLUMN IF NOT EXISTS event_callback_nonce TEXT`,
+  `ALTER TABLE cameras ADD COLUMN IF NOT EXISTS event_callback_token_hash TEXT`,
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS os_update_state TEXT NOT NULL DEFAULT 'confirmed'`,
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS gpu_load_percent REAL`,
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS renderer_telemetry_json JSONB`,
 ];

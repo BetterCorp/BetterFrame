@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tracing::info;
 
 use crate::bundle::KioskBundle;
@@ -674,6 +674,7 @@ pub fn heartbeat(
         "displays": display_info,
         "cpu_temp_c": hw.cpu_temp_c,
         "cpu_load_percent": hw.cpu_load_percent,
+        "gpu_load_percent": hw.gpu_load_percent,
         "fan_rpm": hw.fan_rpm,
         "fan_pwm": hw.fan_pwm,
         "memory_total_mb": hw.memory_total_mb,
@@ -692,6 +693,7 @@ pub fn heartbeat(
         "onvif_subscriptions": serde_json::to_value(crate::onvif_events::get_statuses()).unwrap_or_default(),
         "partitions": serde_json::to_value(&hw.partitions).unwrap_or_default(),
         "audio": serde_json::to_value(crate::audio::get_state()).unwrap_or_default(),
+        "pipeline_stats": serde_json::to_value(crate::pipeline::telemetry()).unwrap_or_default(),
         "tailscale": tailscale_status(),
     });
     if let Some(report) = managed_report {
@@ -716,22 +718,28 @@ pub fn heartbeat(
                 return Ok(false);
             }
             if let Ok(body) = r.json::<serde_json::Value>() {
-                if body.get("bf_kiosk_deleted").and_then(|v| v.as_bool()).unwrap_or(false) {
-                    tracing::warn!("server reports kiosk deleted via heartbeat, confirming via _check");
+                if body
+                    .get("bf_kiosk_deleted")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    tracing::warn!(
+                        "server reports kiosk deleted via heartbeat, confirming via _check"
+                    );
                     if confirm_deletion(server, key) {
-                        tracing::error!("deletion confirmed via heartbeat, wiping config and restarting");
+                        tracing::error!(
+                            "deletion confirmed via heartbeat, wiping config and restarting"
+                        );
                         wipe_and_restart();
                     }
-                    tracing::info!("_check says key still valid, ignoring bf_kiosk_deleted from heartbeat");
+                    tracing::info!(
+                        "_check says key still valid, ignoring bf_kiosk_deleted from heartbeat"
+                    );
                 }
                 let fw = body.get("firmware_channel").and_then(|v| v.as_str());
                 let os = body.get("os_update_channel").and_then(|v| v.as_str());
-                let fw_target = body
-                    .get("firmware_target_version")
-                    .map(|v| v.as_str());
-                let os_target = body
-                    .get("os_update_target_version")
-                    .map(|v| v.as_str());
+                let fw_target = body.get("firmware_target_version").map(|v| v.as_str());
+                let os_target = body.get("os_update_target_version").map(|v| v.as_str());
                 update_cached_update_preferences(fw, fw_target, os, os_target);
                 if let Some(allowed) = body.get("auto_updates_allowed").and_then(|v| v.as_bool()) {
                     AUTO_UPDATES_ALLOWED.store(allowed, Ordering::SeqCst);

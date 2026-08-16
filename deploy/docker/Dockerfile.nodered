@@ -4,35 +4,29 @@
 # package at /usr/src/betterframe-nodes. settings.js points nodesDir
 # there so Node-RED scans it on boot. Survives /data volume mount.
 
-FROM nodered/node-red:latest
+FROM nodered/node-red:5.0.4-22
+
+LABEL org.opencontainers.image.source="https://github.com/BetterCorp/BetterFrame" \
+      org.opencontainers.image.licenses="AGPL-3.0-only OR LicenseRef-BetterFrame-Commercial"
 
 USER root
 
-# su-exec lets the entrypoint drop from root → node-red after fixing /data.
-# nodered/node-red:latest is Alpine-based — apt isn't present.
-RUN apk add --no-cache su-exec
-
 # Copy our nodes into a path outside /data (which is volume-mounted)
 COPY nodered /usr/src/betterframe-nodes
+COPY LICENSE.md LICENSE-AGPL.txt LICENSE-COMMERCIAL.md /usr/share/licenses/betterframe/
 
-# Settings template + entrypoint that seeds /data/settings.js on first boot
-# (the /data named volume hides anything we COPY directly there, so we have
-# to plant the file after the volume mount comes up).
-COPY deploy/docker/nodered-settings.js /usr/src/bf-settings.js
-COPY deploy/docker/nodered-entrypoint.sh /usr/local/bin/bf-nodered-entrypoint
-RUN chmod +x /usr/local/bin/bf-nodered-entrypoint
+# Root manager creates one UID-separated Node-RED runtime per tenant.
+COPY deploy/nodered-manager/manager.mjs /usr/src/betterframe-manager/manager.mjs
 
 # Install deps for the nodes + FlowFuse Dashboard 2.0 into user dir
 RUN cd /usr/src/betterframe-nodes && \
     npm install --omit=dev && \
     cd /usr/src/node-red && \
     npm install @flowfuse/node-red-dashboard && \
-    chown -R node-red:root /usr/src/betterframe-nodes /usr/src/bf-settings.js /usr/src/node-red
+    chown -R node-red:root /usr/src/betterframe-nodes /usr/src/betterframe-manager /usr/src/node-red
 
-# Run entrypoint as root so it can fix stale /data state (e.g. /data/settings.js
-# left as a directory by a previous broken bind mount). Entrypoint drops to
-# node-red via su-exec before launching the actual server.
+# The manager needs root only to assign tenant-owned directories and drop each
+# child runtime to its dedicated UID/GID.
 USER root
 
-ENTRYPOINT ["/usr/local/bin/bf-nodered-entrypoint"]
-CMD []
+ENTRYPOINT ["node", "/usr/src/betterframe-manager/manager.mjs"]

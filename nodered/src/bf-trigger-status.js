@@ -2,7 +2,7 @@
  * bf-trigger-status — fires on kiosk heartbeat telemetry.
  *
  * Topic filter: `kiosk.status`. Server's nodered-bridge POSTs to
- * `${noderedUrl}/in/kiosk.status` directly. This node self-registers its
+ * `${noderedUrl}/api/internal/kiosk.status` directly. This node self-registers its
  * own POST handler — no upstream `http in` node required.
  *
  * Optional config:

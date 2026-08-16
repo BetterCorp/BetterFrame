@@ -19,6 +19,10 @@ cargo run -- agent --server http://localhost
 cargo run -- app
 ```
 
+Install the 64-bit GStreamer MSVC runtime (Complete profile) on the client.
+Camera cells use `d3d11videosink`; decoder selection and GPU acceleration are
+handled by GStreamer/D3D11.
+
 State lives in:
 
 ```text
@@ -45,4 +49,8 @@ State lives in:
 
 Set `"mode": "selected"` and list Windows display names such as `"\\\\.\\DISPLAY1"` to only take over specific monitors.
 
-Current renderer status: the app renders the active BetterFrame layout grid per display, draws each configured block, and dispatches block click/double-click/hold events. `layout.switch` actions are handled locally; undefined events are forwarded to Node-RED as `interaction.cell.<kind>`. RTSP camera playback and embedded WebView rendering are intentionally left for the next implementation pass.
+The app renders the active layout on every selected display, plays RTSP camera
+cells through D3D11, and dispatches click/double-click/hold events.
+`layout.switch` actions are handled locally; undefined events are forwarded to
+Node-RED as `interaction.cell.<kind>`. Embedded webpage cells remain labelled
+placeholders; use the Linux kiosk when webpage/HTML cells are required.

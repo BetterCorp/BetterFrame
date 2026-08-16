@@ -171,10 +171,10 @@ quiet_config "$WORK/mnt-bb/config.txt"
 cat > "$WORK/mnt-bb/autoboot.txt" <<'AUTOBOOT'
 [all]
 tryboot_a_b=1
-boot_partition=2
+boot_partition=1
 
 [tryboot]
-boot_partition=1
+boot_partition=2
 AUTOBOOT
 umount "$WORK/mnt-bb"
 losetup -d "$BOOT_B_LOOP"

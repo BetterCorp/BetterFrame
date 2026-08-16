@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 /**
  * Return an HTML response from JSX-rendered markup.
  *
@@ -36,6 +38,21 @@ export function htmlFragment(markup: unknown): Response {
   return new Response(String(markup), { headers: SECURITY_HEADERS });
 }
 
+/** Debug pages carry terminal output, so their inline script is nonce-only. */
+export function debugHtmlPage(markup: unknown): Response {
+  const nonce = randomBytes(18).toString("base64url");
+  const html = String(markup).replaceAll("<script>", `<script nonce="${nonce}">`);
+  const headers = new Headers(SECURITY_HEADERS);
+  headers.set(
+    "content-security-policy",
+    SECURITY_HEADERS["content-security-policy"].replace(
+      "script-src 'self' 'unsafe-inline'",
+      `script-src 'self' 'nonce-${nonce}'`,
+    ),
+  );
+  return new Response(html, { headers });
+}
+
 /**
  * Build a redirect Response with optional Set-Cookie header.
  * Avoids h3's setCookie which doesn't play well with returning
@@ -43,26 +60,45 @@ export function htmlFragment(markup: unknown): Response {
  */
 export function redirectWithCookie(
   location: string,
-  cookie?: { name: string; value: string; maxAge: number },
+  cookie?: CookieSpec | CookieSpec[],
   status = 302,
 ): Response {
   const headers = new Headers({ location });
   if (cookie) {
-    headers.set(
-      "set-cookie",
-      `${cookie.name}=${cookie.value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${cookie.maxAge}`,
-    );
+    for (const item of Array.isArray(cookie) ? cookie : [cookie]) {
+      headers.append("set-cookie", serializeCookie(item));
+    }
   }
   return new Response(null, { status, headers });
 }
 
 /** Build a redirect that clears a cookie. */
-export function redirectClearCookie(location: string, cookieName: string): Response {
+export function redirectClearCookie(location: string, cookieName: string | string[]): Response {
+  const headers = new Headers({ location });
+  for (const name of Array.isArray(cookieName) ? cookieName : [cookieName]) {
+    headers.append("set-cookie", `${name}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
+  }
   return new Response(null, {
     status: 302,
-    headers: {
-      location,
-      "set-cookie": `${cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`,
-    },
+    headers,
   });
+}
+
+interface CookieSpec {
+  name: string;
+  value: string;
+  maxAge: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+}
+
+function serializeCookie(cookie: CookieSpec): string {
+  return [
+    `${cookie.name}=${cookie.value}`,
+    "Path=/",
+    cookie.httpOnly === false ? "" : "HttpOnly",
+    "SameSite=Strict",
+    cookie.secure ? "Secure" : "",
+    `Max-Age=${cookie.maxAge}`,
+  ].filter(Boolean).join("; ");
 }

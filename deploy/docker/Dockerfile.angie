@@ -5,4 +5,8 @@
 
 FROM nginx:alpine
 
+LABEL org.opencontainers.image.source="https://github.com/BetterCorp/BetterFrame" \
+      org.opencontainers.image.licenses="AGPL-3.0-only OR LicenseRef-BetterFrame-Commercial"
+
 COPY deploy/angie/betterframe.docker.conf /etc/nginx/conf.d/default.conf
+COPY LICENSE.md LICENSE-AGPL.txt LICENSE-COMMERCIAL.md /usr/share/licenses/betterframe/

@@ -32,7 +32,7 @@
   </div>
   <div class="form-tips">
     Fires when a display's active layout changes.
-    Listens on <code>POST /in/layout.changed</code> internally — no upstream
+    Listens on <code>POST /api/internal/layout.changed</code> internally — no upstream
     <code>http in</code> node required.
     Emits <code>msg.payload = {display_id, kiosk_id, layout_id, layout_name}</code> for the selected tenant.
     Leave Display ID blank to receive events from all displays.
@@ -41,7 +41,7 @@
 
 <script type="text/html" data-help-name="bf-trigger-layout-changed">
   <p>Fires when a display switches to a new layout (admin layout-switch).</p>
-  <p>Listens on <code>POST /in/layout.changed</code> internally — no upstream
+  <p>Listens on <code>POST /api/internal/layout.changed</code> internally — no upstream
   <code>http in</code> node needed.</p>
   <p>Select a <b>BF</b> config to scope this trigger to one tenant.</p>
   <p>Optional <b>Display ID</b> filter limits this node to a single display.</p>

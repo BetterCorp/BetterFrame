@@ -3,8 +3,8 @@
 # Triggers:
 #   - push to master       → auto-tag next patch from latest tag + -dev.<sha>,
 #                            create prerelease, invoke build.yml
-#   - push of v* tag       → infer channel from tag, auto-tag next patch,
-#                            create release (or update), invoke build.yml
+#   - push of v* tag       → build that exact version/channel and create or
+#                            update its release
 #
 # Build steps live in build.yml (reusable). This file only owns versioning
 # + release creation. Every channel builds the kiosk binary and Pi image.
@@ -32,8 +32,38 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Node-RED manager checks
+        env:
+          BF_NODERED_MANAGER_SECRET: 0123456789abcdef0123456789abcdef
+          BF_NODERED_MANAGER_SELF_TEST: "1"
+        run: |
+          node --check deploy/nodered-manager/manager.mjs
+          node deploy/nodered-manager/manager.mjs
+      - name: Image and RAUC script syntax
+        run: |
+          bash -n deploy/x86-image/build-image.sh
+          bash -n deploy/rauc/build-bundle.sh
+          bash -n deploy/rauc/hook.sh
+          bash -n deploy/rauc/betterframe-rauc-boot.sh
+          bash -n deploy/systemd/betterframe-seal-key.sh
+          bash -n deploy/systemd/betterframe-rauc-mark-good.sh
+          bash -n deploy/docker/server-entrypoint.sh
+          bash -n deploy/pi-gen/stage-betterframe-client/01-install-kiosk/01-run-chroot.sh
+
   # ---- Tag + release record -------------------------------------------------
   meta:
+    needs: validate
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.compute.outputs.version }}
@@ -58,6 +88,8 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             requested_tag="${GITHUB_REF#refs/tags/}"
             requested_version="${requested_tag#v}"
+            [[ "$requested_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(beta|dev)\.[0-9A-Za-z.-]+)?$ ]] \
+              || { echo "Invalid release tag: $requested_tag" >&2; exit 1; }
             if [[ "$requested_version" == *"-beta"* ]]; then
               channel=beta
             elif [[ "$requested_version" == *"-dev"* ]]; then
@@ -65,31 +97,19 @@ jobs:
             else
               channel=stable
             fi
+            version="$requested_version"
+            tag="$requested_tag"
           else
             channel=dev
+            latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
+              | head -1 || true)
+            if [ -z "$latest" ]; then latest="v0.0.0"; fi
+            base="${latest#v}"
+            base="${base%%-*}"
+            IFS=. read -r MAJ MIN PAT <<< "$base"
+            version="${MAJ}.${MIN}.$((PAT + 1))-dev.${short}"
+            tag="v${version}"
           fi
-
-          # Stable, beta, and dev all advance the patch number per build.
-          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
-            | head -1 || true)
-          if [ -z "$latest" ]; then latest="v0.0.0"; fi
-          base="${latest#v}"
-          base="${base%%-*}"
-          IFS=. read -r MAJ MIN PAT <<< "$base"
-          PAT=$((PAT + 1))
-
-          case "$channel" in
-            stable)
-              version="${MAJ}.${MIN}.${PAT}"
-              ;;
-            beta)
-              version="${MAJ}.${MIN}.${PAT}-beta.${short}"
-              ;;
-            dev)
-              version="${MAJ}.${MIN}.${PAT}-dev.${short}"
-              ;;
-          esac
-          tag="v${version}"
           build_image=true
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -105,8 +125,8 @@ jobs:
           CHANNEL: ${{ steps.compute.outputs.channel }}
         run: |
           set -e
-          # The workflow computes the release tag for all channels so every
-          # build bumps the patch version. A pushed tag only selects channel.
+          # Master builds create an annotated dev tag; pushed tags already
+          # identify the exact release to build.
           if ! git rev-parse "$TAG" >/dev/null 2>&1; then
             git config user.email "actions@github.com"
             git config user.name  "github-actions[bot]"

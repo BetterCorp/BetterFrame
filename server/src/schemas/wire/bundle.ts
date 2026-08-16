@@ -33,6 +33,7 @@ const bundleCamera = av.object(
     playback_password_encrypted: av.nullable(av.string()),
     event_source: av.string().minLength(1).maxLength(128),
     event_sink: av.string().minLength(1).maxLength(128),
+    event_callback_token: av.string().minLength(32).maxLength(128),
     stream_policy: av.string().minLength(1).maxLength(32),
     streams: av.array(cameraStream),
   },

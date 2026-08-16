@@ -2,7 +2,7 @@
  * Admin page routes — overview, cameras, kiosks, labels, etc.
  */
 import { type H3, readBody, getRouterParam, getRequestHeader } from "h3";
-import { htmlPage } from "./html-response.js";
+import { debugHtmlPage, htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { confirmPairing } from "../../shared/pairing.js";
 import { getCoordinator } from "../../shared/coordinator-registry.js";
@@ -61,6 +61,7 @@ import {
   type UpdateSchedule,
 } from "../../shared/update-schedule.js";
 import { currentTenantSchema, withDefaultTenant } from "../../shared/default-tenant.js";
+import { createOnvifCallbackToken } from "../../shared/onvif-callback-token.js";
 
 interface DiscoverAddStream {
   profile_name: string;
@@ -1120,7 +1121,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/entities", async (event) => {
     const user = event.context.user!;
-    syncDashboardsFromNodered(deps).catch(() => {});
+    syncDashboardsFromNodered(deps, event.context.tenant?.id ?? "default").catch(() => {});
     return htmlPage(EntitiesPage({
       user: user.username,
       entities: await deps.repo.listEntities(),
@@ -1307,7 +1308,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.get("/admin/kiosks", async (event) => {
     const user = event.context.user!;
     const kiosks = await deps.repo.listKiosks();
-    const pending = await deps.repo.listPendingPairingCodes();
+    const pending = event.context.originTenant?.slug === "default"
+      ? await deps.repo.listPendingPairingCodes()
+      : [];
     return htmlPage(KiosksPage({ user: user.username, kiosks, pendingCodes: pending }));
   });
 
@@ -1329,6 +1332,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         initialLabels,
         replaceKioskId,
         force,
+        tenant: event.context.tenant ? {
+          id: event.context.tenant.id,
+          slug: event.context.tenant.slug,
+          schemaName: event.context.tenant.schema_name,
+        } : undefined,
       }, event.context.obs);
       await audit(deps.repo, event as any, replaceKioskId ? "kiosk.replace" : "kiosk.pair", {
         resource_type: "kiosk",
@@ -1338,7 +1346,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     } catch (err) {
       const user = event.context.user!;
       const kiosks = await deps.repo.listKiosks();
-      const pending = await deps.repo.listPendingPairingCodes();
+      const pending = event.context.originTenant?.slug === "default"
+        ? await deps.repo.listPendingPairingCodes()
+        : [];
       return htmlPage(KiosksPage({
         user: user.username,
         kiosks,
@@ -2072,7 +2082,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (!cam) {
       return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
     }
+    const callback = createOnvifCallbackToken(deps.secrets, id);
+    await deps.repo.setCameraEventCallbackToken(id, callback.nonce, callback.hash);
     await deps.repo.setAllEventSubscriptionsStatus(id, "inactive", "pending");
+    notifyKiosks();
     return new Response(null, { status: 302, headers: { location: `/admin/cameras/${id}` } });
   });
 
@@ -2392,24 +2405,27 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // /ws/admin/debug/:kioskId and render output. The WS connection is
   // authenticated via the admin's API key.
   app.get("/admin/kiosks/:id/logs", async (event) => {
+    if (!event.context.user?.totp_enabled) {
+      return new Response("two-factor authentication is required for remote debug", { status: 403 });
+    }
     const id = (getRouterParam(event, "id") ?? "");
     const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
     if (kiosk.firmware_channel !== "dev" && kiosk.os_update_channel !== "dev") {
-      return htmlPage(`<html><body style="font-family:sans-serif;padding:2rem"><h2>Journal Logs Unavailable</h2><p>Remote debug requires firmware channel set to <strong>dev</strong>. Current channel: <strong>${kiosk.firmware_channel}</strong></p><a href="/admin/kiosks/${String(id)}">Back to kiosk</a></body></html>`);
+      return htmlPage(`<html><body style="font-family:sans-serif;padding:2rem"><h2>Journal Logs Unavailable</h2><p>Remote debug requires firmware channel set to <strong>dev</strong>. Current channel: <strong>${escapeHtml(kiosk.firmware_channel)}</strong></p><a href="/admin/kiosks/${encodeURIComponent(kiosk.id)}">Back to kiosk</a></body></html>`);
     }
     const user = event.context.user!;
     // Get or create an API key for the WS connection.
     // WS auth: browser sends session cookie automatically on WS upgrade.
     // Coordinator WS endpoint validates via resolveSession.
-    return htmlPage(`<html><head><title>Logs: ${kiosk.name}</title>
+    return debugHtmlPage(`<html><head><title>Logs: ${escapeHtml(kiosk.name)}</title>
       <style>body{margin:0;background:#111;color:#0f0;font-family:monospace;font-size:13px;padding:1rem}
       pre{white-space:pre-wrap;word-break:break-all}
       .controls{margin-bottom:1rem}
       button{background:#333;color:#fff;border:1px solid #555;padding:4px 12px;cursor:pointer;margin-right:8px}
       </style></head><body>
       <div class="controls">
-        <a href="/admin/kiosks/${id}" style="color:#0f0">← ${kiosk.name}</a>
+        <a href="/admin/kiosks/${encodeURIComponent(kiosk.id)}" style="color:#0f0">← ${escapeHtml(kiosk.name)}</a>
         <button id="btn-start">Start streaming</button>
         <button id="btn-stop">Stop</button>
         <button id="btn-clear">Clear</button>
@@ -2422,7 +2438,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         function connect(){
           // WS to coordinator — proxied through Angie at /ws/admin/debug/:id
           var proto=location.protocol==='https:'?'wss:':'ws:';
-          ws=new WebSocket(proto+'//'+location.host+'/admin/ws/debug/${id}');
+          ws=new WebSocket(proto+'//'+location.host+'/admin/ws/debug/${encodeURIComponent(kiosk.id)}');
           ws.onmessage=function(e){
             try{var m=JSON.parse(e.data);
               if(m.type==='journal-line'){log.textContent+=m.line+'\\n';log.scrollTop=log.scrollHeight;}
@@ -2443,15 +2459,18 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   app.get("/admin/kiosks/:id/terminal", async (event) => {
+    if (!event.context.user?.totp_enabled) {
+      return new Response("two-factor authentication is required for remote debug", { status: 403 });
+    }
     const id = (getRouterParam(event, "id") ?? "");
     const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
     if (kiosk.firmware_channel !== "dev" && kiosk.os_update_channel !== "dev") {
-      return htmlPage(`<html><body style="font-family:sans-serif;padding:2rem"><h2>Terminal Unavailable</h2><p>Remote terminal requires firmware channel set to <strong>dev</strong>. Current channel: <strong>${kiosk.firmware_channel}</strong></p><a href="/admin/kiosks/${String(id)}">Back to kiosk</a></body></html>`);
+      return htmlPage(`<html><body style="font-family:sans-serif;padding:2rem"><h2>Terminal Unavailable</h2><p>Remote terminal requires firmware channel set to <strong>dev</strong>. Current channel: <strong>${escapeHtml(kiosk.firmware_channel)}</strong></p><a href="/admin/kiosks/${encodeURIComponent(kiosk.id)}">Back to kiosk</a></body></html>`);
     }
     // WS auth: browser sends session cookie automatically on WS upgrade.
     // Coordinator WS endpoint validates via resolveSession.
-    return htmlPage(`<html><head><title>Terminal: ${kiosk.name}</title>
+    return debugHtmlPage(`<html><head><title>Terminal: ${escapeHtml(kiosk.name)}</title>
       <style>
         body{margin:0;background:#1a1a1a;color:#e0e0e0;font-family:'Cascadia Code','Fira Code',monospace;font-size:13px;padding:1rem}
         #term{height:calc(100vh - 100px);overflow-y:auto;background:#0d0d0d;padding:12px;border:1px solid #333;border-radius:4px}
@@ -2470,7 +2489,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         .cmd-line input{flex:1;background:transparent;border:none;color:#fff;outline:none;font-family:inherit;font-size:13px;padding:2px 0}
       </style></head><body>
       <div class="controls">
-        <a href="/admin/kiosks/${id}" style="color:#5fafff;text-decoration:none">← ${kiosk.name}</a>
+        <a href="/admin/kiosks/${encodeURIComponent(kiosk.id)}" style="color:#5fafff;text-decoration:none">← ${escapeHtml(kiosk.name)}</a>
         <button id="btn-request">Request Terminal</button>
         <input id="code-input" placeholder="Enter code from screen" style="display:none" />
         <button id="btn-auth" style="display:none">Auth</button>
@@ -2517,7 +2536,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
         function connect(){
           var proto=location.protocol==='https:'?'wss:':'ws:';
-          ws=new WebSocket(proto+'//'+location.host+'/admin/ws/debug/${id}');
+          ws=new WebSocket(proto+'//'+location.host+'/admin/ws/debug/${encodeURIComponent(kiosk.id)}');
           ws.onopen=function(){status.textContent='Connected';};
           ws.onmessage=function(e){
             try{var m=JSON.parse(e.data);
@@ -2625,7 +2644,6 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   };
   app.post("/admin/displays/:displayId/layout", displayLayoutSwitch);
   app.post("/admin/displays/:displayId/layout/:layoutId", displayLayoutSwitch);
-  app.get("/admin/displays/:displayId/layout/:layoutId", displayLayoutSwitch);
 
   const displayPower = async (event: any, state: "on" | "standby") => {
     const id = (getRouterParam(event, "id") ?? "");
@@ -3115,7 +3133,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Dashboard entity sync — pull tabs from Node-RED, mirror as entities --
   app.post("/admin/entities/sync-dashboards", async (event) => {
-    const result = await syncDashboardsFromNodered(deps);
+    const result = await syncDashboardsFromNodered(deps, event.context.tenant?.id ?? "default");
     if (isHtmxRequest(event)) {
       return htmlFragment(
         `<div class="flash flash-success">Synced: +${String(result.added)} added, ${String(result.updated)} updated, ${String(result.total)} total.</div>`,
@@ -3134,8 +3152,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
  */
 async function syncDashboardsFromNodered(
   deps: AdminDeps,
+  tenantId: string,
 ): Promise<{ added: number; updated: number; total: number }> {
-  const tabs = await deps.nodered.listDashboards();
+  const tabs = await deps.nodered.listDashboards(tenantId);
   let added = 0;
   let updated = 0;
   for (const tab of tabs) {

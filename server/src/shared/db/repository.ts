@@ -1769,6 +1769,7 @@ export class Repository {
       os_update_compatibility?: string | null;
       cpu_temp_c?: number | null;
       cpu_load_percent?: number | null;
+      gpu_load_percent?: number | null;
       fan_rpm?: number | null;
       fan_pwm?: number | null;
       memory_total_mb?: number | null;
@@ -1783,6 +1784,7 @@ export class Repository {
       network_interfaces_json?: string | null;
       logging_json?: string | null;
       partitions_json?: string | null;
+      renderer_telemetry_json?: string | null;
     },
   ): Promise<void> {
     await this._run(
@@ -1795,6 +1797,7 @@ export class Repository {
          os_update_compatibility = COALESCE(?, os_update_compatibility),
          cpu_temp_c = ?,
          cpu_load_percent = ?,
+         gpu_load_percent = ?,
          fan_rpm = ?,
          fan_pwm = ?,
          memory_total_mb = ?,
@@ -1808,7 +1811,8 @@ export class Repository {
          reported_hostname = COALESCE(?, reported_hostname),
          network_interfaces_json = COALESCE(?, network_interfaces_json),
          logging_json = COALESCE(?, logging_json),
-         partitions_json = COALESCE(?, partitions_json)
+         partitions_json = COALESCE(?, partitions_json),
+         renderer_telemetry_json = COALESCE(?, renderer_telemetry_json)
        WHERE id = ?`,
       [
         isoNow(),
@@ -1819,6 +1823,7 @@ export class Repository {
         patch.os_update_compatibility ?? null,
         patch.cpu_temp_c ?? null,
         patch.cpu_load_percent ?? null,
+        patch.gpu_load_percent ?? null,
         patch.fan_rpm ?? null,
         patch.fan_pwm ?? null,
         patch.memory_total_mb ?? null,
@@ -1833,6 +1838,7 @@ export class Repository {
         patch.network_interfaces_json ?? null,
         patch.logging_json ?? null,
         patch.partitions_json ?? null,
+        patch.renderer_telemetry_json ?? null,
         id,
       ],
     );
@@ -2183,14 +2189,16 @@ export class Repository {
     kioskId: string,
     version: string,
     error: string | null,
+    state?: Kiosk["os_update_state"],
   ): Promise<void> {
     await this._run(
       `UPDATE kiosks SET
          os_update_last_attempt_at = ?,
          os_update_last_attempt_version = ?,
-         os_update_last_error = ?
+         os_update_last_error = ?,
+         os_update_state = COALESCE(?, os_update_state)
        WHERE id = ?`,
-      [isoNow(), version, error, kioskId],
+      [isoNow(), version, error, state ?? null, kioskId],
     );
     void this.notify("kiosks", "update", kioskId);
   }
@@ -2665,6 +2673,14 @@ export class Repository {
     if (sets.length === 0) return;
     vals.push(id);
     await this._run(`UPDATE cameras SET ${sets.join(", ")} WHERE id = ?`, vals);
+    void this.notify("cameras", "update", id);
+  }
+
+  async setCameraEventCallbackToken(id: string, nonce: string, hash: string): Promise<void> {
+    await this._run(
+      "UPDATE cameras SET event_callback_nonce = ?, event_callback_token_hash = ? WHERE id = ?",
+      [nonce, hash, id],
+    );
     void this.notify("cameras", "update", id);
   }
 

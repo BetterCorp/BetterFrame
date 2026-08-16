@@ -32,7 +32,7 @@
   </div>
   <div class="form-tips">
     Triggers when a camera is created, updated, or deleted in admin.
-    Listens on <code>POST /in/camera.changed</code> internally — no upstream
+    Listens on <code>POST /api/internal/camera.changed</code> internally — no upstream
     <code>http in</code> node required.
     Emits <code>msg.payload = {camera_id, event}</code> for the selected tenant.
     Leave Camera ID blank to receive events from all cameras.
@@ -42,7 +42,7 @@
 <script type="text/html" data-help-name="bf-trigger-camera-changed">
   <p>Fires when a camera entity is created, updated, or deleted in admin
   (manual create, ONVIF import, edit, delete, enable/disable).</p>
-  <p>Listens on <code>POST /in/camera.changed</code> internally — no upstream
+  <p>Listens on <code>POST /api/internal/camera.changed</code> internally — no upstream
   <code>http in</code> node needed.</p>
   <p>Select a <b>BF</b> config to scope this trigger to one tenant.</p>
   <p>Optional <b>Camera ID</b> filter limits this node to a single camera.</p>

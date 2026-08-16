@@ -26,37 +26,14 @@ RUN npm run build
 # ---- Runtime ----
 FROM betterweb/service-base:9
 
+LABEL org.opencontainers.image.source="https://github.com/BetterCorp/BetterFrame" \
+      org.opencontainers.image.licenses="AGPL-3.0-only OR LicenseRef-BetterFrame-Commercial"
+
 ARG BF_SERVER_VERSION=dev
-ARG BF_DB_DRIVER=postgres
-ARG BF_PG_HOST=postgres
-ARG BF_PG_PORT=5432
-ARG BF_PG_DB=betterframe
-ARG BF_PG_USER=betterframe
-ARG BF_PG_PASSWORD=betterframe
-ARG BF_PG_POOL_MAX=10
-ARG BF_NODERED_URL=http://nodered:1880
-ARG BF_SELF_URL=http://server:18080
-ARG BF_FIRMWARE_SIGNING_KEY=
-ARG BF_FIRMWARE_IMPORT_API_KEY=
-ARG BF_OTA_IMPORT_API_KEY=
-ARG BF_MQTT_URL=
-ARG BF_MQTT_USERNAME=
-ARG BF_MQTT_PASSWORD=
-ARG BF_MQTT_TOPIC_PREFIX=betterframe
 
 RUN apk add --no-cache gettext ffmpeg
 
-RUN mkdir -p /var/lib/betterframe \
-    && { \
-      echo '#!/bin/sh'; \
-      echo 'chown -R 1000:1000 /var/lib/betterframe 2>/dev/null || true'; \
-      echo '# Find and exec the base image entrypoint or node directly'; \
-      echo 'if [ -f /root/entrypoint.sh ]; then exec /root/entrypoint.sh "$@"; fi'; \
-      echo 'if [ -f /usr/local/bin/entrypoint.sh ]; then exec /usr/local/bin/entrypoint.sh "$@"; fi'; \
-      echo 'if [ -f /home/bsb/entrypoint.sh ]; then exec /home/bsb/entrypoint.sh "$@"; fi'; \
-      echo 'exec node /home/bsb/lib/index.js "$@"'; \
-    } > /usr/local/bin/bf-entrypoint.sh \
-    && chmod +x /usr/local/bin/bf-entrypoint.sh
+RUN mkdir -p /var/lib/betterframe
 
 # Install plugin into BSB's node_modules (searched at /home/bsb/node_modules)
 # /mnt/bsb-plugins is a VOLUME in base image — writes lost at runtime
@@ -66,11 +43,10 @@ COPY --from=builder /app/server/lib /home/bsb/node_modules/betterframe/lib
 COPY --from=builder /app/node_modules /home/bsb/node_modules/betterframe/node_modules
 COPY --from=builder /app/tsconfig.base.json /home/bsb/node_modules/betterframe/tsconfig.base.json
 
-# Generate sec-config.yaml from template + build args
-COPY sec-config.template.yaml /tmp/sec-config.template.yaml
-RUN envsubst < /tmp/sec-config.template.yaml > /home/bsb/sec-config.yaml \
-    && chmod 444 /home/bsb/sec-config.yaml \
-    && rm /tmp/sec-config.template.yaml
+COPY sec-config.template.yaml /home/bsb/sec-config.template.yaml
+COPY LICENSE.md LICENSE-AGPL.txt LICENSE-COMMERCIAL.md /usr/share/licenses/betterframe/
+COPY deploy/docker/server-entrypoint.sh /usr/local/bin/bf-entrypoint.sh
+RUN chmod +x /usr/local/bin/bf-entrypoint.sh
 
 RUN echo "$BF_SERVER_VERSION" > /home/bsb/.bf-version
 

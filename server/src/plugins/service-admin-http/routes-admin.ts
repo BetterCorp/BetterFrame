@@ -62,6 +62,7 @@ import {
 } from "../../shared/update-schedule.js";
 import { currentTenantSchema, withDefaultTenant } from "../../shared/default-tenant.js";
 import { createOnvifCallbackToken } from "../../shared/onvif-callback-token.js";
+import { localTimeHtml } from "../../web-templates/layout.js";
 
 interface DiscoverAddStream {
   profile_name: string;
@@ -2115,10 +2116,6 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // ---- Camera live event feed (htmx fragment, polled every 5s) ---------------
-  const formatTimeShort = (iso: string) => {
-    try { return new Date(iso).toLocaleString("en-GB", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", day: "2-digit", month: "short" }); }
-    catch { return iso; }
-  };
   const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   app.get("/admin/cameras/:id/events", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
@@ -2135,7 +2132,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       let payload = "";
       try { payload = JSON.stringify(e.payload, null, 1); } catch { payload = String(e.payload); }
       return `<tr>
-        <td style="font-size:0.8rem; white-space:nowrap">${formatTimeShort(e.received_at)}</td>
+        <td style="font-size:0.8rem; white-space:nowrap">${localTimeHtml(e.received_at, "event")}</td>
         <td><code style="font-size:0.75rem">${escapeHtml(e.topic)}</code></td>
         <td style="font-size:0.75rem">${escapeHtml(e.source_type)}</td>
         <td style="max-width:300px"><pre style="margin:0; font-size:0.7rem; max-height:80px; overflow:auto; white-space:pre-wrap; word-break:break-all; background:#fafafa; padding:2px 4px">${escapeHtml(payload)}</pre></td>
@@ -2328,7 +2325,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   const operatorStationsFragment = (kioskId: string, stations: Array<{ id: string; name: string; created_at: number; revoked: boolean }>) => {
     if (!stations.length) return `<div class="form-hint">No enrolled stations.</div>`;
     return stations.map((station) => `<div style="display:flex;align-items:center;gap:.5rem;padding:.45rem 0;border-bottom:1px solid #eee">
-      <span style="flex:1"><strong>${escapeHtml(station.name)}</strong><br><small>${escapeHtml(new Date(station.created_at * 1000).toLocaleString())}${station.revoked ? " · revoked" : ""}</small></span>
+      <span style="flex:1"><strong>${escapeHtml(station.name)}</strong><br><small>${localTimeHtml(new Date(station.created_at * 1000).toISOString(), "full")}${station.revoked ? " · revoked" : ""}</small></span>
       ${station.revoked ? "" : `<form hx-post="/admin/kiosks/${encodeURIComponent(kioskId)}/operator-console/stations/${encodeURIComponent(station.id)}/revoke" hx-target="#operator-stations-${encodeURIComponent(kioskId)}" hx-swap="innerHTML"><button class="btn btn-danger" type="submit">Revoke</button></form>`}
     </div>`).join("");
   };

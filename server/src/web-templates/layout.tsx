@@ -25,6 +25,91 @@ export interface PageProps {
   children?: string | string[];
 }
 
+export type LocalTimeFormat = "short" | "event" | "full";
+
+const localTimeFallbackOptions: Record<LocalTimeFormat, Intl.DateTimeFormatOptions> = {
+  short: { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" },
+  event: {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: "UTC",
+  },
+  full: { dateStyle: "medium", timeStyle: "medium", timeZone: "UTC" },
+};
+
+export function formatTimeFallback(value: string, format: LocalTimeFormat = "short"): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en-US", localTimeFallbackOptions[format]).format(date);
+}
+
+export function localTimeData(
+  value: string,
+  format: LocalTimeFormat = "short",
+  prefix?: string,
+  suffix?: string,
+): Record<string, string> {
+  return {
+    "data-bf-local-time": format,
+    "data-bf-local-time-value": value,
+    ...(prefix ? { "data-bf-local-time-prefix": prefix } : {}),
+    ...(suffix ? { "data-bf-local-time-suffix": suffix } : {}),
+  };
+}
+
+export function LocalTime(props: { value: string; format?: LocalTimeFormat }) {
+  const format = props.format ?? "short";
+  const date = new Date(props.value);
+  if (Number.isNaN(date.getTime())) {
+    const escaped = props.value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return <time>{escaped}</time>;
+  }
+  const utc = date.toISOString();
+  return (
+    <time datetime={utc} title={`UTC: ${utc}`} {...localTimeData(utc, format)}>
+      {formatTimeFallback(utc, format)}
+    </time>
+  );
+}
+
+export function localTimeHtml(value: string, format: LocalTimeFormat = "short"): string {
+  return String(LocalTime({ value, format }));
+}
+
+const localTimeScript = `
+(function () {
+  var formats = {
+    short: { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" },
+    event: { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false },
+    full: { dateStyle: "medium", timeStyle: "medium" }
+  };
+
+  function localize(root) {
+    var nodes = [];
+    if (root && root.matches && root.matches("[data-bf-local-time]")) nodes.push(root);
+    if (root && root.querySelectorAll) nodes = nodes.concat(Array.from(root.querySelectorAll("[data-bf-local-time]")));
+    nodes.forEach(function (element) {
+      var value = element.getAttribute("data-bf-local-time-value") || element.getAttribute("datetime");
+      var date = new Date(value || "");
+      if (Number.isNaN(date.getTime())) return;
+      var format = element.getAttribute("data-bf-local-time") || "short";
+      var rendered = new Intl.DateTimeFormat(undefined, formats[format] || formats.short).format(date);
+      var prefix = element.getAttribute("data-bf-local-time-prefix") || "";
+      var suffix = element.getAttribute("data-bf-local-time-suffix") || "";
+      element.textContent = prefix + rendered + suffix;
+      element.title = "UTC: " + date.toISOString();
+    });
+  }
+
+  localize(document);
+  document.addEventListener("htmx:afterSwap", function (event) { localize(event.detail && event.detail.target); });
+  document.addEventListener("htmx:oobAfterSwap", function (event) { localize(event.detail && event.detail.target); });
+})();`;
+
 // ---- Components -------------------------------------------------------------
 
 function NavItem(props: { href: string; label: string; icon: string; active?: boolean; coreOnly?: boolean }) {
@@ -157,6 +242,7 @@ export function Layout(props: PageProps) {
           )}
         </div>
         <script src="/static/htmx.min.js"></script>
+        <script>{js(localTimeScript)}</script>
       </body>
     </html>
   );

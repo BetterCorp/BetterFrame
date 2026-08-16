@@ -2,7 +2,7 @@
  * Admin page templates: overview, cameras, kiosks, account, etc.
  */
 import { js } from "jsx-htmx";
-import { Layout } from "./layout.js";
+import { formatTimeFallback, Layout, LocalTime, localTimeData } from "./layout.js";
 import type {
   AuditEntry,
   Camera,
@@ -70,7 +70,7 @@ export function IoBoxesPage(props: IoBoxPageProps) {
                   <td>{display ? <a href={`/admin/displays/${display.id}`}>{display.name}</a> : <span style="color:#999">unassigned</span>}</td>
                   <td><span class="badge badge-gray">{box.route_mode}</span></td>
                   <td>{box.firmware_version ?? "—"}</td>
-                  <td>{box.last_seen_at ? formatTime(box.last_seen_at) : "never"}</td>
+                  <td>{box.last_seen_at ? <LocalTime value={box.last_seen_at} /> : "never"}</td>
                 </tr>
               );
             })}
@@ -88,7 +88,7 @@ export function IoBoxesPage(props: IoBoxPageProps) {
               <tr>
                 <td><code>{s.serial}</code></td>
                 <td>{modelById.get(s.model_id)?.name ?? s.model_id}</td>
-                <td>{s.last_seen_at ? formatTime(s.last_seen_at) : "never"}</td>
+                <td>{s.last_seen_at ? <LocalTime value={s.last_seen_at} /> : "never"}</td>
                 <td>{s.last_seen_at ? <span class="badge badge-green">active unpaired</span> : <span class="badge badge-gray">inactive unpaired</span>}</td>
               </tr>
             ))}
@@ -108,7 +108,7 @@ export function IoBoxesPage(props: IoBoxPageProps) {
                 <td>{r.channel}</td>
                 <td>{r.model_id ? (modelById.get(r.model_id)?.name ?? r.model_id) : "all models"}</td>
                 <td>{String(r.size_bytes)} bytes</td>
-                <td>{formatTime(r.uploaded_at)}</td>
+                <td><LocalTime value={r.uploaded_at} /></td>
                 <td>{r.yanked_at ? <span class="badge badge-gray">yanked</span> : <span class="badge badge-green">active</span>}</td>
               </tr>
             ))}
@@ -208,7 +208,7 @@ export function IoBoxSerialsPage(props: { user: string; serials: IoBoxSerial[]; 
         <div class="table-wrap">
           <table>
             <thead><tr><th>Serial</th><th>Model</th><th>Pairing</th><th>Last Seen</th></tr></thead>
-            <tbody>{props.serials.length === 0 ? <tr><td colspan="4" style="text-align:center; color:#999; padding:2rem">No serials registered</td></tr> : props.serials.map((s) => <tr><td><code>{s.serial}</code></td><td>{modelById.get(s.model_id)?.name ?? s.model_id}</td><td>{s.paired_iobox_id ? <span class="badge badge-green">paired</span> : <span class="badge badge-gray">unpaired</span>}</td><td>{s.last_seen_at ? formatTime(s.last_seen_at) : "never"}</td></tr>)}</tbody>
+            <tbody>{props.serials.length === 0 ? <tr><td colspan="4" style="text-align:center; color:#999; padding:2rem">No serials registered</td></tr> : props.serials.map((s) => <tr><td><code>{s.serial}</code></td><td>{modelById.get(s.model_id)?.name ?? s.model_id}</td><td>{s.paired_iobox_id ? <span class="badge badge-green">paired</span> : <span class="badge badge-gray">unpaired</span>}</td><td>{s.last_seen_at ? <LocalTime value={s.last_seen_at} /> : "never"}</td></tr>)}</tbody>
           </table>
         </div>
         <form method="post" action="/admin/iobox/serials" class="card">
@@ -246,7 +246,7 @@ export function IoBoxDetailPage(props: { user: string; box: IoBox; model: IoBoxM
           <p>Firmware: {box.firmware_version ?? "—"}</p>
           {box.firmware_last_attempt_version ? <p>Last OTA: {box.firmware_last_attempt_version}{box.firmware_last_error ? <span style="color:#a00"> — {box.firmware_last_error}</span> : null}</p> : null}
           <p>Config: {String(box.config_applied_version)} / {String(box.config_version)}</p>
-          <p>Last seen: {box.last_seen_at ? formatTime(box.last_seen_at) : "never"}</p>
+          <p>Last seen: {box.last_seen_at ? <LocalTime value={box.last_seen_at} /> : "never"}</p>
           <p>IP: {box.local_last_ip ?? "—"}</p>
         </div>
       </div>
@@ -362,7 +362,7 @@ export function OverviewPage(props: OverviewProps) {
             ) : (
               props.events.map((ev) => (
                 <tr>
-                  <td style="white-space:nowrap; font-size:0.8rem">{formatTime(ev.received_at)}</td>
+                  <td style="white-space:nowrap; font-size:0.8rem"><LocalTime value={ev.received_at} format="event" /></td>
                   <td>{ev.topic}</td>
                   <td><span class="badge badge-gray">{ev.source_type}</span></td>
                   <td style="font-size:0.8rem; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
@@ -1201,7 +1201,7 @@ export function KiosksPage(props: KiosksProps) {
                     <tr>
                       <td><a href={`/admin/kiosks/${k.id}`}><strong>{k.name}</strong></a></td>
                       <td style="font-size:0.85rem">{k.hardware_model ?? "—"}</td>
-                      <td style="font-size:0.85rem; white-space:nowrap">{k.last_seen_at ? formatTime(k.last_seen_at) : "Never"}</td>
+                      <td style="font-size:0.85rem; white-space:nowrap">{k.last_seen_at ? <LocalTime value={k.last_seen_at} /> : "Never"}</td>
                       <td>
                         {k.enabled
                           ? <span class="badge badge-green">Active</span>
@@ -1241,7 +1241,12 @@ export function KiosksPage(props: KiosksProps) {
                 <select id="replace_kiosk_id" name="replace_kiosk_id" class="form-input">
                   <option value="">-- No, this is a new kiosk --</option>
                   {props.kiosks.map((k) => (
-                    <option value={String(k.id)}>{k.name}{k.last_seen_at ? ` (last seen ${formatTime(k.last_seen_at)})` : " (never seen)"}</option>
+                    <option
+                      value={String(k.id)}
+                      {...(k.last_seen_at ? localTimeData(k.last_seen_at, "short", `${k.name} (last seen `, ")") : {})}
+                    >
+                      {k.last_seen_at ? `${k.name} (last seen ${formatTimeFallback(k.last_seen_at)})` : `${k.name} (never seen)`}
+                    </option>
                   ))}
                 </select>
                 <div class="form-hint">
@@ -1276,7 +1281,7 @@ export function KiosksPage(props: KiosksProps) {
                     <div style="font-size:0.8rem; padding:0.4rem 0; border-top:1px dashed #eee">
                       <div style="display:flex; justify-content:space-between">
                         <code style="font-size:0.95rem">{pc.code}</code>
-                        <span style="color:#666">expires {formatTime(pc.expires_at)}</span>
+                        <span style="color:#666">expires <LocalTime value={pc.expires_at} /></span>
                       </div>
                       <div style="color:#666; margin-top:0.2rem">
                         {pc.kiosk_proposed_name ? <>name: <code>{pc.kiosk_proposed_name}</code></> : "(no name)"}
@@ -1592,7 +1597,7 @@ export function CameraEditPage(props: CameraEditProps) {
                 <div><strong>Stream URL:</strong> <code style="font-size:0.8rem; word-break:break-all">{cam.cloud_stream_url}</code></div>
               )}
               <div><strong>Status:</strong> {cam.enabled ? <span class="badge badge-green">Enabled</span> : <span class="badge badge-red">Disabled</span>}</div>
-              <div><strong>Last seen:</strong> {cam.last_seen_at ? formatTime(cam.last_seen_at) : "Never"}</div>
+              <div><strong>Last seen:</strong> {cam.last_seen_at ? <LocalTime value={cam.last_seen_at} /> : "Never"}</div>
             </div>
             <a href="/admin/cameras" class="btn btn-ghost" style="margin-top:1rem">Back</a>
           </div>
@@ -1778,7 +1783,7 @@ export function CameraEditPage(props: CameraEditProps) {
                               </span>
                             </td>
                             <td style="font-size:0.8rem; white-space:nowrap; color:#666">
-                              {sub?.last_event_at ? formatTime(sub.last_event_at) : "—"}
+                              {sub?.last_event_at ? <LocalTime value={sub.last_event_at} /> : "—"}
                             </td>
                             <td style="font-size:0.75rem; color:#ef4444; max-width:200px; overflow:hidden; text-overflow:ellipsis">
                               {sub?.error_message ?? ""}
@@ -2047,7 +2052,7 @@ function ManagedConfigCard(props: { kiosk: Kiosk }) {
         <div>
           Version: {String(k.managed_config_version)}
           {" · Applied: "}{String(k.managed_config_applied_version)}
-          {k.managed_config_applied_at ? <> ({formatTime(k.managed_config_applied_at)})</> : null}
+          {k.managed_config_applied_at ? <> (<LocalTime value={k.managed_config_applied_at} />)</> : null}
           {pending ? <span style="color:#b06; margin-left:0.5rem">pending push…</span> : null}
         </div>
         {k.managed_config_error
@@ -2254,9 +2259,9 @@ export function KioskEditPage(props: KioskEditProps) {
           </form>
           <div style="margin-top:1rem; color:#666; font-size:0.85rem">
             <div>Hardware: {k.hardware_model ?? "—"}</div>
-            <div>Paired: {k.paired_at ? formatTime(k.paired_at) : "—"}</div>
-            <div>Last seen: {k.last_seen_at ? formatTime(k.last_seen_at) : "Never"}</div>
-            <div>Client time: {logging.clientTime ? formatTime(logging.clientTime) : "—"}</div>
+            <div>Paired: {k.paired_at ? <LocalTime value={k.paired_at} /> : "—"}</div>
+            <div>Last seen: {k.last_seen_at ? <LocalTime value={k.last_seen_at} /> : "Never"}</div>
+            <div>Client time: {logging.clientTime ? <LocalTime value={logging.clientTime} /> : "—"}</div>
             <div>
               Axiom: {
                 logging.axiomEnabled == null
@@ -2278,8 +2283,8 @@ export function KioskEditPage(props: KioskEditProps) {
                 {logging.axiomEventsReceived != null ? `Events: ${logging.axiomEventsReceived}` : null}
                 {logging.axiomFlushCount != null ? ` · Flushes: ${logging.axiomFlushCount}` : null}
                 {logging.axiomErrorCount ? ` · Errors: ${logging.axiomErrorCount}` : null}
-                {logging.axiomLastFlush ? ` · Last flush: ${formatTime(logging.axiomLastFlush)}` : null}
-                {logging.axiomLastAttempt ? ` · Last attempt: ${formatTime(logging.axiomLastAttempt)}` : null}
+                {logging.axiomLastFlush ? <> · Last flush: <LocalTime value={logging.axiomLastFlush} /></> : null}
+                {logging.axiomLastAttempt ? <> · Last attempt: <LocalTime value={logging.axiomLastAttempt} /></> : null}
               </div>
             ) : null}
           </div>
@@ -2649,7 +2654,7 @@ export function KioskEditPage(props: KioskEditProps) {
                     return (
                       <tr>
                         <td style="font-size:0.8rem; white-space:nowrap; color:#666; font-family:monospace">
-                          {log.received_at.replace("T", " ").replace(/\.\d+Z$/, "Z")}
+                          <LocalTime value={log.received_at} format="event" />
                         </td>
                         <td><span class={`badge ${levelBadge}`}>{log.level}</span></td>
                         <td>
@@ -3624,7 +3629,7 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
           <div style="color:#666; font-size:0.85rem; margin-bottom:1rem">
             <div>Index: {String(d.index)}</div>
             <div>Resolution: {String(d.width_px)}x{String(d.height_px)} <span style="color:#999">(reported by kiosk)</span></div>
-            <div>Power: {powerBadge(d.actual_power_state)} {d.actual_power_state_at ? <span style="color:#999">as of {formatTime(d.actual_power_state_at)}</span> : ""}</div>
+            <div>Power: {powerBadge(d.actual_power_state)} {d.actual_power_state_at ? <span style="color:#999">as of <LocalTime value={d.actual_power_state_at} /></span> : ""}</div>
             {d.kiosk_id && (
               <div>Kiosk: <a href={`/admin/kiosks/${d.kiosk_id}`}>{props.kioskName ?? `#${String(d.kiosk_id)}`}</a></div>
             )}
@@ -3830,20 +3835,6 @@ function maskRtspPassword(uri: string): string {
   return uri.replace(/(rtsp:\/\/[^:]+:)([^@]+)(@)/, "$1**********$3");
 }
 
-function formatTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
-}
-
 // ---- System Health ----------------------------------------------------------
 
 interface SystemHealthRow {
@@ -3957,7 +3948,7 @@ export function SystemHealthPage(props: SystemHealthPageProps) {
                         ? <span class="badge badge-green">Online</span>
                         : <span class="badge badge-red">Offline</span>}
                     </td>
-                    <td style="font-size:0.85rem; white-space:nowrap">{k.last_seen_at ? formatTime(k.last_seen_at) : "Never"}</td>
+                    <td style="font-size:0.85rem; white-space:nowrap">{k.last_seen_at ? <LocalTime value={k.last_seen_at} /> : "Never"}</td>
                     <td>{tempBadge(k.cpu_temp_c)}</td>
                     <td style="font-size:0.85rem">{percentText(k.cpu_load_percent)}</td>
                     <td style="font-size:0.85rem">{mbPair(k.memory_used_mb, k.memory_total_mb)}</td>
@@ -4084,7 +4075,7 @@ export function FirmwarePage(props: FirmwarePageProps) {
                   </td>
                   <td style="font-size:0.85rem">{Math.round(r.size_bytes / 1024)} KiB</td>
                   <td style="font-family:monospace; font-size:0.75rem">{r.sha256.slice(0, 12)}…</td>
-                  <td style="font-size:0.85rem; white-space:nowrap">{formatTime(r.uploaded_at)}</td>
+                  <td style="font-size:0.85rem; white-space:nowrap"><LocalTime value={r.uploaded_at} /></td>
                   <td>
                     {r.yanked_at ? (
                       <span style="color:#999; font-size:0.8rem">yanked</span>
@@ -4142,7 +4133,7 @@ export function KioskFirmwarePanel(props: KioskFirmwarePanelProps) {
         {k.firmware_last_attempt_version && (
           <div>
             Last attempt: <code>{k.firmware_last_attempt_version}</code>
-            {k.firmware_last_attempt_at && <span> at {formatTime(k.firmware_last_attempt_at)}</span>}
+            {k.firmware_last_attempt_at && <span> at <LocalTime value={k.firmware_last_attempt_at} /></span>}
             {k.firmware_last_error && <span style="color:#a00"> — {k.firmware_last_error}</span>}
           </div>
         )}
@@ -4424,7 +4415,7 @@ export function FirmwareRolloutsPage(props: FirmwareRolloutsPageProps) {
                     <td><span class={`badge ${r.state === "active" ? "badge-green" : r.state === "paused" ? "badge-yellow" : r.state === "complete" ? "badge-gray" : "badge-blue"}`}>{r.state}</span></td>
                     <td>{String(r.percentage)}%</td>
                     <td style="font-size:0.85rem">{targetSummary}</td>
-                    <td style="font-size:0.85rem; white-space:nowrap">{formatTime(r.created_at)}</td>
+                    <td style="font-size:0.85rem; white-space:nowrap"><LocalTime value={r.created_at} /></td>
                     <td>
                       <form method="post" action={`/admin/firmware/rollouts/${r.id}/state`} style="display:inline">
                         <input type="hidden" name="state" value={r.state === "paused" ? "active" : "paused"} />
@@ -4487,7 +4478,7 @@ export function AuditLogPage(props: AuditLogPageProps) {
             ) : (
               props.entries.map((e) => (
                 <tr>
-                  <td style="font-size:0.8rem; white-space:nowrap">{formatTime(e.ts)}</td>
+                  <td style="font-size:0.8rem; white-space:nowrap"><LocalTime value={e.ts} format="event" /></td>
                   <td style="font-size:0.85rem">
                     <span class="badge badge-gray">{e.actor_type}</span>
                     {e.actor_label && <span style="margin-left:0.25rem">{e.actor_label}</span>}
@@ -4627,7 +4618,7 @@ export function OsUpdatePage(props: OsUpdatePageProps) {
                   <td style="font-family:monospace; font-size:0.8rem">{r.compatibility}</td>
                   <td style="font-size:0.85rem">{Math.round(r.size_bytes / 1024 / 1024)} MiB</td>
                   <td style="font-family:monospace; font-size:0.75rem">{r.sha256.slice(0, 12)}…</td>
-                  <td style="font-size:0.85rem; white-space:nowrap">{formatTime(r.uploaded_at)}</td>
+                  <td style="font-size:0.85rem; white-space:nowrap"><LocalTime value={r.uploaded_at} /></td>
                   <td>
                     {r.yanked_at ? (
                       <span style="color:#999; font-size:0.8rem">yanked</span>
@@ -4753,7 +4744,7 @@ export function OsUpdateRolloutsPage(props: OsUpdateRolloutsPageProps) {
                     <td><span class={`badge ${r.state === "active" ? "badge-green" : r.state === "paused" ? "badge-yellow" : r.state === "complete" ? "badge-gray" : "badge-blue"}`}>{r.state}</span></td>
                     <td>{String(r.percentage)}%</td>
                     <td style="font-size:0.85rem">{targetSummary}</td>
-                    <td style="font-size:0.85rem; white-space:nowrap">{formatTime(r.created_at)}</td>
+                    <td style="font-size:0.85rem; white-space:nowrap"><LocalTime value={r.created_at} /></td>
                     <td>
                       <form method="post" action={`/admin/os-updates/rollouts/${r.id}/state`} style="display:inline">
                         <input type="hidden" name="state" value={r.state === "paused" ? "active" : "paused"} />
@@ -4883,7 +4874,7 @@ export function CloudAccountsPage(props: CloudAccountsPageProps) {
                       <td>{vendorLabel}</td>
                       <td>{String(a.camera_count)}</td>
                       <td style="font-size:0.85rem">
-                        {a.last_sync_at ? formatTime(a.last_sync_at) : "—"}
+                        {a.last_sync_at ? <LocalTime value={a.last_sync_at} /> : "—"}
                         {a.last_sync_error && (
                           <div style="color:#c00; font-size:0.8rem">{a.last_sync_error}</div>
                         )}
@@ -4925,7 +4916,7 @@ export function KioskOsUpdatePanel(props: KioskOsUpdatePanelProps) {
         {k.os_update_last_attempt_version && (
           <div>
             Last attempt: <code>{k.os_update_last_attempt_version}</code>
-            {k.os_update_last_attempt_at && <span> at {formatTime(k.os_update_last_attempt_at)}</span>}
+            {k.os_update_last_attempt_at && <span> at <LocalTime value={k.os_update_last_attempt_at} /></span>}
             {k.os_update_last_error && <span style="color:#a00"> — {k.os_update_last_error}</span>}
           </div>
         )}
@@ -5233,7 +5224,7 @@ export function SettingsPage(props: SettingsPageProps) {
                   <tr>
                     <td>{a.name}</td>
                     <td>{String(a.screen_count ?? 0)}</td>
-                    <td style="font-size:0.85rem">{a.last_sync_at ? formatTime(a.last_sync_at) : "Never"}</td>
+                    <td style="font-size:0.85rem">{a.last_sync_at ? <LocalTime value={a.last_sync_at} /> : "Never"}</td>
                     <td>
                       <form method="POST" action={`/admin/ablesign/${String(a.id)}/delete`} style="display:inline">
                         <button type="submit" class="btn btn-sm btn-ghost" style="color:#c00">Remove</button>
@@ -5323,7 +5314,7 @@ export function AbleSignPage(props: AbleSignPageProps) {
                     <td><a href={`/admin/ablesign/${String(a.id)}/screens`}>{a.name}</a></td>
                     <td>{String(a.screen_count ?? 0)}</td>
                     <td style="font-size:0.85rem">
-                      {a.last_sync_at ? formatTime(a.last_sync_at) : "Never"}
+                      {a.last_sync_at ? <LocalTime value={a.last_sync_at} /> : "Never"}
                       {a.last_sync_error && <span style="color:red" title={a.last_sync_error}>{" (error)"}</span>}
                     </td>
                     <td style="display:flex; gap:0.25rem">
@@ -5494,7 +5485,7 @@ export function AbleSignScreenDetailPage(props: AbleSignScreenDetailPageProps) {
           <div>{"Status: "}{s.online ? "Online" : "Offline"}</div>
           <div>{"Source: "}{props.entity ? "Internal" : "External"}</div>
           {props.entity ? <div>{"Entity: "}<a href={`/admin/entities/${String(props.entity.id)}`}>{entityDisplayName(props.entity)}</a></div> : ""}
-          {r?.heartbeatTime ? <div>{"Last heartbeat: "}{formatTime(r.heartbeatTime)}</div> : ""}
+          {r?.heartbeatTime ? <div>{"Last heartbeat: "}<LocalTime value={r.heartbeatTime} /></div> : ""}
           {r?.timezone ? <div>{"Timezone: "}{String(r.timezone)}</div> : ""}
         </div>
       </div>

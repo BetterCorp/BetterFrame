@@ -148,6 +148,9 @@ jobs:
   # ---- Build assets ---------------------------------------------------------
   build:
     needs: meta
+    permissions:
+      actions: read
+      contents: write
     uses: ./.github/workflows/build.yml
     with:
       version: ${{ needs.meta.outputs.version }}

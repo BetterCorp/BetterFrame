@@ -7,6 +7,7 @@
 import { Repository } from "./repository.js";
 import type { DbAdapter } from "./db-adapter.js";
 import type { DbConfig } from "./config.js";
+import { mirrorPlatformAdmins } from "./platform-admin.js";
 
 interface DbLog {
   info(msg: string): void;
@@ -150,6 +151,7 @@ export async function createTenantSchema(
         );
       }
     }
+    await mirrorPlatformAdmins(adapter, [schemaName]);
   } finally {
     await adapter.setSearchPath("public");
   }

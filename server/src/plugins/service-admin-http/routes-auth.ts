@@ -9,6 +9,7 @@ import { audit } from "../../shared/audit.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
 import { LoginBody, TotpBody, validateBody } from "../../shared/api-schemas.js";
 import { csrfRequestIsValid, requestOriginIsValid } from "../../shared/csrf.js";
+import type { User } from "../../shared/types.js";
 
 
 export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
@@ -17,6 +18,10 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
   // schema extractor doesn't evaluate at module load.
   const loginGuard = createRateLimiter({ windowMs: 60_000, max: 8 });
   const secondFactorGuard = createRateLimiter({ windowMs: 60_000, max: 8 });
+  const updateAuthenticatedUser = (user: User, patch: Partial<User>) =>
+    user.role === "admin"
+      ? deps.repo.updatePlatformAdmin(user.id, patch)
+      : deps.repo.updateUser(user.id, patch);
   // ---- Login ----------------------------------------------------------------
 
   app.get("/auth/login", (event) => {
@@ -69,7 +74,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       if (count >= deps.auth.config.loginLockoutThreshold) {
         patch["locked_until"] = new Date(Date.now() + deps.auth.config.loginLockoutSeconds * 1000).toISOString();
       }
-      await deps.repo.updateUser(user.id, patch);
+      await updateAuthenticatedUser(user, patch);
       await audit(deps.repo, event as any, "user.login", {
         result: "failed",
         actor_type: "system",
@@ -79,7 +84,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       return htmlPage(LoginPage({ error: "Invalid credentials.", username }));
     }
 
-    await deps.repo.updateUser(user.id, {
+    await updateAuthenticatedUser(user, {
       failed_login_count: 0,
       locked_until: null,
       last_login_at: new Date().toISOString(),
@@ -226,7 +231,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
     }
 
     await deps.repo.adapter.withSearchPath(resolved.tenant.schema_name, async () => {
-      await deps.repo.updateUser(user.id, {
+      await updateAuthenticatedUser(user, {
         recovery_codes_hashed: result.remaining,
       });
       await deps.repo.setSessionTotpPending(session.id, false);
@@ -248,6 +253,6 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
           deps.auth.revokeSession(resolved.session.id));
       }
     }
-    return redirectClearCookie("/auth/login", [deps.cookieName, "betterframe_csrf"]);
+    return redirectClearCookie("/auth/login", [deps.cookieName, "betterframe_csrf", "bf_tenant"]);
   });
 }

@@ -1,22 +1,40 @@
 /**
  * Account management routes — password change, TOTP enrollment.
  */
-import { type H3, readBody } from "h3";
+import { type H3, type H3Event, readBody } from "h3";
 import { htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { AccountPage, TotpEnrollPage } from "../../web-templates/admin-pages.js";
+import type { User } from "../../shared/types.js";
 
 export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
+  const outsideDefaultTenant = (event: H3Event) =>
+    event.context.tenant?.slug !== "default";
+  const rejectTenantMutation = (event: H3Event) =>
+    outsideDefaultTenant(event)
+      ? new Response(null, { status: 302, headers: { location: "/admin/account" } })
+      : null;
+  const updateAuthenticatedUser = (user: User, patch: Partial<User>) =>
+    user.role === "admin"
+      ? deps.repo.updatePlatformAdmin(user.id, patch)
+      : deps.repo.updateUser(user.id, patch);
+
   // ---- Account page ---------------------------------------------------------
 
   app.get("/admin/account", (event) => {
     const user = event.context.user!;
-    return htmlPage(AccountPage({ user: user.username, totpEnabled: user.totp_enabled }));
+    return htmlPage(AccountPage({
+      user: user.username,
+      totpEnabled: user.totp_enabled,
+      rootRequired: outsideDefaultTenant(event),
+    }));
   });
 
   // ---- Change password ------------------------------------------------------
 
   app.post("/admin/account/password", async (event) => {
+    const tenantRedirect = rejectTenantMutation(event);
+    if (tenantRedirect) return tenantRedirect;
     const user = event.context.user!;
     const body = await readBody<{ current_password?: string; new_password?: string }>(event);
     const current = body?.current_password ?? "";
@@ -48,10 +66,11 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
     }
 
     const hash = await deps.auth.hashPassword(newPw);
-    deps.repo.updateUser(user.id, { password_hash: hash });
+    await updateAuthenticatedUser(user, { password_hash: hash });
 
     // Revoke all sessions (force re-login)
-    deps.repo.revokeAllSessionsForUser(user.id);
+    if (user.role === "admin") await deps.repo.revokePlatformAdminSessions(user.id);
+    else await deps.repo.revokeAllSessionsForUser(user.id);
 
     return new Response(null, {
       status: 302,
@@ -61,7 +80,9 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- TOTP: begin enrollment -----------------------------------------------
 
-  app.post("/admin/account/totp/begin", (event) => {
+  app.post("/admin/account/totp/begin", async (event) => {
+    const tenantRedirect = rejectTenantMutation(event);
+    if (tenantRedirect) return tenantRedirect;
     const user = event.context.user!;
 
     if (user.totp_enabled) {
@@ -78,7 +99,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
 
     // Store unconfirmed secret + codes
     const encrypted = deps.auth.encryptTotpSecret(secret);
-    deps.repo.updateUser(user.id, {
+    await updateAuthenticatedUser(user, {
       totp_secret_encrypted: encrypted,
     });
 
@@ -93,6 +114,8 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
   // ---- TOTP: confirm enrollment ---------------------------------------------
 
   app.post("/admin/account/totp/confirm", async (event) => {
+    const tenantRedirect = rejectTenantMutation(event);
+    if (tenantRedirect) return tenantRedirect;
     const user = event.context.user!;
     const body = await readBody<{ code?: string; recovery_codes?: string }>(event);
     const code = (body?.code ?? "").trim().replace(/\s/g, "");
@@ -128,7 +151,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
     const codes: string[] = JSON.parse(codesJson);
     const hashed = await deps.auth.hashRecoveryCodes(codes);
 
-    deps.repo.updateUser(user.id, {
+    await updateAuthenticatedUser(user, {
       totp_enabled: true,
       recovery_codes_hashed: hashed,
     });
@@ -142,6 +165,8 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
   // ---- TOTP: disable --------------------------------------------------------
 
   app.post("/admin/account/totp/disable", async (event) => {
+    const tenantRedirect = rejectTenantMutation(event);
+    if (tenantRedirect) return tenantRedirect;
     const user = event.context.user!;
     const body = await readBody<{ password?: string }>(event);
     const password = body?.password ?? "";
@@ -155,7 +180,7 @@ export function registerAccountRoutes(app: H3, deps: AdminDeps): void {
       }));
     }
 
-    deps.repo.updateUser(user.id, {
+    await updateAuthenticatedUser(user, {
       totp_enabled: false,
       totp_secret_encrypted: null,
       recovery_codes_hashed: [],

@@ -1308,6 +1308,7 @@ export function KiosksPage(props: KiosksProps) {
 interface AccountProps {
   user: string;
   totpEnabled: boolean;
+  rootRequired?: boolean;
   error?: string;
   success?: string;
 }
@@ -1326,6 +1327,20 @@ export function AccountPage(props: AccountProps) {
             : undefined
       }
     >
+      {props.rootRequired ? (
+        <div style="max-width:600px">
+          <div class="card">
+            <h2 style="margin:0 0 1rem; font-size:1.1rem">Default tenant required</h2>
+            <p style="color:#666; margin-bottom:1rem">
+              Platform account security settings can only be changed from the Default tenant.
+            </p>
+            <form method="post" action="/admin/tenants/switch">
+              <input type="hidden" name="tenant_slug" value="default" />
+              <button type="submit" class="btn btn-primary">Switch to Default</button>
+            </form>
+          </div>
+        </div>
+      ) : (
       <div style="max-width:600px">
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Change Password</h2>
@@ -1371,6 +1386,7 @@ export function AccountPage(props: AccountProps) {
           )}
         </div>
       </div>
+      )}
     </Layout>
   );
 }

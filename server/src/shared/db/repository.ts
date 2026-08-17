@@ -99,12 +99,32 @@ import {
   rowToUser,
 } from "./mappers.js";
 import { J, isoIn, isoNow, j, normalizeTimestamp } from "./util.js";
+import { mirrorPlatformAdmins, quotedSchema } from "./platform-admin.js";
 
 type NotifyFn = (
   table: string,
   op: "create" | "update" | "delete",
   id?: string | number,
 ) => Promise<void>;
+
+function userPatchSql(patch: Partial<User>): { columns: string[]; values: unknown[] } {
+  const columns: string[] = [];
+  const values: unknown[] = [];
+  const add = (column: string, value: unknown) => {
+    columns.push(`${column} = ?`);
+    values.push(value);
+  };
+  if ("password_hash" in patch) add("password_hash", patch.password_hash);
+  if ("totp_enabled" in patch) add("totp_enabled", Boolean(patch.totp_enabled));
+  if ("totp_secret_encrypted" in patch) add("totp_secret_encrypted", patch.totp_secret_encrypted);
+  if ("recovery_codes_hashed" in patch) add("recovery_codes_hashed", J(patch.recovery_codes_hashed));
+  if ("must_change_password" in patch) add("must_change_password", Boolean(patch.must_change_password));
+  if ("failed_login_count" in patch) add("failed_login_count", patch.failed_login_count);
+  if ("locked_until" in patch) add("locked_until", patch.locked_until);
+  if ("last_login_at" in patch) add("last_login_at", patch.last_login_at);
+  if ("is_active" in patch) add("is_active", Boolean(patch.is_active));
+  return { columns, values };
+}
 
 export class Repository {
   readonly adapter: DbAdapter;
@@ -370,47 +390,33 @@ export class Repository {
   }
 
   async updateUser(id: string, patch: Partial<User>): Promise<void> {
-    const cols: string[] = [];
-    const vals: unknown[] = [];
-    if ("password_hash" in patch) {
-      cols.push("password_hash = ?");
-      vals.push(patch.password_hash);
-    }
-    if ("totp_enabled" in patch) {
-      cols.push("totp_enabled = ?");
-      vals.push(Boolean(patch.totp_enabled));
-    }
-    if ("totp_secret_encrypted" in patch) {
-      cols.push("totp_secret_encrypted = ?");
-      vals.push(patch.totp_secret_encrypted);
-    }
-    if ("recovery_codes_hashed" in patch) {
-      cols.push("recovery_codes_hashed = ?");
-      vals.push(J(patch.recovery_codes_hashed));
-    }
-    if ("must_change_password" in patch) {
-      cols.push("must_change_password = ?");
-      vals.push(Boolean(patch.must_change_password));
-    }
-    if ("failed_login_count" in patch) {
-      cols.push("failed_login_count = ?");
-      vals.push(patch.failed_login_count);
-    }
-    if ("locked_until" in patch) {
-      cols.push("locked_until = ?");
-      vals.push(patch.locked_until);
-    }
-    if ("last_login_at" in patch) {
-      cols.push("last_login_at = ?");
-      vals.push(patch.last_login_at);
-    }
-    if ("is_active" in patch) {
-      cols.push("is_active = ?");
-      vals.push(Boolean(patch.is_active));
-    }
-    if (cols.length === 0) return;
-    vals.push(id);
-    await this._run(`UPDATE users SET ${cols.join(", ")} WHERE id = ?`, vals);
+    const { columns, values } = userPatchSql(patch);
+    if (columns.length === 0) return;
+    values.push(id);
+    await this._run(`UPDATE users SET ${columns.join(", ")} WHERE id = ?`, values);
+    void this.notify("users", "update", id);
+  }
+
+  /** Update the authoritative platform admin and mirror it into every tenant. */
+  async updatePlatformAdmin(id: string, patch: Partial<User>): Promise<void> {
+    const { columns, values } = userPatchSql(patch);
+    if (columns.length === 0) return;
+    const admin = await this._get<{ username: string }>(
+      "SELECT username FROM public.users WHERE id = ? AND role = 'admin'",
+      [id],
+    );
+    if (!admin) throw new Error("platform administrator not found");
+    const schemas = (await this.listTenants())
+      .map((tenant) => tenant.schema_name)
+      .filter((schema) => schema !== "public");
+
+    await this.adapter.transaction(async () => {
+      await this._run(
+        `UPDATE public.users SET ${columns.join(", ")} WHERE id = ?`,
+        [...values, id],
+      );
+      await mirrorPlatformAdmins(this.adapter, schemas, id);
+    });
     void this.notify("users", "update", id);
   }
 
@@ -475,6 +481,35 @@ export class Repository {
         WHERE user_id = ? AND revoked_at IS NULL`,
       [isoNow(), userId],
     );
+  }
+
+  /** Revoke root and legacy tenant sessions for a mirrored platform admin. */
+  async revokePlatformAdminSessions(userId: string): Promise<void> {
+    const admin = await this._get<{ username: string }>(
+      "SELECT username FROM public.users WHERE id = ? AND role = 'admin'",
+      [userId],
+    );
+    if (!admin) throw new Error("platform administrator not found");
+    const schemas = (await this.listTenants())
+      .map((tenant) => tenant.schema_name)
+      .filter((schema) => schema !== "public");
+    const revokedAt = isoNow();
+
+    await this.adapter.transaction(async () => {
+      await this.adapter.run(
+        "UPDATE public.sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+        [revokedAt, userId],
+      );
+      for (const schema of schemas) {
+        const target = quotedSchema(schema);
+        await this.adapter.run(
+          `UPDATE ${target}.sessions SET revoked_at = ?
+            WHERE user_id IN (SELECT id FROM ${target}.users WHERE username = ?)
+              AND revoked_at IS NULL`,
+          [revokedAt, admin.username],
+        );
+      }
+    });
   }
 
   // ===========================================================================

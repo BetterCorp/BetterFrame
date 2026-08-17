@@ -14,6 +14,7 @@ import { type H3, getCookie, getRequestPath } from "h3";
 import type { AdminDeps } from "./index.js";
 import type { User, Session, Tenant } from "../../shared/types.js";
 import { csrfRequestIsValid } from "../../shared/csrf.js";
+import { redirectClearCookie } from "./html-response.js";
 
 declare module "h3" {
   interface H3EventContext {
@@ -91,7 +92,10 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
     if (path.startsWith("/static/") || path === "/healthz" || path === "/readyz" || path === "/version") return next();
 
     let schema = "public";
-    const headerSlug = (event.req.headers.get("x-betterframe-tenant") ?? "").trim().toLowerCase();
+    const loginRequest = path === "/auth/login";
+    const headerSlug = loginRequest
+      ? ""
+      : (event.req.headers.get("x-betterframe-tenant") ?? "").trim().toLowerCase();
     if (headerSlug) {
       const tenant = await deps.repo.getTenantBySlug(headerSlug);
       if (tenant?.is_active) {
@@ -102,7 +106,7 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
       event.context.tenantHeaderError = tenant ? "inactive tenant" : "unknown tenant";
     }
 
-    const tenantSlug = getCookie(event, "bf_tenant") || "default";
+    const tenantSlug = loginRequest ? "default" : getCookie(event, "bf_tenant") || "default";
     const tenant = await deps.repo.getTenantBySlug(tenantSlug);
     if (tenant && tenant.is_active) {
       event.context.tenant = tenant;
@@ -180,6 +184,11 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
       if (!resolved) {
         return new Response(null, { status: 302, headers: { location: "/auth/login" } });
       }
+      if (resolved.user.role === "admin" && resolved.tenant.slug !== "default") {
+        await deps.repo.adapter.withSearchPath(resolved.tenant.schema_name, () =>
+          deps.auth.revokeSession(resolved.session.id));
+        return redirectClearCookie("/auth/login", [deps.cookieName, "betterframe_csrf", "bf_tenant"]);
+      }
       if (resolved.session.totp_pending) {
         return new Response(null, { status: 302, headers: { location: "/auth/totp" } });
       }
@@ -197,7 +206,11 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
       if (isUnsafeMethod(event.req.method) && !csrfRequestIsValid(event, resolved.session)) {
         return new Response("invalid CSRF token", { status: 403 });
       }
-      event.context.user = resolved.user;
+      const tenantUser = platformAdmin && targetTenant.id !== resolved.tenant.id
+        ? await deps.repo.adapter.withSearchPath(targetTenant.schema_name, () =>
+            deps.repo.getUserByUsername(resolved.user.username))
+        : null;
+      event.context.user = tenantUser ?? resolved.user;
       event.context.session = resolved.session;
       event.context.originTenant = resolved.tenant;
       event.context.tenant = targetTenant;

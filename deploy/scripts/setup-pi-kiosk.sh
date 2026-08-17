@@ -204,7 +204,7 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
   MEDIAMTX_TMP="$(mktemp -d)"
   curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/${MEDIAMTX_ARCHIVE}" -o "${MEDIAMTX_TMP}/${MEDIAMTX_ARCHIVE}"
   curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/checksums.sha256" -o "${MEDIAMTX_TMP}/checksums.sha256"
-  (cd "${MEDIAMTX_TMP}" && grep " ${MEDIAMTX_ARCHIVE}$" checksums.sha256 | sha256sum -c - && tar -xzf "${MEDIAMTX_ARCHIVE}" mediamtx)
+  (cd "${MEDIAMTX_TMP}" && grep -F "${MEDIAMTX_ARCHIVE}" checksums.sha256 | sha256sum -c - && tar -xzf "${MEDIAMTX_ARCHIVE}" mediamtx)
   install -d -m 755 /opt/betterframe/mediamtx
   install -m 755 "${MEDIAMTX_TMP}/mediamtx" /opt/betterframe/mediamtx/mediamtx
   rm -rf "${MEDIAMTX_TMP}"

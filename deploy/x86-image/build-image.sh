@@ -165,7 +165,7 @@ MEDIAMTX_VERSION="$(cat /tmp/bf-files/mediamtx.version)"
 MEDIAMTX_ARCHIVE="mediamtx_v${MEDIAMTX_VERSION}_linux_amd64.tar.gz"
 curl -fsSLO "https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/${MEDIAMTX_ARCHIVE}"
 curl -fsSLO "https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/checksums.sha256"
-grep " ${MEDIAMTX_ARCHIVE}$" checksums.sha256 | sha256sum -c -
+grep -F "${MEDIAMTX_ARCHIVE}" checksums.sha256 | sha256sum -c -
 tar -xzf "${MEDIAMTX_ARCHIVE}" mediamtx
 install -d -m 755 /opt/betterframe/mediamtx
 install -m 755 mediamtx /opt/betterframe/mediamtx/mediamtx

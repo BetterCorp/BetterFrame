@@ -960,7 +960,13 @@ fn paint_layout(hwnd: HWND, hdc: HDC, rect: RECT, display_id: &str) {
         SelectObject(hdc, old_pen);
         DeleteObject(pen as _);
     }
-    sync_camera_pipelines(hwnd, rect, layout, &bundle, state.encrypt_key.as_deref());
+    sync_camera_pipelines(
+        hwnd,
+        rect,
+        layout,
+        bundle.as_ref().expect("active layout requires a bundle"),
+        state.encrypt_key.as_deref(),
+    );
 }
 
 fn query_displays() -> Vec<DisplayReport> {

@@ -288,7 +288,7 @@ jobs:
             "gstreamer-1.0-libav.msm"
           ) | ForEach-Object { Copy-Item (Join-Path $sourceDir $_) $moduleDir }
           $msiVersion = "0.1.${{ github.run_number }}"
-          cargo wix --nocapture --install-version $msiVersion
+          cargo wix --nocapture --install-version $msiVersion -L -sice:ICE30 -L -sice:ICE80
           $msi = Get-ChildItem target\wix\*.msi | Select-Object -First 1
           Copy-Item $msi.FullName "betterframe-windows-client-${{ inputs.version }}-x86_64.msi"
       - name: Upload Windows installer to GitHub Release

@@ -19,9 +19,9 @@ cargo run -- agent --server http://localhost
 cargo run -- app
 ```
 
-Install the 64-bit GStreamer MSVC runtime (Complete profile) on the client.
+Release MSIs include the 64-bit GStreamer runtime required by the client.
 Camera cells use `d3d11videosink`; decoder selection and GPU acceleration are
-handled by GStreamer/D3D11.
+handled by GStreamer/D3D11. Source builds still require the GStreamer MSVC SDK.
 
 State lives in:
 

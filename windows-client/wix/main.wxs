@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="windows-1252"?>
+
+<?if $(sys.BUILDARCH) = x64 ?>
+  <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+  <?error BetterFrame Windows Client only supports x64 builds. ?>
+<?endif ?>
+
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+      Id="*"
+      Name="betterframe-windows-client"
+      UpgradeCode="C57DAC79-D926-492A-800D-190630390291"
+      Manufacturer="BetterCorp"
+      Language="1033"
+      Codepage="1252"
+      Version="$(var.Version)">
+    <Package
+        Id="*"
+        Description="BetterFrame Windows kiosk agent and desktop app"
+        Manufacturer="BetterCorp"
+        InstallerVersion="500"
+        Languages="1033"
+        Compressed="yes"
+        InstallScope="perMachine"
+        SummaryCodepage="1252" />
+
+    <MajorUpgrade
+        Schedule="afterInstallInitialize"
+        DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <Media Id="1" Cabinet="media1.cab" EmbedCab="yes" CompressionLevel="high" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="$(var.PlatformProgramFilesFolder)" Name="PFiles">
+        <Directory Id="APPLICATIONFOLDER" Name="betterframe-windows-client">
+          <Directory Id="Bin" Name="bin">
+            <Component Id="ClientBinary" Guid="*">
+              <File
+                  Id="ClientExe"
+                  Name="betterframe-windows-client.exe"
+                  Source="$(var.CargoTargetBinDir)\betterframe-windows-client.exe"
+                  KeyPath="yes" />
+            </Component>
+          </Directory>
+
+          <!-- Official GStreamer modules are rooted here so their bin directory
+               is the same directory as the client executable. -->
+          <Merge Id="GStreamerBaseSystem" SourceFile="target\gstreamer-msm\base-system-1.0.msm" DiskId="1" Language="1033" />
+          <Merge Id="GStreamerBaseCrypto" SourceFile="target\gstreamer-msm\base-crypto.msm" DiskId="1" Language="1033" />
+          <Merge Id="GStreamerCore" SourceFile="target\gstreamer-msm\gstreamer-1.0-core.msm" DiskId="1" Language="1033" />
+          <Merge Id="GStreamerNet" SourceFile="target\gstreamer-msm\gstreamer-1.0-net.msm" DiskId="1" Language="1033" />
+          <Merge Id="GStreamerPlayback" SourceFile="target\gstreamer-msm\gstreamer-1.0-playback.msm" DiskId="1" Language="1033" />
+          <Merge Id="GStreamerCodecs" SourceFile="target\gstreamer-msm\gstreamer-1.0-codecs.msm" DiskId="1" Language="1033" />
+          <Merge Id="GStreamerSystem" SourceFile="target\gstreamer-msm\gstreamer-1.0-system.msm" DiskId="1" Language="1033" />
+          <Merge Id="GStreamerLibav" SourceFile="target\gstreamer-msm\gstreamer-1.0-libav.msm" DiskId="1" Language="1033" />
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature
+        Id="Application"
+        Title="BetterFrame Windows Client"
+        Level="1"
+        ConfigurableDirectory="APPLICATIONFOLDER"
+        Absent="disallow">
+      <ComponentRef Id="ClientBinary" />
+      <MergeRef Id="GStreamerBaseSystem" />
+      <MergeRef Id="GStreamerBaseCrypto" />
+      <MergeRef Id="GStreamerCore" />
+      <MergeRef Id="GStreamerNet" />
+      <MergeRef Id="GStreamerPlayback" />
+      <MergeRef Id="GStreamerCodecs" />
+      <MergeRef Id="GStreamerSystem" />
+      <MergeRef Id="GStreamerLibav" />
+    </Feature>
+
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[APPLICATIONFOLDER]" After="CostFinalize" />
+    <UIRef Id="WixUI_FeatureTree" />
+  </Product>
+</Wix>

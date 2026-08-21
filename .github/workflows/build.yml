@@ -243,6 +243,9 @@ jobs:
   # ---- Windows client + MSI -------------------------------------------------
   windows-client:
     runs-on: windows-latest
+    env:
+      GSTREAMER_VERSION: "1.26.9"
+      GSTREAMER_MSM_SHA256: d3f16159d60ac5c7df6be73afdc6715b08e6de77906364ddb8560f706a09452d
     steps:
       - uses: actions/checkout@v6
         with:
@@ -251,7 +254,7 @@ jobs:
       - name: Install GStreamer SDK
         shell: powershell
         run: |
-          choco install gstreamer gstreamer-devel --version=1.26.9 -y --no-progress
+          choco install gstreamer gstreamer-devel --version=$env:GSTREAMER_VERSION -y --no-progress
           C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm --needed pkgconf"
           "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "PKG_CONFIG=C:\msys64\usr\bin\pkg-config.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -264,8 +267,28 @@ jobs:
         working-directory: windows-client
         run: |
           cargo install cargo-wix --version 0.3.9 --locked
-          cargo wix init
-          cargo wix --nocapture
+          $archive = Join-Path $env:RUNNER_TEMP "gstreamer-msvc-x86_64-merge-modules.zip"
+          Invoke-WebRequest -Uri "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GSTREAMER_VERSION/msvc/gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION-merge-modules.zip" -OutFile $archive
+          $actualHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $env:GSTREAMER_MSM_SHA256) {
+            throw "GStreamer merge-module checksum mismatch: $actualHash"
+          }
+          $extractDir = Join-Path $env:RUNNER_TEMP "gstreamer-msm"
+          Expand-Archive -LiteralPath $archive -DestinationPath $extractDir
+          $sourceDir = Get-ChildItem $extractDir -Directory | Select-Object -First 1
+          $moduleDir = New-Item -ItemType Directory -Force -Path "target\gstreamer-msm"
+          @(
+            "base-system-1.0.msm",
+            "base-crypto.msm",
+            "gstreamer-1.0-core.msm",
+            "gstreamer-1.0-net.msm",
+            "gstreamer-1.0-playback.msm",
+            "gstreamer-1.0-codecs.msm",
+            "gstreamer-1.0-system.msm",
+            "gstreamer-1.0-libav.msm"
+          ) | ForEach-Object { Copy-Item (Join-Path $sourceDir $_) $moduleDir }
+          $msiVersion = "0.1.${{ github.run_number }}"
+          cargo wix --nocapture --install-version $msiVersion
           $msi = Get-ChildItem target\wix\*.msi | Select-Object -First 1
           Copy-Item $msi.FullName "betterframe-windows-client-${{ inputs.version }}-x86_64.msi"
       - name: Upload Windows installer to GitHub Release

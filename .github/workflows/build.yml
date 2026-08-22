@@ -254,7 +254,12 @@ jobs:
       - name: Install GStreamer SDK
         shell: powershell
         run: |
-          choco install gstreamer gstreamer-devel --version=$env:GSTREAMER_VERSION -y --no-progress
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install gstreamer gstreamer-devel --version=$env:GSTREAMER_VERSION -y --no-progress
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 3) { throw "GStreamer SDK install failed after 3 attempts" }
+            Start-Sleep -Seconds 15
+          }
           C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm --needed pkgconf"
           "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "PKG_CONFIG=C:\msys64\usr\bin\pkg-config.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

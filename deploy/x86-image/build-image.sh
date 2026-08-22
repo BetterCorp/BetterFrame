@@ -143,7 +143,7 @@ apt-get -y install --no-install-recommends \
   linux-image-amd64 systemd-sysv dbus sudo locales ca-certificates curl gnupg \
   python3 initramfs-tools \
   grub-efi-amd64 grub-efi-amd64-bin grub-common shim-signed grub-efi-amd64-signed \
-  cage seatd plymouth plymouth-themes librsvg2-bin \
+  sway seatd plymouth plymouth-themes librsvg2-bin \
   libgtk-4-1 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libwebkitgtk-6.0-4 \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
   gstreamer1.0-libav gstreamer1.0-tools v4l-utils wlr-randr \
@@ -194,6 +194,18 @@ cat > /etc/systemd/system/betterframe-kiosk.service.d/tpm-storage.conf <<'TPMUNI
 Requires=betterframe-seal-key.service
 After=betterframe-seal-key.service
 TPMUNIT
+install -d -m 755 /etc/sway
+cat > /etc/sway/betterframe.conf <<'SWAY'
+default_border none
+default_floating_border none
+focus_follows_mouse no
+exec /bin/sh -c '/opt/betterframe/kiosk/betterframe-kiosk; /usr/bin/swaymsg exit'
+SWAY
+cat > /etc/systemd/system/betterframe-kiosk.service.d/x86-compositor.conf <<'SWAYUNIT'
+[Service]
+ExecStart=
+ExecStart=/bin/sh -lc 'export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"; exec /usr/bin/sway --config /etc/sway/betterframe.conf'
+SWAYUNIT
 install -m 755 /tmp/bf-files/randomize-image-users.sh /usr/local/sbin/randomize-image-users.sh
 install -m 644 /tmp/bf-files/betterframe-kiosk.conf /etc/tmpfiles.d/betterframe-kiosk.conf
 install -m 644 /tmp/bf-files/90-betterframe-no-hid.rules /etc/udev/rules.d/90-betterframe-no-hid.rules

@@ -1160,7 +1160,7 @@ fn install_idle_watchdog() {
     });
 }
 
-/// Query connected HDMI displays from sysfs. Returns (name, width, height).
+/// Query connected DRM displays from sysfs. Returns (name, width, height).
 /// Reads /sys/class/drm/*/status and /sys/class/drm/*/modes.
 fn query_displays() -> Vec<(String, u32, u32)> {
     let mut out = Vec::new();
@@ -1169,32 +1169,29 @@ fn query_displays() -> Vec<(String, u32, u32)> {
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if !name.contains("-HDMI-") && !name.contains("-DP-") {
-            continue;
-        }
         let path = entry.path();
         let status = std::fs::read_to_string(path.join("status")).unwrap_or_default();
         if status.trim() != "connected" {
             continue;
         }
         let modes = std::fs::read_to_string(path.join("modes")).unwrap_or_default();
-        let mode = modes.lines().next().unwrap_or("");
-        let parts: Vec<&str> = mode.split('x').collect();
-        if parts.len() != 2 {
+        let Some((w, h)) = modes.lines().find_map(parse_drm_mode) else {
             continue;
-        }
-        let w: u32 = parts[0].parse().unwrap_or(0);
-        let h: u32 = parts[1].trim().parse().unwrap_or(0);
-        if w == 0 || h == 0 {
-            continue;
-        }
+        };
         let clean_name = name
             .split_once('-')
             .map(|(_, rest)| rest.to_string())
             .unwrap_or(name);
         out.push((clean_name, w, h));
     }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
     out
+}
+
+fn parse_drm_mode(mode: &str) -> Option<(u32, u32)> {
+    let (width, height) = mode.trim().split_once('x')?;
+    let dimensions = (width.parse().ok()?, height.parse().ok()?);
+    (dimensions.0 > 0 && dimensions.1 > 0).then_some(dimensions)
 }
 
 fn show_pairing_code(window: &ApplicationWindow, code: &str) {
@@ -2930,6 +2927,10 @@ fn ensure_web(
     let wv = webkit6::WebView::new();
     wv.set_vexpand(true);
     wv.set_hexpand(true);
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+    if let Some(settings) = webkit6::prelude::WebViewExt::settings(&wv) {
+        settings.set_hardware_acceleration_policy(webkit6::HardwareAccelerationPolicy::Never);
+    }
     webkit6::prelude::WebViewExt::set_background_color(
         &wv,
         &gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 1.0),
@@ -3013,6 +3014,18 @@ fn ensure_web(
     });
     info!("warmed webview {key}");
     wv
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::parse_drm_mode;
+
+    #[test]
+    fn parses_only_valid_drm_modes() {
+        assert_eq!(parse_drm_mode("1920x1080\n"), Some((1920, 1080)));
+        assert_eq!(parse_drm_mode("0x1080"), None);
+        assert_eq!(parse_drm_mode("unknown"), None);
+    }
 }
 
 /// Walk an arbitrary layout's web/html cells and add their pool keys to `out`.

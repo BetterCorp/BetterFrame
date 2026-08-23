@@ -275,9 +275,13 @@ jobs:
           }
           $pkgConfigPath = "C:/Program Files/gstreamer/1.0/msvc_x86_64/lib/pkgconfig"
           if (-not (Test-Path "$pkgConfigPath/glib-2.0.pc")) { throw "GStreamer development files were not installed" }
-          C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm --needed pkgconf"
+          C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm --needed mingw-w64-x86_64-pkgconf"
+          $pkgConfig = "C:\msys64\mingw64\bin\pkg-config.exe"
+          $env:PKG_CONFIG_PATH = $pkgConfigPath
+          & $pkgConfig --modversion glib-2.0
+          if ($LASTEXITCODE -ne 0) { throw "pkg-config could not find GStreamer GLib" }
           "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "PKG_CONFIG=C:\msys64\usr\bin\pkg-config.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PKG_CONFIG=$pkgConfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "PKG_CONFIG_PATH=$pkgConfigPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "LIB=C:\Program Files\gstreamer\1.0\msvc_x86_64\lib;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build and test Windows client

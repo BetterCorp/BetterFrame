@@ -269,8 +269,9 @@ jobs:
           ) | ForEach-Object {
             $actualHash = (Get-FileHash $_.Path -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($actualHash -ne $_.Hash) { throw "GStreamer checksum mismatch for $($_.Path): $actualHash" }
-            & msiexec.exe /i $_.Path ADDLOCAL=ALL /qn /norestart
-            if ($LASTEXITCODE -notin 0, 3010) { throw "GStreamer install failed with exit code $LASTEXITCODE" }
+            $arguments = "/i `"$($_.Path)`" ADDLOCAL=ALL /qn /norestart"
+            $installer = Start-Process msiexec.exe -ArgumentList $arguments -Wait -PassThru
+            if ($installer.ExitCode -notin 0, 3010) { throw "GStreamer install failed with exit code $($installer.ExitCode)" }
           }
           $pkgConfigPath = "C:/Program Files/gstreamer/1.0/msvc_x86_64/lib/pkgconfig"
           if (-not (Test-Path "$pkgConfigPath/glib-2.0.pc")) { throw "GStreamer development files were not installed" }

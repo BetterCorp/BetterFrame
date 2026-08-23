@@ -245,6 +245,9 @@ jobs:
     runs-on: windows-latest
     env:
       GSTREAMER_VERSION: "1.26.9"
+      GSTREAMER_RELEASE: deps-1
+      GSTREAMER_RUNTIME_SHA256: ef56a1e9077c6cadcf8384369d1e435a0f3bc0d5a26594773256cffe79f40ecb
+      GSTREAMER_DEVEL_SHA256: 79c7ca2a5013181d94a2c823ef1c8a575f3e036e813633dc3e5ac3d393581a15
       GSTREAMER_MSM_SHA256: d3f16159d60ac5c7df6be73afdc6715b08e6de77906364ddb8560f706a09452d
     steps:
       - uses: actions/checkout@v6
@@ -253,12 +256,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install GStreamer SDK
         shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            choco install gstreamer gstreamer-devel --version=$env:GSTREAMER_VERSION -y --no-progress
-            if ($LASTEXITCODE -eq 0) { break }
-            if ($attempt -eq 3) { throw "GStreamer SDK install failed after 3 attempts" }
-            Start-Sleep -Seconds 15
+          $runtime = Join-Path $env:RUNNER_TEMP "gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.msi"
+          $devel = Join-Path $env:RUNNER_TEMP "gstreamer-1.0-devel-msvc-x86_64-$env:GSTREAMER_VERSION.msi"
+          gh release download $env:GSTREAMER_RELEASE --repo $env:GITHUB_REPOSITORY --dir $env:RUNNER_TEMP `
+            --pattern (Split-Path $runtime -Leaf) --pattern (Split-Path $devel -Leaf)
+          @(
+            @{ Path = $runtime; Hash = $env:GSTREAMER_RUNTIME_SHA256 },
+            @{ Path = $devel; Hash = $env:GSTREAMER_DEVEL_SHA256 }
+          ) | ForEach-Object {
+            $actualHash = (Get-FileHash $_.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $_.Hash) { throw "GStreamer checksum mismatch for $($_.Path): $actualHash" }
+            & msiexec.exe /i $_.Path ADDLOCAL=ALL /qn /norestart
+            if ($LASTEXITCODE -notin 0, 3010) { throw "GStreamer install failed with exit code $LASTEXITCODE" }
           }
           C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm --needed pkgconf"
           "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
@@ -270,10 +282,12 @@ jobs:
         run: cargo test --release
       - name: Build MSI
         working-directory: windows-client
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           cargo install cargo-wix --version 0.3.9 --locked
-          $archive = Join-Path $env:RUNNER_TEMP "gstreamer-msvc-x86_64-merge-modules.zip"
-          Invoke-WebRequest -Uri "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GSTREAMER_VERSION/msvc/gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION-merge-modules.zip" -OutFile $archive
+          $archive = Join-Path $env:RUNNER_TEMP "gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION-merge-modules.zip"
+          gh release download $env:GSTREAMER_RELEASE --repo $env:GITHUB_REPOSITORY --dir $env:RUNNER_TEMP --pattern (Split-Path $archive -Leaf)
           $actualHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actualHash -ne $env:GSTREAMER_MSM_SHA256) {
             throw "GStreamer merge-module checksum mismatch: $actualHash"

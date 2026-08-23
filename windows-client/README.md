@@ -5,7 +5,7 @@ Windows kiosk MVP with two modes:
 - `agent`: pairs with the BetterFrame server, heartbeats, fetches bundles, listens on the kiosk WebSocket, applies Windows policy gates, and supervises the desktop app.
 - `app`: visible fullscreen desktop UI for the displays allowed by `windows-policy.json`.
 
-Install logon tasks:
+Install the logon task:
 
 ```powershell
 cargo build --release
@@ -29,6 +29,12 @@ State lives in:
 %PROGRAMDATA%\BetterFrame\WindowsClient
 ```
 
+The WebView2 browser profile lives in the signed-in user's:
+
+```text
+%LOCALAPPDATA%\BetterFrame\WindowsClient\WebView2
+```
+
 `windows-policy.json` defaults host-sensitive controls off:
 
 ```json
@@ -50,7 +56,6 @@ State lives in:
 Set `"mode": "selected"` and list Windows display names such as `"\\\\.\\DISPLAY1"` to only take over specific monitors.
 
 The app renders the active layout on every selected display, plays RTSP camera
-cells through D3D11, and dispatches click/double-click/hold events.
+cells through D3D11, renders web/HTML cells with WebView2, and dispatches click/double-click/hold events.
 `layout.switch` actions are handled locally; undefined events are forwarded to
-Node-RED as `interaction.cell.<kind>`. Embedded webpage cells remain labelled
-placeholders; use the Linux kiosk when webpage/HTML cells are required.
+Node-RED as `interaction.cell.<kind>`.

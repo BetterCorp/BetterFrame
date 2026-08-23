@@ -17,13 +17,15 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{info, warn};
 use windows_sys::Win32::Foundation::{
-    BOOL, COLORREF, HWND, LPARAM, LRESULT, LocalFree, RECT, WPARAM,
+    COLORREF, CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, LRESULT,
+    LocalFree, RECT, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreatePen, CreateSolidBrush, DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_TOP, DT_VCENTER,
-    DeleteObject, DrawTextW, EndPaint, EnumDisplayMonitors, FillRect, GetMonitorInfoW, HBRUSH, HDC,
-    InvalidateRect, LineTo, MONITORINFOEXW, MoveToEx, PAINTSTRUCT, PS_SOLID, SelectObject,
-    SetBkMode, SetTextColor, UpdateWindow,
+    BeginPaint, CreatePen, CreateSolidBrush, DEVMODEW, DISPLAY_DEVICE_ATTACHED_TO_DESKTOP,
+    DISPLAY_DEVICE_MIRRORING_DRIVER, DISPLAY_DEVICEW, DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_TOP,
+    DT_VCENTER, DeleteObject, DrawTextW, ENUM_CURRENT_SETTINGS, EndPaint, EnumDisplayDevicesW,
+    EnumDisplaySettingsExW, FillRect, HBRUSH, HDC, InvalidateRect, LineTo, MoveToEx, PAINTSTRUCT,
+    PS_SOLID, SelectObject, SetBkMode, SetTextColor, UpdateWindow,
 };
 use windows_sys::Win32::Security::Cryptography::{
     CRYPT_INTEGER_BLOB, CRYPTPROTECT_LOCAL_MACHINE, CryptProtectData, CryptUnprotectData,
@@ -32,6 +34,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     GetClientRect, GetMessageW, GetSystemMetrics, HMENU, HWND_BROADCAST, MSG, PostQuitMessage,
@@ -43,7 +46,7 @@ use wry::raw_window_handle::{
     HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle,
 };
 use wry::{
-    Rect as WebRect, WebView, WebViewBuilder,
+    Rect as WebRect, WebContext, WebView, WebViewBuilder,
     dpi::{PhysicalPosition, PhysicalSize},
 };
 
@@ -125,6 +128,10 @@ struct ClientState {
     managed_config_applied_version: u64,
     #[serde(default)]
     managed_config_error: Option<String>,
+    #[serde(default)]
+    pairing_code: Option<String>,
+    #[serde(default)]
+    pairing_expires_at: Option<String>,
     active_layouts: HashMap<String, String>,
 }
 
@@ -236,6 +243,8 @@ struct NativeDisplay {
 #[derive(Debug, Clone)]
 struct WindowState {
     display_id: String,
+    display_name: String,
+    display_index: usize,
     mouse_down: Option<MouseDown>,
 }
 
@@ -255,6 +264,8 @@ static CAMERA_PIPELINES: OnceLock<Mutex<HashMap<String, CameraPipeline>>> = Once
 
 thread_local! {
     static WEBVIEWS: RefCell<HashMap<String, WebView>> = RefCell::new(HashMap::new());
+    static WEBVIEW_FAILURES: RefCell<HashMap<String, Instant>> = RefCell::new(HashMap::new());
+    static WEB_CONTEXT: RefCell<WebContext> = RefCell::new(WebContext::new(Some(webview_data_dir())));
 }
 
 #[derive(Debug)]
@@ -272,12 +283,24 @@ enum AgentCommand {
     Reboot,
 }
 
+enum HeartbeatError {
+    Unauthorized,
+    Other(String),
+}
+
 fn default_true() -> bool {
     true
 }
 
 fn default_display_mode() -> String {
     "all".to_string()
+}
+
+fn unpaired_state(server_url: &str) -> ClientState {
+    ClientState {
+        server_url: server_url.to_string(),
+        ..ClientState::default()
+    }
 }
 
 fn main() {
@@ -332,6 +355,7 @@ fn run_agent_cli(args: &[String]) -> Result<(), String> {
 async fn run_agent(server_url: String) -> Result<(), String> {
     fs::create_dir_all(state_dir()).map_err(|e| format!("create state dir: {e}"))?;
     ensure_default_policy()?;
+    let _ = run_command("schtasks", &["/Delete", "/TN", APP_TASK_NAME, "/F"]);
 
     let mut state = load_state();
     state.server_url = server_url;
@@ -376,7 +400,29 @@ async fn run_agent(server_url: String) -> Result<(), String> {
                             let _ = save_state(&next);
                             *state.lock().unwrap() = next;
                         }
-                        Err(err) => warn!("heartbeat failed: {err}"),
+                        Err(HeartbeatError::Unauthorized) => {
+                            warn!("kiosk was removed from the server; restarting pairing");
+                            let reset = unpaired_state(&snapshot.server_url);
+                            let _ = remove_cached_bundle();
+                            let _ = save_state(&reset);
+                            *state.lock().unwrap() = reset;
+                            match pair(&snapshot.server_url).await {
+                                Ok(next) => {
+                                    let _ = save_state(&next);
+                                    *state.lock().unwrap() = next;
+                                }
+                                Err(err) => warn!("pairing failed: {err}"),
+                            }
+                        }
+                        Err(HeartbeatError::Other(err)) => warn!("heartbeat failed: {err}"),
+                    }
+                } else {
+                    match pair(&snapshot.server_url).await {
+                        Ok(next) => {
+                            let _ = save_state(&next);
+                            *state.lock().unwrap() = next;
+                        }
+                        Err(err) => warn!("pairing failed: {err}"),
                     }
                 }
                 tokio::time::sleep(Duration::from_secs(30)).await;
@@ -456,6 +502,10 @@ async fn pair(server_url: &str) -> Result<ClientState, String> {
 
     println!("BetterFrame Windows pairing code: {}", init.code);
     println!("Enter it in admin before it expires at {}", init.expires_at);
+    let mut pending = unpaired_state(server_url);
+    pending.pairing_code = Some(init.code.clone());
+    pending.pairing_expires_at = Some(init.expires_at.clone());
+    save_state(&pending)?;
 
     loop {
         let resp = client
@@ -479,6 +529,8 @@ async fn pair(server_url: &str) -> Result<ClientState, String> {
                     bundle_version: None,
                     managed_config_applied_version: 0,
                     managed_config_error: None,
+                    pairing_code: None,
+                    pairing_expires_at: None,
                     active_layouts: HashMap::new(),
                 });
             }
@@ -664,7 +716,7 @@ async fn heartbeat(
     server_url: &str,
     key: &str,
     state: &ClientState,
-) -> Result<ClientState, String> {
+) -> Result<ClientState, HeartbeatError> {
     let displays = query_displays();
     let resp = reqwest::Client::new()
         .post(format!("{server_url}/api/kiosk/heartbeat"))
@@ -683,11 +735,20 @@ async fn heartbeat(
         }))
         .send()
         .await
-        .map_err(|e| format!("heartbeat request: {e}"))?;
+        .map_err(|e| HeartbeatError::Other(format!("heartbeat request: {e}")))?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(HeartbeatError::Unauthorized);
+    }
+    if !resp.status().is_success() {
+        return Err(HeartbeatError::Other(format!(
+            "heartbeat response: HTTP {}",
+            resp.status()
+        )));
+    }
     let body = resp
         .json::<HeartbeatResponse>()
         .await
-        .map_err(|e| format!("heartbeat response: {e}"))?;
+        .map_err(|e| HeartbeatError::Other(format!("heartbeat response: {e}")))?;
     let mut next = state.clone();
     if let Some(pending) = body.pending_config {
         match apply_pending_config(&pending) {
@@ -765,6 +826,12 @@ fn restart_app(slot: &Arc<Mutex<Option<Child>>>) -> Result<(), String> {
 }
 
 fn run_app() -> Result<(), String> {
+    let Some(_instance) = acquire_app_instance()? else {
+        info!("BetterFrame renderer is already running");
+        return Ok(());
+    };
+    fs::create_dir_all(webview_data_dir())
+        .map_err(|error| format!("create WebView2 data directory: {error}"))?;
     gstreamer::init().map_err(|error| format!("GStreamer initialization failed: {error}"))?;
     let policy = load_policy();
     let displays = query_native_displays();
@@ -815,10 +882,10 @@ fn run_app() -> Result<(), String> {
             if hwnd == 0 {
                 return Err("CreateWindowExW failed".to_string());
             }
-            let display_id = bundle
-                .as_ref()
-                .and_then(|b| b.displays.get(display.report.index).map(|d| d.id.clone()))
-                .unwrap_or_else(|| display.report.name.clone());
+            let display_id =
+                resolve_bundle_display(bundle.as_ref(), &display.report.name, display.report.index)
+                    .map(|display| display.id.clone())
+                    .unwrap_or_else(|| display.report.name.clone());
             WINDOWS
                 .get_or_init(|| Mutex::new(HashMap::new()))
                 .lock()
@@ -827,6 +894,8 @@ fn run_app() -> Result<(), String> {
                     hwnd,
                     WindowState {
                         display_id,
+                        display_name: display.report.name.clone(),
+                        display_index: display.report.index,
                         mouse_down: None,
                     },
                 );
@@ -875,17 +944,15 @@ unsafe extern "system" fn window_proc(
         WM_LBUTTONUP => {
             let x = loword(lparam as usize) as i16 as i32;
             let y = hiword(lparam as usize) as i16 as i32;
-            let mut display_id = None;
             let mut down = None;
             if let Some(windows) = WINDOWS.get() {
                 if let Some(st) = windows.lock().unwrap().get_mut(&hwnd) {
-                    display_id = Some(st.display_id.clone());
                     down = st.mouse_down.take();
                 }
             }
             // No mouse_down means this is the second BUTTONUP of a
             // double-click (DBLCLK already consumed it) — don't dispatch.
-            if let (Some(display_id), Some(down)) = (display_id, down) {
+            if let (Some(display_id), Some(down)) = (resolved_display_id(hwnd), down) {
                 let kind = if down.at.elapsed() >= Duration::from_millis(650) {
                     "hold"
                 } else {
@@ -898,10 +965,7 @@ unsafe extern "system" fn window_proc(
         WM_LBUTTONDBLCLK => {
             let x = loword(lparam as usize) as i16 as i32;
             let y = hiword(lparam as usize) as i16 as i32;
-            if let Some(display_id) = WINDOWS
-                .get()
-                .and_then(|w| w.lock().unwrap().get(&hwnd).map(|st| st.display_id.clone()))
-            {
+            if let Some(display_id) = resolved_display_id(hwnd) {
                 handle_pointer_event(&display_id, x, y, "double_click");
             }
             0
@@ -926,10 +990,7 @@ fn paint_window(hwnd: HWND) {
 
         SetBkMode(hdc, 1);
         SetTextColor(hdc, rgb(229, 231, 235));
-        if let Some(display_id) = WINDOWS
-            .get()
-            .and_then(|w| w.lock().unwrap().get(&hwnd).map(|st| st.display_id.clone()))
-        {
+        if let Some(display_id) = resolved_display_id(hwnd) {
             let mut client_rect = std::mem::zeroed();
             GetClientRect(hwnd, &mut client_rect);
             paint_layout(hwnd, hdc, client_rect, &display_id);
@@ -940,13 +1001,31 @@ fn paint_window(hwnd: HWND) {
     }
 }
 
+fn resolved_display_id(hwnd: HWND) -> Option<String> {
+    let bundle = load_bundle();
+    let windows = WINDOWS.get()?;
+    let mut windows = windows.lock().ok()?;
+    let window = windows.get_mut(&hwnd)?;
+    if let Some(display) =
+        resolve_bundle_display(bundle.as_ref(), &window.display_name, window.display_index)
+    {
+        window.display_id = display.id.clone();
+    }
+    Some(window.display_id.clone())
+}
+
 fn paint_layout(hwnd: HWND, hdc: HDC, rect: RECT, display_id: &str) {
     let state = load_state();
     let bundle = load_bundle();
     let Some((display, layout)) = active_layout_for_display(bundle.as_ref(), &state, display_id)
     else {
         remove_webviews(hwnd);
-        draw_centered(hdc, rect, "BetterFrame Windows Kiosk - waiting for bundle");
+        let message = state
+            .pairing_code
+            .as_deref()
+            .map(|code| format!("BetterFrame pairing code: {code}"))
+            .unwrap_or_else(|| "BetterFrame Windows Kiosk - waiting for bundle".to_string());
+        draw_centered(hdc, rect, &message);
         return;
     };
     if layout.cells.is_empty() {
@@ -1062,10 +1141,29 @@ fn sync_webviews(
         if exists {
             continue;
         }
+        let should_retry = WEBVIEW_FAILURES.with(|failures| {
+            failures
+                .borrow()
+                .get(&spec.key)
+                .is_none_or(|failed_at| failed_at.elapsed() >= Duration::from_secs(10))
+        });
+        if !should_retry {
+            continue;
+        }
+        WEBVIEW_FAILURES.with(|failures| {
+            failures
+                .borrow_mut()
+                .insert(spec.key.clone(), Instant::now());
+        });
         match create_webview(hwnd, &spec, state) {
-            Ok(view) => WEBVIEWS.with(|views| {
-                views.borrow_mut().insert(spec.key, view);
-            }),
+            Ok(view) => {
+                WEBVIEW_FAILURES.with(|failures| {
+                    failures.borrow_mut().remove(&spec.key);
+                });
+                WEBVIEWS.with(|views| {
+                    views.borrow_mut().insert(spec.key, view);
+                });
+            }
             Err(error) => warn!("web cell failed: {error}"),
         }
     }
@@ -1073,6 +1171,11 @@ fn sync_webviews(
     let prefix = format!("{hwnd}:");
     WEBVIEWS.with(|views| {
         views
+            .borrow_mut()
+            .retain(|key, _| !key.starts_with(&prefix) || wanted.contains(key));
+    });
+    WEBVIEW_FAILURES.with(|failures| {
+        failures
             .borrow_mut()
             .retain(|key, _| !key.starts_with(&prefix) || wanted.contains(key));
     });
@@ -1090,43 +1193,46 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
         }
     }
 
-    let mut builder = WebViewBuilder::new()
-        .with_bounds(spec.bounds)
-        .with_initialization_script(script)
-        .with_devtools(false);
-    if let Some(url) = &spec.url {
-        if same_origin(url, &state.server_url) {
-            if let Some(key) = &state.kiosk_key {
-                let mut headers = wry::http::HeaderMap::new();
-                headers.insert(
-                    wry::http::header::AUTHORIZATION,
-                    wry::http::HeaderValue::from_str(&format!("Bearer {key}"))
-                        .map_err(|error| error.to_string())?,
-                );
-                builder = builder.with_initialization_script(format!(
-                    "document.cookie='betterframe_kiosk_key={}; path=/; SameSite=Strict{}';",
-                    key,
-                    if url.starts_with("https://") {
-                        "; Secure"
-                    } else {
-                        ""
-                    },
-                ));
-                builder = builder.with_url_and_headers(url, headers);
+    WEB_CONTEXT.with(|context| {
+        let mut context = context.borrow_mut();
+        let mut builder = WebViewBuilder::new_with_web_context(&mut context)
+            .with_bounds(spec.bounds)
+            .with_initialization_script(script)
+            .with_devtools(false);
+        if let Some(url) = &spec.url {
+            if same_origin(url, &state.server_url) {
+                if let Some(key) = &state.kiosk_key {
+                    let mut headers = wry::http::HeaderMap::new();
+                    headers.insert(
+                        wry::http::header::AUTHORIZATION,
+                        wry::http::HeaderValue::from_str(&format!("Bearer {key}"))
+                            .map_err(|error| error.to_string())?,
+                    );
+                    builder = builder.with_initialization_script(format!(
+                        "document.cookie='betterframe_kiosk_key={}; path=/; SameSite=Strict{}';",
+                        key,
+                        if url.starts_with("https://") {
+                            "; Secure"
+                        } else {
+                            ""
+                        },
+                    ));
+                    builder = builder.with_url_and_headers(url, headers);
+                } else {
+                    builder = builder.with_url(url);
+                }
             } else {
                 builder = builder.with_url(url);
             }
+        } else if let Some(html) = &spec.html {
+            builder = builder.with_html(html);
         } else {
-            builder = builder.with_url(url);
+            return Err("web cell has no URL or HTML".to_string());
         }
-    } else if let Some(html) = &spec.html {
-        builder = builder.with_html(html);
-    } else {
-        return Err("web cell has no URL or HTML".to_string());
-    }
-    builder
-        .build_as_child(&NativeWindowHandle(hwnd))
-        .map_err(|error| error.to_string())
+        builder
+            .build_as_child(&NativeWindowHandle(hwnd))
+            .map_err(|error| error.to_string())
+    })
 }
 
 fn web_rect(rect: RECT) -> WebRect {
@@ -1163,6 +1269,11 @@ fn remove_webviews(hwnd: HWND) {
             .borrow_mut()
             .retain(|key, _| !key.starts_with(&prefix))
     });
+    WEBVIEW_FAILURES.with(|failures| {
+        failures
+            .borrow_mut()
+            .retain(|key, _| !key.starts_with(&prefix))
+    });
 }
 
 fn query_displays() -> Vec<DisplayReport> {
@@ -1170,6 +1281,20 @@ fn query_displays() -> Vec<DisplayReport> {
         .into_iter()
         .map(|d| d.report)
         .collect()
+}
+
+fn resolve_bundle_display<'a>(
+    bundle: Option<&'a KioskBundle>,
+    native_name: &str,
+    native_index: usize,
+) -> Option<&'a BundleDisplay> {
+    let bundle = bundle?;
+    let suffix = format!(": {native_name}");
+    bundle
+        .displays
+        .iter()
+        .find(|display| display.name == native_name || display.name.ends_with(&suffix))
+        .or_else(|| bundle.displays.get(native_index))
 }
 
 fn active_layout_for_display<'a>(
@@ -1595,44 +1720,54 @@ fn decrypt_camera_password(ciphertext: &str, key: &str) -> Option<String> {
 }
 
 fn query_native_displays() -> Vec<NativeDisplay> {
-    unsafe extern "system" fn enum_monitor(
-        monitor: isize,
-        _hdc: HDC,
-        _rect: *mut RECT,
-        data: LPARAM,
-    ) -> BOOL {
-        let out = unsafe { &mut *(data as *mut Vec<NativeDisplay>) };
-        let mut info: MONITORINFOEXW = unsafe { std::mem::zeroed() };
-        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
-        if unsafe { GetMonitorInfoW(monitor, &mut info as *mut MONITORINFOEXW as *mut _) } != 0 {
-            let idx = out.len();
-            let name = wide_to_string(&info.szDevice);
-            let r = info.monitorInfo.rcMonitor;
-            out.push(NativeDisplay {
-                report: DisplayReport {
-                    index: idx,
-                    name,
-                    width_px: (r.right - r.left).max(0) as u32,
-                    height_px: (r.bottom - r.top).max(0) as u32,
-                    power_state: "awake".to_string(),
-                },
-                rect: r,
-            });
-        }
-        1
-    }
-
     let mut displays = Vec::<NativeDisplay>::new();
-    unsafe {
-        EnumDisplayMonitors(
-            0,
-            null(),
-            Some(enum_monitor),
-            &mut displays as *mut _ as LPARAM,
-        );
+    for device_number in 0.. {
+        let mut device: DISPLAY_DEVICEW = unsafe { std::mem::zeroed() };
+        device.cb = std::mem::size_of::<DISPLAY_DEVICEW>() as u32;
+        if unsafe { EnumDisplayDevicesW(null(), device_number, &mut device, 0) } == 0 {
+            break;
+        }
+        if device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP == 0
+            || device.StateFlags & DISPLAY_DEVICE_MIRRORING_DRIVER != 0
+        {
+            continue;
+        }
+        let mut mode: DEVMODEW = unsafe { std::mem::zeroed() };
+        mode.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
+        if unsafe {
+            EnumDisplaySettingsExW(
+                device.DeviceName.as_ptr(),
+                ENUM_CURRENT_SETTINGS,
+                &mut mode,
+                0,
+            )
+        } == 0
+        {
+            continue;
+        }
+        let position = unsafe { mode.Anonymous1.Anonymous2.dmPosition };
+        displays.push(NativeDisplay {
+            report: DisplayReport {
+                index: 0,
+                name: wide_to_string(&device.DeviceName),
+                width_px: mode.dmPelsWidth,
+                height_px: mode.dmPelsHeight,
+                power_state: "awake".to_string(),
+            },
+            rect: RECT {
+                left: position.x,
+                top: position.y,
+                right: position.x + mode.dmPelsWidth as i32,
+                bottom: position.y + mode.dmPelsHeight as i32,
+            },
+        });
     }
     if displays.is_empty() {
         displays.push(primary_native_display());
+    }
+    displays.sort_by(|left, right| left.report.name.cmp(&right.report.name));
+    for (index, display) in displays.iter_mut().enumerate() {
+        display.report.index = index;
     }
     displays
 }
@@ -1726,7 +1861,6 @@ fn install_tasks(args: &[String]) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
     let server = arg_value(args, "--server").unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
     let agent_tr = format!("\"{}\" agent --server {}", exe.display(), server);
-    let app_tr = format!("\"{}\" app", exe.display());
     run_command(
         "schtasks",
         &[
@@ -1742,22 +1876,8 @@ fn install_tasks(args: &[String]) -> Result<(), String> {
             &agent_tr,
         ],
     )?;
-    run_command(
-        "schtasks",
-        &[
-            "/Create",
-            "/TN",
-            APP_TASK_NAME,
-            "/SC",
-            "ONLOGON",
-            "/RL",
-            "LIMITED",
-            "/F",
-            "/TR",
-            &app_tr,
-        ],
-    )?;
-    println!("Installed BetterFrame Windows logon tasks.");
+    let _ = run_command("schtasks", &["/Delete", "/TN", APP_TASK_NAME, "/F"]);
+    println!("Installed BetterFrame Windows logon task.");
     Ok(())
 }
 
@@ -1778,6 +1898,22 @@ fn run_command(program: &str, args: &[&str]) -> Result<(), String> {
     } else {
         Err(format!("{program} exited with {status}"))
     }
+}
+
+fn acquire_app_instance() -> Result<Option<HANDLE>, String> {
+    let name = wide("Local\\BetterFrameWindowsRenderer");
+    let handle = unsafe { CreateMutexW(null(), 0, name.as_ptr()) };
+    if handle == 0 {
+        return Err(format!(
+            "create renderer mutex: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        unsafe { CloseHandle(handle) };
+        return Ok(None);
+    }
+    Ok(Some(handle))
 }
 
 fn build_ws_url(http_url: &str, token: &str) -> String {
@@ -1820,6 +1956,14 @@ fn state_dir() -> PathBuf {
         .join("WindowsClient")
 }
 
+fn webview_data_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("BetterFrame")
+        .join("WindowsClient")
+        .join("WebView2")
+}
+
 fn state_path() -> PathBuf {
     state_dir().join("state.json")
 }
@@ -1855,6 +1999,14 @@ fn load_bundle() -> Option<KioskBundle> {
 
 fn save_bundle(bundle: &KioskBundle) -> Result<(), String> {
     write_protected(&bundle_path(), &serde_json::to_vec(bundle).unwrap())
+}
+
+fn remove_cached_bundle() -> Result<(), String> {
+    match fs::remove_file(bundle_path()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("remove cached bundle: {error}")),
+    }
 }
 
 fn protect_machine(plaintext: &[u8]) -> Result<Vec<u8>, String> {
@@ -2008,4 +2160,41 @@ fn wide_to_string(buf: &[u16]) -> String {
 
 fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_and_display_reconciliation_keep_only_valid_identity() {
+        let reset = unpaired_state("https://frame.example");
+        assert_eq!(reset.server_url, "https://frame.example");
+        assert!(reset.kiosk_key.is_none());
+
+        let bundle = KioskBundle {
+            kiosk_id: "kiosk".into(),
+            kiosk_name: "Lobby".into(),
+            displays: vec![
+                BundleDisplay {
+                    id: "first".into(),
+                    name: r"Lobby: \\.\DISPLAY1".into(),
+                    default_layout_id: None,
+                    layouts: vec![],
+                },
+                BundleDisplay {
+                    id: "second".into(),
+                    name: r"Lobby: \\.\DISPLAY2".into(),
+                    default_layout_id: None,
+                    layouts: vec![],
+                },
+            ],
+            cameras: vec![],
+            version: "1".into(),
+        };
+        assert_eq!(
+            resolve_bundle_display(Some(&bundle), r"\\.\DISPLAY2", 0).map(|d| d.id.as_str()),
+            Some("second")
+        );
+    }
 }

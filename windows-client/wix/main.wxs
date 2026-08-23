@@ -41,6 +41,11 @@
                   Source="$(var.CargoTargetBinDir)\betterframe-windows-client.exe"
                   KeyPath="yes" />
             </Component>
+            <Component Id="LicenseFiles" Guid="*">
+              <File Id="LicenseSummary" Source="..\LICENSE.md" KeyPath="yes" />
+              <File Id="LicenseAgpl" Source="..\LICENSE-AGPL.txt" />
+              <File Id="LicenseCommercial" Source="..\LICENSE-COMMERCIAL.md" />
+            </Component>
           </Directory>
 
           <!-- Official GStreamer modules are rooted here so their bin directory
@@ -64,6 +69,7 @@
         ConfigurableDirectory="APPLICATIONFOLDER"
         Absent="disallow">
       <ComponentRef Id="ClientBinary" />
+      <ComponentRef Id="LicenseFiles" />
       <MergeRef Id="GStreamerBaseSystem" />
       <MergeRef Id="GStreamerBaseCrypto" />
       <MergeRef Id="GStreamerCore" />
@@ -75,6 +81,10 @@
     </Feature>
 
     <SetProperty Id="ARPINSTALLLOCATION" Value="[APPLICATIONFOLDER]" After="CostFinalize" />
+    <Icon Id="BetterFrameIcon" SourceFile="wix\betterframe.ico" />
+    <Property Id="ARPPRODUCTICON" Value="BetterFrameIcon" />
+    <WixVariable Id="WixUIBannerBmp" Value="wix\banner.bmp" />
+    <WixVariable Id="WixUILicenseRtf" Value="wix\license.rtf" />
     <UIRef Id="WixUI_FeatureTree" />
   </Product>
 </Wix>

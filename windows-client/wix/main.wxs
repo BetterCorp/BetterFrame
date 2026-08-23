@@ -41,9 +41,13 @@
                   Source="$(var.CargoTargetBinDir)\betterframe-windows-client.exe"
                   KeyPath="yes" />
             </Component>
-            <Component Id="LicenseFiles" Guid="*">
+            <Component Id="LicenseSummaryFile" Guid="*">
               <File Id="LicenseSummary" Source="..\LICENSE.md" KeyPath="yes" />
+            </Component>
+            <Component Id="LicenseAgplFile" Guid="*">
               <File Id="LicenseAgpl" Source="..\LICENSE-AGPL.txt" />
+            </Component>
+            <Component Id="LicenseCommercialFile" Guid="*">
               <File Id="LicenseCommercial" Source="..\LICENSE-COMMERCIAL.md" />
             </Component>
           </Directory>
@@ -69,7 +73,9 @@
         ConfigurableDirectory="APPLICATIONFOLDER"
         Absent="disallow">
       <ComponentRef Id="ClientBinary" />
-      <ComponentRef Id="LicenseFiles" />
+      <ComponentRef Id="LicenseSummaryFile" />
+      <ComponentRef Id="LicenseAgplFile" />
+      <ComponentRef Id="LicenseCommercialFile" />
       <MergeRef Id="GStreamerBaseSystem" />
       <MergeRef Id="GStreamerBaseCrypto" />
       <MergeRef Id="GStreamerCore" />

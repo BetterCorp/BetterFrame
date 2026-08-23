@@ -494,6 +494,19 @@ function displayBaseName(displayName: string): string {
   return idx >= 0 ? displayName.slice(idx + 2) : displayName;
 }
 
+export function findReportedDisplayMatch<T extends { id: string; name: string; index: number }>(
+  existing: T[],
+  seenDisplayIds: ReadonlySet<string>,
+  reportedName: string,
+  reportedIndex: number,
+): T | undefined {
+  return existing.find((display) =>
+    !seenDisplayIds.has(display.id) && displayBaseName(display.name) === reportedName
+  ) ?? existing.find((display) =>
+    !seenDisplayIds.has(display.id) && display.index === reportedIndex
+  );
+}
+
 async function resolveTenantForIoBoxClaim(repo: Repository, event: any): Promise<{ id: string | null; slug: string; schema_name: string }> {
   const requested = getRequestHeader(event, "x-betterframe-tenant")?.trim() || "default";
   const tenants = await repo.listTenants();
@@ -956,8 +969,7 @@ function registerKioskRoutes(
           ? reported.index!
           : position;
         const displayName = kioskDisplayName(kioskFull?.name ?? String(kiosk.id), reported.name);
-        const match = existing.find((d) => displayBaseName(d.name) === reported.name)
-          ?? existing.find((d) => d.index === reportedIndex);
+        const match = findReportedDisplayMatch(existing, seenDisplayIds, reported.name, reportedIndex);
         if (match) {
           seenDisplayIds.add(match.id);
           const powerState = reported.power_state === "awake" || reported.power_state === "standby"
@@ -970,6 +982,7 @@ function registerKioskRoutes(
             || match.index !== reportedIndex
             || match.width_px !== reported.width_px
             || match.height_px !== reported.height_px
+            || !match.is_enabled
             || (powerState != null && match.actual_power_state !== powerState)
           ) {
             await repo.updateDisplay(match.id, {
@@ -977,6 +990,7 @@ function registerKioskRoutes(
               index: reportedIndex,
               width_px: reported.width_px,
               height_px: reported.height_px,
+              is_enabled: true,
               ...(powerState != null ? {
                 actual_power_state: powerState,
                 actual_power_state_at: new Date().toISOString(),
@@ -1006,10 +1020,8 @@ function registerKioskRoutes(
         }
       }
       for (const display of existing) {
-        if (seenDisplayIds.has(display.id) || !display.is_enabled) continue;
-        if (!display.name.endsWith(" HDMI-0")) continue;
-        if ((await repo.listLayoutsForDisplay(display.id)).length > 0) continue;
-        await repo.updateDisplay(display.id, { is_enabled: false } as any);
+        if (seenDisplayIds.has(display.id)) continue;
+        await repo.deleteDisplayIfUnused(display.id);
       }
     }
 

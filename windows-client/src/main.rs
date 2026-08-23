@@ -1,5 +1,7 @@
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::num::NonZeroIsize;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::ptr::{null, null_mut};
@@ -36,6 +38,13 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     RegisterClassW, SC_MONITORPOWER, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWMAXIMIZED, SendMessageW,
     ShowWindow, TranslateMessage, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_PAINT, WM_SYSCOMMAND, WNDCLASSW, WS_EX_TOPMOST, WS_POPUP,
+};
+use wry::raw_window_handle::{
+    HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle,
+};
+use wry::{
+    Rect as WebRect, WebView, WebViewBuilder,
+    dpi::{PhysicalPosition, PhysicalSize},
 };
 
 const DEFAULT_SERVER_URL: &str = "http://localhost";
@@ -186,6 +195,8 @@ struct BundleCell {
     web_url: Option<String>,
     html_content: Option<String>,
     #[serde(default)]
+    local_storage: Option<HashMap<String, String>>,
+    #[serde(default)]
     input_options: Option<serde_json::Value>,
 }
 
@@ -241,6 +252,10 @@ struct CameraPipeline {
 }
 
 static CAMERA_PIPELINES: OnceLock<Mutex<HashMap<String, CameraPipeline>>> = OnceLock::new();
+
+thread_local! {
+    static WEBVIEWS: RefCell<HashMap<String, WebView>> = RefCell::new(HashMap::new());
+}
 
 #[derive(Debug)]
 enum AgentCommand {
@@ -893,6 +908,7 @@ unsafe extern "system" fn window_proc(
         }
         WM_DESTROY => {
             remove_camera_pipelines(hwnd);
+            remove_webviews(hwnd);
             unsafe { PostQuitMessage(0) };
             0
         }
@@ -929,10 +945,12 @@ fn paint_layout(hwnd: HWND, hdc: HDC, rect: RECT, display_id: &str) {
     let bundle = load_bundle();
     let Some((display, layout)) = active_layout_for_display(bundle.as_ref(), &state, display_id)
     else {
+        remove_webviews(hwnd);
         draw_centered(hdc, rect, "BetterFrame Windows Kiosk - waiting for bundle");
         return;
     };
     if layout.cells.is_empty() {
+        remove_webviews(hwnd);
         draw_centered(hdc, rect, &format!("{} - {}", display.name, layout.name));
         return;
     }
@@ -967,6 +985,184 @@ fn paint_layout(hwnd: HWND, hdc: HDC, rect: RECT, display_id: &str) {
         bundle.as_ref().expect("active layout requires a bundle"),
         state.encrypt_key.as_deref(),
     );
+    sync_webviews(
+        hwnd,
+        rect,
+        layout,
+        &bundle.as_ref().unwrap().version,
+        &state,
+    );
+}
+
+struct NativeWindowHandle(HWND);
+
+impl HasWindowHandle for NativeWindowHandle {
+    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+        let hwnd = NonZeroIsize::new(self.0).ok_or(HandleError::Unavailable)?;
+        let raw = RawWindowHandle::Win32(Win32WindowHandle::new(hwnd));
+        Ok(unsafe { WindowHandle::borrow_raw(raw) })
+    }
+}
+
+struct WebCellSpec {
+    key: String,
+    bounds: WebRect,
+    url: Option<String>,
+    html: Option<String>,
+    local_storage: Option<HashMap<String, String>>,
+}
+
+fn sync_webviews(
+    hwnd: HWND,
+    canvas: RECT,
+    layout: &BundleLayout,
+    bundle_version: &str,
+    state: &ClientState,
+) {
+    let cols = layout.grid_cols.max(1) as i32;
+    let rows = layout.grid_rows.max(1) as i32;
+    let specs: Vec<WebCellSpec> = layout
+        .cells
+        .iter()
+        .enumerate()
+        .filter_map(|(index, cell)| {
+            if cell.content_type != "web" && cell.content_type != "html" {
+                return None;
+            }
+            let target = cell_rect(canvas, cols, rows, cell);
+            let view_id = cell.view_id.clone().unwrap_or_else(|| index.to_string());
+            Some(WebCellSpec {
+                key: format!(
+                    "{hwnd}:{}:{bundle_version}:{}:{}",
+                    layout.id, view_id, cell.content_type,
+                ),
+                bounds: web_rect(target),
+                url: cell
+                    .web_url
+                    .as_deref()
+                    .and_then(|url| resolve_web_url(url, &state.server_url)),
+                html: cell.html_content.clone(),
+                local_storage: cell.local_storage.clone(),
+            })
+        })
+        .collect();
+    let wanted: HashSet<String> = specs.iter().map(|spec| spec.key.clone()).collect();
+
+    for spec in specs {
+        let exists = WEBVIEWS.with(|views| {
+            let views = views.borrow();
+            if let Some(view) = views.get(&spec.key) {
+                let _ = view.set_bounds(spec.bounds);
+                let _ = view.set_visible(true);
+                true
+            } else {
+                false
+            }
+        });
+        if exists {
+            continue;
+        }
+        match create_webview(hwnd, &spec, state) {
+            Ok(view) => WEBVIEWS.with(|views| {
+                views.borrow_mut().insert(spec.key, view);
+            }),
+            Err(error) => warn!("web cell failed: {error}"),
+        }
+    }
+
+    let prefix = format!("{hwnd}:");
+    WEBVIEWS.with(|views| {
+        views
+            .borrow_mut()
+            .retain(|key, _| !key.starts_with(&prefix) || wanted.contains(key));
+    });
+}
+
+fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result<WebView, String> {
+    let mut script = "document.documentElement.style.cursor='none';".to_string();
+    if let Some(values) = &spec.local_storage {
+        for (key, value) in values {
+            script.push_str(&format!(
+                "try{{localStorage.setItem({},{});}}catch(_e){{}}",
+                serde_json::to_string(key).unwrap(),
+                serde_json::to_string(value).unwrap(),
+            ));
+        }
+    }
+
+    let mut builder = WebViewBuilder::new()
+        .with_bounds(spec.bounds)
+        .with_initialization_script(script)
+        .with_devtools(false);
+    if let Some(url) = &spec.url {
+        if same_origin(url, &state.server_url) {
+            if let Some(key) = &state.kiosk_key {
+                let mut headers = wry::http::HeaderMap::new();
+                headers.insert(
+                    wry::http::header::AUTHORIZATION,
+                    wry::http::HeaderValue::from_str(&format!("Bearer {key}"))
+                        .map_err(|error| error.to_string())?,
+                );
+                builder = builder.with_initialization_script(format!(
+                    "document.cookie='betterframe_kiosk_key={}; path=/; SameSite=Strict{}';",
+                    key,
+                    if url.starts_with("https://") {
+                        "; Secure"
+                    } else {
+                        ""
+                    },
+                ));
+                builder = builder.with_url_and_headers(url, headers);
+            } else {
+                builder = builder.with_url(url);
+            }
+        } else {
+            builder = builder.with_url(url);
+        }
+    } else if let Some(html) = &spec.html {
+        builder = builder.with_html(html);
+    } else {
+        return Err("web cell has no URL or HTML".to_string());
+    }
+    builder
+        .build_as_child(&NativeWindowHandle(hwnd))
+        .map_err(|error| error.to_string())
+}
+
+fn web_rect(rect: RECT) -> WebRect {
+    WebRect {
+        position: PhysicalPosition::new(rect.left, rect.top).into(),
+        size: PhysicalSize::new(
+            (rect.right - rect.left).max(1) as u32,
+            (rect.bottom - rect.top).max(1) as u32,
+        )
+        .into(),
+    }
+}
+
+fn resolve_web_url(value: &str, server_url: &str) -> Option<String> {
+    let value = value.trim();
+    if reqwest::Url::parse(value).is_ok() {
+        return Some(value.to_string());
+    }
+    let base = reqwest::Url::parse(&format!("{}/", server_url.trim_end_matches('/'))).ok()?;
+    base.join(value).ok().map(|url| url.to_string())
+}
+
+fn same_origin(url: &str, server_url: &str) -> bool {
+    match (reqwest::Url::parse(url), reqwest::Url::parse(server_url)) {
+        (Ok(url), Ok(server)) => url.origin() == server.origin(),
+        _ => false,
+    }
+}
+
+fn remove_webviews(hwnd: HWND) {
+    let prefix = format!("{hwnd}:");
+    WEBVIEWS.with(|views| {
+        views
+            .borrow_mut()
+            .retain(|key, _| !key.starts_with(&prefix))
+    });
 }
 
 fn query_displays() -> Vec<DisplayReport> {

@@ -625,6 +625,17 @@ export class Repository {
     return rs.map((r) => rowToDisplay(r as Record<string, unknown>));
   }
 
+  async deleteDisplayIfUnused(id: string): Promise<boolean> {
+    const result = await this._run(
+      `DELETE FROM displays
+        WHERE id = ?
+          AND NOT EXISTS (SELECT 1 FROM display_layouts WHERE display_id = ?)`,
+      [id, id],
+    );
+    if (result.changes > 0) void this.notify("displays", "delete", id);
+    return result.changes > 0;
+  }
+
   /**
    * Kiosks currently rendering this camera (active layout has a cell
    * pointing at it). Subset of listKiosksWithCameraInBundle.

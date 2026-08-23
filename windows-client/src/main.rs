@@ -46,7 +46,7 @@ use wry::raw_window_handle::{
     HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle,
 };
 use wry::{
-    Rect as WebRect, WebContext, WebView, WebViewBuilder,
+    Rect as WebRect, WebContext, WebView, WebViewBuilder, WebViewBuilderExtWindows,
     dpi::{PhysicalPosition, PhysicalSize},
 };
 
@@ -1235,6 +1235,11 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
             .with_bounds(spec.bounds)
             .with_initialization_script(script)
             .with_devtools(false);
+        if let Some(profile) =
+            ablesign_profile_name(spec.url.as_deref(), spec.local_storage.as_ref())
+        {
+            builder = builder.with_profile_name(profile);
+        }
         if let Some(url) = &spec.url {
             if same_origin(url, &state.server_url) {
                 if let Some(key) = &state.kiosk_key {
@@ -1269,6 +1274,23 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
             .build_as_child(&NativeWindowHandle(hwnd))
             .map_err(|error| error.to_string())
     })
+}
+
+fn ablesign_profile_name(
+    url: Option<&str>,
+    local_storage: Option<&HashMap<String, String>>,
+) -> Option<String> {
+    let url = reqwest::Url::parse(url?).ok()?;
+    if url.host_str() != Some("player.ablesign.tv") {
+        return None;
+    }
+    let screen_id = local_storage?.get("screenId")?;
+    let safe_id: String = screen_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .take(48)
+        .collect();
+    (!safe_id.is_empty()).then(|| format!("ablesign-{safe_id}"))
 }
 
 fn web_rect(rect: RECT) -> WebRect {
@@ -2255,6 +2277,25 @@ mod tests {
         assert_eq!(
             resolve_bundle_display(Some(&bundle), r"\\.\DISPLAY2", 0).map(|d| d.id.as_str()),
             Some("second")
+        );
+    }
+
+    #[test]
+    fn ablesign_profiles_follow_screen_identity() {
+        let first = HashMap::from([("screenId".into(), "101".into())]);
+        let second = HashMap::from([("screenId".into(), "202".into())]);
+
+        assert_eq!(
+            ablesign_profile_name(Some("https://player.ablesign.tv"), Some(&first)).as_deref(),
+            Some("ablesign-101")
+        );
+        assert_eq!(
+            ablesign_profile_name(Some("https://player.ablesign.tv"), Some(&second)).as_deref(),
+            Some("ablesign-202")
+        );
+        assert_eq!(
+            ablesign_profile_name(Some("https://example.com"), Some(&first)),
+            None
         );
     }
 }

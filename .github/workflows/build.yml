@@ -640,7 +640,7 @@ jobs:
           chmod +x staging/betterframe-kiosk
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            debootstrap xz-utils util-linux gdisk dosfstools e2fsprogs grub-common
+            debootstrap xz-utils util-linux gdisk dosfstools e2fsprogs grub-common zerofree
           chmod +x deploy/x86-image/build-image.sh
           img="${{ github.workspace }}/betterframe-client-${{ inputs.version }}-betterframe-pc-x86_64.img.xz"
           rootfs="${{ github.workspace }}/x86-rootfs.ext4"

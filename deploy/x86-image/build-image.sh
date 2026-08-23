@@ -406,6 +406,9 @@ mount "${LOOP}p3" "${WORK}/root-b"
 sed -i "s|^PARTUUID=${PARTUUID_ROOT_A}  / |PARTUUID=${PARTUUID_ROOT_B}  / |" "${WORK}/root-b/etc/fstab"
 grep -q "^PARTUUID=${PARTUUID_ROOT_B}  / " "${WORK}/root-b/etc/fstab"
 umount "${WORK}/root-b"
+echo "==> Zeroing unused rootfs blocks"
+zerofree "${LOOP}p2"
+zerofree "${LOOP}p3"
 if [ -n "$ROOTFS_OUT" ]; then
   dd if="${LOOP}p2" of="$ROOTFS_OUT" bs=4M status=none
 fi
@@ -417,4 +420,8 @@ LOOP=""
 
 echo "==> Compressing x86 image"
 xz -T0 -6 -c "$IMG" > "$OUT_IMG_XZ"
+if [ "$(stat -c%s "$OUT_IMG_XZ")" -ge 2147483648 ]; then
+  echo "ERROR: compressed image exceeds GitHub's 2 GiB release asset limit" >&2
+  exit 1
+fi
 ls -lh "$OUT_IMG_XZ"

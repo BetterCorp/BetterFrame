@@ -355,7 +355,6 @@ fn run_agent_cli(args: &[String]) -> Result<(), String> {
 async fn run_agent(server_url: String) -> Result<(), String> {
     fs::create_dir_all(state_dir()).map_err(|e| format!("create state dir: {e}"))?;
     ensure_default_policy()?;
-    let _ = run_command("schtasks", &["/Delete", "/TN", APP_TASK_NAME, "/F"]);
 
     let mut state = load_state();
     state.server_url = server_url;
@@ -701,12 +700,16 @@ async fn handle_agent_command(
 }
 
 async fn fetch_bundle(server_url: &str, key: &str) -> Result<KioskBundle, String> {
-    reqwest::Client::new()
+    let response = reqwest::Client::new()
         .get(format!("{server_url}/api/kiosk/bundle"))
         .bearer_auth(key)
         .send()
         .await
-        .map_err(|e| format!("bundle request: {e}"))?
+        .map_err(|e| format!("bundle request: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("bundle response: HTTP {}", response.status()));
+    }
+    response
         .json::<KioskBundle>()
         .await
         .map_err(|e| format!("bundle response: {e}"))
@@ -718,6 +721,18 @@ async fn heartbeat(
     state: &ClientState,
 ) -> Result<ClientState, HeartbeatError> {
     let displays = query_displays();
+    info!(
+        "heartbeat reporting {} display(s): {}",
+        displays.len(),
+        displays
+            .iter()
+            .map(|display| format!(
+                "{}={}x{}",
+                display.name, display.width_px, display.height_px
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     let resp = reqwest::Client::new()
         .post(format!("{server_url}/api/kiosk/heartbeat"))
         .bearer_auth(key)
@@ -835,6 +850,12 @@ fn run_app() -> Result<(), String> {
     gstreamer::init().map_err(|error| format!("GStreamer initialization failed: {error}"))?;
     let policy = load_policy();
     let displays = query_native_displays();
+    let _ = save_renderer_displays(
+        &displays
+            .iter()
+            .map(|display| display.report.clone())
+            .collect::<Vec<_>>(),
+    );
     let targets: Vec<NativeDisplay> = displays
         .into_iter()
         .filter(|d| display_allowed(&policy, &d.report.name))
@@ -905,10 +926,20 @@ fn run_app() -> Result<(), String> {
         }
 
         std::thread::spawn(move || {
+            let mut ticks = 0u8;
             loop {
                 std::thread::sleep(Duration::from_secs(1));
                 for hwnd in &hwnds {
                     InvalidateRect(*hwnd, null(), 1);
+                }
+                ticks = ticks.wrapping_add(1);
+                if ticks % 5 == 0 {
+                    let _ = save_renderer_displays(
+                        &query_native_displays()
+                            .into_iter()
+                            .map(|display| display.report)
+                            .collect::<Vec<_>>(),
+                    );
                 }
             }
         });
@@ -1141,6 +1172,9 @@ fn sync_webviews(
         if exists {
             continue;
         }
+        if WEB_CONTEXT.with(|context| context.try_borrow().is_err()) {
+            continue;
+        }
         let should_retry = WEBVIEW_FAILURES.with(|failures| {
             failures
                 .borrow()
@@ -1194,7 +1228,9 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
     }
 
     WEB_CONTEXT.with(|context| {
-        let mut context = context.borrow_mut();
+        let mut context = context
+            .try_borrow_mut()
+            .map_err(|_| "WebView2 initialization already in progress".to_string())?;
         let mut builder = WebViewBuilder::new_with_web_context(&mut context)
             .with_bounds(spec.bounds)
             .with_initialization_script(script)
@@ -1277,10 +1313,12 @@ fn remove_webviews(hwnd: HWND) {
 }
 
 fn query_displays() -> Vec<DisplayReport> {
-    query_native_displays()
-        .into_iter()
-        .map(|d| d.report)
-        .collect()
+    load_renderer_displays().unwrap_or_else(|| {
+        query_native_displays()
+            .into_iter()
+            .map(|display| display.report)
+            .collect()
+    })
 }
 
 fn resolve_bundle_display<'a>(
@@ -1976,6 +2014,10 @@ fn policy_path() -> PathBuf {
     state_dir().join("windows-policy.json")
 }
 
+fn display_report_path() -> PathBuf {
+    state_dir().join("displays.json")
+}
+
 fn load_state() -> ClientState {
     read_protected_or_plain(&state_path())
         .ok()
@@ -1999,6 +2041,24 @@ fn load_bundle() -> Option<KioskBundle> {
 
 fn save_bundle(bundle: &KioskBundle) -> Result<(), String> {
     write_protected(&bundle_path(), &serde_json::to_vec(bundle).unwrap())
+}
+
+fn load_renderer_displays() -> Option<Vec<DisplayReport>> {
+    let path = display_report_path();
+    let age = fs::metadata(&path).ok()?.modified().ok()?.elapsed().ok()?;
+    if age > Duration::from_secs(15) {
+        return None;
+    }
+    read_protected_or_plain(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
+fn save_renderer_displays(displays: &[DisplayReport]) -> Result<(), String> {
+    write_protected(
+        &display_report_path(),
+        &serde_json::to_vec(displays).unwrap(),
+    )
 }
 
 fn remove_cached_bundle() -> Result<(), String> {

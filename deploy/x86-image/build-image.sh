@@ -19,6 +19,9 @@ cleanup() {
   if [ -d "${WORK}/root" ]; then
     umount -R "${WORK}/root" 2>/dev/null || true
   fi
+  if [ -d "${WORK}/root-b" ]; then
+    umount -R "${WORK}/root-b" 2>/dev/null || true
+  fi
   for p in dev/pts dev proc sys run boot/efi; do
     if mountpoint -q "${WORK}/root/${p}"; then umount -lf "${WORK}/root/${p}"; fi
   done
@@ -280,6 +283,12 @@ systemctl mask ssh.service ssh.socket 2>/dev/null || true
 mkdir -p /boot/efi/EFI/betterframe /boot/efi/EFI/BOOT
 grub-editenv /boot/efi/EFI/betterframe/grubenv create
 grub-editenv /boot/efi/EFI/betterframe/grubenv set ORDER="A B" A_OK=1 A_TRY=0 B_OK=0 B_TRY=0
+KERNEL="$(basename "$(ls -1 /boot/vmlinuz-* | sort -V | tail -n1)")"
+INITRD="$(basename "$(ls -1 /boot/initrd.img-* | sort -V | tail -n1)")"
+install -m 644 "/boot/${KERNEL}" /boot/efi/vmlinuz-A
+install -m 644 "/boot/${INITRD}" /boot/efi/initrd-A.img
+install -m 644 "/boot/${KERNEL}" /boot/efi/vmlinuz-B
+install -m 644 "/boot/${INITRD}" /boot/efi/initrd-B.img
 cat > /boot/efi/EFI/betterframe/grub.cfg <<'GRUB'
 set timeout=3
 set default=0
@@ -320,19 +329,19 @@ if [ "$any_ok" -eq 0 ]; then
 fi
 save_env --file=($bootpart)/EFI/betterframe/grubenv A_TRY B_TRY
 menuentry "BetterFrame A" {
-  search --no-floppy --partuuid @PARTUUID_ROOT_A@ --set=root
-  linux /vmlinuz root=PARTUUID=@PARTUUID_ROOT_A@ ro rauc.slot=A loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
-  initrd /initrd.img
+  set root=$bootpart
+  linux /vmlinuz-A root=PARTUUID=@PARTUUID_ROOT_A@ ro rauc.slot=A loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  initrd /initrd-A.img
 }
 menuentry "BetterFrame B" {
-  search --no-floppy --partuuid @PARTUUID_ROOT_B@ --set=root
-  linux /vmlinuz root=PARTUUID=@PARTUUID_ROOT_B@ ro rauc.slot=B loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
-  initrd /initrd.img
+  set root=$bootpart
+  linux /vmlinuz-B root=PARTUUID=@PARTUUID_ROOT_B@ ro rauc.slot=B loglevel=4 systemd.show_status=1 plymouth.enable=0 vt.global_cursor_default=0 logo.nologo systemd.unit=multi-user.target
+  initrd /initrd-B.img
 }
 menuentry "BetterFrame A debug shell" {
-  search --no-floppy --partuuid @PARTUUID_ROOT_A@ --set=root
-  linux /vmlinuz root=PARTUUID=@PARTUUID_ROOT_A@ rw rauc.slot=A loglevel=7 systemd.show_status=1 plymouth.enable=0 init=/bin/bash
-  initrd /initrd.img
+  set root=$bootpart
+  linux /vmlinuz-A root=PARTUUID=@PARTUUID_ROOT_A@ rw rauc.slot=A loglevel=7 systemd.show_status=1 plymouth.enable=0 init=/bin/bash
+  initrd /initrd-A.img
 }
 GRUB
 cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/EFI/BOOT/grub.cfg
@@ -347,6 +356,10 @@ cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/EFI/debian/grub.cfg
 cp /boot/efi/EFI/betterframe/grub.cfg /boot/grub/grub.cfg
 cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/grub.cfg
 cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/boot/grub/grub.cfg
+grub-script-check /boot/efi/EFI/betterframe/grub.cfg
+for boot_file in vmlinuz-A initrd-A.img vmlinuz-B initrd-B.img; do
+  test -s "/boot/efi/${boot_file}"
+done
 if [ ! -f /usr/lib/shim/shimx64.efi.signed ]; then
   echo "ERROR: shimx64.efi.signed is missing; cannot build a Secure Boot image" >&2
   exit 1
@@ -388,6 +401,11 @@ umount "${WORK}/root"
 echo "==> Cloning initial root slot A to B"
 dd if="${LOOP}p2" of="${LOOP}p3" bs=16M conv=fsync status=none
 tune2fs -L BF_ROOT_B "${LOOP}p3"
+mkdir -p "${WORK}/root-b"
+mount "${LOOP}p3" "${WORK}/root-b"
+sed -i "s|^PARTUUID=${PARTUUID_ROOT_A}  / |PARTUUID=${PARTUUID_ROOT_B}  / |" "${WORK}/root-b/etc/fstab"
+grep -q "^PARTUUID=${PARTUUID_ROOT_B}  / " "${WORK}/root-b/etc/fstab"
+umount "${WORK}/root-b"
 if [ -n "$ROOTFS_OUT" ]; then
   dd if="${LOOP}p2" of="$ROOTFS_OUT" bs=4M status=none
 fi

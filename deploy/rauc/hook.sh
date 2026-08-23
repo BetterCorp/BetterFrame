@@ -85,6 +85,7 @@ LETTER="$(slot_letter)"
 # Prefer the mount point RAUC already provides; fall back to mounting.
 MNT="${RAUC_SLOT_MOUNT_POINT:-}"
 OWN_MOUNT=0
+OWN_ESP_MOUNT=0
 if [ -z "$MNT" ]; then
   MNT="$(mktemp -d)"
   mount "$RAUC_SLOT_DEVICE" "$MNT"
@@ -92,6 +93,9 @@ if [ -z "$MNT" ]; then
 fi
 cleanup() {
   sync
+  if [ "$OWN_ESP_MOUNT" = "1" ]; then
+    umount /boot/efi 2>/dev/null || true
+  fi
   if [ "$OWN_MOUNT" = "1" ]; then
     umount "$MNT" 2>/dev/null || true
     rmdir "$MNT" 2>/dev/null || true
@@ -130,6 +134,21 @@ PARTUUID=${DATA_UUID}  /var/lib/betterframe ext4  defaults,noatime,nofail  0  2
 FSTAB
       write_x86_rauc_system_conf "${MNT}/etc/rauc/system.conf" \
         "$ROOT_A_UUID" "$ROOT_B_UUID"
+      if ! mountpoint -q /boot/efi; then
+        mkdir -p /boot/efi
+        mount "/dev/disk/by-partuuid/${BOOT_UUID}" /boot/efi
+        OWN_ESP_MOUNT=1
+      fi
+      KERNEL="$(find "${MNT}/boot" -maxdepth 1 -type f -name 'vmlinuz-*' -printf '%f\n' | sort -V | tail -n1)"
+      INITRD="$(find "${MNT}/boot" -maxdepth 1 -type f -name 'initrd.img-*' -printf '%f\n' | sort -V | tail -n1)"
+      if [ -z "$KERNEL" ] || [ -z "$INITRD" ]; then
+        echo "hook: updated x86 rootfs has no kernel or initrd" >&2
+        exit 1
+      fi
+      install -m 644 "${MNT}/boot/${KERNEL}" "/boot/efi/.vmlinuz-${LETTER}.new"
+      install -m 644 "${MNT}/boot/${INITRD}" "/boot/efi/.initrd-${LETTER}.img.new"
+      mv "/boot/efi/.initrd-${LETTER}.img.new" "/boot/efi/initrd-${LETTER}.img"
+      mv "/boot/efi/.vmlinuz-${LETTER}.new" "/boot/efi/vmlinuz-${LETTER}"
       # Preserve host identity across replaceable root slots. This also lets
       # the first TPM-enabled update decrypt and migrate legacy BFE1 state,
       # whose x86 fallback key was derived from machine-id.

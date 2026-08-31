@@ -640,6 +640,10 @@ fn tailscale_status() -> serde_json::Value {
     serde_json::Value::Null
 }
 
+pub fn ota_enabled(name: &str) -> bool {
+    std::env::var(name).as_deref() != Ok("0")
+}
+
 pub fn heartbeat(
     server: &str,
     key: &str,
@@ -694,6 +698,10 @@ pub fn heartbeat(
         "logging": {
             "client_time": crate::axiom::iso_now(),
             "axiom": crate::axiom::status(),
+            "updates": {
+                "app_enabled": ota_enabled("BF_ENABLE_APP_OTA"),
+                "os_enabled": ota_enabled("BF_ENABLE_OS_OTA"),
+            },
         },
         "onvif_subscriptions": serde_json::to_value(crate::onvif_events::get_statuses()).unwrap_or_default(),
         "partitions": serde_json::to_value(&hw.partitions).unwrap_or_default(),

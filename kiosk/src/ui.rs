@@ -815,8 +815,8 @@ fn maybe_apply_os_update(
     tx: &mpsc::Sender<WorkerMsg>,
     force: bool,
 ) {
-    if std::env::var("BF_ENABLE_OS_OTA").as_deref() != Ok("1") {
-        info!("os-update: disabled (BF_ENABLE_OS_OTA != 1)");
+    if !server::ota_enabled("BF_ENABLE_OS_OTA") {
+        info!("os-update: disabled (BF_ENABLE_OS_OTA = 0)");
         return;
     }
     if OS_UPDATE_ACTIVE
@@ -921,8 +921,8 @@ fn maybe_apply_firmware_update(
     tx: &mpsc::Sender<WorkerMsg>,
     force: bool,
 ) {
-    if std::env::var("BF_ENABLE_APP_OTA").as_deref() != Ok("1") {
-        info!("firmware: disabled (BF_ENABLE_APP_OTA != 1)");
+    if !server::ota_enabled("BF_ENABLE_APP_OTA") {
+        info!("firmware: disabled (BF_ENABLE_APP_OTA = 0)");
         return;
     }
     if FIRMWARE_ACTIVE

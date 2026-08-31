@@ -21,8 +21,8 @@
 //! (deploy/rauc/betterframe-rauc-boot.sh) flips Pi 5 tryboot on the
 //! next boot.
 //!
-//! Gated by env `BF_ENABLE_OS_OTA=1`. Default OFF so dev kiosks running
-//! a non-A/B layout don't try (and fail) to RAUC-install bundles.
+//! Enabled unless env `BF_ENABLE_OS_OTA=0`. Non-A/B development installs
+//! must opt out explicitly so they do not try to RAUC-install bundles.
 //!
 //! Compatibility: read from `/etc/betterframe/os-compatibility` (written
 //! at image build time). Falls back to env `BF_RAUC_COMPATIBILITY`, then

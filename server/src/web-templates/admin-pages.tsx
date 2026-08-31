@@ -2036,6 +2036,8 @@ interface KioskEditProps {
 
 interface AxiomStatus {
   clientTime: string | null;
+  appOtaEnabled: boolean;
+  osOtaEnabled: boolean;
   axiomEnabled: boolean | null;
   axiomActive: boolean | null;
   axiomFlushCount: number | null;
@@ -2047,6 +2049,7 @@ interface AxiomStatus {
 }
 const EMPTY_AXIOM: AxiomStatus = {
   clientTime: null,
+  appOtaEnabled: true, osOtaEnabled: true,
   axiomEnabled: null, axiomActive: null, axiomFlushCount: null,
   axiomErrorCount: null, axiomEventsReceived: null,
   axiomLastFlush: null, axiomLastAttempt: null, axiomLastError: null,
@@ -2056,17 +2059,18 @@ function parseKioskLogging(raw: string | null): AxiomStatus {
   try {
     const parsed = JSON.parse(raw);
     const a = parsed?.axiom;
-    if (!a) return EMPTY_AXIOM;
     return {
       clientTime: typeof parsed?.client_time === "string" ? parsed.client_time : null,
-      axiomEnabled: typeof a.enabled === "boolean" ? a.enabled : null,
-      axiomActive: typeof a.active === "boolean" ? a.active : null,
-      axiomFlushCount: typeof a.flush_count === "number" ? a.flush_count : null,
-      axiomErrorCount: typeof a.error_count === "number" ? a.error_count : null,
-      axiomEventsReceived: typeof a.events_received === "number" ? a.events_received : null,
-      axiomLastFlush: typeof a.last_flush_at === "string" ? a.last_flush_at : null,
-      axiomLastAttempt: typeof a.last_attempt_at === "string" ? a.last_attempt_at : null,
-      axiomLastError: typeof a.last_error === "string" ? a.last_error : null,
+      appOtaEnabled: parsed?.updates?.app_enabled !== false,
+      osOtaEnabled: parsed?.updates?.os_enabled !== false,
+      axiomEnabled: typeof a?.enabled === "boolean" ? a.enabled : null,
+      axiomActive: typeof a?.active === "boolean" ? a.active : null,
+      axiomFlushCount: typeof a?.flush_count === "number" ? a.flush_count : null,
+      axiomErrorCount: typeof a?.error_count === "number" ? a.error_count : null,
+      axiomEventsReceived: typeof a?.events_received === "number" ? a.events_received : null,
+      axiomLastFlush: typeof a?.last_flush_at === "string" ? a.last_flush_at : null,
+      axiomLastAttempt: typeof a?.last_attempt_at === "string" ? a.last_attempt_at : null,
+      axiomLastError: typeof a?.last_error === "string" ? a.last_error : null,
     };
   } catch {
     return EMPTY_AXIOM;
@@ -4253,6 +4257,7 @@ interface KioskFirmwarePanelProps {
 
 export function KioskFirmwarePanel(props: KioskFirmwarePanelProps) {
   const k = props.kiosk;
+  const updatable = parseKioskLogging(k.logging_json).appOtaEnabled;
   const current = k.kiosk_app_version ?? "unknown";
   const target = normalizeFirmwareTarget(k.firmware_target);
   const matchingReleases = target
@@ -4274,7 +4279,9 @@ export function KioskFirmwarePanel(props: KioskFirmwarePanelProps) {
           </div>
         )}
       </div>
-      <form
+      {!updatable ? (
+        <div class="form-hint">App updates are delivered with this kiosk's OS image.</div>
+      ) : <form
         {...{
           "hx-post": `/admin/kiosks/${String(k.id)}/firmware`,
           "hx-target": `#kiosk-firmware-${String(k.id)}`,
@@ -4314,7 +4321,7 @@ export function KioskFirmwarePanel(props: KioskFirmwarePanelProps) {
             }}
           >Push update now</button>
         </div>
-      </form>
+      </form>}
     </div>
   );
 }
@@ -5038,6 +5045,7 @@ export function CloudAccountsPage(props: CloudAccountsPageProps) {
 
 export function KioskOsUpdatePanel(props: KioskOsUpdatePanelProps) {
   const k = props.kiosk;
+  const updatable = parseKioskLogging(k.logging_json).osOtaEnabled;
   const current = k.os_version ?? "unknown";
   const compatibility = k.os_update_compatibility?.trim() ?? "";
   const matchingReleases = compatibility
@@ -5057,7 +5065,9 @@ export function KioskOsUpdatePanel(props: KioskOsUpdatePanelProps) {
           </div>
         )}
       </div>
-      <form
+      {!updatable ? (
+        <div class="form-hint">OS updates are disabled on this kiosk.</div>
+      ) : <form
         {...{
           "hx-post": `/admin/kiosks/${String(k.id)}/os-update`,
           "hx-target": `#kiosk-os-${String(k.id)}`,
@@ -5097,7 +5107,7 @@ export function KioskOsUpdatePanel(props: KioskOsUpdatePanelProps) {
             }}
           >Push OS update now</button>
         </div>
-      </form>
+      </form>}
     </div>
   );
 }

@@ -5,7 +5,7 @@ import {
   firmwareTargetLabel,
   normalizeFirmwareTarget,
 } from "../src/shared/firmware-targets.js";
-import { KioskFirmwarePanel } from "../src/web-templates/admin-pages.js";
+import { KioskFirmwarePanel, KioskOsUpdatePanel } from "../src/web-templates/admin-pages.js";
 import type { FirmwareRelease, Kiosk } from "../src/shared/types.js";
 
 test("normalizes legacy Rust triples to BetterFrame firmware targets", () => {
@@ -40,6 +40,26 @@ test("kiosk firmware panel only shows releases for the kiosk target", () => {
   assert.match(html, /PC x86_64/);
   assert.match(html, /199 \(stable\)/);
   assert.doesNotMatch(html, /200 \(stable\)/);
+});
+
+test("kiosk panels show versions but hide explicitly disabled update controls", () => {
+  const kiosk = {
+    id: "k1",
+    name: "managed-kiosk",
+    kiosk_app_version: "199",
+    os_version: "199",
+    logging_json: JSON.stringify({ updates: { app_enabled: false, os_enabled: false } }),
+  } as Kiosk;
+
+  const app = String(KioskFirmwarePanel({ kiosk, releases: [] }));
+  const os = String(KioskOsUpdatePanel({ kiosk, releases: [] }));
+
+  assert.match(app, /Running:.*199/);
+  assert.match(app, /delivered with this kiosk's OS image/);
+  assert.doesNotMatch(app, /Push update now/);
+  assert.match(os, /Running:.*199/);
+  assert.match(os, /OS updates are disabled/);
+  assert.doesNotMatch(os, /Push OS update now/);
 });
 
 function release(version: string, arch: string): FirmwareRelease {

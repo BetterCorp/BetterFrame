@@ -240,6 +240,8 @@ export type EventSinkMode = "auto" | "server" | string;
 
 export interface Camera {
   id: string;
+  device_id: string | null;
+  device_channel_id: string | null;
   name: string;
   camera_number: string | null;
   type: CameraType;
@@ -264,6 +266,19 @@ export interface Camera {
   event_callback_token_hash: string | null;
   /** BetterFrame-owned SimpleVMS settings keyed by plugin/profile. */
   recording_config_json: Record<string, unknown>;
+}
+
+export interface CameraDevice {
+  id: string;
+  name: string;
+  type: "onvif";
+  host: string;
+  port: number;
+  username: string | null;
+  password: string | null;
+  discovery_runner: string;
+  layout_defaults_json: Record<string, unknown>;
+  created_at: string;
 }
 
 export interface CameraStream {

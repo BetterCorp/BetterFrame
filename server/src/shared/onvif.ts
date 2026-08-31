@@ -348,6 +348,60 @@ function buildDigestAuthHeader(method: string, url: string, challengeHeader: str
   return parts.join(", ");
 }
 
+/** Fetch a camera-owned HTTP resource using the same Basic/Digest fallback as ONVIF. */
+export async function authenticatedGet(
+  url: string,
+  username: string,
+  password: string,
+  timeoutMs = 8000,
+  maxBytes = 10 * 1024 * 1024,
+): Promise<{ status: number; ok: boolean; contentType: string | null; body: Uint8Array }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const read = async (response: Response) => {
+    const reader = response.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (reader) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new Error("camera HTTP response too large");
+      }
+      chunks.push(value);
+    }
+    const body = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { status: response.status, ok: response.ok, contentType: response.headers.get("content-type"), body };
+  };
+  try {
+    if (username) {
+      const basic = await fetch(url, {
+        headers: { Authorization: `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}` },
+        signal: controller.signal,
+      });
+      if (basic.ok) return await read(basic);
+      await basic.body?.cancel();
+    }
+
+    const challenge = await fetch(url, { signal: controller.signal });
+    if (challenge.ok || !username) return await read(challenge);
+    const header = challenge.headers.get("www-authenticate") ?? "";
+    await challenge.body?.cancel();
+    const authorization = buildDigestAuthHeader("GET", url, header, username, password);
+    if (!authorization) return { status: 401, ok: false, contentType: null, body: new Uint8Array() };
+    return await read(await fetch(url, { headers: { Authorization: authorization }, signal: controller.signal }));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function buildEnvelope(headerXml: string, bodyXml: string, extraNamespaces?: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"

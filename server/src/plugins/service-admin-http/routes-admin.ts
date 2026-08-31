@@ -1,6 +1,7 @@
 /**
  * Admin page routes — overview, cameras, kiosks, labels, etc.
  */
+import { randomUUID } from "node:crypto";
 import { type H3, readBody, getRouterParam, getRequestHeader } from "h3";
 import { debugHtmlPage, htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
@@ -9,6 +10,7 @@ import { getCoordinator } from "../../shared/coordinator-registry.js";
 import {
   OverviewPage,
   CamerasPage,
+  CameraDeviceEditPage,
   CameraNewPage,
   CameraEditPage,
   CameraDiscoverPage,
@@ -43,10 +45,12 @@ import {
 } from "../../web-templates/admin-pages.js";
 import {
   discover as onvifDiscover,
+  authenticatedGet,
   getEventProperties as onvifGetEventProperties,
   performAction as onvifPerformAction,
   OnvifActionException,
   type OnvifActionRequest,
+  type DiscoveredCamera,
 } from "../../shared/onvif.js";
 import { generateBundle } from "../../shared/bundle.js";
 import { captureSnapshot } from "../../shared/snapshot.js";
@@ -75,6 +79,52 @@ interface DiscoverAddStream {
   stream_uri: string;
   snapshot_uri?: string | null;
   role: "main" | "sub" | "other";
+}
+
+interface DiscoveryPreview {
+  url: string;
+  runner: string;
+  username: string;
+  password: string;
+  expiresAt: number;
+  tenantSchema: string | null;
+}
+
+const discoveryPreviews = new Map<string, DiscoveryPreview>();
+
+function proxyDiscoverySnapshots(
+  cameras: DiscoveredCamera[],
+  runner: string,
+  username: string,
+  password: string,
+  tenantSchema: string | null,
+): DiscoveredCamera[] {
+  const now = Date.now();
+  for (const [key, preview] of discoveryPreviews) {
+    if (preview.expiresAt <= now) discoveryPreviews.delete(key);
+  }
+  return cameras.map((camera) => ({
+    ...camera,
+    profiles: camera.profiles.map((profile) => {
+      if (!profile.snapshot_uri) return profile;
+      try {
+        const parsed = new URL(profile.snapshot_uri);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return { ...profile, snapshot_uri: null };
+      } catch {
+        return { ...profile, snapshot_uri: null };
+      }
+      const token = randomUUID();
+      discoveryPreviews.set(token, {
+        url: profile.snapshot_uri,
+        runner,
+        username,
+        password,
+        expiresAt: now + 5 * 60_000,
+        tenantSchema,
+      });
+      return { ...profile, snapshot_uri: `/admin/cameras/discover/snapshot/${token}` };
+    }),
+  }));
 }
 
 function noderedTenant(event: any): { tenant_slug: string; tenant_name: string | null; tenant_id: string | null } {
@@ -406,25 +456,57 @@ function safeProxyContentType(value: unknown): string {
 
 async function importDiscoveredCamera(
   deps: AdminDeps,
+  deviceId: string,
+  sourceToken: string | null,
   rawName: string,
   onvifHost: string,
   onvifPort: number,
   username: string,
   password: string,
   streams: DiscoverAddStream[],
-): Promise<string | null> {
+): Promise<{ id: string; created: boolean } | null> {
   if (streams.length === 0) return null;
-  const name = await uniqueCameraName(deps, rawName || "ONVIF camera");
+  const channelId = sourceToken
+    || streams.find((stream) => stream.source_token)?.source_token
+    || streams.map((stream) => stream.profile_token).filter(Boolean).sort().join("|");
+  const profileTokens = new Set(streams.map((stream) => stream.profile_token).filter(Boolean));
+  let cam = (await deps.repo.listCamerasByDevice(deviceId))
+    .find((camera) => camera.device_channel_id === channelId) ?? null;
+  if (!cam && profileTokens.size > 0) {
+    for (const candidate of await deps.repo.listCamerasByDevice(deviceId)) {
+      const existingStreams = await deps.repo.listCameraStreams(candidate.id);
+      if (existingStreams.some((stream) => stream.profile_token && profileTokens.has(stream.profile_token))) {
+        cam = candidate;
+        break;
+      }
+    }
+  }
 
-  const cam = await deps.repo.createCamera({
-    name,
-    type: "onvif",
-    rtsp_url: null,
-    onvif_host: onvifHost,
-    onvif_port: onvifPort,
-    onvif_username: username,
-    onvif_password: password,
-  } as any);
+  const created = cam == null;
+  if (cam) {
+    await deps.repo.updateCamera(cam.id, {
+      device_channel_id: channelId || null,
+      onvif_host: onvifHost,
+      onvif_port: onvifPort,
+      onvif_username: username,
+      onvif_password: password,
+      enabled: true,
+    } as any);
+    await deps.repo.deleteCameraStreams(cam.id);
+  } else {
+    const name = await uniqueCameraName(deps, rawName || "ONVIF camera");
+    cam = await deps.repo.createCamera({
+      device_id: deviceId,
+      device_channel_id: channelId || null,
+      name,
+      type: "onvif",
+      rtsp_url: null,
+      onvif_host: onvifHost,
+      onvif_port: onvifPort,
+      onvif_username: username,
+      onvif_password: password,
+    });
+  }
   for (const stream of streams) {
     const width = stream.width == null ? null : Number(stream.width);
     const height = stream.height == null ? null : Number(stream.height);
@@ -446,7 +528,7 @@ async function importDiscoveredCamera(
       is_discovered: true,
     });
   }
-  return cam.id;
+  return { id: cam.id, created };
 }
 
 function rangesOverlap(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
@@ -488,6 +570,15 @@ function gridQuickLayout(size: number): QuickLayoutCell[] {
     }
   }
   return cells;
+}
+
+export function deviceGridPositions(count: number): Array<{ row: number; col: number }> {
+  if (count <= 0) return [];
+  const cols = Math.ceil(Math.sqrt(count));
+  return Array.from({ length: count }, (_, index) => ({
+    row: Math.floor(index / cols),
+    col: index % cols,
+  }));
 }
 
 function quickLayoutCells(preset: string): QuickLayoutCell[] | null {
@@ -941,7 +1032,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       streamCounts.set(cam.id, (await deps.repo.listCameraStreams(cam.id)).length);
       activeKiosks.set(cam.id, (await deps.repo.listKiosksRenderingCamera(cam.id)).length);
     }
-    return htmlPage(CamerasPage({ user: user.username, cameras, streamCounts, activeKiosks }));
+    return htmlPage(CamerasPage({
+      user: user.username,
+      cameras,
+      devices: await deps.repo.listCameraDevices(),
+      streamCounts,
+      activeKiosks,
+    }));
   });
 
   app.get("/admin/cameras/new", async (event) => {
@@ -1023,6 +1120,47 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }));
   });
 
+  app.get("/admin/cameras/discover/snapshot/:token", async (event) => {
+    const token = getRouterParam(event, "token") ?? "";
+    const preview = discoveryPreviews.get(token);
+    if (!preview || preview.expiresAt <= Date.now() || preview.tenantSchema !== currentTenantSchema(event)) {
+      discoveryPreviews.delete(token);
+      return new Response("Preview expired", { status: 404 });
+    }
+    try {
+      if (preview.runner.startsWith("kiosk:")) {
+        const response = await getCoordinator().requestKiosk<{
+          status?: number;
+          content_type?: string;
+          body_b64?: string;
+          error?: string;
+        }>(preview.runner.slice("kiosk:".length), {
+          type: "camera-proxy-request",
+          url: preview.url,
+          username: preview.username,
+          password: preview.password,
+          timeout_ms: 8000,
+        }, 11000);
+        if (response.error || !response.body_b64 || Number(response.status ?? 0) >= 300) {
+          throw new Error(response.error || `snapshot HTTP ${String(response.status ?? 0)}`);
+        }
+        const body = Buffer.from(response.body_b64, "base64");
+        return new Response(new Uint8Array(body), {
+          headers: { "content-type": safeProxyContentType(response.content_type), "cache-control": "no-store" },
+        });
+      }
+      const response = await authenticatedGet(preview.url, preview.username, preview.password);
+      if (!response.ok) throw new Error(`snapshot HTTP ${String(response.status)}`);
+      const body = response.body;
+      if (body.byteLength > 10 * 1024 * 1024) return new Response("Preview too large", { status: 413 });
+      return new Response(body, {
+        headers: { "content-type": safeProxyContentType(response.contentType), "cache-control": "no-store" },
+      });
+    } catch (error) {
+      return new Response(`Snapshot unavailable: ${(error as Error).message}`, { status: 502 });
+    }
+  });
+
   app.post("/admin/cameras/discover", async (event) => {
     const user = event.context.user!;
     const body = await readBody<Record<string, string>>(event);
@@ -1052,7 +1190,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         port,
         username,
         password,
-        cameras: result.cameras,
+        cameras: proxyDiscoverySnapshots(result.cameras, runner, username, password, currentTenantSchema(event)),
+        runner,
         debug: result.debug,
       }));
     } catch (err) {
@@ -1064,6 +1203,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         username,
         password,
         cameras: [],
+        runner,
         error: `Discovery failed: ${msg}`,
         debug: extractOnvifErrorDebug(msg),
       }));
@@ -1076,37 +1216,59 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const onvifPort = parseInt(formValue(body?.["port"]) || "80", 10) || 80;
     const username = formValue(body?.["username"]).trim();
     const password = formValue(body?.["password"]);
+    const discoveryRunner = formValue(body?.["discovery_runner"]).trim() || "server";
+    const deviceName = formValue(body?.["device_name"]).trim() || `${onvifHost}:${String(onvifPort)}`;
     let imported = 0;
+
+    let device = await deps.repo.getCameraDeviceByEndpoint(onvifHost, onvifPort);
+    if (device) {
+      await deps.repo.updateCameraDevice(device.id, {
+        username: username || null,
+        password: password || device.password,
+        discovery_runner: discoveryRunner,
+      });
+      device = (await deps.repo.getCameraDeviceById(device.id))!;
+    } else {
+      device = await deps.repo.createCameraDevice({
+        name: deviceName,
+        host: onvifHost,
+        port: onvifPort,
+        username: username || null,
+        password: password || null,
+        discovery_runner: discoveryRunner,
+      });
+    }
 
     const selected = formValues(body?.["selected"]);
     if (selected.length > 0) {
       for (const idx of selected) {
         const rawName = formValue(body?.[`camera_${idx}_name`]).trim() || "ONVIF camera";
+        const sourceToken = formValue(body?.[`camera_${idx}_source_token`]).trim() || null;
         const streams = parseDiscoveredStreams(formValue(body?.[`camera_${idx}_streams_json`]));
         if (streams.length === 0) continue;
-        const camId = await importDiscoveredCamera(deps, rawName, onvifHost, onvifPort, username, password, streams);
-        if (camId != null) {
+        const result = await importDiscoveredCamera(deps, device.id, sourceToken, rawName, onvifHost, onvifPort, username, password, streams);
+        if (result != null) {
           deps.nodered.forward(
             "camera.changed",
-            { camera_id: camId, event: "created", source: "server" },
+            { camera_id: result.id, event: result.created ? "created" : "updated", source: "server" },
             noderedTenant(event),
           );
+          imported += 1;
         }
-        imported += 1;
       }
     } else {
       const rawName = formValue(body?.["name"]).trim() || "ONVIF camera";
       const streams = parseDiscoveredStreams(formValue(body?.["streams_json"]));
       if (streams.length > 0) {
-        const camId = await importDiscoveredCamera(deps, rawName, onvifHost, onvifPort, username, password, streams);
-        if (camId != null) {
+        const result = await importDiscoveredCamera(deps, device.id, null, rawName, onvifHost, onvifPort, username, password, streams);
+        if (result != null) {
           deps.nodered.forward(
             "camera.changed",
-            { camera_id: camId, event: "created", source: "server" },
+            { camera_id: result.id, event: result.created ? "created" : "updated", source: "server" },
             noderedTenant(event),
           );
+          imported += 1;
         }
-        imported += 1;
       }
     }
 
@@ -1115,6 +1277,113 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
     notifyKiosks();
 
+    return new Response(null, { status: 302, headers: { location: `/admin/camera-devices/${device.id}` } });
+  });
+
+  app.get("/admin/camera-devices/:id", async (event) => {
+    const id = getRouterParam(event, "id") ?? "";
+    const device = await deps.repo.getCameraDeviceById(id);
+    if (!device) return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
+    const url = new URL(event.req.url, "http://localhost");
+    return htmlPage(CameraDeviceEditPage({
+      user: event.context.user!.username,
+      device,
+      cameras: await deps.repo.listCamerasByDevice(id),
+      kiosks: await deps.repo.listKiosks(),
+      success: url.searchParams.get("success") ?? undefined,
+      error: url.searchParams.get("error") ?? undefined,
+    }));
+  });
+
+  app.post("/admin/camera-devices/:id", async (event) => {
+    const id = getRouterParam(event, "id") ?? "";
+    const device = await deps.repo.getCameraDeviceById(id);
+    if (!device) return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
+    const body = await readBody<Record<string, string>>(event);
+    const fit = body?.["fit"] === "contain" || body?.["fit"] === "fill" ? body["fit"] : "cover";
+    const streamSelector = body?.["stream_selector"] === "main" || body?.["stream_selector"] === "sub"
+      ? body["stream_selector"]
+      : "auto";
+    const patch: Record<string, unknown> = {
+      name: (body?.["name"] ?? device.name).trim(),
+      host: (body?.["host"] ?? device.host).trim(),
+      port: Math.max(1, Math.min(65535, Number(body?.["port"] ?? device.port) || device.port)),
+      username: (body?.["username"] ?? "").trim() || null,
+      discovery_runner: (body?.["discovery_runner"] ?? "server").trim() || "server",
+      layout_defaults_json: {
+        fit,
+        stream_selector: streamSelector,
+        input_options_json: elementInputOptions(body ?? {}),
+      },
+    };
+    if (body?.["password"]) patch["password"] = body["password"];
+    try {
+      await deps.repo.updateCameraDevice(id, patch as any);
+      notifyKiosks();
+      return new Response(null, { status: 302, headers: { location: `/admin/camera-devices/${id}?success=Device+saved` } });
+    } catch (error) {
+      return new Response(null, { status: 302, headers: { location: `/admin/camera-devices/${id}?error=${encodeURIComponent((error as Error).message)}` } });
+    }
+  });
+
+  app.post("/admin/camera-devices/:id/sync", async (event) => {
+    const id = getRouterParam(event, "id") ?? "";
+    const device = await deps.repo.getCameraDeviceById(id);
+    if (!device) return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
+    try {
+      const soapTransport = device.discovery_runner.startsWith("kiosk:")
+        ? kioskOnvifSoapTransport(device.discovery_runner.slice("kiosk:".length))
+        : undefined;
+      const discovered = await onvifDiscover({
+        host: device.host,
+        port: device.port,
+        username: device.username ?? "",
+        password: device.password ?? "",
+        soapTransport,
+      });
+      const seen = new Set<string>();
+      let added = 0;
+      let updated = 0;
+      for (const camera of discovered.cameras) {
+        const result = await importDiscoveredCamera(
+          deps,
+          id,
+          camera.source_token,
+          camera.name,
+          device.host,
+          device.port,
+          device.username ?? "",
+          device.password ?? "",
+          camera.profiles,
+        );
+        if (!result) continue;
+        seen.add(result.id);
+        result.created ? added += 1 : updated += 1;
+        deps.nodered.forward(
+          "camera.changed",
+          { camera_id: result.id, event: result.created ? "created" : "updated", source: "server" },
+          noderedTenant(event),
+        );
+      }
+      let disabled = 0;
+      for (const camera of await deps.repo.listCamerasByDevice(id)) {
+        if (!seen.has(camera.id) && camera.enabled) {
+          await deps.repo.updateCamera(camera.id, { enabled: false });
+          disabled += 1;
+        }
+      }
+      notifyKiosks();
+      const message = encodeURIComponent(`Synced: ${String(added)} added, ${String(updated)} updated, ${String(disabled)} disabled`);
+      return new Response(null, { status: 302, headers: { location: `/admin/camera-devices/${id}?success=${message}` } });
+    } catch (error) {
+      return new Response(null, { status: 302, headers: { location: `/admin/camera-devices/${id}?error=${encodeURIComponent((error as Error).message)}` } });
+    }
+  });
+
+  app.post("/admin/camera-devices/:id/delete", async (event) => {
+    const id = getRouterParam(event, "id") ?? "";
+    await deps.repo.deleteCameraDevice(id);
+    notifyKiosks();
     return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
   });
 
@@ -1431,6 +1700,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       cells,
       cameras,
       entities,
+      devices: await deps.repo.listCameraDevices(),
     }));
   });
 
@@ -1562,6 +1832,45 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (isHtmxRequest(event)) {
       return htmlFragment(renderGrid(layoutId, cells, entities, cameras));
     }
+    return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
+  });
+
+  app.post("/admin/layouts/:id/device", async (event) => {
+    const layoutId = getRouterParam(event, "id") ?? "";
+    const body = await readBody<Record<string, string>>(event);
+    const device = await deps.repo.getCameraDeviceById(body?.["device_id"] ?? "");
+    if (!device) return new Response("Unknown device", { status: 400 });
+    const cameras = (await deps.repo.listCamerasByDevice(device.id)).filter((camera) => camera.enabled);
+    const defaults = device.layout_defaults_json ?? {};
+    const fit = defaults["fit"] === "contain" || defaults["fit"] === "fill" ? defaults["fit"] : "cover";
+    const streamSelector = defaults["stream_selector"] === "main" || defaults["stream_selector"] === "sub"
+      ? defaults["stream_selector"]
+      : "auto";
+    const inputOptions = defaults["input_options_json"] && typeof defaults["input_options_json"] === "object"
+      ? defaults["input_options_json"] as Record<string, unknown>
+      : {};
+    await deps.repo.transact(async () => {
+      for (const cell of await deps.repo.layoutCells(layoutId)) await deps.repo.deleteLayoutCell(cell.id);
+      const positions = deviceGridPositions(cameras.length);
+      for (let index = 0; index < cameras.length; index += 1) {
+        const entity = await deps.repo.getEntityForCamera(cameras[index]!.id);
+        if (!entity) continue;
+        await deps.repo.createLayoutCell({
+          layout_id: layoutId,
+          row: positions[index]!.row,
+          col: positions[index]!.col,
+          entity_id: entity.id,
+          stream_selector: streamSelector,
+          fit,
+          input_options_json: inputOptions,
+        });
+      }
+    });
+    notifyKiosks();
+    const cells = await deps.repo.layoutCells(layoutId);
+    const allCameras = await deps.repo.listCameras();
+    const entities = await deps.repo.listEntities();
+    if (isHtmxRequest(event)) return htmlFragment(renderGrid(layoutId, cells, entities, allCameras));
     return new Response(null, { status: 302, headers: { location: `/admin/layouts/${layoutId}` } });
   });
 
@@ -1917,6 +2226,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     return htmlPage(CameraEditPage({
       user: user.username,
       camera,
+      device: camera.device_id ? await deps.repo.getCameraDeviceById(camera.device_id) : null,
       labels: await deps.repo.cameraLabelIds(id),
       allLabels: await deps.repo.listLabels(),
       streams: await deps.repo.listCameraStreams(id),
@@ -1968,7 +2278,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       patch["onvif_port"] = body?.["rtsp_port"] ? Number(body["rtsp_port"]) : 554;
       patch["onvif_username"] = body?.["rtsp_username"] || null;
       if (body?.["rtsp_password"]) patch["onvif_password"] = body["rtsp_password"];
-    } else if (cam?.type === "onvif") {
+    } else if (cam?.type === "onvif" && !cam.device_id) {
       patch["onvif_host"] = body?.["onvif_host"] || null;
       patch["onvif_port"] = body?.["onvif_port"] ? Number(body["onvif_port"]) : null;
       patch["onvif_username"] = body?.["onvif_username"] || null;
@@ -2024,6 +2334,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
     if (labelId) {
       await deps.repo.attachCameraLabel(camId, labelId);
+      notifyKiosks();
     }
     if (isHtmxRequest(event)) {
       return htmlFragment(renderCameraLabels(camId, await deps.repo.cameraLabelIds(camId), await deps.repo.listLabels()));
@@ -2036,6 +2347,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const body = await readBody<Record<string, string>>(event);
     const labelId = String(body?.["label_id"] ?? "");
     await deps.repo.detachCameraLabel(camId, labelId);
+    notifyKiosks();
     if (isHtmxRequest(event)) {
       return htmlFragment(renderCameraLabels(camId, await deps.repo.cameraLabelIds(camId), await deps.repo.listLabels()));
     }
@@ -2484,7 +2796,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const kioskId = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
     const newLabel = (body?.["new_label"] ?? "").trim().toLowerCase();
-    const role = (body?.["role"] ?? "consume") as "consume" | "operate";
+    const role = body?.["role"] === "operate" ? "operate" : "consume";
     let labelId = body?.["label_id"] ? String(body["label_id"] ?? "") : null;
 
     if (newLabel) {
@@ -2493,6 +2805,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     }
     if (labelId) {
       await deps.repo.attachKioskLabel(kioskId, labelId, role);
+      notifyKiosks();
     }
     if (isHtmxRequest(event)) {
       const kioskLabels = (await deps.repo.listKioskLabels(kioskId)).map((kl) => ({
@@ -2509,7 +2822,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const kioskId = (getRouterParam(event, "id") ?? "");
     const body = await readBody<Record<string, string>>(event);
     const labelId = String(body?.["label_id"] ?? "");
-    await deps.repo.detachKioskLabel(kioskId, labelId);
+    const role = body?.["role"] === "operate" ? "operate" : "consume";
+    await deps.repo.detachKioskLabel(kioskId, labelId, role);
+    notifyKiosks();
     if (isHtmxRequest(event)) {
       const kioskLabels = (await deps.repo.listKioskLabels(kioskId)).map((kl) => ({
         label_id: kl.label_id,

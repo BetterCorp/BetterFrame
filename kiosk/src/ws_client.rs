@@ -25,8 +25,11 @@ struct OnvifSoapRequest {
 #[derive(Deserialize)]
 struct CameraProxyRequest {
     request_id: String,
-    camera_id: String,
-    path: String,
+    camera_id: Option<String>,
+    path: Option<String>,
+    url: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
     timeout_ms: Option<u64>,
 }
 
@@ -681,48 +684,49 @@ async fn perform_onvif_soap(req: OnvifSoapRequest) -> String {
 
 async fn perform_camera_proxy_request(req: CameraProxyRequest) -> String {
     let timeout = Duration::from_millis(req.timeout_ms.unwrap_or(8000).clamp(1000, 30000));
-    let Some(bundle) = crate::server::load_cached_bundle() else {
-        return serde_json::json!({
-            "type": "camera-proxy-response",
-            "request_id": req.request_id,
-            "status": 503,
-            "error": "no bundle cached yet",
-        })
-        .to_string();
+    let (url, username, password) = if let Some(url) = req.url.as_deref() {
+        let Ok(parsed) = url::Url::parse(url) else {
+            return camera_proxy_error(req.request_id, 400, "invalid proxy URL");
+        };
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
+            return camera_proxy_error(req.request_id, 400, "proxy URL must use HTTP or HTTPS");
+        }
+        (
+            url.to_string(),
+            req.username.unwrap_or_default(),
+            req.password.unwrap_or_default(),
+        )
+    } else {
+        let Some(bundle) = crate::server::load_cached_bundle() else {
+            return camera_proxy_error(req.request_id, 503, "no bundle cached yet");
+        };
+        let Some(camera_id) = req.camera_id.as_deref() else {
+            return camera_proxy_error(req.request_id, 400, "camera_id or url required");
+        };
+        let Some(cam) = bundle.cameras.iter().find(|c| c.id == camera_id) else {
+            return camera_proxy_error(req.request_id, 404, "camera not in bundle");
+        };
+        let Some(host) = cam.onvif_host.as_deref().filter(|v| !v.trim().is_empty()) else {
+            return camera_proxy_error(req.request_id, 400, "camera has no ONVIF host");
+        };
+        let path = normalize_camera_proxy_path(req.path.as_deref().unwrap_or("/"));
+        let decrypt_key =
+            crate::server::load_encrypt_key().or_else(|| crate::server::load_cluster_key());
+        let password = cam
+            .onvif_password_encrypted
+            .as_ref()
+            .and_then(|enc| {
+                decrypt_key
+                    .as_deref()
+                    .and_then(|key| crate::onvif_events::decrypt_cluster_public(enc, key))
+            })
+            .unwrap_or_default();
+        (
+            format!("http://{}:{}{}", host, cam.onvif_port.unwrap_or(80), path),
+            cam.onvif_username.clone().unwrap_or_default(),
+            password,
+        )
     };
-    let Some(cam) = bundle.cameras.iter().find(|c| c.id == req.camera_id) else {
-        return serde_json::json!({
-            "type": "camera-proxy-response",
-            "request_id": req.request_id,
-            "status": 404,
-            "error": "camera not in bundle",
-        })
-        .to_string();
-    };
-    let Some(host) = cam.onvif_host.as_deref().filter(|v| !v.trim().is_empty()) else {
-        return serde_json::json!({
-            "type": "camera-proxy-response",
-            "request_id": req.request_id,
-            "status": 400,
-            "error": "camera has no ONVIF host",
-        })
-        .to_string();
-    };
-
-    let path = normalize_camera_proxy_path(&req.path);
-    let url = format!("http://{}:{}{}", host, cam.onvif_port.unwrap_or(80), path);
-    let decrypt_key =
-        crate::server::load_encrypt_key().or_else(|| crate::server::load_cluster_key());
-    let username = cam.onvif_username.as_deref().unwrap_or("");
-    let password = cam
-        .onvif_password_encrypted
-        .as_ref()
-        .and_then(|enc| {
-            decrypt_key
-                .as_deref()
-                .and_then(|k| crate::onvif_events::decrypt_cluster_public(enc, k))
-        })
-        .unwrap_or_default();
 
     let client = match reqwest::Client::builder().timeout(timeout).build() {
         Ok(client) => client,
@@ -741,7 +745,7 @@ async fn perform_camera_proxy_request(req: CameraProxyRequest) -> String {
     let challenge: Option<String>;
     let mut first = client.get(&url);
     if !username.is_empty() {
-        first = first.basic_auth(username, Some(password.as_str()));
+        first = first.basic_auth(username.as_str(), Some(password.as_str()));
     }
     match first.send().await {
         Ok(resp) => {
@@ -769,7 +773,7 @@ async fn perform_camera_proxy_request(req: CameraProxyRequest) -> String {
     if !username.is_empty() {
         if let Some(challenge) = challenge.as_deref() {
             if let Some(auth) =
-                digest_auth_header_for("GET", &url, challenge, username, password.as_str())
+                digest_auth_header_for("GET", &url, challenge, username.as_str(), password.as_str())
             {
                 match client.get(&url).header("Authorization", auth).send().await {
                     Ok(resp) => {
@@ -797,6 +801,16 @@ async fn perform_camera_proxy_request(req: CameraProxyRequest) -> String {
         "request_id": req.request_id,
         "status": status,
         "error": format!("camera proxy HTTP {status}"),
+    })
+    .to_string()
+}
+
+fn camera_proxy_error(request_id: String, status: u16, error: &str) -> String {
+    serde_json::json!({
+        "type": "camera-proxy-response",
+        "request_id": request_id,
+        "status": status,
+        "error": error,
     })
     .to_string()
 }

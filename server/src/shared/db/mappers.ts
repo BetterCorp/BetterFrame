@@ -12,6 +12,7 @@ import type {
   AuditEntry,
   AuditResult,
   Camera,
+  CameraDevice,
   CameraEventSubscription,
   CloudAccount,
   CloudVendor,
@@ -161,6 +162,8 @@ export function rowToDisplay(r: Row): Display {
 export function rowToCamera(r: Row): Camera {
   return {
     id: s(r["id"]),
+    device_id: sn(r["device_id"]),
+    device_channel_id: sn(r["device_channel_id"]),
     name: s(r["name"]),
     camera_number: sn(r["camera_number"]),
     type: s(r["type"]) as CameraType,
@@ -184,6 +187,21 @@ export function rowToCamera(r: Row): Camera {
     event_callback_nonce: sn(r["event_callback_nonce"]),
     event_callback_token_hash: sn(r["event_callback_token_hash"]),
     recording_config_json: j<Record<string, unknown>>(r["recording_config_json"], {}),
+  };
+}
+
+export function rowToCameraDevice(r: Row): CameraDevice {
+  return {
+    id: s(r["id"]),
+    name: s(r["name"]),
+    type: "onvif",
+    host: s(r["host"]),
+    port: n(r["port"]),
+    username: sn(r["username"]),
+    password: sn(r["password"]),
+    discovery_runner: s(r["discovery_runner"] ?? "server"),
+    layout_defaults_json: j<Record<string, unknown>>(r["layout_defaults_json"], {}),
+    created_at: s(r["created_at"]),
   };
 }
 

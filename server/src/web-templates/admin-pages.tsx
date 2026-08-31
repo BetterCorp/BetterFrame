@@ -6,6 +6,7 @@ import { formatTimeFallback, Layout, LocalTime, localTimeData } from "./layout.j
 import type {
   AuditEntry,
   Camera,
+  CameraDevice,
   CameraEventSubscription,
   Display,
   Entity,
@@ -383,16 +384,38 @@ export function OverviewPage(props: OverviewProps) {
 interface CamerasProps {
   user: string;
   cameras: Camera[];
+  devices: CameraDevice[];
   streamCounts: Map<string, number>;
   activeKiosks: Map<string, number>;
 }
 
 export function CamerasPage(props: CamerasProps) {
+  const deviceById = new Map(props.devices.map((device) => [device.id, device]));
   return (
     <Layout title="Cameras" user={props.user} activeNav="cameras">
       <div class="section-header">
+        <h2 class="section-title">Devices</h2>
+        <a href="/admin/cameras/discover" class="btn btn-primary">Add ONVIF Device</a>
+      </div>
+      <div class="table-wrap" style="margin-bottom:1.5rem">
+        <table>
+          <thead><tr><th>Name</th><th>Endpoint</th><th>Cameras</th></tr></thead>
+          <tbody>
+            {props.devices.length === 0 ? (
+              <tr><td colspan="3" style="text-align:center; color:#999; padding:2rem">No ONVIF devices configured</td></tr>
+            ) : props.devices.map((device) => (
+              <tr>
+                <td><a href={`/admin/camera-devices/${device.id}`}><strong>{device.name}</strong></a></td>
+                <td><code>{device.host}:{String(device.port)}</code></td>
+                <td>{String(props.cameras.filter((camera) => camera.device_id === device.id).length)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div class="section-header">
         <h2 class="section-title">All Cameras</h2>
-        <a href="/admin/cameras/new" class="btn btn-primary">Add Camera</a>
+        <a href="/admin/cameras/new" class="btn btn-ghost">Add Standalone RTSP Camera</a>
       </div>
       <div class="table-wrap">
         <table>
@@ -400,13 +423,14 @@ export function CamerasPage(props: CamerasProps) {
             <tr>
               <th>Name</th>
               <th>Type</th>
+              <th>Device</th>
               <th>Streams</th>
               <th>Status</th>
             </tr>
           </thead>
           <tbody>
             {props.cameras.length === 0 ? (
-              <tr><td colspan="4" style="text-align:center; color:#999; padding:2rem">No cameras configured</td></tr>
+              <tr><td colspan="5" style="text-align:center; color:#999; padding:2rem">No cameras configured</td></tr>
             ) : (
               props.cameras.map((cam) => {
                 const streams = props.streamCounts.get(cam.id) ?? 0;
@@ -426,6 +450,9 @@ export function CamerasPage(props: CamerasProps) {
                       <a href={`/admin/cameras/${cam.id}`}><strong>{cam.name}</strong></a>
                     </td>
                     <td><span class="badge badge-blue">{cam.type.toUpperCase()}</span></td>
+                    <td>{cam.device_id && deviceById.get(cam.device_id)
+                      ? <a href={`/admin/camera-devices/${cam.device_id}`}>{deviceById.get(cam.device_id)!.name}</a>
+                      : <span style="color:#999">Standalone</span>}</td>
                     <td>{String(streams)}</td>
                     <td><span class={`badge badge-${health}`}>{healthLabel}</span></td>
                   </tr>
@@ -434,6 +461,80 @@ export function CamerasPage(props: CamerasProps) {
             )}
           </tbody>
         </table>
+      </div>
+    </Layout>
+  );
+}
+
+interface CameraDeviceEditProps {
+  user: string;
+  device: CameraDevice;
+  cameras: Camera[];
+  kiosks: Kiosk[];
+  success?: string;
+  error?: string;
+}
+
+export function CameraDeviceEditPage(props: CameraDeviceEditProps) {
+  const defaults = props.device.layout_defaults_json ?? {};
+  const input = defaults["input_options_json"] && typeof defaults["input_options_json"] === "object"
+    ? defaults["input_options_json"] as Record<string, unknown>
+    : {};
+  return (
+    <Layout
+      title={`Device: ${props.device.name}`}
+      user={props.user}
+      activeNav="cameras"
+      flash={props.error ? { type: "error", message: props.error } : props.success ? { type: "success", message: props.success } : undefined}
+    >
+      <div class="two-col">
+        <div class="card">
+          <h2 style="margin:0 0 1rem;font-size:1.1rem">Connection and layout defaults</h2>
+          <form method="post" action={`/admin/camera-devices/${props.device.id}`}>
+            <div class="form-group"><label for="name">Name</label><input id="name" name="name" class="form-input" value={props.device.name} required maxlength="128" /></div>
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:0.75rem">
+              <div class="form-group"><label for="host">Host</label><input id="host" name="host" class="form-input" value={props.device.host} required /></div>
+              <div class="form-group"><label for="port">Port</label><input id="port" name="port" type="number" class="form-input" value={String(props.device.port)} required /></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem">
+              <div class="form-group"><label for="username">Username</label><input id="username" name="username" class="form-input" value={props.device.username ?? ""} /></div>
+              <div class="form-group"><label for="password">Password (blank keeps current)</label><input id="password" name="password" type="password" class="form-input" /></div>
+            </div>
+            <div class="form-group">
+              <label for="discovery_runner">Connect through</label>
+              <select id="discovery_runner" name="discovery_runner" class="form-input">
+                <option value="server" selected={props.device.discovery_runner === "server"}>Server</option>
+                {props.kiosks.map((kiosk) => <option value={`kiosk:${kiosk.id}`} selected={props.device.discovery_runner === `kiosk:${kiosk.id}`}>Kiosk: {kiosk.name}</option>)}
+              </select>
+            </div>
+            <h3 style="margin:1rem 0 0.75rem;font-size:0.95rem">Defaults when added to a layout</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem">
+              <div class="form-group"><label for="stream_selector">Stream</label><select id="stream_selector" name="stream_selector" class="form-input"><option value="auto" selected={defaults["stream_selector"] !== "main" && defaults["stream_selector"] !== "sub"}>Auto</option><option value="main" selected={defaults["stream_selector"] === "main"}>Main</option><option value="sub" selected={defaults["stream_selector"] === "sub"}>Sub</option></select></div>
+              <div class="form-group"><label for="fit">Fit</label><select id="fit" name="fit" class="form-input"><option value="cover" selected={defaults["fit"] !== "contain" && defaults["fit"] !== "fill"}>Cover</option><option value="contain" selected={defaults["fit"] === "contain"}>Contain</option><option value="fill" selected={defaults["fit"] === "fill"}>Fill</option></select></div>
+            </div>
+            <div class="form-group"><label for="keyboard_mode">ioBOX keyboard</label><select id="keyboard_mode" name="keyboard_mode" class="form-input"><option value="disabled" selected={input["keyboard_mode"] === "disabled" || !input["keyboard_mode"]}>Disabled</option><option value="all" selected={input["keyboard_mode"] === "all"}>All keys</option><option value="alphanumeric" selected={input["keyboard_mode"] === "alphanumeric"}>Alphanumeric</option><option value="custom" selected={input["keyboard_mode"] === "custom"}>Custom</option></select></div>
+            <div class="form-group"><label for="keyboard_allowlist">Allowed keys</label><input id="keyboard_allowlist" name="keyboard_allowlist" class="form-input" value={Array.isArray(input["keyboard_allowlist"]) ? input["keyboard_allowlist"].join(", ") : ""} /></div>
+            <label style="display:block;margin-bottom:0.5rem"><input type="checkbox" name="mouse_enabled" value="1" checked={input["mouse_enabled"] === true} /> Mouse</label>
+            <label style="display:block;margin-bottom:1rem"><input type="checkbox" name="ptz_enabled" value="1" checked={input["ptz_enabled"] === true} /> PTZ</label>
+            <button type="submit" class="btn btn-primary">Save Device</button>
+            <a href="/admin/cameras" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
+          </form>
+        </div>
+        <div>
+          <div class="card" style="margin-bottom:1rem">
+            <h2 style="margin:0 0 0.75rem;font-size:1.1rem">Channels</h2>
+            <p style="color:#666;font-size:0.85rem;margin-bottom:1rem">Re-sync adds new channels, refreshes streams, and disables channels no longer reported.</p>
+            <form method="post" action={`/admin/camera-devices/${props.device.id}/sync`}>
+              <button type="submit" class="btn btn-primary">Re-sync Device</button>
+            </form>
+            <div style="margin-top:1rem;display:grid;gap:0.4rem">
+              {props.cameras.map((camera) => <a href={`/admin/cameras/${camera.id}`}>{camera.name}{camera.enabled ? "" : " (disabled)"}</a>)}
+            </div>
+          </div>
+          <form method="post" action={`/admin/camera-devices/${props.device.id}/delete`}>
+            <button type="submit" class="btn btn-danger" {...{"onclick": `return confirm('Delete this device and all ${String(props.cameras.length)} cameras?')`}}>Delete Device and Cameras</button>
+          </form>
+        </div>
       </div>
     </Layout>
   );
@@ -597,6 +698,7 @@ interface CameraDiscoverResultsProps {
   port?: number;
   username: string;
   password: string;
+  runner: string;
   cameras: DiscoveredCameraRow[];
   error?: string;
   success?: string;
@@ -731,6 +833,8 @@ export function CameraDiscoverResultsPage(props: CameraDiscoverResultsProps) {
             <input type="hidden" name="port" value={String(props.port ?? 80)} />
             <input type="hidden" name="username" value={props.username} />
             <input type="hidden" name="password" value={props.password} />
+            <input type="hidden" name="discovery_runner" value={props.runner} />
+            <input type="hidden" name="device_name" value={props.debug?.deviceName ?? props.host} />
             <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:1rem; flex-wrap:wrap">
               <button type="button" class="btn btn-ghost" data-action="check-all">Check all</button>
               <button type="button" class="btn btn-ghost" data-action="uncheck-all">Uncheck all</button>
@@ -745,6 +849,7 @@ export function CameraDiscoverResultsPage(props: CameraDiscoverResultsProps) {
                 return (
                   <div class="card discover-camera-card">
                     <input type="hidden" name={`camera_${String(idx)}_name`} value={cam.name} />
+                    <input type="hidden" name={`camera_${String(idx)}_source_token`} value={cam.source_token ?? ""} />
                     <input type="hidden" name={`camera_${String(idx)}_streams_json`} value={JSON.stringify(cam.profiles)} />
                     <div class="section-header" style="margin-bottom:0.75rem">
                       <label style="display:flex; gap:0.5rem; align-items:center">
@@ -1153,7 +1258,7 @@ export function EntityEditPage(props: EntityEditPageProps) {
             <button type="submit" class="btn btn-primary">Save</button>
             <a href="/admin/entities" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
             {e.type === "dashboard" && (
-              <a href="/admin/nodered" class="btn btn-ghost" style="margin-left:0.5rem" target="_blank" rel="noopener">Open in Node-RED</a>
+              <a href="/admin/nodered" class="btn btn-ghost" style="margin-left:0.5rem">Open in Node-RED</a>
             )}
           </form>
         </div>
@@ -1514,6 +1619,7 @@ interface CameraSubscription {
 interface CameraEditProps {
   user: string;
   camera: Camera;
+  device?: CameraDevice | null;
   labels: Array<{ label_id: string; name: string }>;
   allLabels: Label[];
   streams: Array<{ id: string; role: string; name: string; rtsp_uri: string }>;
@@ -1622,6 +1728,7 @@ export function CameraEditPage(props: CameraEditProps) {
         {cam.type !== "cloud" && (<>
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Edit Camera</h2>
+          {props.device && <p style="color:#666;font-size:0.85rem;margin-bottom:1rem">Connection and credentials are managed by <a href={`/admin/camera-devices/${props.device.id}`}>{props.device.name}</a>.</p>}
           <form method="post" action={`/admin/cameras/${cam.id}`}>
             <div class="form-group">
               <label for="name">Name</label>
@@ -1666,7 +1773,7 @@ export function CameraEditPage(props: CameraEditProps) {
                 </div>
               );
             })()}
-            {cam.type === "onvif" && (
+            {cam.type === "onvif" && !props.device && (
               <div>
                 <div class="form-group">
                   <label for="onvif_host">ONVIF Host</label>
@@ -1988,7 +2095,7 @@ export function renderKioskLabels(
               style="cursor:pointer; border:none"
               title="Click to remove"
               hx-post={`/admin/kiosks/${String(kioskId)}/labels/remove`}
-              hx-vals={JSON.stringify({ label_id: l.label_id })}
+              hx-vals={JSON.stringify({ label_id: l.label_id, role: l.role })}
               hx-target={labelsTargetSelector}
               hx-swap="innerHTML"
             >
@@ -2006,9 +2113,7 @@ export function renderKioskLabels(
         style="display:flex; gap:0.5rem"
       >
         <select name="label_id" class="form-input" style="flex:1">
-          {allLabels
-            .filter((al) => !labels.some((l) => l.label_id === al.id))
-            .map((al) => <option value={String(al.id)}>{al.name}</option>)}
+          {allLabels.map((al) => <option value={String(al.id)}>{al.name}</option>)}
         </select>
         <select name="role" class="form-input" style="width:120px">
           <option value="consume">consume</option>
@@ -2016,6 +2121,7 @@ export function renderKioskLabels(
         </select>
         <button type="submit" class="btn btn-primary">Add</button>
       </form>
+      <div class="form-hint">A label may be attached as both consume and operate.</div>
       <form
         hx-post={`/admin/kiosks/${String(kioskId)}/labels`}
         hx-target={labelsTargetSelector}
@@ -2224,7 +2330,7 @@ function OperatorConsoleCard(props: { kiosk: Kiosk }) {
         <div class="form-group"><label>Dedicated recording mount</label><input name="simple_vms_storage_path" class="form-input" value={k.simple_vms_storage_path ?? ""} placeholder="/var/lib/betterframe/recordings" /></div>
         <div class="form-group"><label>Dynamic SimpleVMS settings</label><textarea name="simple_vms_settings_json" class="form-input" rows="6">{JSON.stringify(vmsSettings, null, 2)}</textarea></div>
         <button type="submit" class="btn btn-primary">Save &amp; Push</button>
-        {origin ? <a class="btn btn-ghost" style="margin-left:.5rem" href={origin} target="_blank" rel="noopener">Open Console</a> : null}
+        {origin ? <a class="btn btn-ghost" style="margin-left:.5rem" href={origin}>Open Console</a> : null}
         {k.operator_console_host ? <a class="btn btn-ghost" style="margin-left:.5rem" href={`http://${k.operator_console_host}:18090/local/operator-certificate.crt`}>Download trust certificate</a> : null}
       </form>
       {k.operator_console_enabled ? (
@@ -2524,8 +2630,8 @@ export function KioskEditPage(props: KioskEditProps) {
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Remote Debug</h2>
           {k.firmware_channel === "dev" && (k as any).os_update_channel === "dev" ? (
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
-              <a href={`/admin/kiosks/${String(k.id)}/logs`} class="btn btn-sm" target="_blank">Journal Logs</a>
-              <a href={`/admin/kiosks/${String(k.id)}/terminal`} class="btn btn-sm" target="_blank">Terminal</a>
+              <a href={`/admin/kiosks/${String(k.id)}/logs`} class="btn btn-sm">Journal Logs</a>
+              <a href={`/admin/kiosks/${String(k.id)}/terminal`} class="btn btn-sm">Terminal</a>
             </div>
           ) : (
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center">
@@ -2884,6 +2990,7 @@ interface LayoutEditPageProps {
   cells: LayoutCell[];
   cameras: Camera[];
   entities: Entity[];
+  devices: CameraDevice[];
   /** If set, render the content-assignment form for this cell beneath the grid. */
   selectedCellId?: number | null;
   error?: string;
@@ -3061,7 +3168,7 @@ export function renderCellSidebar(
             ))}
           </select>
           <div class="form-hint" style="font-size:0.7rem">
-            <a href="/admin/entities/new" target="_blank">+ New entity</a>
+            <a href="/admin/entities/new">+ New entity</a>
           </div>
         </div>
 
@@ -3458,6 +3565,19 @@ export function LayoutEditPage(props: LayoutEditPageProps) {
                 <button type="submit" class="btn btn-sm btn-ghost">{preset.label}</button>
               </form>
             ))}
+            {props.devices.length > 0 && (
+              <form
+                hx-post={`/admin/layouts/${l.id}/device`}
+                hx-target="#layout-grid"
+                hx-swap="innerHTML"
+                hx-confirm="Fill this layout from the device? This replaces all blocks in this layout."
+              >
+                <select name="device_id" class="form-input" style="min-width:180px">
+                  {props.devices.map((device) => <option value={device.id}>{device.name}</option>)}
+                </select>
+                <button type="submit" class="btn btn-sm btn-primary">Fill from device</button>
+              </form>
+            )}
           </div>
           <div class="layout-editor-shell">
             <div id="layout-grid">

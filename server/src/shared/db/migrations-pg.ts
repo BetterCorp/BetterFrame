@@ -945,4 +945,42 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS simple_vms_enabled BOOLEAN NOT NULL DEFAULT false`,
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS simple_vms_storage_path TEXT`,
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS simple_vms_settings_json JSONB NOT NULL DEFAULT '{}'`,
+
+  // ---- Physical ONVIF devices (NVR/DVR/camera) own discovered channels -----
+  `CREATE TABLE IF NOT EXISTS camera_devices (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'onvif' CHECK(type IN ('onvif')),
+    host TEXT NOT NULL,
+    port INTEGER NOT NULL DEFAULT 80,
+    username TEXT,
+    password TEXT,
+    discovery_runner TEXT NOT NULL DEFAULT 'server',
+    layout_defaults_json JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_camera_devices_endpoint ON camera_devices(host, port)`,
+  `ALTER TABLE cameras ADD COLUMN IF NOT EXISTS device_id TEXT REFERENCES camera_devices(id) ON DELETE CASCADE`,
+  `ALTER TABLE cameras ADD COLUMN IF NOT EXISTS device_channel_id TEXT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_cameras_device_channel ON cameras(device_id, device_channel_id) WHERE device_channel_id IS NOT NULL`,
+  `INSERT INTO camera_devices (id, name, host, port, username, password)
+    SELECT 'legacy-' || substr(md5(onvif_host || ':' || COALESCE(onvif_port, 80)::text), 1, 24),
+           onvif_host || ':' || COALESCE(onvif_port, 80)::text,
+           onvif_host,
+           COALESCE(onvif_port, 80),
+           MIN(onvif_username),
+           MIN(onvif_password)
+      FROM cameras
+     WHERE type = 'onvif' AND onvif_host IS NOT NULL AND device_id IS NULL
+     GROUP BY onvif_host, COALESCE(onvif_port, 80)
+    ON CONFLICT (host, port) DO NOTHING`,
+  `UPDATE cameras c
+      SET device_id = d.id,
+          onvif_username = d.username,
+          onvif_password = d.password
+     FROM camera_devices d
+    WHERE c.type = 'onvif'
+      AND c.device_id IS NULL
+      AND c.onvif_host = d.host
+      AND COALESCE(c.onvif_port, 80) = d.port`,
 ];

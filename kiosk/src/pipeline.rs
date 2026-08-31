@@ -161,9 +161,9 @@ pub fn create_camera_pipeline(
         }
     });
 
-    // Prefer the DMA-BUF/GL path. Common software decoders output YUV while
-    // gtk4paintablesink accepts RGB system memory, so insert videoconvert only
-    // when direct negotiation fails.
+    // Pad linking can succeed before runtime format negotiation. Only bypass
+    // videoconvert for an explicit zero-copy memory type; software decoder YUV
+    // otherwise fails later with not-negotiated at gtk4paintablesink.
     let pipeline_weak = pipeline.downgrade();
     let sink_weak = sink.downgrade();
     let decode_name = pipeline_name.clone();
@@ -179,35 +179,40 @@ pub fn create_camera_pipeline(
         let Some(sink) = sink_weak.upgrade() else {
             return;
         };
-        let Some(sink_pad) = sink.static_pad("sink") else {
+        let zero_copy = caps
+            .features(0)
+            .map(|features| {
+                features.contains("memory:DMABuf") || features.contains("memory:GLMemory")
+            })
+            .unwrap_or(false);
+        if zero_copy {
+            let Some(sink_pad) = sink.static_pad("sink") else {
+                return;
+            };
+            if pad.link(&sink_pad).is_ok() {
+                info!("[{decode_name}] decoder linked directly to GTK sink (zero-copy)");
+                return;
+            }
+        }
+
+        let Some(pipeline) = pipeline_weak.upgrade() else {
             return;
         };
-        if !sink_pad.is_linked() {
-            match pad.link(&sink_pad) {
-                Ok(_) => info!("[{decode_name}] decoder linked directly to GTK sink"),
-                Err(error) => {
-                    info!("[{decode_name}] direct decoder link unavailable ({error:?}); using videoconvert");
-                    let Some(pipeline) = pipeline_weak.upgrade() else {
-                        return;
-                    };
-                    let Ok(convert) = gst::ElementFactory::make("videoconvert").build() else {
-                        error!("[{decode_name}] videoconvert is unavailable");
-                        return;
-                    };
-                    let Some(convert_sink) = convert.static_pad("sink") else {
-                        return;
-                    };
-                    if pipeline.add(&convert).is_err()
-                        || convert.link(&sink).is_err()
-                        || pad.link(&convert_sink).is_err()
-                        || convert.sync_state_with_parent().is_err()
-                    {
-                        error!("[{decode_name}] software conversion fallback failed");
-                    } else {
-                        info!("[{decode_name}] decoder linked through videoconvert");
-                    }
-                }
-            }
+        let Ok(convert) = gst::ElementFactory::make("videoconvert").build() else {
+            error!("[{decode_name}] videoconvert is unavailable");
+            return;
+        };
+        let Some(convert_sink) = convert.static_pad("sink") else {
+            return;
+        };
+        if pipeline.add(&convert).is_err()
+            || convert.link(&sink).is_err()
+            || pad.link(&convert_sink).is_err()
+            || convert.sync_state_with_parent().is_err()
+        {
+            error!("[{decode_name}] software conversion link failed");
+        } else {
+            info!("[{decode_name}] decoder linked through videoconvert");
         }
     });
 

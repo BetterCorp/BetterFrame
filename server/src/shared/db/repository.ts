@@ -20,6 +20,7 @@ import type {
   AuditEntry,
   AuditResult,
   Camera,
+  CameraDevice,
   CameraEventSubscription,
   CameraStream,
   CameraType,
@@ -70,6 +71,7 @@ import {
   rowToApiKey,
   rowToAuditEntry,
   rowToCamera,
+  rowToCameraDevice,
   rowToCameraEventSubscription,
   rowToCloudAccount,
   rowToCameraStream,
@@ -909,6 +911,7 @@ export class Repository {
     options?: Record<string, unknown>;
     entity_id?: string | null;
     fit?: "cover" | "contain" | "fill";
+    input_options_json?: Record<string, unknown>;
   }): Promise<LayoutCell> {
     // Resolve content fields from the entity (if given). The legacy columns
     // remain populated for backward-compatible bundle generation. Dashboard
@@ -933,8 +936,8 @@ export class Repository {
 
     const id = uuidv7();
     await this._run(
-      `INSERT INTO layout_cells (id, layout_id, "row", col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options, entity_id, fit)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO layout_cells (id, layout_id, "row", col, row_span, col_span, content_type, camera_id, stream_selector, web_url, html_content, cooling_timeout_seconds, options, entity_id, fit, input_options_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.layout_id,
@@ -951,6 +954,7 @@ export class Repository {
         J(input.options ?? {}),
         input.entity_id ?? null,
         input.fit ?? "cover",
+        J(input.input_options_json ?? {}),
       ],
     );
     void this.notify("layout_cells", "create", id);
@@ -1091,8 +1095,82 @@ export class Repository {
   // cameras
   // ===========================================================================
 
+  async listCameraDevices(): Promise<CameraDevice[]> {
+    const rs = await this._all("SELECT * FROM camera_devices ORDER BY name");
+    return rs.map((r) => rowToCameraDevice(r as Record<string, unknown>));
+  }
+
+  async getCameraDeviceById(id: string): Promise<CameraDevice | null> {
+    const r = await this._get("SELECT * FROM camera_devices WHERE id = ?", [id]);
+    return r ? rowToCameraDevice(r as Record<string, unknown>) : null;
+  }
+
+  async getCameraDeviceByEndpoint(host: string, port: number): Promise<CameraDevice | null> {
+    const r = await this._get("SELECT * FROM camera_devices WHERE host = ? AND port = ?", [host, port]);
+    return r ? rowToCameraDevice(r as Record<string, unknown>) : null;
+  }
+
+  async createCameraDevice(input: {
+    name: string;
+    host: string;
+    port: number;
+    username?: string | null;
+    password?: string | null;
+    discovery_runner?: string;
+    layout_defaults_json?: Record<string, unknown>;
+  }): Promise<CameraDevice> {
+    const id = uuidv7();
+    await this._run(
+      `INSERT INTO camera_devices
+         (id, name, host, port, username, password, discovery_runner, layout_defaults_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, input.name, input.host, input.port, input.username ?? null, input.password ?? null,
+       input.discovery_runner ?? "server", J(input.layout_defaults_json ?? {})],
+    );
+    void this.notify("camera_devices", "create", id);
+    return (await this.getCameraDeviceById(id))!;
+  }
+
+  async updateCameraDevice(id: string, patch: Partial<CameraDevice>): Promise<void> {
+    const allowed = new Set(["name", "host", "port", "username", "password", "discovery_runner", "layout_defaults_json"]);
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [key, value] of Object.entries(patch)) {
+      if (!allowed.has(key)) continue;
+      sets.push(`${key} = ?`);
+      vals.push(key === "layout_defaults_json" ? J(value) : value === undefined ? null : value);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    await this.transact(async () => {
+      await this._run(`UPDATE camera_devices SET ${sets.join(", ")} WHERE id = ?`, vals);
+      const device = await this.getCameraDeviceById(id);
+      if (device) {
+        await this._run(
+          `UPDATE cameras
+              SET onvif_host = ?, onvif_port = ?, onvif_username = ?, onvif_password = ?
+            WHERE device_id = ?`,
+          [device.host, device.port, device.username, device.password, id],
+        );
+      }
+    });
+    void this.notify("camera_devices", "update", id);
+    void this.notify("cameras", "update", id);
+  }
+
+  async deleteCameraDevice(id: string): Promise<void> {
+    await this._run("DELETE FROM camera_devices WHERE id = ?", [id]);
+    void this.notify("camera_devices", "delete", id);
+    void this.notify("cameras", "delete", id);
+  }
+
   async listCameras(): Promise<Camera[]> {
     const rs = await this._all("SELECT * FROM cameras ORDER BY name");
+    return rs.map((r) => rowToCamera(r as Record<string, unknown>));
+  }
+
+  async listCamerasByDevice(deviceId: string): Promise<Camera[]> {
+    const rs = await this._all("SELECT * FROM cameras WHERE device_id = ? ORDER BY name", [deviceId]);
     return rs.map((r) => rowToCamera(r as Record<string, unknown>));
   }
 
@@ -1107,6 +1185,8 @@ export class Repository {
   }
 
   async createCamera(input: {
+    device_id?: string | null;
+    device_channel_id?: string | null;
     name: string;
     camera_number?: string | null;
     type: CameraType;
@@ -1121,11 +1201,13 @@ export class Repository {
     const id = uuidv7();
     await this._run(
       `INSERT INTO cameras
-         (id, name, camera_number, type, rtsp_url, onvif_host, onvif_port, onvif_username,
+         (id, device_id, device_channel_id, name, camera_number, type, rtsp_url, onvif_host, onvif_port, onvif_username,
           onvif_password, capabilities, stream_policy)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
+        input.device_id ?? null,
+        input.device_channel_id ?? null,
         input.name,
         input.camera_number ?? null,
         input.type,
@@ -1266,6 +1348,11 @@ export class Repository {
     vals.push(id);
     await this._run(`UPDATE camera_streams SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("camera_streams", "update", id);
+  }
+
+  async deleteCameraStreams(cameraId: string): Promise<void> {
+    await this._run("DELETE FROM camera_streams WHERE camera_id = ?", [cameraId]);
+    void this.notify("camera_streams", "delete", cameraId);
   }
 
   // ===========================================================================
@@ -2928,8 +3015,11 @@ export class Repository {
     await this._run(`DELETE FROM camera_labels WHERE camera_id = ? AND label_id = ?`, [cameraId, labelId]);
   }
 
-  async detachKioskLabel(kioskId: string, labelId: string): Promise<void> {
-    await this._run(`DELETE FROM kiosk_labels WHERE kiosk_id = ? AND label_id = ?`, [kioskId, labelId]);
+  async detachKioskLabel(kioskId: string, labelId: string, role: LabelRole): Promise<void> {
+    await this._run(
+      `DELETE FROM kiosk_labels WHERE kiosk_id = ? AND label_id = ? AND role = ?`,
+      [kioskId, labelId, role],
+    );
   }
 
   async deleteLabel(id: string): Promise<void> {

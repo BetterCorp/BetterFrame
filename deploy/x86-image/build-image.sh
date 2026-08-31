@@ -64,6 +64,7 @@ mkfs.vfat -F32 -n BF_BOOT "${LOOP}p1"
 mkfs.ext4 -F -L BF_ROOT_A "${LOOP}p2"
 mkfs.ext4 -F -L BF_ROOT_B "${LOOP}p3"
 mkfs.ext4 -F -L BF_DATA "${LOOP}p4"
+test "$(blkid -s LABEL -o value "${LOOP}p1")" = BF_BOOT
 
 partuuid() {
   blkid -s PARTUUID -o value "$1" | tr '[:upper:]' '[:lower:]'
@@ -304,6 +305,7 @@ set A_OK=0
 set B_OK=0
 set A_TRY=0
 set B_TRY=0
+set bootpart=$root
 search --no-floppy --label BF_BOOT --set=bootpart
 load_env --file=($bootpart)/EFI/betterframe/grubenv
 for SLOT in $ORDER; do

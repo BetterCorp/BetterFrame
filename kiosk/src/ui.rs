@@ -24,6 +24,7 @@ fn set_reported_bundle_version(version: &str) {
     }
 }
 
+use gdk_pixbuf::prelude::PixbufLoaderExt;
 use gtk4::prelude::*;
 use gtk4::{
     self as gtk, Application, ApplicationWindow, Box as GtkBox, Grid, Label, Orientation, Picture,
@@ -176,7 +177,7 @@ thread_local! {
 }
 
 const APP_ID: &str = "dev.betterframe.kiosk";
-const BETTERFRAME_LOGO_SVG: &str = include_str!("../../server/src/web-static/betterframe-logo.svg");
+const BETTERFRAME_LOGO_SVG: &str = include_str!("../assets/betterframe-logo-dark.svg");
 const BETTERFRAME_MARK_SVG: &str = include_str!("../../server/src/web-static/betterframe-mark.svg");
 
 pub fn build_app() -> Application {
@@ -246,9 +247,24 @@ fn activate(app: &Application) {
             }
         };
 
-        // Try fetching live bundle. If server unreachable, fall back to
-        // cached on-disk bundle and keep retrying every 30s in the background.
-        let initial = match server::fetch_bundle(&server, &key) {
+        // Render cached content before any network request so a paired kiosk
+        // starts immediately while its server is unavailable or rebooting.
+        let cached = server::load_cached_bundle();
+        if let Some(bundle) = &cached {
+            info!("boot: rendering cached bundle");
+            set_reported_bundle_version(&bundle.version);
+            crate::axiom::set_kiosk_id(bundle.kiosk_id.clone());
+            set_hostname_from_name(&bundle.kiosk_name);
+            let _ = tx.send(WorkerMsg::RenderBundle(
+                bundle.clone(),
+                server.clone(),
+                key.clone(),
+            ));
+        }
+
+        // Fetch the current bundle and replace the cached render when the
+        // server is reachable. Background loops keep reconnecting otherwise.
+        match server::fetch_bundle(&server, &key) {
             Some(b) => {
                 set_reported_bundle_version(&b.version);
                 crate::axiom::set_kiosk_id(b.kiosk_id.clone());
@@ -258,13 +274,11 @@ fn activate(app: &Application) {
                     b.cameras.len(),
                     b.normalized_displays().len()
                 );
-                Some(b)
+                let _ = tx.send(WorkerMsg::RenderBundle(b, server.clone(), key.clone()));
             }
             None => {
-                if let Some(cached) = server::load_cached_bundle() {
-                    warn!("offline mode: rendering cached bundle");
-                    set_reported_bundle_version(&cached.version);
-                    Some(cached)
+                if cached.is_some() {
+                    warn!("offline mode: keeping cached bundle");
                 } else {
                     warn!("no bundle available (server unreachable, no cache)");
                     if server::is_paired() {
@@ -272,13 +286,8 @@ fn activate(app: &Application) {
                             "paired kiosk has no live bundle and no cached bundle",
                         );
                     }
-                    None
                 }
             }
-        };
-
-        if let Some(bundle) = initial {
-            let _ = tx.send(WorkerMsg::RenderBundle(bundle, server.clone(), key.clone()));
         }
 
         // Start the LAN-side local server now that we have server URL + kiosk
@@ -3372,8 +3381,19 @@ fn apply_webview_positions(display_id: &str) -> bool {
 }
 
 fn logo_picture(svg: &'static str, width: i32, height: i32, css_class: &str) -> gtk::Widget {
-    let bytes = gtk::glib::Bytes::from_static(svg.as_bytes());
-    match gtk::gdk::Texture::from_bytes(&bytes) {
+    let texture = (|| {
+        let loader = gdk_pixbuf::PixbufLoader::with_type("svg")?;
+        loader.set_size(width, height);
+        loader.write(svg.as_bytes())?;
+        loader.close()?;
+        loader
+            .pixbuf()
+            .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
+            .ok_or_else(|| {
+                gtk::glib::Error::new(gtk::glib::FileError::Failed, "SVG decoded without pixels")
+            })
+    })();
+    match texture {
         Ok(texture) => {
             let picture = Picture::for_paintable(&texture);
             picture.add_css_class(css_class);

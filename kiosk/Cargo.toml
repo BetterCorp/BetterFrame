@@ -9,6 +9,7 @@ license = "AGPL-3.0-only OR Commercial"
 # GTK4 for windowing/layout. v4_14 = Debian Trixie / Pi OS Trixie stock
 # libgtk-4 — pi-gen defaults to trixie, so build chain + image are aligned.
 gtk4 = { version = "0.9", features = ["v4_14"] }
+gdk-pixbuf = "0.20"
 
 # GStreamer for RTSP decode
 gstreamer = "0.23"

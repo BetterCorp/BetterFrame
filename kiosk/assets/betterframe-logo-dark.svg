@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="88" viewBox="0 0 360 88" role="img" aria-labelledby="title desc">
+  <title id="title">BetterFrame logo</title>
+  <desc id="desc">BetterFrame wordmark with a display frame and multi-camera grid icon.</desc>
+  <defs>
+    <linearGradient id="bf-accent" x1="20" y1="18" x2="68" y2="66" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="0.58" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#14b8a6"/>
+    </linearGradient>
+    <linearGradient id="bf-panel" x1="18" y1="16" x2="70" y2="70" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#252547"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="72" height="72" rx="16" fill="#0f172a"/>
+  <rect x="20" y="22" width="48" height="38" rx="5" fill="url(#bf-panel)" stroke="#475569" stroke-width="2"/>
+  <path d="M25 33h38M25 45h38M37 27v28M50 27v28" stroke="#64748b" stroke-width="2" stroke-linecap="round"/>
+  <path d="M25 28a1 1 0 0 1 1-1h24v18H25V28z" fill="#172554" opacity=".76"/>
+  <path d="M25 28a1 1 0 0 1 1-1h24v18H25V28z" fill="none" stroke="url(#bf-accent)" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M32 65h24" stroke="url(#bf-accent)" stroke-width="4" stroke-linecap="round"/>
+  <path d="M44 60v7" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/>
+  <text x="100" y="49" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="33" font-weight="760">BetterFrame</text>
+  <text x="102" y="68" fill="#94a3b8" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12" font-weight="600" letter-spacing="1.3">MULTI-CAMERA DISPLAY</text>
+</svg>

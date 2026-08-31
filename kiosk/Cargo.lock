@@ -179,6 +179,7 @@ dependencies = [
  "dirs",
  "ed25519-dalek",
  "futures-util",
+ "gdk-pixbuf",
  "gpiod",
  "gst-plugin-gtk4",
  "gstreamer",

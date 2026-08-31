@@ -243,10 +243,11 @@ pub fn discover_server(override_url: Option<&str>) -> String {
         return url.to_string();
     }
 
-    // Check saved
+    // A paired kiosk must boot from cache without waiting for its server.
+    // The WS and bundle retry loops reconnect to this saved endpoint later.
     if let Ok(saved) = fs::read_to_string(server_file()) {
         let saved = saved.trim().to_string();
-        if check_health(&saved) {
+        if !saved.is_empty() && (is_paired() || check_health(&saved)) {
             return saved;
         }
     }

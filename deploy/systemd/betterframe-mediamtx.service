@@ -1,7 +1,6 @@
 [Unit]
 Description=BetterFrame local media gateway and recorder
-After=network-online.target
-Wants=network-online.target
+After=network.target
 Before=betterframe-kiosk.service
 
 [Service]

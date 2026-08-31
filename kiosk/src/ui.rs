@@ -1442,6 +1442,10 @@ fn render_bundle(
             });
         }
     }
+
+    // A rendered cached bundle is healthy even when the server is offline.
+    // RAUC rollback protects app startup, not server reachability.
+    mark_kiosk_healthy();
 }
 
 fn pick_initial_layout(bd: &BundleDisplayWithLayouts) -> Option<String> {

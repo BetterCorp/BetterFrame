@@ -1,8 +1,8 @@
 [Unit]
 Description=BetterFrame Kiosk (cage + betterframe-kiosk)
 Documentation=https://github.com/BetterCorp/BetterFrame
-After=systemd-user-sessions.service systemd-logind.service network-online.target seatd.service
-Wants=network-online.target seatd.service
+After=systemd-user-sessions.service systemd-logind.service network.target seatd.service
+Wants=seatd.service
 Conflicts=getty@tty1.service
 After=getty@tty1.service
 # After 10 fast restarts in 60s, back off so a broken binary doesn't burn CPU.

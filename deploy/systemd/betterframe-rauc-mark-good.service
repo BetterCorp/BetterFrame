@@ -1,8 +1,8 @@
 [Unit]
-Description=Mark BetterFrame RAUC slot good after kiosk heartbeat
+Description=Mark BetterFrame RAUC slot good after kiosk render
 Documentation=https://github.com/BetterCorp/BetterFrame
-After=betterframe-kiosk.service network-online.target
-Wants=betterframe-kiosk.service network-online.target
+After=betterframe-kiosk.service
+Wants=betterframe-kiosk.service
 ConditionPathExists=/etc/rauc/system.conf
 ConditionPathExists=/usr/bin/rauc
 

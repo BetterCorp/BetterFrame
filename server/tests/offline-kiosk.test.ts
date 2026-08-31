@@ -12,6 +12,25 @@ test("kiosk boot and RAUC confirmation do not wait for network-online", () => {
   }
 });
 
+test("persistent kiosk data is mounted before services can use it", () => {
+  for (const file of [
+    "../../deploy/x86-image/build-image.sh",
+    "../../deploy/rauc/hook.sh",
+    "../../deploy/rauc/repartition-image.sh",
+  ]) {
+    const script = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.doesNotMatch(script, /\/var\/lib\/betterframe[^\n]*nofail/);
+  }
+});
+
+test("unpaired kiosks check signed OS updates before starting pairing", () => {
+  const kiosk = readFileSync(new URL("../../kiosk/src/ui.rs", import.meta.url), "utf8");
+  const api = readFileSync(new URL("../src/plugins/service-api-http/index.ts", import.meta.url), "utf8");
+  assert.ok(kiosk.indexOf("os_update::check_public(&server)") < kiosk.indexOf("server::initiate_pairing(&server)"));
+  assert.match(api, /\/api\/os\/public\/check/);
+  assert.match(api, /\/api\/os\/public\/download\/:id/);
+});
+
 test("x86 GRUB falls back to its loaded partition when the FAT label is unavailable", () => {
   const script = readFileSync(
     new URL("../../deploy/x86-image/build-image.sh", import.meta.url),

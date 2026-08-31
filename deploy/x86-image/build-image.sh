@@ -130,7 +130,7 @@ sed -i \
 cat > "${WORK}/root/etc/fstab" <<FSTAB
 PARTUUID=${PARTUUID_BOOT}    /boot/efi             vfat  defaults  0  2
 PARTUUID=${PARTUUID_ROOT_A}  /                    ext4  defaults,noatime  0  1
-PARTUUID=${PARTUUID_DATA}    /var/lib/betterframe ext4  defaults,noatime,nofail  0  2
+PARTUUID=${PARTUUID_DATA}    /var/lib/betterframe ext4  defaults,noatime  0  2
 FSTAB
 
 printf 'betterframe-kiosk\n' > "${WORK}/root/etc/hostname"

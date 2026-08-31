@@ -35,7 +35,7 @@ import { onvifCallbackTokenMatches } from "../../shared/onvif-callback-token.js"
 import { createHash, randomBytes } from "node:crypto";
 import type { AuthApi } from "../../shared/auth.js";
 import type { SecretsApi } from "../../shared/secrets.js";
-import type { FirmwareChannel } from "../../shared/types.js";
+import type { FirmwareChannel, OsUpdateRelease } from "../../shared/types.js";
 import {
   PairInitiateBody, PairClaimBody, HeartbeatBody, EventBody,
   KioskLogsBody, FirmwareAppliedBody, OsAppliedBody, OsStatusBody,
@@ -256,7 +256,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       });
     });
 
-    registerPairingRoutes(app, repo, auth, secrets, codeTtl, firmware);
+    registerPairingRoutes(app, repo, auth, secrets, codeTtl, firmware, osUpdates);
     registerKioskRoutes(app, repo, auth, secrets, nodered, firmware, osUpdates, mqtt);
     registerIoBoxRoutes(app, repo, auth, nodered, mqtt, firmware);
 
@@ -341,6 +341,50 @@ async function getClusterKey(repo: Repository, secrets: SecretsApi): Promise<str
   }
 }
 
+async function serveOsUpdateBundle(
+  event: any,
+  release: OsUpdateRelease,
+  osUpdates: OsUpdateApi,
+): Promise<Response> {
+  const bundle = await osUpdates.streamBundle(release.artifact_path);
+  const totalSize = bundle.size;
+  const rangeHeader = getRequestHeader(event, "range");
+  if (rangeHeader) {
+    const match = rangeHeader.match(/^bytes=(\d+)-(\d*)$/);
+    if (match) {
+      const start = Number(match[1]);
+      const requestedEnd = match[2] ? Number(match[2]) : totalSize - 1;
+      const end = Math.min(requestedEnd, totalSize - 1);
+      if (Number.isSafeInteger(start) && Number.isSafeInteger(requestedEnd) && start < totalSize && start <= end) {
+        const rangeBundle = await osUpdates.streamBundle(release.artifact_path, start, end);
+        return new Response(rangeBundle.body, {
+          status: 206,
+          headers: {
+            "content-type": "application/vnd.rauc",
+            "content-length": String(end - start + 1),
+            "content-range": `bytes ${start}-${end}/${totalSize}`,
+            "accept-ranges": "bytes",
+            "x-bf-sha256": release.sha256,
+            "x-bf-version": release.version,
+          },
+        });
+      }
+    }
+    return new Response(null, { status: 416, headers: { "content-range": `bytes */${totalSize}` } });
+  }
+
+  return new Response(bundle.body, {
+    headers: {
+      "content-type": "application/vnd.rauc",
+      "content-length": String(totalSize),
+      "accept-ranges": "bytes",
+      "x-bf-sha256": release.sha256,
+      "x-bf-version": release.version,
+      "x-bf-compatibility": release.compatibility,
+    },
+  });
+}
+
 // ---- Pairing routes ---------------------------------------------------------
 
 function registerPairingRoutes(
@@ -350,6 +394,7 @@ function registerPairingRoutes(
   secrets: SecretsApi,
   codeTtl: number,
   firmware: FirmwareApi,
+  osUpdates: OsUpdateApi,
 ): void {
   // Constructed in-function so the BSB schema extractor (which evaluates the
   // module statically) doesn't see a top-level createRateLimiter call.
@@ -391,7 +436,7 @@ function registerPairingRoutes(
     const code = body.code.trim().toUpperCase();
 
     const reqObs = event.context.obs!;
-    const result = await claimPairing(repo, code, reqObs);
+    const result = await claimPairing(repo, code, secrets, reqObs);
     if (result.status === "pending") {
       return new Response(JSON.stringify({ status: "pending" }), {
         status: 202,
@@ -468,6 +513,48 @@ function registerPairingRoutes(
         "x-bf-signature": release.signature,
       },
     });
+  });
+
+  // Public stable-channel OS bootstrap. RAUC verifies the bundle signature
+  // against the keyring baked into the image before installing it.
+  app.get("/api/os/public/check", async (event) => {
+    const url = new URL(event.req.url);
+    const compatibility = url.searchParams.get("compatibility")?.trim();
+    if (!compatibility) throw createError({ statusCode: 400, statusMessage: "compatibility required" });
+    const current = url.searchParams.get("current")?.trim() ?? "";
+    const release = await withDefaultTenant(repo, null, () =>
+      repo.getLatestOsUpdateRelease("stable", compatibility)
+    );
+    if (!release || release.version === current) return { up_to_date: true };
+    return {
+      up_to_date: false,
+      update: {
+        release_id: release.id,
+        version: release.version,
+        channel: release.channel,
+        compatibility: release.compatibility,
+        sha256: release.sha256,
+        size_bytes: release.size_bytes,
+        bundle_format: release.bundle_format,
+        download_url: `/api/os/public/download/${release.id}`,
+      },
+    };
+  });
+
+  const publicOsDlGuard = createRateLimiter({ windowMs: 60_000, max: 20 });
+  app.get("/api/os/public/download/:id", async (event) => {
+    const ip = getRequestHeader(event, "x-real-ip")
+      ?? getRequestHeader(event, "x-forwarded-for")?.split(",")[0]?.trim()
+      ?? "anon";
+    if (!publicOsDlGuard.take(`osdl:${ip}`)) {
+      throw createError({ statusCode: 429, statusMessage: "rate limited" });
+    }
+    const id = getRouterParam(event, "id") ?? "";
+    const release = await withDefaultTenant(repo, null, () => repo.getOsUpdateRelease(id));
+    if (!release || release.yanked_at) {
+      throw createError({ statusCode: 404, statusMessage: "release not found" });
+    }
+    return serveOsUpdateBundle(event, release, osUpdates);
   });
 }
 
@@ -1497,48 +1584,7 @@ function registerKioskRoutes(
     if (!release || release.yanked_at) {
       throw createError({ statusCode: 404, statusMessage: "release not found" });
     }
-
-    const bundle = await osUpdates.streamBundle(release.artifact_path);
-    const totalSize = bundle.size;
-
-    // Support Range requests for resumable downloads.
-    const rangeHeader = getRequestHeader(event, "range");
-    if (rangeHeader) {
-      const match = rangeHeader.match(/^bytes=(\d+)-(\d*)$/);
-      if (match) {
-        const start = Number(match[1]);
-        const requestedEnd = match[2] ? Number(match[2]) : totalSize - 1;
-        const end = Math.min(requestedEnd, totalSize - 1);
-        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start >= totalSize || start > end) {
-          return new Response(null, { status: 416, headers: { "content-range": `bytes */${totalSize}` } });
-        }
-        const rangeBundle = await osUpdates.streamBundle(release.artifact_path, start, end);
-        return new Response(rangeBundle.body, {
-          status: 206,
-          headers: {
-            "content-type": "application/vnd.rauc",
-            "content-length": String(end - start + 1),
-            "content-range": `bytes ${start}-${end}/${totalSize}`,
-            "accept-ranges": "bytes",
-            "x-bf-sha256": release.sha256,
-            "x-bf-version": release.version,
-          },
-        });
-      }
-      return new Response(null, { status: 416, headers: { "content-range": `bytes */${totalSize}` } });
-    }
-
-    return new Response(bundle.body, {
-      status: 200,
-      headers: {
-        "content-type": "application/vnd.rauc",
-        "content-length": String(totalSize),
-        "accept-ranges": "bytes",
-        "x-bf-sha256": release.sha256,
-        "x-bf-version": release.version,
-        "x-bf-compatibility": release.compatibility,
-      },
-    });
+    return serveOsUpdateBundle(event, release, osUpdates);
   });
 
   app.post("/api/kiosk/os/applied", async (event) => {

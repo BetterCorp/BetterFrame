@@ -139,7 +139,7 @@ case "$RAUC_SLOT_CLASS" in
       cat > "${MNT}/etc/fstab" <<FSTAB
 PARTUUID=${BOOT_UUID}  /boot/efi             vfat  defaults  0  2
 PARTUUID=${ROOT_UUID}  /                    ext4  defaults,noatime  0  1
-PARTUUID=${DATA_UUID}  /var/lib/betterframe ext4  defaults,noatime,nofail  0  2
+PARTUUID=${DATA_UUID}  /var/lib/betterframe ext4  defaults,noatime  0  2
 FSTAB
       write_x86_rauc_system_conf "${MNT}/etc/rauc/system.conf" \
         "$ROOT_A_UUID" "$ROOT_B_UUID"
@@ -171,7 +171,7 @@ FSTAB
     cat > "${MNT}/etc/fstab" <<FSTAB
 LABEL=BF_BOOT_${LETTER}  /boot/firmware  vfat  defaults  0  2
 PARTUUID=${ROOT_UUID}  /               ext4  defaults,noatime  0  1
-LABEL=BF_DATA    /var/lib/betterframe  ext4  defaults,noatime,nofail  0  2
+LABEL=BF_DATA    /var/lib/betterframe  ext4  defaults,noatime  0  2
 FSTAB
       schedule_reboot pi
       echo "hook: patched Pi rootfs slot ${LETTER} fstab -> BF_BOOT_${LETTER}, root PARTUUID=${ROOT_UUID}"

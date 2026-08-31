@@ -219,18 +219,37 @@ fn activate(app: &Application) {
         let server = server::discover_server(server_url.as_deref());
         info!("server: {server}");
 
-        // Pre-boot self-update: check for stable firmware before pairing.
-        // If an update is available, download + swap + exit. systemd restarts
-        // with the new binary which re-enters this flow.
+        // Bootstrap updates run before pairing so an older image can repair
+        // its client before talking to a newer server.
         if !server::is_paired() {
-            let _ = tx.send(WorkerMsg::StartupStatus(
-                "Checking for app updates".into(),
-            ));
-            let current = crate::server::kiosk_app_version();
-            if let Some(update) = crate::firmware::check_public(&server, current) {
-                info!("preboot update available: {} → {}", current, update.version);
-                if let Err(e) = crate::firmware::apply_public(&server, &update) {
-                    tracing::warn!("preboot update failed: {e}");
+            if server::ota_enabled("BF_ENABLE_APP_OTA") {
+                let _ = tx.send(WorkerMsg::StartupStatus(
+                    "Checking for app updates".into(),
+                ));
+                let current = crate::server::kiosk_app_version();
+                if let Some(update) = crate::firmware::check_public(&server, current) {
+                    info!("preboot update available: {} → {}", current, update.version);
+                    if let Err(e) = crate::firmware::apply_public(&server, &update) {
+                        tracing::warn!("preboot update failed: {e}");
+                    }
+                }
+            }
+            if server::ota_enabled("BF_ENABLE_OS_OTA") {
+                let _ = tx.send(WorkerMsg::StartupStatus(
+                    "Checking for OS updates".into(),
+                ));
+                if let Some(update) = os_update::check_public(&server) {
+                    let version = update.version.clone();
+                    let tx_progress = tx.clone();
+                    if let Err(e) = os_update::apply_public(&server, &update, move |phase, pct| {
+                        let _ = tx_progress.send(WorkerMsg::UpdateProgress(Some((
+                            format!("OS Update {version}: {phase}"),
+                            pct,
+                        ))));
+                    }) {
+                        let _ = tx.send(WorkerMsg::UpdateProgress(None));
+                        tracing::warn!("preboot OS update failed: {e}");
+                    }
                 }
             }
         }

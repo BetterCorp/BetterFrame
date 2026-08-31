@@ -80,6 +80,7 @@ export interface PairingClaimResult {
 export async function claimPairing(
   repo: Repository,
   code: string,
+  secrets: SecretsApi,
   obs?: Observable,
 ): Promise<PairingClaimResult> {
   const pc = await repo.getPairingCode(code);
@@ -88,7 +89,29 @@ export async function claimPairing(
   if (!pc.consumed_at) { obs?.log.info("claim {code}: not yet consumed", { code }); return { status: "pending" }; }
 
   const extras = pc.extras as Record<string, unknown>;
-  const kioskKey = extras["kiosk_key_plaintext"] as string | undefined;
+  let claim: { kioskKey?: string; clusterKey?: string; encryptKey?: string } = {};
+  const encryptedClaim = extras["pairing_claim_encrypted"];
+  if (typeof encryptedClaim === "string") {
+    try {
+      const parsed = JSON.parse(secrets.decryptString(encryptedClaim, "pairing-claim")) as Record<string, unknown>;
+      claim = {
+        kioskKey: typeof parsed["kioskKey"] === "string" ? parsed["kioskKey"] : undefined,
+        clusterKey: typeof parsed["clusterKey"] === "string" ? parsed["clusterKey"] : undefined,
+        encryptKey: typeof parsed["encryptKey"] === "string" ? parsed["encryptKey"] : undefined,
+      };
+    } catch {
+      obs?.log.warn("claim {code}: encrypted credentials unreadable", { code });
+      return { status: "pending" };
+    }
+  } else {
+    // Compatibility with pairing codes confirmed by older server builds.
+    claim = {
+      kioskKey: extras["kiosk_key_plaintext"] as string | undefined,
+      clusterKey: extras["cluster_key"] as string | undefined,
+      encryptKey: extras["encrypt_key"] as string | undefined,
+    };
+  }
+  const kioskKey = claim.kioskKey;
 
   if (!kioskKey || !pc.consumed_by_kiosk_id) { obs?.log.warn("claim {code}: consumed but missing key/id", { code }); return { status: "pending" }; }
 
@@ -97,24 +120,13 @@ export async function claimPairing(
     tenantSchema,
     () => repo.getKioskById(pc.consumed_by_kiosk_id!),
   );
-  const clusterKey = extras["cluster_key"] as string | undefined;
-  const encryptKey = extras["encrypt_key"] as string | undefined;
-
-  // Wipe plaintext keys from extras after first claim
-  await repo.updatePairingCodeExtras(code, {
-    ...extras,
-    kiosk_key_plaintext: undefined,
-    cluster_key: undefined,
-    encrypt_key: undefined,
-  });
-
   return {
     status: "claimed",
     kioskId: pc.consumed_by_kiosk_id,
     kioskName: kiosk?.name ?? pc.kiosk_proposed_name ?? "kiosk",
     kioskKey,
-    clusterKey,
-    encryptKey,
+    clusterKey: claim.clusterKey,
+    encryptKey: claim.encryptKey,
     bundleUrl: "/api/kiosk/bundle",
   };
 }
@@ -237,9 +249,8 @@ export async function confirmPairing(
     kioskName = candidate;
   }
 
-  // Per-kiosk encryption key: generate a fresh 32-byte key for this kiosk,
-  // store it encrypted with the server's secret, deliver plaintext to the
-  // kiosk (one-time). Replaces shared cluster_key for bundle encryption.
+  // Per-kiosk encryption key: generate a fresh 32-byte key for this kiosk and
+  // deliver it through the server-encrypted, retryable pairing claim.
   const kioskEncryptKey = randomBytes(32).toString("base64url");
   const kioskEncryptKeyEncrypted = secrets.encryptString(kioskEncryptKey, "kiosk-encrypt");
   await repo.updateKiosk(kioskId, { encrypt_key_encrypted: kioskEncryptKeyEncrypted } as any);
@@ -257,10 +268,13 @@ export async function confirmPairing(
     }
   }
 
+  const pairingClaimEncrypted = secrets.encryptString(JSON.stringify({
+    kioskKey: kioskKeyPlaintext,
+    clusterKey,
+    encryptKey: kioskEncryptKey,
+  }), "pairing-claim");
   await repo.markPairingCodeClaimed(input.code, kioskId, {
-    kiosk_key_plaintext: kioskKeyPlaintext,
-    cluster_key: clusterKey,
-    encrypt_key: kioskEncryptKey,
+    pairing_claim_encrypted: pairingClaimEncrypted,
     tenant_id: input.tenant?.id ?? "default",
     tenant_slug: input.tenant?.slug ?? "default",
     tenant_schema: input.tenant?.schemaName ?? "public",

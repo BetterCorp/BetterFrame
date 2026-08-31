@@ -126,7 +126,7 @@ fi
 cat > "$WORK/mnt-root/etc/fstab" <<FSTAB
 LABEL=BF_BOOT_A  /boot/firmware  vfat  defaults  0  2
 PARTUUID=${PARTUUID_ROOT_A}  /               ext4  defaults,noatime  0  1
-LABEL=BF_DATA    /var/lib/betterframe  ext4  defaults,noatime,nofail  0  2
+LABEL=BF_DATA    /var/lib/betterframe  ext4  defaults,noatime  0  2
 FSTAB
 mkdir -p "$WORK/mnt-root/etc/betterframe"
 printf '%s\n' "${BF_BUILD_VERSION:-0.0.0}" > "$WORK/mnt-root/etc/betterframe/os-version"

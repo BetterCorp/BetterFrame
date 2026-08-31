@@ -117,30 +117,37 @@ pub struct UpdateInfo {
     pub download_url: String,
 }
 
-/// Hit `/api/kiosk/os/check`. Returns `Some(UpdateInfo)` when an upgrade is
-/// available. `None` on up-to-date, network failure, or parse error.
+/// Public stable-channel check used before the kiosk has paired.
+pub fn check_public(server: &str) -> Option<UpdateInfo> {
+    check_at(server, None, "/api/os/public/check")
+}
+
+/// Authenticated check used after pairing.
 pub fn check(server: &str, key: &str) -> Option<UpdateInfo> {
+    check_at(server, Some(key), "/api/kiosk/os/check")
+}
+
+fn check_at(server: &str, key: Option<&str>, path: &str) -> Option<UpdateInfo> {
     let compat = compatibility();
     let cur = current_os_version();
     let url = format!(
-        "{server}/api/kiosk/os/check?compatibility={compat}&current={cur}",
+        "{server}{path}?compatibility={compat}&current={cur}",
         compat = urlencoding::encode(&compat),
         cur = urlencoding::encode(&cur),
     );
     let client = reqwest::blocking::Client::new();
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {key}"))
-        .timeout(Duration::from_secs(10))
-        .send()
-    {
+    let mut request = client.get(&url);
+    if let Some(key) = key {
+        request = request.header("Authorization", format!("Bearer {key}"));
+    }
+    let resp = match request.timeout(Duration::from_secs(10)).send() {
         Ok(r) => r,
         Err(err) => {
             warn!("os-update check: request failed: {err}");
             return None;
         }
     };
-    if resp.status().as_u16() == 401 {
+    if key.is_some() && resp.status().as_u16() == 401 {
         crate::server::reset_pairing_and_restart(
             "server rejected kiosk key during os update check",
         );
@@ -167,6 +174,23 @@ pub fn check(server: &str, key: &str) -> Option<UpdateInfo> {
 pub fn apply(
     server: &str,
     key: &str,
+    info: &UpdateInfo,
+    on_progress: impl Fn(&str, u8),
+) -> Result<(), String> {
+    apply_inner(server, Some(key), info, on_progress)
+}
+
+pub fn apply_public(
+    server: &str,
+    info: &UpdateInfo,
+    on_progress: impl Fn(&str, u8),
+) -> Result<(), String> {
+    apply_inner(server, None, info, on_progress)
+}
+
+fn apply_inner(
+    server: &str,
+    key: Option<&str>,
     info: &UpdateInfo,
     on_progress: impl Fn(&str, u8),
 ) -> Result<(), String> {
@@ -200,9 +224,10 @@ pub fn apply(
         );
 
         let client = reqwest::blocking::Client::new();
-        let mut req = client
-            .get(&url)
-            .header("Authorization", format!("Bearer {key}"));
+        let mut req = client.get(&url);
+        if let Some(key) = key {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
         if existing_bytes > 0 {
             req = req.header("Range", format!("bytes={existing_bytes}-"));
         }
@@ -220,7 +245,7 @@ pub fn apply(
         };
 
         let status = resp.status().as_u16();
-        if status == 401 {
+        if key.is_some() && status == 401 {
             crate::server::reset_pairing_and_restart(
                 "server rejected kiosk key during os update download",
             );
@@ -455,10 +480,13 @@ pub fn apply(
 
 fn report_applied(
     server: &str,
-    key: &str,
+    key: Option<&str>,
     version: &str,
     error: Option<&str>,
 ) -> Result<(), String> {
+    let Some(key) = key else {
+        return Ok(());
+    };
     let payload = if let Some(err) = error {
         serde_json::json!({ "version": version, "state": "failed", "error": err })
     } else {

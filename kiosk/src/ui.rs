@@ -1612,7 +1612,8 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
         recompute_global_state();
         DISPLAYS.with(|ds| {
             if let Some(st) = ds.borrow_mut().get_mut(display_id) {
-                st.content_overlay.set_child(Some(&build_logo_content()));
+                st.content_overlay
+                    .set_child(Some(&build_logo_content("Waiting for content")));
                 hide_all_webviews(&st.web_layer);
                 st.web_positions.clear();
             }

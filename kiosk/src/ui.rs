@@ -177,8 +177,8 @@ thread_local! {
 }
 
 const APP_ID: &str = "dev.betterframe.kiosk";
-const BETTERFRAME_LOGO_SVG: &str = include_str!("../assets/betterframe-logo-dark.svg");
-const BETTERFRAME_MARK_SVG: &str = include_str!("../../server/src/web-static/betterframe-mark.svg");
+const BETTERFRAME_LOGO_PNG: &[u8] = include_bytes!("../assets/betterframe-logo-dark.png");
+const BETTERFRAME_MARK_PNG: &[u8] = include_bytes!("../assets/betterframe-mark.png");
 
 pub fn build_app() -> Application {
     let app = Application::builder().application_id(APP_ID).build();
@@ -1209,7 +1209,7 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
     vbox.set_halign(gtk::Align::Center);
     vbox.set_vexpand(true);
 
-    let title = logo_picture(BETTERFRAME_LOGO_SVG, 360, 88, "pairing-logo");
+    let title = logo_picture(BETTERFRAME_LOGO_PNG, 360, 88, "pairing-logo");
 
     let code_label = Label::new(Some(code));
     add_css(
@@ -1251,7 +1251,7 @@ fn show_pairing_progress(window: &ApplicationWindow) {
     vbox.set_halign(gtk::Align::Center);
     vbox.set_vexpand(true);
 
-    let title = logo_picture(BETTERFRAME_LOGO_SVG, 360, 88, "pairing-logo");
+    let title = logo_picture(BETTERFRAME_LOGO_PNG, 360, 88, "pairing-logo");
 
     let status = Label::new(Some("Pairing complete"));
     add_css(
@@ -3151,7 +3151,7 @@ fn build_logo_content() -> gtk::Widget {
     vbox.set_halign(gtk::Align::Center);
     vbox.set_vexpand(true);
     vbox.set_hexpand(true);
-    vbox.append(&logo_picture(BETTERFRAME_LOGO_SVG, 480, 118, "idle-logo"));
+    vbox.append(&logo_picture(BETTERFRAME_LOGO_PNG, 480, 118, "idle-logo"));
     vbox.append(&spinner(36));
 
     let fw_ver = server::kiosk_app_version();
@@ -3190,7 +3190,7 @@ fn build_empty_display_reference(
     vbox.set_halign(gtk::Align::Center);
     vbox.set_vexpand(true);
     vbox.set_hexpand(true);
-    vbox.append(&logo_picture(BETTERFRAME_LOGO_SVG, 480, 118, "idle-logo"));
+    vbox.append(&logo_picture(BETTERFRAME_LOGO_PNG, 480, 118, "idle-logo"));
     overlay.set_child(Some(&vbox));
 
     let last_sync = CURRENT_SYNC_LABEL.with(|s| s.borrow().clone());
@@ -3281,7 +3281,7 @@ fn placeholder(text: Option<&str>) -> gtk::Widget {
     vbox.set_halign(gtk::Align::Center);
     vbox.set_vexpand(true);
     vbox.set_hexpand(true);
-    vbox.append(&logo_picture(BETTERFRAME_MARK_SVG, 56, 56, "cell-logo"));
+    vbox.append(&logo_picture(BETTERFRAME_MARK_PNG, 56, 56, "cell-logo"));
     if let Some(text) = text {
         let label = Label::new(Some(text));
         label.add_css_class("bf-placeholder-text");
@@ -3384,11 +3384,11 @@ fn apply_webview_positions(display_id: &str) -> bool {
     })
 }
 
-fn logo_picture(svg: &'static str, width: i32, height: i32, css_class: &str) -> gtk::Widget {
+fn logo_picture(png: &'static [u8], width: i32, height: i32, css_class: &str) -> gtk::Widget {
     let texture = (|| {
-        let loader = gdk_pixbuf::PixbufLoader::with_type("svg")?;
+        let loader = gdk_pixbuf::PixbufLoader::with_type("png")?;
         loader.set_size(width, height);
-        loader.write(svg.as_bytes())?;
+        loader.write(png)?;
         loader.close()?;
         loader
             .pixbuf()
@@ -3409,7 +3409,7 @@ fn logo_picture(svg: &'static str, width: i32, height: i32, css_class: &str) -> 
             picture.upcast()
         }
         Err(err) => {
-            warn!("failed to load embedded logo: {err}");
+            warn!("failed to load embedded PNG logo: {err}");
             let label = Label::new(Some("BetterFrame"));
             label.set_size_request(width, height);
             label.set_valign(gtk::Align::Center);
@@ -3469,7 +3469,7 @@ fn show_terminal_code_overlay(code: &str) {
         add_css(&warning, ".term-warn { font-size: 20px; color: #ff4444; font-weight: 700; letter-spacing: 2px; }");
         warning.add_css_class("term-warn");
 
-        let logo = logo_picture(BETTERFRAME_LOGO_SVG, 360, 88, "terminal-logo");
+        let logo = logo_picture(BETTERFRAME_LOGO_PNG, 360, 88, "terminal-logo");
 
         let code_label = Label::new(Some(code));
         add_css(&code_label, ".term-code { font-size: 72px; color: #ff4444; font-weight: 700; letter-spacing: 12px; font-family: monospace; }");

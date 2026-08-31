@@ -6,6 +6,7 @@ import { registerMiddleware } from "../src/plugins/service-admin-http/middleware
 import { registerAuthRoutes } from "../src/plugins/service-admin-http/routes-auth.js";
 import { registerAccountRoutes } from "../src/plugins/service-admin-http/routes-account.js";
 import { createTenantSchema } from "../src/shared/db/init.js";
+import { withDefaultTenant } from "../src/shared/default-tenant.js";
 import { quotedSchema } from "../src/shared/db/platform-admin.js";
 import { Repository } from "../src/shared/db/repository.js";
 import type { Session, Tenant, User } from "../src/shared/types.js";
@@ -242,4 +243,21 @@ test("audit inserts provide the required entry id", async () => {
   assert.match(insert!.sql, /\(id, actor_type/);
   assert.equal(insert!.params?.length, 10);
   assert.equal(typeof insert!.params?.[0], "string");
+});
+
+test("default-tenant queries use a scoped search path", async () => {
+  const calls: string[] = [];
+  const repo = {
+    adapter: {
+      dialect: () => "postgres",
+      setSearchPath: async () => { throw new Error("must not mutate the caller context"); },
+      withSearchPath: async (_schema: string, fn: () => Promise<string>) => {
+        calls.push(_schema);
+        return fn();
+      },
+    },
+  };
+
+  assert.equal(await withDefaultTenant(repo as never, "tenant_site", async () => "ok"), "ok");
+  assert.deepEqual(calls, ["public"]);
 });

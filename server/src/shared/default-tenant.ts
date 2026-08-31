@@ -11,14 +11,9 @@ export function isDefaultTenant(event: { context?: { tenant?: { slug?: string } 
 
 export async function withDefaultTenant<T>(
   repo: Repository,
-  restoreSchema: string | null,
+  _restoreSchema: string | null,
   fn: () => Promise<T>,
 ): Promise<T> {
   if (repo.adapter.dialect() !== "postgres") return fn();
-  await repo.adapter.setSearchPath("public");
-  try {
-    return await fn();
-  } finally {
-    await repo.adapter.setSearchPath(restoreSchema ?? "public");
-  }
+  return repo.adapter.withSearchPath("public", fn);
 }

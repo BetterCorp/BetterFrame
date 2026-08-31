@@ -51,11 +51,13 @@ truncate -s "${TOTAL_MB}M" "$IMG"
 
 sfdisk "$IMG" <<SFDISK
 label: gpt
-start=2048, size=$((ESP_MB * 2048)), type=U, name="BF_BOOT"
+first-lba: 34
+start=4096, size=$((ESP_MB * 2048)), type=U, name="BF_BOOT"
 size=$((ROOT_MB * 2048)), type=L, name="BF_ROOT_A"
 size=$((ROOT_MB * 2048)), type=L, name="BF_ROOT_B"
 type=L, name="BF_DATA"
 SFDISK
+sgdisk --set-alignment=1 --new=5:34:4095 --typecode=5:ef02 --change-name=5:BF_BIOS "$IMG"
 
 LOOP="$(losetup --find --partscan --show "$IMG")"
 udevadm settle || true
@@ -146,7 +148,7 @@ apt-get update
 apt-get -y install --no-install-recommends \
   linux-image-amd64 systemd-sysv systemd-resolved systemd-timesyncd dbus sudo locales ca-certificates curl gnupg \
   python3 initramfs-tools \
-  grub-efi-amd64 grub-efi-amd64-bin grub-common shim-signed grub-efi-amd64-signed \
+  grub-efi-amd64 grub-efi-amd64-bin grub-pc-bin grub-common shim-signed grub-efi-amd64-signed \
   sway seatd plymouth plymouth-themes librsvg2-bin \
   libgtk-4-1 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libwebkitgtk-6.0-4 \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
@@ -365,6 +367,7 @@ cp /boot/efi/EFI/betterframe/grub.cfg /boot/grub/grub.cfg
 cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/grub.cfg
 cp /boot/efi/EFI/betterframe/grub.cfg /boot/efi/boot/grub/grub.cfg
 grub-script-check /boot/efi/EFI/betterframe/grub.cfg
+grub-install --target=i386-pc --boot-directory=/boot --recheck @IMAGE_DISK@
 for boot_file in vmlinuz-A initrd-A.img vmlinuz-B initrd-B.img; do
   test -s "/boot/efi/${boot_file}"
 done
@@ -396,6 +399,7 @@ CHROOT
 
 sed -i "s/@VERSION@/${VERSION}/g" "${WORK}/root/tmp/install-betterframe-x86.sh"
 sed -i "s/@CHANNEL@/${IMAGE_CHANNEL}/g" "${WORK}/root/tmp/install-betterframe-x86.sh"
+sed -i "s|@IMAGE_DISK@|${LOOP}|g" "${WORK}/root/tmp/install-betterframe-x86.sh"
 sed -i \
   -e "s/@PARTUUID_ROOT_A@/${PARTUUID_ROOT_A}/g" \
   -e "s/@PARTUUID_ROOT_B@/${PARTUUID_ROOT_B}/g" \

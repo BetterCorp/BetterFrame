@@ -263,6 +263,9 @@ Everything else is a shared module (plain TS, no BSB lifecycle).
 - **Log message strings MUST be string literals** (BSB SmartLogMeta extracts placeholders from literal type)
 - **Datetimes are ISO-8601 strings** stored as TEXT
 - **node:sqlite** API: `DatabaseSync`, `.exec()`, `.prepare().run/all/get()`. Synchronous
+- **x86 image enablement**: install every unit's package explicitly and never suppress the bulk `systemctl enable` failure; one missing unit leaves the whole set disabled.
+- **kiosk runtime dir**: let `pam_systemd` create `/run/user/<uid>`; creating it with `install -d -o bfkiosk` can also create `/run/user` with unsafe ownership and break PAM.
+- **x86 networking**: debootstrap does not configure Ethernet; use the built-in `systemd-networkd` with DHCP plus `systemd-resolved`, and install/enable both explicitly.
 
 ## file layout (current)
 ```

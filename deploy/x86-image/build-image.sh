@@ -143,7 +143,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
 apt-get -y install --no-install-recommends \
-  linux-image-amd64 systemd-sysv dbus sudo locales ca-certificates curl gnupg \
+  linux-image-amd64 systemd-sysv systemd-resolved systemd-timesyncd dbus sudo locales ca-certificates curl gnupg \
   python3 initramfs-tools \
   grub-efi-amd64 grub-efi-amd64-bin grub-common shim-signed grub-efi-amd64-signed \
   sway seatd plymouth plymouth-themes librsvg2-bin \
@@ -261,6 +261,16 @@ for name in ["default","left_ptr","arrow","watch","hand2","text","xterm"]:
 PY
 
 mkdir -p /etc/systemd/timesyncd.conf.d /etc/systemd/logind.conf.d
+mkdir -p /etc/systemd/network
+cat > /etc/systemd/network/20-wired.network <<'NETWORK'
+[Match]
+Name=en* eth*
+
+[Network]
+DHCP=yes
+IPv6AcceptRA=yes
+NETWORK
+ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 cat > /etc/systemd/timesyncd.conf.d/betterframe.conf <<'NTP'
 [Time]
 NTP=0.pool.ntp.org 1.pool.ntp.org 2.pool.ntp.org 3.pool.ntp.org
@@ -272,7 +282,7 @@ NAutoVTs=0
 ReserveVT=0
 LOGIND
 
-systemctl enable systemd-timesyncd seatd nftables betterframe-seal-key betterframe-mediamtx betterframe-kiosk betterframe-rauc-mark-good betterframe-expand-data rauc 2>/dev/null || true
+systemctl enable systemd-networkd systemd-resolved systemd-timesyncd seatd nftables betterframe-seal-key betterframe-mediamtx betterframe-kiosk betterframe-rauc-mark-good betterframe-expand-data rauc
 systemctl set-default multi-user.target
 for dm in lightdm gdm gdm3 sddm; do systemctl disable "$dm.service" 2>/dev/null || true; systemctl mask "$dm.service" 2>/dev/null || true; done
 for tty in 1 2 3 4 5 6; do systemctl disable "getty@tty${tty}.service" 2>/dev/null || true; systemctl mask "getty@tty${tty}.service" 2>/dev/null || true; done

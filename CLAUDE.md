@@ -269,6 +269,7 @@ Everything else is a shared module (plain TS, no BSB lifecycle).
 - **operator media**: operate-label cameras always use bundled MediaMTX for on-demand live restreaming; SimpleVMS only gates recording/playback/export UI.
 - **operator quick push**: every reusable non-camera entity is shipped as a normal-priority virtual fullscreen layout; operator links and tools stay in one browser tab.
 - **RAUC reboot**: the root-run bundle hook schedules reboot after slot installation; the kiosk service has `NoNewPrivileges=yes`, so `sudo` from the app cannot work.
+- **x86 VM diagnostics**: ship and enable `qemu-guest-agent`; it is inert on physical kiosks and gives Proxmox a supported automation channel.
 
 ## file layout (current)
 ```

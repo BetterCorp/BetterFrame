@@ -151,7 +151,7 @@ apt-get -y install --no-install-recommends \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
   gstreamer1.0-libav gstreamer1.0-tools v4l-utils wlr-randr \
   gstreamer1.0-vaapi va-driver-all mesa-va-drivers vainfo intel-gpu-tools \
-  rauc dosfstools nftables cloud-guest-utils e2fsprogs openssl udev tpm2-tools
+  rauc dosfstools nftables cloud-guest-utils e2fsprogs openssl udev tpm2-tools qemu-guest-agent
 
 locale-gen en_US.UTF-8 || true
 update-locale LANG=en_US.UTF-8 || true
@@ -278,7 +278,7 @@ NAutoVTs=0
 ReserveVT=0
 LOGIND
 
-systemctl enable systemd-networkd systemd-resolved systemd-timesyncd seatd nftables betterframe-seal-key betterframe-mediamtx betterframe-kiosk betterframe-rauc-mark-good betterframe-expand-data rauc
+systemctl enable systemd-networkd systemd-resolved systemd-timesyncd seatd nftables qemu-guest-agent betterframe-seal-key betterframe-mediamtx betterframe-kiosk betterframe-rauc-mark-good betterframe-expand-data rauc
 systemctl set-default multi-user.target
 for dm in lightdm gdm gdm3 sddm; do systemctl disable "$dm.service" 2>/dev/null || true; systemctl mask "$dm.service" 2>/dev/null || true; done
 for tty in 1 2 3 4 5 6; do systemctl disable "getty@tty${tty}.service" 2>/dev/null || true; systemctl mask "getty@tty${tty}.service" 2>/dev/null || true; done

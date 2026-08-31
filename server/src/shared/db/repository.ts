@@ -1996,10 +1996,11 @@ export class Repository {
   }): Promise<void> {
     await this._run(
       `INSERT INTO audit_log
-         (actor_type, actor_id, actor_label, action, resource_type,
+         (id, actor_type, actor_id, actor_label, action, resource_type,
           resource_id, ip, metadata, result)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        uuidv7(),
         input.actor_type,
         input.actor_id,
         input.actor_label,

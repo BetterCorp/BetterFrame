@@ -215,3 +215,31 @@ test("platform admin updates run in one transaction and mirror every tenant", as
   assert.match(writes[1]!, /UPDATE "tenant_tenant"\.users/);
   assert.match(writes[2]!, /INSERT INTO "tenant_tenant"\.users/);
 });
+
+test("audit inserts provide the required entry id", async () => {
+  let insert: { sql: string; params?: readonly unknown[] } | undefined;
+  const adapter = {
+    dialect: () => "postgres",
+    run: async (sql: string, params?: readonly unknown[]) => {
+      insert = { sql, params };
+      return { lastInsertRowid: 0n, changes: 1 };
+    },
+  };
+  const repo = new Repository(adapter as never, async () => {});
+
+  await repo.insertAudit({
+    actor_type: "user",
+    actor_id: "user-1",
+    actor_label: "admin",
+    action: "test.action",
+    resource_type: null,
+    resource_id: null,
+    ip: null,
+    metadata: {},
+    result: "success",
+  });
+
+  assert.match(insert!.sql, /\(id, actor_type/);
+  assert.equal(insert!.params?.length, 10);
+  assert.equal(typeof insert!.params?.[0], "string");
+});

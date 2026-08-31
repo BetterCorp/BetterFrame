@@ -1826,6 +1826,15 @@ export function CameraEditPage(props: CameraEditProps) {
                 {" "}Enabled
               </label>
             </div>
+            {cam.type === "onvif" && (
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" name="ptz_enabled" value="1" checked={cam.capabilities.some((capability) => capability.toLowerCase() === "ptz")} />
+                  {" "}PTZ controls
+                </label>
+                <div class="form-hint">Show movement and camera presets in the operator console.</div>
+              </div>
+            )}
             <div class="form-group">
               <label for="recording_config_json">SimpleVMS Recording Configuration</label>
               <textarea id="recording_config_json" name="recording_config_json" class="form-input" rows="8">{JSON.stringify(cam.recording_config_json ?? {}, null, 2)}</textarea>

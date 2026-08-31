@@ -37,3 +37,11 @@ test("Pi setup creates the kiosk user before owned directories", () => {
   );
   assert.ok(script.indexOf("useradd -m") < script.indexOf("install -d -o bfkiosk"));
 });
+
+test("operator PTZ controls are capability-gated and read kiosk preset data", () => {
+  const html = readFileSync(new URL("../../kiosk/operator-console/index.html", import.meta.url), "utf8");
+  const script = readFileSync(new URL("../../kiosk/operator-console/app.js", import.meta.url), "utf8");
+  assert.match(html, /id="ptz-controls" class="panel control-card hidden"/);
+  assert.match(script, /item\.toLowerCase\(\)===\"ptz\"/);
+  assert.match(script, /result\.result\?\.data\?\.presets/);
+});

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { deviceGridPositions } from "../src/plugins/service-admin-http/routes-admin.js";
+import {
+  cameraCapabilitiesFromForm,
+  deviceGridPositions,
+} from "../src/plugins/service-admin-http/routes-admin.js";
 import {
   renderCameraDeviceLabels,
   renderCameraLabels,
@@ -17,6 +20,11 @@ test("device cameras fill a compact grid in stable discovery order", () => {
     { row: 1, col: 0 },
     { row: 1, col: 1 },
   ]);
+});
+
+test("camera PTZ checkbox preserves unrelated capabilities", () => {
+  assert.deepEqual(cameraCapabilitiesFromForm(["events", "PTZ"], false), ["events"]);
+  assert.deepEqual(cameraCapabilitiesFromForm(["events"], true), ["events", "ptz"]);
 });
 
 test("kiosk label picker keeps labels available for a second role", () => {

@@ -74,6 +74,7 @@ export type OnvifActionName =
   | "ptz.relative_move"
   | "ptz.absolute_move"
   | "ptz.stop"
+  | "ptz.get_presets"
   | "ptz.goto_preset"
   | "ptz.set_preset"
   | "ptz.remove_preset"
@@ -904,6 +905,7 @@ export async function performAction(
     "ptz.relative_move",
     "ptz.absolute_move",
     "ptz.stop",
+    "ptz.get_presets",
     "ptz.goto_preset",
     "ptz.set_preset",
     "ptz.remove_preset",
@@ -997,6 +999,23 @@ export async function performAction(
         `xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"`,
       );
       return result(action, xml, { profileToken, configurationToken });
+    }
+
+    if (action === "ptz.get_presets") {
+      const xml = await execActionSoap(
+        input,
+        timeoutMs,
+        ptzUrl,
+        "http://www.onvif.org/ver20/ptz/wsdl/GetPresets",
+        `<tptz:GetPresets><tptz:ProfileToken>${escapeXml(profileToken)}</tptz:ProfileToken></tptz:GetPresets>`,
+        `xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"`,
+      );
+      const tokens = pickAttr(xml, "Preset", "token");
+      const presets = pickAll(xml, "Preset").map((block, index) => ({
+        token: tokens[index] ?? "",
+        name: pickNested(block, "Name") ?? tokens[index] ?? "",
+      })).filter((preset) => preset.token);
+      return result(action, xml, { profileToken, presets });
     }
 
     let body = "";

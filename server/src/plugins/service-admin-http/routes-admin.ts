@@ -82,6 +82,12 @@ interface DiscoverAddStream {
   role: "main" | "sub" | "other";
 }
 
+export function cameraCapabilitiesFromForm(existing: string[], ptzEnabled: boolean): string[] {
+  const capabilities = existing.filter((capability) => capability.toLowerCase() !== "ptz");
+  if (ptzEnabled) capabilities.push("ptz");
+  return capabilities;
+}
+
 interface DiscoveryPreview {
   url: string;
   runner: string;
@@ -2291,6 +2297,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       camera_number: (body?.["camera_number"] ?? "").trim() || null,
       enabled: body?.["enabled"] === "1",
     };
+    if (cam?.type === "onvif") {
+      patch["capabilities"] = cameraCapabilitiesFromForm(cam.capabilities, body?.["ptz_enabled"] === "1");
+    }
     if (body?.["recording_config_json"] != null) {
       try {
         const parsed = JSON.parse(body["recording_config_json"] || "{}");

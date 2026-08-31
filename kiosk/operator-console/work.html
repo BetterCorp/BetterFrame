@@ -15,10 +15,16 @@
   <main>
     <section id="wall-overview" class="overview-grid"></section>
     <section>
+      <h1>Quick content</h1>
+      <label class="content-target">Target display<select id="content-display"></select></label>
+      <div id="content-grid" class="tool-grid"></div>
+      <p id="push-state" class="muted"></p>
+    </section>
+    <section>
       <h1>Operational tools</h1>
       <div id="tool-grid" class="tool-grid"></div>
     </section>
-    <section id="playback-panel" class="panel control-card">
+    <section id="playback-panel" class="panel control-card hidden">
       <h1>Playback and export</h1>
       <p id="vms-state" class="muted">Loading SimpleVMS…</p>
       <div id="playback-controls" class="filters hidden">

@@ -2,14 +2,26 @@ const TOKEN_KEY = "betterframe.operator.stationToken";
 const token = () => localStorage.getItem(TOKEN_KEY) || "";
 let playbackUrl = null;
 
-async function authenticatedFetch(path) {
-  const response = await fetch(path, { headers: { Authorization: `Bearer ${token()}` } });
+async function authenticatedFetch(path, options = {}) {
+  const headers = new Headers(options.headers || {});
+  headers.set("Authorization", `Bearer ${token()}`);
+  const response = await fetch(path, { ...options, headers });
   if (response.status === 401) {
     location.href = "/operator/";
     throw new Error("unauthorized");
   }
   if (!response.ok) throw new Error((await response.text()) || `Request failed (${response.status})`);
   return response;
+}
+
+async function activateLayout(displayId, layoutId, label) {
+  const status = document.getElementById("push-state");
+  try {
+    await authenticatedFetch(`/operator/api/displays/${encodeURIComponent(displayId)}/layouts/${encodeURIComponent(layoutId)}`, { method: "POST" });
+    status.textContent = `${label} sent to display.`;
+  } catch (error) {
+    status.textContent = error.message;
+  }
 }
 
 async function boot() {
@@ -25,28 +37,69 @@ async function boot() {
     for (const cell of display.cells) {
       const item = document.createElement("div");
       item.className = "cell-pill";
-      item.textContent = cell.camera_name || `${cell.id} · Empty`;
+      item.textContent = cell.camera_name || `${cell.id} · ${cell.content_type === "none" ? "Empty" : cell.content_type}`;
       cells.append(item);
     }
-    card.append(title, cells);
+    const layoutTitle = document.createElement("h3");
+    layoutTitle.textContent = "Quick layouts";
+    const layouts = document.createElement("div");
+    layouts.className = "layout-buttons";
+    for (const layout of display.layouts) {
+      const button = document.createElement("button");
+      button.textContent = `${layout.name}${layout.is_default ? " · Default" : ""}`;
+      button.onclick = () => activateLayout(display.id, layout.id, layout.name);
+      layouts.append(button);
+    }
+    card.append(title, cells, layoutTitle, layouts);
     return card;
   }));
+
+  const contentDisplay = document.getElementById("content-display");
+  for (const display of data.displays) {
+    const option = document.createElement("option");
+    option.value = display.id;
+    option.textContent = display.name;
+    contentDisplay.append(option);
+  }
+  const content = document.getElementById("content-grid");
+  if (!data.content.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "No web, HTML, dashboard, or AbleSign content is configured.";
+    content.replaceChildren(empty);
+  } else {
+    content.replaceChildren(...data.content.map(item => {
+      const card = document.createElement("article");
+      card.className = "panel tool-card";
+      const name = document.createElement("div");
+      name.textContent = item.name;
+      const detail = document.createElement("div");
+      detail.className = "muted";
+      detail.textContent = item.source || item.type;
+      const button = document.createElement("button");
+      button.textContent = "Push full-screen";
+      button.onclick = () => activateLayout(contentDisplay.value, item.id, item.name);
+      card.append(name, detail, button);
+      return card;
+    }));
+  }
 
   const tools = document.getElementById("tool-grid");
   tools.replaceChildren(...data.tools.map(tool => {
     const link = document.createElement("a");
     link.className = "panel tool-card";
     link.href = tool.url;
-    link.target = "_blank";
-    link.rel = "noopener";
-    link.textContent = `${tool.label} ↗`;
+    link.textContent = `${tool.label} →`;
     return link;
   }));
 
+  if (!data.simple_vms.enabled) return;
+  const panel = document.getElementById("playback-panel");
+  panel.classList.remove("hidden");
   const cameras = data.cameras.filter(camera => camera.playback_path);
   const status = document.getElementById("vms-state");
-  if (!data.simple_vms.enabled || !cameras.length) {
-    status.textContent = "SimpleVMS is not enabled or has no managed cameras.";
+  if (!cameras.length) {
+    status.textContent = "Recording is enabled but has no managed cameras.";
     return;
   }
   status.textContent = "Choose a camera and recording start time.";
@@ -92,4 +145,4 @@ document.getElementById("playback-load").onclick = async () => {
 };
 
 window.addEventListener("beforeunload", () => playbackUrl && URL.revokeObjectURL(playbackUrl));
-boot().catch(error => document.getElementById("vms-state").textContent = error.message);
+boot().catch(error => document.getElementById("push-state").textContent = error.message);

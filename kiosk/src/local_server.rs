@@ -272,6 +272,7 @@ fn operator_router(state: LocalServerState) -> Router {
         .route("/operator/api/bootstrap", get(operator_bootstrap_handler))
         .route("/operator/api/cameras/:camera_id/onvif", post(operator_onvif_handler))
         .route("/operator/api/media/session", post(operator_media_session_handler))
+        .route("/operator/api/displays/:display_id/layouts/:layout_id", post(operator_layout_handler))
         .route("/operator/api/displays/:display_id/focus", post(operator_focus_handler))
         .route("/operator/api/displays/:display_id/clear", post(operator_clear_handler))
         .route("/operator/api/displays/:display_id/overrides", delete(operator_restore_handler))
@@ -394,7 +395,8 @@ async fn operator_bootstrap_handler(
     }).collect();
     let camera_names: std::collections::HashMap<&str, &str> = bundle.cameras.iter()
         .map(|camera| (camera.id.as_str(), camera.name.as_str())).collect();
-    let displays: Vec<serde_json::Value> = bundle.normalized_displays().iter().map(|display| {
+    let normalized_displays = bundle.normalized_displays();
+    let displays: Vec<serde_json::Value> = normalized_displays.iter().map(|display| {
         let layout = display.default_layout_id.as_deref()
             .and_then(|id| display.layouts.iter().find(|layout| layout.id == id))
             .or_else(|| display.layouts.iter().find(|layout| layout.is_default))
@@ -412,18 +414,47 @@ async fn operator_bootstrap_handler(
                 "col_span": cell.col_span,
             })
         }).collect::<Vec<_>>()).unwrap_or_default();
-        json!({ "id": display.id, "name": display.name, "cells": cells })
+        let layouts = display.layouts.iter().filter(|layout| !is_virtual_layout(layout)).map(|layout| json!({
+            "id": layout.id,
+            "name": layout.name,
+            "is_default": layout.is_default,
+        })).collect::<Vec<_>>();
+        json!({ "id": display.id, "name": display.name, "cells": cells, "layouts": layouts })
     }).collect();
+    let content = normalized_displays.first().map(|display| display.layouts.iter().filter_map(|layout| {
+        let cell = operator_content_cell(layout)?;
+        Some(json!({
+            "id": layout.id,
+            "name": layout.name.strip_prefix("Full Screen: ").unwrap_or(&layout.name),
+            "type": cell.content_type,
+            "source": cell.web_url,
+        }))
+    }).collect::<Vec<_>>()).unwrap_or_default();
     Json(json!({
         "kiosk_id": bundle.kiosk_id,
         "kiosk_name": bundle.kiosk_name,
         "cameras": cameras,
         "displays": displays,
+        "content": content,
         "tools": bundle.operator_console.tools,
         "simple_vms": {
             "enabled": bundle.operator_console.simple_vms.enabled,
         }
     })).into_response()
+}
+
+fn is_virtual_layout(layout: &crate::bundle::BundleLayout) -> bool {
+    layout.cells.len() == 1
+        && layout.cells[0].entity_id.as_deref() == Some(layout.id.as_str())
+        && layout.cells[0]
+            .view_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("virtual:") || id.starts_with("operator:"))
+}
+
+fn operator_content_cell(layout: &crate::bundle::BundleLayout) -> Option<&crate::bundle::BundleCell> {
+    let cell = is_virtual_layout(layout).then(|| &layout.cells[0])?;
+    (!matches!(cell.content_type.as_str(), "camera" | "none")).then_some(cell)
 }
 
 fn camera_freshness(value: &str) -> &'static str {
@@ -628,6 +659,30 @@ async fn operator_focus_handler(
         duration_seconds: body.duration_seconds,
     };
     operator_ui_request(&state, |reply| WorkerMsg::OperatorFocus(request, reply)).await
+}
+
+async fn operator_layout_handler(
+    State(state): State<LocalServerState>,
+    Path((display_id, layout_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(response) = require_operator(&state, &headers) { return response; }
+    let allowed = crate::server::load_cached_bundle().is_some_and(|bundle| {
+        bundle.normalized_displays().iter().any(|display| {
+            display.id == display_id && display.layouts.iter().any(|layout| layout.id == layout_id)
+        })
+    });
+    if !allowed { return StatusCode::NOT_FOUND.into_response(); }
+    let sent = state.ui_tx.lock().ok().and_then(|guard| guard.as_ref().cloned())
+        .is_some_and(|sender| sender.send(WorkerMsg::SwitchLayout {
+            display_id: Some(display_id),
+            layout_id,
+        }).is_ok());
+    if sent {
+        Json(json!({ "ok": true })).into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "operator UI is unavailable").into_response()
+    }
 }
 
 async fn operator_clear_handler(

@@ -227,10 +227,6 @@ cat > /etc/sudoers.d/betterframe-managed-config <<'SUDOERS'
 bfkiosk ALL=(root) NOPASSWD: /usr/local/sbin/betterframe-apply-managed-config.sh *
 SUDOERS
 chmod 440 /etc/sudoers.d/betterframe-managed-config
-cat > /etc/sudoers.d/betterframe-reboot <<'SUDOERS'
-bfkiosk ALL=(root) NOPASSWD: /usr/sbin/reboot 0 tryboot, /usr/bin/systemctl reboot
-SUDOERS
-chmod 440 /etc/sudoers.d/betterframe-reboot
 
 cat > /etc/default/betterframe-kiosk <<'EOF'
 BF_ENABLE_APP_OTA=0

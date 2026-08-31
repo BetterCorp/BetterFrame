@@ -266,6 +266,9 @@ Everything else is a shared module (plain TS, no BSB lifecycle).
 - **x86 image enablement**: install every unit's package explicitly and never suppress the bulk `systemctl enable` failure; one missing unit leaves the whole set disabled.
 - **kiosk runtime dir**: let `pam_systemd` create `/run/user/<uid>`; creating it with `install -d -o bfkiosk` can also create `/run/user` with unsafe ownership and break PAM.
 - **x86 networking**: debootstrap does not configure Ethernet; use the built-in `systemd-networkd` with DHCP plus `systemd-resolved`, and install/enable both explicitly.
+- **operator media**: operate-label cameras always use bundled MediaMTX for on-demand live restreaming; SimpleVMS only gates recording/playback/export UI.
+- **operator quick push**: every reusable non-camera entity is shipped as a normal-priority virtual fullscreen layout; operator links and tools stay in one browser tab.
+- **RAUC reboot**: the root-run bundle hook schedules reboot after slot installation; the kiosk service has `NoNewPrivileges=yes`, so `sudo` from the app cannot work.
 
 ## file layout (current)
 ```

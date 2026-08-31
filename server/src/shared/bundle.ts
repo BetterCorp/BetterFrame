@@ -1,14 +1,13 @@
 /**
  * Bundle generation — display-chain routing.
  *
- * kiosk.display_id → layouts for display → cells → cameras
- * No label filtering for v0.1.
+ * kiosk → enabled displays → layouts/cells plus operate-label cameras.
  */
 import { createHash } from "node:crypto";
 import type { Observable } from "@bsb/base";
 import type { Repository } from "./db/repository.js";
 import type { SecretsApi } from "./secrets.js";
-import type { Camera, CameraStream } from "./types.js";
+import type { Camera, CameraStream, CellContentType, Entity } from "./types.js";
 import { parseRtspUri, stripRtspCredentials } from "./rtsp.js";
 import { createOnvifCallbackToken } from "./onvif-callback-token.js";
 
@@ -242,6 +241,44 @@ export async function generateBundle(
     return ciphertext;
   }
 
+  async function resolveEntityContent(ent: Entity): Promise<{
+    contentType: CellContentType;
+    cameraId: string | null;
+    webUrl: string | null;
+    htmlContent: string | null;
+    localStorage?: Record<string, string>;
+  }> {
+    let localStorage: Record<string, string> | undefined;
+    if (ent.type === "ablesign" && ent.ablesign_screen_id) {
+      const screen = await repo.getAbleSignScreen(ent.ablesign_screen_id);
+      if (screen) {
+        localStorage = { screenId: screen.ablesign_screen_id };
+        if (screen.ablesign_screen_token_encrypted) {
+          try {
+            localStorage["screenToken"] = secrets.decryptString(
+              screen.ablesign_screen_token_encrypted,
+              "ablesign-token",
+            );
+          } catch { /* player will show pairing */ }
+        }
+      }
+    }
+    return {
+      contentType: ent.type === "dashboard" || ent.type === "ablesign" ? "web" : ent.type,
+      cameraId: ent.type === "camera" ? ent.camera_id : null,
+      webUrl:
+        ent.type === "web" || ent.type === "ablesign" ? ent.web_url :
+        ent.type === "dashboard" && ent.dashboard_id ? `/dash/${ent.dashboard_id}` :
+        null,
+      htmlContent: ent.type === "html" ? ent.html_content : null,
+      localStorage,
+    };
+  }
+
+  const operatorContent = kiosk.operator_console_enabled
+    ? (await repo.listEntities()).filter((entity) => entity.type !== "camera")
+    : [];
+
   async function buildLayouts(displayId: string, defaultLayoutId: string | null): Promise<BundleLayout[]> {
     const layouts = await repo.layoutsForDisplayId(displayId);
     const result: BundleLayout[] = [];
@@ -271,32 +308,12 @@ export async function generateBundle(
         if (c.entity_id != null) {
           const ent = await repo.getEntityById(c.entity_id);
           if (ent) {
-            // Dashboard entities are surfaced to the kiosk as `web` cells
-            // pointing at /dash/<dashboard_id> — kiosk WebKit handles them
-            // identically to user-supplied web cells.
-            contentType = (ent.type === "dashboard" || ent.type === "ablesign") ? "web" : ent.type;
-            cameraId = ent.type === "camera" ? ent.camera_id : null;
-            webUrl =
-              ent.type === "web" ? ent.web_url :
-              ent.type === "ablesign" ? ent.web_url :
-              ent.type === "dashboard" && ent.dashboard_id ? `/dash/${ent.dashboard_id}` :
-              null;
-            htmlContent = ent.type === "html" ? ent.html_content : null;
-            // AbleSign: inject screenToken + screenId into localStorage
-            if (ent.type === "ablesign" && ent.ablesign_screen_id) {
-              const screen = await repo.getAbleSignScreen(ent.ablesign_screen_id);
-              if (screen) {
-                const ls: Record<string, string> = {
-                  screenId: screen.ablesign_screen_id,
-                };
-                if (screen.ablesign_screen_token_encrypted) {
-                  try {
-                    ls["screenToken"] = secrets.decryptString(screen.ablesign_screen_token_encrypted, "ablesign-token");
-                  } catch { /* token decrypt failed — player will show pairing */ }
-                }
-                cellLocalStorage = ls;
-              }
-            }
+            const resolved = await resolveEntityContent(ent);
+            contentType = resolved.contentType;
+            cameraId = resolved.cameraId;
+            webUrl = resolved.webUrl;
+            htmlContent = resolved.htmlContent;
+            cellLocalStorage = resolved.localStorage;
             cellInputOptions = Object.keys(ent.input_options_json ?? {}).length > 0
               ? ent.input_options_json
               : cellInputOptions;
@@ -385,6 +402,40 @@ export async function generateBundle(
         is_default: defaultLayoutId === l.id,
         cells: bundleCells,
         input_options: l.input_options_json,
+      });
+    }
+    for (const ent of operatorContent) {
+      if (virtualLayouts.has(ent.id)) continue;
+      const resolved = await resolveEntityContent(ent);
+      virtualLayouts.set(ent.id, {
+        id: ent.id,
+        name: `Full Screen: ${ent.name}`,
+        grid_cols: 1,
+        grid_rows: 1,
+        priority: "normal",
+        cooling_timeout_seconds: null,
+        idle_timeout_seconds: null,
+        preload_camera_ids: [],
+        resets_idle_timer: true,
+        is_default: false,
+        cells: [{
+          view_id: `operator:${ent.id}`,
+          entity_id: ent.id,
+          row: 0,
+          col: 0,
+          row_span: 1,
+          col_span: 1,
+          content_type: resolved.contentType,
+          camera_id: resolved.cameraId,
+          stream_selector: null,
+          web_url: resolved.webUrl,
+          html_content: resolved.htmlContent,
+          cooling_timeout_seconds: null,
+          fit: "contain",
+          local_storage: resolved.localStorage,
+          input_options: ent.input_options_json,
+        }],
+        input_options: ent.input_options_json,
       });
     }
     const realLayoutIds = new Set(result.map((layout) => layout.id));

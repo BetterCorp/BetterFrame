@@ -444,36 +444,13 @@ pub fn apply(
 
     on_progress("Rebooting", 100);
     info!("os-update: rauc install OK → rebooting into the new slot");
-    // RAUC's custom bootloader backend has already armed tryboot for the
-    // freshly-written slot. Reboot picks it up. On failure to reach the
-    // new slot, tryboot rolls back automatically on the next power cycle.
-    let mut reboot = if compatibility().contains("rpi") {
-        let mut command = Command::new("sudo");
-        command.args(["-n", "/usr/sbin/reboot", "0", "tryboot"]);
-        command
-    } else {
-        let mut command = Command::new("sudo");
-        command.args(["-n", "/usr/bin/systemctl", "reboot"]);
-        command
-    };
-    match reboot.status() {
-        Ok(status) if status.success() => {
-            // systemctl reboot returns before the reboot completes; sleep
-            // briefly so we don't race main() into a re-entry.
-            std::thread::sleep(Duration::from_secs(30));
-            std::process::exit(0);
-        }
-        Ok(status) => {
-            let message = format!("privileged reboot failed: {status}");
-            let _ = report_applied(server, key, &info.version, Some(&message));
-            Err(message)
-        }
-        Err(e) => {
-            let message = format!("privileged reboot: {e}");
-            let _ = report_applied(server, key, &info.version, Some(&message));
-            Err(message)
-        }
-    }
+    // The root-run RAUC hook schedules the reboot after it finishes patching
+    // the target slot. The kiosk service has NoNewPrivileges=yes for WebKit,
+    // so attempting sudo here can never work.
+    std::thread::sleep(Duration::from_secs(60));
+    let message = "scheduled reboot did not occur".to_string();
+    let _ = report_applied(server, key, &info.version, Some(&message));
+    Err(message)
 }
 
 fn report_applied(

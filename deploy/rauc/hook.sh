@@ -80,6 +80,15 @@ bootname=B
 RAUCCONF
 }
 
+schedule_reboot() {
+  local -a command=(/usr/bin/systemctl reboot)
+  if [ "$1" = "pi" ]; then
+    command=(/usr/sbin/reboot 0 tryboot)
+  fi
+  systemd-run --unit=betterframe-rauc-reboot --on-active=30s --collect "${command[@]}"
+  echo "hook: scheduled reboot after successful RAUC install"
+}
+
 LETTER="$(slot_letter)"
 
 # Prefer the mount point RAUC already provides; fall back to mounting.
@@ -155,6 +164,7 @@ FSTAB
       if [ -s /etc/machine-id ]; then
         install -m 444 /etc/machine-id "${MNT}/etc/machine-id"
       fi
+      schedule_reboot x86
       echo "hook: patched x86 rootfs slot ${LETTER} fstab and RAUC PARTUUIDs"
     else
       ROOT_UUID="$(partuuid_of "BF_ROOT_${LETTER}")"
@@ -163,6 +173,7 @@ LABEL=BF_BOOT_${LETTER}  /boot/firmware  vfat  defaults  0  2
 PARTUUID=${ROOT_UUID}  /               ext4  defaults,noatime  0  1
 LABEL=BF_DATA    /var/lib/betterframe  ext4  defaults,noatime,nofail  0  2
 FSTAB
+      schedule_reboot pi
       echo "hook: patched Pi rootfs slot ${LETTER} fstab -> BF_BOOT_${LETTER}, root PARTUUID=${ROOT_UUID}"
     fi
     ;;

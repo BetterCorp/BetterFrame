@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { deviceGridPositions } from "../src/plugins/service-admin-http/routes-admin.js";
-import { renderKioskLabels } from "../src/web-templates/admin-pages.js";
+import {
+  renderCameraDeviceLabels,
+  renderCameraLabels,
+  renderKioskLabels,
+} from "../src/web-templates/admin-pages.js";
 
 test("device cameras fill a compact grid in stable discovery order", () => {
   assert.deepEqual(deviceGridPositions(0), []);
@@ -23,4 +27,17 @@ test("kiosk label picker keeps labels available for a second role", () => {
   ));
   assert.match(html, /<option value="label-1">site-a<\/option>/);
   assert.match(html, /&quot;role&quot;:&quot;consume&quot;/);
+});
+
+test("camera labels distinguish inherited device labels", () => {
+  const labels = [
+    { label_id: "device-label", name: "site-a", inherited: true },
+    { label_id: "camera-label", name: "entrance", inherited: false },
+  ];
+  const html = String(renderCameraLabels("camera-1", labels, labels.map((label) => ({ id: label.label_id, name: label.name } as never))));
+
+  assert.match(html, /site-a \(device\)/);
+  assert.doesNotMatch(html, /device-label/);
+  assert.match(html, /camera-label/);
+  assert.match(String(renderCameraDeviceLabels("device-1", [], [])), /camera-devices\/device-1\/labels/);
 });

@@ -960,6 +960,11 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_camera_devices_endpoint ON camera_devices(host, port)`,
+  `CREATE TABLE IF NOT EXISTS device_labels (
+    device_id TEXT NOT NULL REFERENCES camera_devices(id) ON DELETE CASCADE,
+    label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+    PRIMARY KEY(device_id, label_id)
+  )`,
   `ALTER TABLE cameras ADD COLUMN IF NOT EXISTS device_id TEXT REFERENCES camera_devices(id) ON DELETE CASCADE`,
   `ALTER TABLE cameras ADD COLUMN IF NOT EXISTS device_channel_id TEXT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_cameras_device_channel ON cameras(device_id, device_channel_id) WHERE device_channel_id IS NOT NULL`,

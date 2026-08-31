@@ -471,6 +471,8 @@ interface CameraDeviceEditProps {
   device: CameraDevice;
   cameras: Camera[];
   kiosks: Kiosk[];
+  labels: Array<{ label_id: string; name: string }>;
+  allLabels: Label[];
   success?: string;
   error?: string;
 }
@@ -529,6 +531,13 @@ export function CameraDeviceEditPage(props: CameraDeviceEditProps) {
             </form>
             <div style="margin-top:1rem;display:grid;gap:0.4rem">
               {props.cameras.map((camera) => <a href={`/admin/cameras/${camera.id}`}>{camera.name}{camera.enabled ? "" : " (disabled)"}</a>)}
+            </div>
+          </div>
+          <div class="card" style="margin-bottom:1rem">
+            <h2 style="margin:0 0 0.75rem;font-size:1.1rem">Labels</h2>
+            <p style="color:#666;font-size:0.85rem;margin-bottom:1rem">Inherited by every camera on this device.</p>
+            <div id={`device-labels-${String(props.device.id)}`}>
+              {renderCameraDeviceLabels(props.device.id, props.labels, props.allLabels)}
             </div>
           </div>
           <form method="post" action={`/admin/camera-devices/${props.device.id}/delete`}>
@@ -1620,7 +1629,7 @@ interface CameraEditProps {
   user: string;
   camera: Camera;
   device?: CameraDevice | null;
-  labels: Array<{ label_id: string; name: string }>;
+  labels: Array<{ label_id: string; name: string; inherited: boolean }>;
   allLabels: Label[];
   streams: Array<{ id: string; role: string; name: string; rtsp_uri: string }>;
   subscriptions: CameraSubscription[];
@@ -1634,25 +1643,27 @@ interface CameraEditProps {
  * htmx label add/remove can swap just this fragment via
  * hx-target="#camera-labels-<id>" hx-swap="innerHTML".
  */
-export function renderCameraLabels(
-  cameraId: string,
-  labels: Array<{ label_id: string; name: string }>,
+function renderLabelEditor(
+  ownerPath: string,
+  targetSelector: string,
+  labels: Array<{ label_id: string; name: string; inherited?: boolean }>,
   allLabels: Label[],
 ): string {
-  const labelsTargetSelector = `#camera-labels-${String(cameraId)}`;
   return (
     <div>
       {labels.length > 0 ? (
         <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:1rem">
-          {labels.map((l) => (
+          {labels.map((l) => l.inherited ? (
+            <span class="badge badge-gray" title="Inherited from device">{l.name} (device)</span>
+          ) : (
             <button
               type="button"
               class="badge badge-blue"
               style="cursor:pointer; border:none"
               title="Click to remove"
-              hx-post={`/admin/cameras/${String(cameraId)}/labels/remove`}
+              hx-post={`${ownerPath}/labels/remove`}
               hx-vals={JSON.stringify({ label_id: l.label_id })}
-              hx-target={labelsTargetSelector}
+              hx-target={targetSelector}
               hx-swap="innerHTML"
             >
               {l.name} ×
@@ -1663,8 +1674,8 @@ export function renderCameraLabels(
         <p style="color:#999; margin-bottom:1rem">No labels attached</p>
       )}
       <form
-        hx-post={`/admin/cameras/${String(cameraId)}/labels`}
-        hx-target={labelsTargetSelector}
+        hx-post={`${ownerPath}/labels`}
+        hx-target={targetSelector}
         hx-swap="innerHTML"
         style="display:flex; gap:0.5rem"
       >
@@ -1676,8 +1687,8 @@ export function renderCameraLabels(
         <button type="submit" class="btn btn-primary">Add</button>
       </form>
       <form
-        hx-post={`/admin/cameras/${String(cameraId)}/labels`}
-        hx-target={labelsTargetSelector}
+        hx-post={`${ownerPath}/labels`}
+        hx-target={targetSelector}
         hx-swap="innerHTML"
         style="display:flex; gap:0.5rem; margin-top:0.5rem"
       >
@@ -1686,6 +1697,22 @@ export function renderCameraLabels(
       </form>
     </div>
   );
+}
+
+export function renderCameraLabels(
+  cameraId: string,
+  labels: Array<{ label_id: string; name: string; inherited: boolean }>,
+  allLabels: Label[],
+): string {
+  return renderLabelEditor(`/admin/cameras/${String(cameraId)}`, `#camera-labels-${String(cameraId)}`, labels, allLabels);
+}
+
+export function renderCameraDeviceLabels(
+  deviceId: string,
+  labels: Array<{ label_id: string; name: string }>,
+  allLabels: Label[],
+): string {
+  return renderLabelEditor(`/admin/camera-devices/${String(deviceId)}`, `#device-labels-${String(deviceId)}`, labels, allLabels);
 }
 
 export function CameraEditPage(props: CameraEditProps) {

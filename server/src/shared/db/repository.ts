@@ -1434,6 +1434,28 @@ export class Repository {
     );
   }
 
+  async attachCameraDeviceLabel(deviceId: string, labelId: string): Promise<void> {
+    await this._run(
+      `INSERT OR IGNORE INTO device_labels (device_id, label_id)
+       VALUES (?, ?)`,
+      [deviceId, labelId],
+    );
+  }
+
+  async cameraDeviceLabelIds(deviceId: string): Promise<Array<{ label_id: string; name: string }>> {
+    const rs = await this._all(
+      `SELECT dl.label_id, l.name FROM device_labels dl
+         JOIN labels l ON l.id = dl.label_id
+        WHERE dl.device_id = ?
+        ORDER BY l.name`,
+      [deviceId],
+    );
+    return rs.map((r) => {
+      const row = r as Record<string, unknown>;
+      return { label_id: String(row["label_id"]), name: String(row["name"]) };
+    });
+  }
+
   // ===========================================================================
   // ioBOX models + serial inventory (PUBLIC schema)
   // ===========================================================================
@@ -2742,11 +2764,16 @@ export class Repository {
     const placeholders = labelIds.map(() => "?").join(",");
     const rs = await this._all(
       `SELECT DISTINCT c.* FROM cameras c
-         JOIN camera_labels cl ON cl.camera_id = c.id
-        WHERE cl.label_id IN (${placeholders})
+        WHERE (EXISTS (
+                 SELECT 1 FROM camera_labels cl
+                  WHERE cl.camera_id = c.id AND cl.label_id IN (${placeholders})
+               ) OR EXISTS (
+                 SELECT 1 FROM device_labels dl
+                  WHERE dl.device_id = c.device_id AND dl.label_id IN (${placeholders})
+               ))
           AND c.enabled = true
         ORDER BY c.name`,
-      labelIds,
+      [...labelIds, ...labelIds],
     );
     return rs.map((r) => rowToCamera(r as Record<string, unknown>));
   }
@@ -2775,24 +2802,47 @@ export class Repository {
 
   async cameraLabelNames(cameraId: string): Promise<string[]> {
     const rs = await this._all(
-      `SELECT l.name FROM camera_labels cl
-         JOIN labels l ON l.id = cl.label_id
-        WHERE cl.camera_id = ?`,
-      [cameraId],
+      `SELECT DISTINCT l.name FROM labels l
+        WHERE EXISTS (
+                SELECT 1 FROM camera_labels cl
+                 WHERE cl.camera_id = ? AND cl.label_id = l.id
+              ) OR EXISTS (
+                SELECT 1 FROM cameras c
+                  JOIN device_labels dl ON dl.device_id = c.device_id
+                 WHERE c.id = ? AND dl.label_id = l.id
+              )
+        ORDER BY l.name`,
+      [cameraId, cameraId],
     );
     return rs.map((r) => String((r as Record<string, unknown>)["name"]));
   }
 
-  async cameraLabelIds(cameraId: string): Promise<Array<{ label_id: string; name: string }>> {
+  async cameraLabelIds(cameraId: string): Promise<Array<{ label_id: string; name: string; inherited: boolean }>> {
     const rs = await this._all(
-      `SELECT cl.label_id, l.name FROM camera_labels cl
-         JOIN labels l ON l.id = cl.label_id
-        WHERE cl.camera_id = ?`,
-      [cameraId],
+      `SELECT l.id AS label_id, l.name,
+              CASE WHEN EXISTS (
+                SELECT 1 FROM camera_labels cl
+                 WHERE cl.camera_id = ? AND cl.label_id = l.id
+              ) THEN false ELSE true END AS inherited
+         FROM labels l
+        WHERE EXISTS (
+                SELECT 1 FROM camera_labels cl
+                 WHERE cl.camera_id = ? AND cl.label_id = l.id
+              ) OR EXISTS (
+                SELECT 1 FROM cameras c
+                  JOIN device_labels dl ON dl.device_id = c.device_id
+                 WHERE c.id = ? AND dl.label_id = l.id
+              )
+        ORDER BY l.name`,
+      [cameraId, cameraId, cameraId],
     );
     return rs.map((r) => {
       const row = r as Record<string, unknown>;
-      return { label_id: String(row["label_id"]), name: String(row["name"]) };
+      return {
+        label_id: String(row["label_id"]),
+        name: String(row["name"]),
+        inherited: Boolean(row["inherited"]),
+      };
     });
   }
 
@@ -3016,6 +3066,10 @@ export class Repository {
     await this._run(`DELETE FROM camera_labels WHERE camera_id = ? AND label_id = ?`, [cameraId, labelId]);
   }
 
+  async detachCameraDeviceLabel(deviceId: string, labelId: string): Promise<void> {
+    await this._run(`DELETE FROM device_labels WHERE device_id = ? AND label_id = ?`, [deviceId, labelId]);
+  }
+
   async detachKioskLabel(kioskId: string, labelId: string, role: LabelRole): Promise<void> {
     await this._run(
       `DELETE FROM kiosk_labels WHERE kiosk_id = ? AND label_id = ? AND role = ?`,
@@ -3025,6 +3079,7 @@ export class Repository {
 
   async deleteLabel(id: string): Promise<void> {
     await this._run(`DELETE FROM camera_labels WHERE label_id = ?`, [id]);
+    await this._run(`DELETE FROM device_labels WHERE label_id = ?`, [id]);
     await this._run(`DELETE FROM kiosk_labels WHERE label_id = ?`, [id]);
     await this._run(`DELETE FROM layout_labels WHERE label_id = ?`, [id]);
     await this._run(`DELETE FROM labels WHERE id = ?`, [id]);

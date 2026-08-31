@@ -38,6 +38,7 @@ import {
   renderCellSidebarResponse,
   renderGrid,
   renderCameraLabels,
+  renderCameraDeviceLabels,
   renderKioskLabels,
   renderDisplayLayouts,
   renderDefaultLayoutSelect,
@@ -1290,6 +1291,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       device,
       cameras: await deps.repo.listCamerasByDevice(id),
       kiosks: await deps.repo.listKiosks(),
+      labels: await deps.repo.cameraDeviceLabelIds(id),
+      allLabels: await deps.repo.listLabels(),
       success: url.searchParams.get("success") ?? undefined,
       error: url.searchParams.get("error") ?? undefined,
     }));
@@ -1378,6 +1381,33 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     } catch (error) {
       return new Response(null, { status: 302, headers: { location: `/admin/camera-devices/${id}?error=${encodeURIComponent((error as Error).message)}` } });
     }
+  });
+
+  app.post("/admin/camera-devices/:id/labels", async (event) => {
+    const deviceId = getRouterParam(event, "id") ?? "";
+    const body = await readBody<Record<string, string>>(event);
+    const newLabel = (body?.["new_label"] ?? "").trim().toLowerCase();
+    let labelId = body?.["label_id"] ? String(body["label_id"]) : null;
+    if (newLabel) labelId = (await deps.repo.ensureLabel(newLabel)).id;
+    if (labelId) {
+      await deps.repo.attachCameraDeviceLabel(deviceId, labelId);
+      notifyKiosks();
+    }
+    if (isHtmxRequest(event)) {
+      return htmlFragment(renderCameraDeviceLabels(deviceId, await deps.repo.cameraDeviceLabelIds(deviceId), await deps.repo.listLabels()));
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/camera-devices/${deviceId}` } });
+  });
+
+  app.post("/admin/camera-devices/:id/labels/remove", async (event) => {
+    const deviceId = getRouterParam(event, "id") ?? "";
+    const body = await readBody<Record<string, string>>(event);
+    await deps.repo.detachCameraDeviceLabel(deviceId, String(body?.["label_id"] ?? ""));
+    notifyKiosks();
+    if (isHtmxRequest(event)) {
+      return htmlFragment(renderCameraDeviceLabels(deviceId, await deps.repo.cameraDeviceLabelIds(deviceId), await deps.repo.listLabels()));
+    }
+    return new Response(null, { status: 302, headers: { location: `/admin/camera-devices/${deviceId}` } });
   });
 
   app.post("/admin/camera-devices/:id/delete", async (event) => {

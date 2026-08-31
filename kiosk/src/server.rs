@@ -97,9 +97,6 @@ fn read_network_interfaces() -> Vec<Value> {
                     })
                 })
                 .collect();
-            if ips.is_empty() {
-                return None;
-            }
             Some(serde_json::json!({
                 "name": name,
                 "mac": item.get("address").and_then(|v| v.as_str()),
@@ -108,6 +105,45 @@ fn read_network_interfaces() -> Vec<Value> {
             }))
         })
         .collect()
+}
+
+fn format_startup_network_summary(interfaces: &[Value]) -> (String, String) {
+    let interfaces: Vec<&Value> = interfaces
+        .iter()
+        .filter(|item| item["name"] != "lo")
+        .collect();
+    let macs: Vec<String> = interfaces
+        .iter()
+        .filter_map(|item| {
+            Some(format!(
+                "{} {}",
+                item["name"].as_str()?,
+                item["mac"].as_str()?
+            ))
+        })
+        .collect();
+    let ips: Vec<&str> = interfaces
+        .iter()
+        .flat_map(|item| item["ips"].as_array().into_iter().flatten())
+        .filter_map(Value::as_str)
+        .filter(|ip| !ip.starts_with("fe80:") && !ip.starts_with("127.") && *ip != "::1/128")
+        .collect();
+    (
+        if macs.is_empty() {
+            "searching".into()
+        } else {
+            macs.join(", ")
+        },
+        if ips.is_empty() {
+            "searching".into()
+        } else {
+            ips.join(", ")
+        },
+    )
+}
+
+pub fn startup_network_summary() -> (String, String) {
+    format_startup_network_summary(&read_network_interfaces())
 }
 
 fn state_dir() -> PathBuf {
@@ -947,5 +983,23 @@ fn validate_timezone(timezone: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("timezone not found: {timezone}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_startup_network_summary;
+
+    #[test]
+    fn startup_network_summary_keeps_mac_while_waiting_for_ip() {
+        let interfaces = vec![serde_json::json!({
+            "name": "eth0",
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "ips": ["fe80::1/64"]
+        })];
+        assert_eq!(
+            format_startup_network_summary(&interfaces),
+            ("eth0 aa:bb:cc:dd:ee:ff".into(), "searching".into())
+        );
     }
 }

@@ -213,6 +213,9 @@ fn activate(app: &Application) {
         .ok()
         .or_else(|| std::env::args().nth(1));
     std::thread::spawn(move || {
+        let _ = tx.send(WorkerMsg::StartupStatus(
+            "Finding BetterFrame server".into(),
+        ));
         let server = server::discover_server(server_url.as_deref());
         info!("server: {server}");
 
@@ -220,6 +223,9 @@ fn activate(app: &Application) {
         // If an update is available, download + swap + exit. systemd restarts
         // with the new binary which re-enters this flow.
         if !server::is_paired() {
+            let _ = tx.send(WorkerMsg::StartupStatus(
+                "Checking for app updates".into(),
+            ));
             let current = crate::server::kiosk_app_version();
             if let Some(update) = crate::firmware::check_public(&server, current) {
                 info!("preboot update available: {} → {}", current, update.version);
@@ -231,6 +237,9 @@ fn activate(app: &Application) {
 
         let key = if server::is_paired() {
             info!("already paired");
+            let _ = tx.send(WorkerMsg::StartupStatus(
+                "Loading device identity".into(),
+            ));
             server::load_key()
         } else {
             loop {
@@ -249,6 +258,9 @@ fn activate(app: &Application) {
 
         // Render cached content before any network request so a paired kiosk
         // starts immediately while its server is unavailable or rebooting.
+        let _ = tx.send(WorkerMsg::StartupStatus(
+            "Loading cached content".into(),
+        ));
         let cached = server::load_cached_bundle();
         if let Some(bundle) = &cached {
             info!("boot: rendering cached bundle");
@@ -264,6 +276,9 @@ fn activate(app: &Application) {
 
         // Fetch the current bundle and replace the cached render when the
         // server is reachable. Background loops keep reconnecting otherwise.
+        if cached.is_none() {
+            let _ = tx.send(WorkerMsg::StartupStatus(format!("Connecting to {server}")));
+        }
         match server::fetch_bundle(&server, &key) {
             Some(b) => {
                 set_reported_bundle_version(&b.version);
@@ -506,6 +521,9 @@ fn activate(app: &Application) {
     gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         while let Ok(msg) = rx.try_recv() {
             match msg {
+                WorkerMsg::StartupStatus(action) => {
+                    show_startup_status(&pairing_window_clone, &action)
+                }
                 WorkerMsg::ShowPairingCode(code) => show_pairing_code(&pairing_window_clone, &code),
                 WorkerMsg::ShowPairingProgress => show_pairing_progress(&pairing_window_clone),
                 WorkerMsg::RenderBundle(bundle, server, key) => {
@@ -543,6 +561,7 @@ fn activate(app: &Application) {
 }
 
 pub enum WorkerMsg {
+    StartupStatus(String),
     ShowPairingCode(String),
     ShowPairingProgress,
     RenderBundle(KioskBundle, String, String),
@@ -3145,7 +3164,7 @@ fn hide_cursor_on(window: &ApplicationWindow) {
     window.set_cursor(blank.as_ref());
 }
 
-fn build_logo_content() -> gtk::Widget {
+fn build_logo_content(action: &str) -> gtk::Widget {
     let vbox = GtkBox::new(Orientation::Vertical, 24);
     vbox.set_valign(gtk::Align::Center);
     vbox.set_halign(gtk::Align::Center);
@@ -3153,6 +3172,16 @@ fn build_logo_content() -> gtk::Widget {
     vbox.set_hexpand(true);
     vbox.append(&logo_picture(BETTERFRAME_LOGO_PNG, 480, 118, "idle-logo"));
     vbox.append(&spinner(36));
+
+    let (mac, ip) = server::startup_network_summary();
+    let status = Label::new(Some(&format!("IP: {ip}\nMAC: {mac}\nAction: {action}")));
+    status.set_xalign(0.0);
+    add_css(
+        &status,
+        ".startup-status { font-size: 13px; color: #777; font-family: monospace; }",
+    );
+    status.add_css_class("startup-status");
+    vbox.append(&status);
 
     let fw_ver = server::kiosk_app_version();
     let os_ver =
@@ -3174,7 +3203,11 @@ fn build_logo_content() -> gtk::Widget {
 }
 
 fn show_logo(window: &ApplicationWindow) {
-    window.set_child(Some(&build_logo_content()));
+    show_startup_status(window, "Starting kiosk");
+}
+
+fn show_startup_status(window: &ApplicationWindow, action: &str) {
+    window.set_child(Some(&build_logo_content(action)));
 }
 
 fn build_empty_display_reference(

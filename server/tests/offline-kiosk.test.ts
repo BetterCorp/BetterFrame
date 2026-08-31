@@ -29,3 +29,11 @@ test("x86 image installs GRUB for legacy BIOS without renumbering the A/B partit
   assert.match(script, /sgdisk --set-alignment=1 --new=5:34:4095 --typecode=5:ef02/);
   assert.match(script, /grub-install --target=i386-pc .* @IMAGE_DISK@/);
 });
+
+test("Pi setup creates the kiosk user before owned directories", () => {
+  const script = readFileSync(
+    new URL("../../deploy/scripts/setup-pi-kiosk.sh", import.meta.url),
+    "utf8",
+  );
+  assert.ok(script.indexOf("useradd -m") < script.indexOf("install -d -o bfkiosk"));
+});

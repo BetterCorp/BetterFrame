@@ -174,6 +174,11 @@ fi
 # 7. Build + install kiosk binary
 # ----------------------------------------------------------------------------
 if [ "${INSTALL_KIOSK}" = "1" ]; then
+  echo "==> Provisioning bfkiosk user"
+  if ! id -u bfkiosk >/dev/null 2>&1; then
+    useradd -m -s /usr/sbin/nologin bfkiosk
+  fi
+
   BIN_SRC="${REPO_ROOT}/kiosk/target/release/betterframe-kiosk"
   BIN_DST_DIR="/opt/betterframe/kiosk"
   BIN_DST="${BIN_DST_DIR}/betterframe-kiosk"
@@ -213,10 +218,6 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
   # --------------------------------------------------------------------------
   # 8. bfkiosk user + PAM + systemd unit
   # --------------------------------------------------------------------------
-  echo "==> Provisioning bfkiosk user"
-  if ! id -u bfkiosk >/dev/null 2>&1; then
-    useradd -m -s /usr/sbin/nologin bfkiosk
-  fi
   # Debian's seatd uses -g video (no separate 'seat' group) — only join groups
   # that actually exist on this system.
   for grp in video render input audio; do

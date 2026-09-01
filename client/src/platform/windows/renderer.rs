@@ -413,17 +413,9 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
                         wry::http::HeaderValue::from_str(&format!("Bearer {key}"))
                             .map_err(|error| error.to_string())?,
                     );
-                    let cookie =
-                        wry::cookie::Cookie::build(("betterframe_kiosk_key", key.as_str()))
-                            .domain(server.host_str().unwrap_or("localhost").to_string())
-                            .path("/")
-                            .http_only(true)
-                            .secure(server.scheme() == "https")
-                            .same_site(wry::cookie::SameSite::Strict)
-                            .build();
                     builder = builder
                         .with_navigation_handler(move |next| same_origin(&next, &trusted_origin));
-                    authenticated_load = Some((url, headers, cookie));
+                    authenticated_load = Some((url, headers));
                 } else {
                     builder = builder.with_url(url);
                 }
@@ -438,9 +430,7 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
         let view = builder
             .build_as_child(&NativeWindowHandle(hwnd))
             .map_err(|error| error.to_string())?;
-        if let Some((url, headers, cookie)) = authenticated_load {
-            view.set_cookie(&cookie)
-                .map_err(|error| error.to_string())?;
+        if let Some((url, headers)) = authenticated_load {
             view.load_url_with_headers(url, headers)
                 .map_err(|error| error.to_string())?;
         }

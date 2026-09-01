@@ -232,12 +232,14 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
     app.get("/api/kiosk/_check", async (event) => {
       const kiosk = (event.context as any).verifiedKiosk;
+      const token = authorizationBearerToken(event);
       return new Response(null, {
         status: 200,
         headers: {
           "x-betterframe-kiosk-id": String(kiosk.id),
           "x-betterframe-tenant": kiosk.tenant_id,
           "x-betterframe-tenant-slug": kiosk.tenant_slug,
+          ...(token ? { "set-cookie": kioskSessionCookie(token) } : {}),
         },
       });
     });
@@ -284,8 +286,8 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 // ---- Helpers ----------------------------------------------------------------
 
 function extractBearerToken(event: any): string | null {
-  const hdr = getRequestHeader(event, "authorization");
-  if (hdr?.startsWith("Bearer ")) return hdr.slice(7);
+  const bearer = authorizationBearerToken(event);
+  if (bearer) return bearer;
   // Fallback: check betterframe_kiosk_key cookie (WebView sub-resource
   // requests don't carry the Authorization header — only cookies persist).
   const cookieHeader = getRequestHeader(event, "cookie") ?? "";
@@ -297,6 +299,15 @@ function extractBearerToken(event: any): string | null {
     }
   }
   return null;
+}
+
+function authorizationBearerToken(event: any): string | null {
+  const header = getRequestHeader(event, "authorization");
+  return header?.startsWith("Bearer ") ? header.slice(7) : null;
+}
+
+export function kioskSessionCookie(token: string): string {
+  return `betterframe_kiosk_key=${token}; Path=/; Secure; HttpOnly; SameSite=Strict`;
 }
 
 async function requireKiosk(

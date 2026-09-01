@@ -2617,14 +2617,8 @@ fn heal_stalled_streams() {
 
 fn load_webview_url(webview: &webkit6::WebView, url: &str, server_url: &str, kiosk_key: &str) {
     if should_attach_kiosk_auth(url, server_url) {
-        // Set a cookie so ALL sub-resource requests (JS, CSS, XHR, WS)
-        // carry auth automatically. The Authorization header only applies
-        // to the initial request — sub-resources from the loaded page
-        // don't inherit it, causing 401 on every CSS/JS/API fetch.
-        set_kiosk_cookie(webview, server_url, kiosk_key);
-
-        // Also set the header on the initial request for the page load
-        // itself (belt + suspenders — server checks cookie OR header).
+        // The trusted server exchanges the initial header for a host-only,
+        // HttpOnly cookie used by subsequent sub-resource requests.
         let request = webkit6::URIRequest::new(url);
         if let Some(headers) = request.http_headers() {
             headers.append("Authorization", &format!("Bearer {kiosk_key}"));
@@ -2727,47 +2721,6 @@ fn js_string_lit(s: &str) -> String {
             .replace('\'', "\\'")
             .replace('\n', "\\n")
     )
-}
-
-/// Set a cookie in WebKit's cookie jar so all requests to the server
-/// carry the kiosk auth token. Name matches what the server's auth_request
-/// endpoint checks: `betterframe_kiosk_key`.
-fn set_kiosk_cookie(webview: &webkit6::WebView, server_url: &str, kiosk_key: &str) {
-    use webkit6::prelude::*;
-
-    let Ok(server) = url::Url::parse(server_url) else {
-        return;
-    };
-    let domain = server.host_str().unwrap_or("localhost");
-    let secure = server.scheme() == "https";
-
-    // WebKit's CookieManager handles the cookie jar.
-    let ctx = webview.network_session();
-    let Some(ctx) = ctx else { return };
-    let cm = ctx.cookie_manager();
-    let Some(_cm) = cm else { return };
-
-    // Build a SoupCookie and add it.
-    // soup3 crate provides Cookie API used by webkit6.
-    let _cookie = webkit6::glib::GString::from(format!(
-        "betterframe_kiosk_key={key}; Domain={domain}; Path=/; {secure}HttpOnly; SameSite=Strict",
-        key = kiosk_key,
-        domain = domain,
-        secure = if secure { "Secure; " } else { "" },
-    ));
-
-    // Use the JavaScript bridge to set the cookie since the Rust
-    // CookieManager API varies by webkit6 binding version.
-    let js = format!(
-        "document.cookie = 'betterframe_kiosk_key={key}; path=/; {secure}SameSite=Strict';",
-        key = kiosk_key,
-        secure = if secure { "Secure; " } else { "" },
-    );
-    // Run JS after a tiny delay so the WebView context exists.
-    let wv = webview.clone();
-    gtk::glib::idle_add_local_once(move || {
-        wv.evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
-    });
 }
 
 fn should_attach_kiosk_auth(url: &str, server_url: &str) -> bool {

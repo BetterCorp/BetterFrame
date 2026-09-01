@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { kioskSessionCookie } from "../src/plugins/service-api-http/index.js";
+
 test("kiosk boot and RAUC confirmation do not wait for network-online", () => {
   for (const file of [
     "../../deploy/systemd/betterframe-kiosk.service",
@@ -74,4 +76,17 @@ test("operator credentials stay in HttpOnly cookies and stale previews are abort
   assert.match(server, /Secure; HttpOnly; SameSite=Strict/);
   assert.match(script, /new AbortController\(\)/);
   assert.match(script, /generation!==state\.previewGeneration/);
+});
+
+test("webview kiosk credentials become server-issued host-only cookies", () => {
+  const linux = readFileSync(new URL("../../client/src/platform/linux/ui.rs", import.meta.url), "utf8");
+  const windows = readFileSync(new URL("../../client/src/platform/windows/renderer.rs", import.meta.url), "utf8");
+  const proxy = readFileSync(new URL("../../deploy/angie/betterframe.docker.conf", import.meta.url), "utf8");
+  const cookie = kioskSessionCookie("bf-test");
+
+  assert.doesNotMatch(linux + windows, /Cookie::build|document\.cookie.*betterframe_kiosk_key/);
+  assert.equal(cookie, "betterframe_kiosk_key=bf-test; Path=/; Secure; HttpOnly; SameSite=Strict");
+  assert.doesNotMatch(cookie, /Domain=/i);
+  assert.equal(proxy.match(/auth_request_set \$bf_kiosk_cookie/g)?.length, 2);
+  assert.equal(proxy.match(/add_header Set-Cookie \$bf_kiosk_cookie always/g)?.length, 2);
 });

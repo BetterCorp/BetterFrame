@@ -105,6 +105,7 @@ export interface AdminDeps {
   firmware: FirmwareApi;
   osUpdates: OsUpdateApi;
   dataDir: string;
+  clientFirmwarePublicKey?: string;
   firmwareImportApiKey?: string;
   otaImportApiKey?: string;
   scheduleNoderedReconcile: () => void;
@@ -189,6 +190,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       firmware,
       osUpdates,
       dataDir,
+      clientFirmwarePublicKey: process.env["BF_CLIENT_FIRMWARE_PUBLIC_KEY"] || undefined,
       firmwareImportApiKey: this.config.firmwareImportApiKey || undefined,
       otaImportApiKey: this.config.otaImportApiKey || undefined,
       scheduleNoderedReconcile: () => {

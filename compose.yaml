@@ -15,6 +15,7 @@ services:
       BF_PG_PASSWORD: ${BF_PG_PASSWORD:?set BF_PG_PASSWORD}
       BF_NODERED_URL: http://nodered:1880
       BF_SELF_URL: http://server:18080
+      BF_CLIENT_FIRMWARE_PUBLIC_KEY: ${BF_CLIENT_FIRMWARE_PUBLIC_KEY:-}
       BF_NODERED_MANAGER_SECRET: ${BF_NODERED_MANAGER_SECRET:?set BF_NODERED_MANAGER_SECRET to at least 32 characters}
     volumes:
       - betterframe-data:/var/lib/betterframe

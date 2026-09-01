@@ -4179,8 +4179,7 @@ export function FirmwarePage(props: FirmwarePageProps) {
   return (
     <Layout title="Firmware" user={props.user} activeNav="firmware">
       <p style="color:#666; margin-bottom:1rem">
-        Signed kiosk firmware artifacts. Uploaded binaries are hashed +
-        Ed25519-signed by the server before kiosks can install them.
+        Kiosk firmware must be signed by the vendor release key before upload.
         <a href="/admin/firmware/rollouts" style="margin-left:0.5rem">Rollouts →</a>
       </p>
 
@@ -4196,6 +4195,11 @@ export function FirmwarePage(props: FirmwarePageProps) {
             <label for="artifact">Binary</label>
             <input id="artifact" name="artifact" type="file" required class="form-input" />
             <div class="form-hint">Stripped release binary, no archive wrapper.</div>
+          </div>
+          <div class="form-group" style="grid-column:1/-1">
+            <label for="signature">Vendor signature</label>
+            <input id="signature" name="signature" type="file" required class="form-input" />
+            <div class="form-hint">Base64url Ed25519 signature produced by the release workflow.</div>
           </div>
           <div class="form-group">
             <label for="version">Version</label>
@@ -4220,7 +4224,7 @@ export function FirmwarePage(props: FirmwarePageProps) {
             <label for="release_notes">Release notes</label>
             <textarea id="release_notes" name="release_notes" class="form-input" rows="3" />
           </div>
-          <button type="submit" class="btn btn-primary" style="grid-column:1/-1">Upload + sign</button>
+          <button type="submit" class="btn btn-primary" style="grid-column:1/-1">Verify + upload</button>
         </form>
       </div>
 
@@ -4278,9 +4282,9 @@ export function FirmwarePage(props: FirmwarePageProps) {
       <details class="card" style="font-size:0.85rem">
         <summary style="cursor:pointer; font-weight:600">Signing public key</summary>
         <p style="color:#666; margin:0.5rem 0">
-          Ed25519 public key kiosks pin during pairing. Safe to share. Kept here for backup.
+          Vendor Ed25519 key embedded in release builds. The server can verify releases but cannot sign them.
         </p>
-        <pre style="background:#fafafa; padding:0.75rem; overflow:auto; font-size:0.75rem">{props.publicKeyPem}</pre>
+        <pre style="background:#fafafa; padding:0.75rem; overflow:auto; font-size:0.75rem">{props.publicKeyPem || "Not configured (BF_CLIENT_FIRMWARE_PUBLIC_KEY)"}</pre>
       </details>
     </Layout>
   );

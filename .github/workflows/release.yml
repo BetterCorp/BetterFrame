@@ -159,6 +159,7 @@ jobs:
       ref:     ${{ needs.meta.outputs.ref }}
       build-image: ${{ needs.meta.outputs.build_image == 'true' }}
     secrets:
+      BF_CLIENT_FIRMWARE_SIGNING_KEY: ${{ secrets.BF_CLIENT_FIRMWARE_SIGNING_KEY }}
       BF_AUTOIMPORT_URL:     ${{ secrets.BF_AUTOIMPORT_URL }}
       BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}
       BF_RAUC_SIGNING_CERT:  ${{ secrets.BF_RAUC_SIGNING_CERT }}

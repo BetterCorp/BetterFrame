@@ -26,7 +26,8 @@ BF_PG_PASSWORD=<random database password>
 BF_NODERED_MANAGER_SECRET=<random value, at least 32 characters>
 BF_NODERED_URL=http://nodered:1880
 BF_SELF_URL=http://server:18080
-BF_FIRMWARE_SIGNING_KEY=        # paste Ed25519 PEM for stable signing key
+BF_FIRMWARE_SIGNING_KEY=        # optional server-owned key for ioBOX firmware
+BF_CLIENT_FIRMWARE_PUBLIC_KEY=  # vendor public PEM used to verify client releases
 BF_MQTT_URL=                     # optional MQTT telemetry export
 ```
 
@@ -40,11 +41,22 @@ hook can pull these on a schedule.
 ```bash
 sudo apt install -y git
 git clone https://github.com/BetterCorp/BetterFrame.git ~/betterframe
-sudo ~/betterframe/deploy/scripts/setup-pi-kiosk.sh client
+sudo BF_CLIENT_FIRMWARE_PUBLIC_KEY_FILE=/path/to/client-firmware-signing.pub.pem \
+  ~/betterframe/deploy/scripts/setup-pi-kiosk.sh client
 ```
+
+The installer validates and persists the vendor public key for later rebuilds;
+the environment override is only required on first install or key rotation.
 
 Pairs with whichever `bf-server` is set in `/etc/default/betterframe-kiosk`
 (`BETTERFRAME_SERVER=http://<server-host>`).
+
+Client release builds require the vendor private PEM in the GitHub Actions
+secret `BF_CLIENT_FIRMWARE_SIGNING_KEY`. Generate the pair with
+`scripts/gen-firmware-signing-key.sh`; configure only its public PEM on the
+server as `BF_CLIENT_FIRMWARE_PUBLIC_KEY`.
+Re-import existing client releases with vendor signatures before deploying the
+new trust root; server-signed client artifacts are intentionally rejected.
 
 ## Recommended: Docker services + native kiosk
 
@@ -132,9 +144,9 @@ sudo apt install -y libgtk-4-dev libgstreamer1.0-dev \
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 
-cd /opt/betterframe/kiosk
-cargo build --release
-sudo install -Dm755 target/release/betterframe-kiosk /opt/betterframe/kiosk/betterframe-kiosk
+cd /opt/betterframe
+cargo build --release --manifest-path client/Cargo.toml
+sudo install -Dm755 client/target/release/betterframe-client /opt/betterframe/kiosk/betterframe-kiosk
 
 mkdir -p ~/.config/systemd/user
 cp /opt/betterframe/deploy/systemd/betterframe-kiosk.service ~/.config/systemd/user/

@@ -38,7 +38,7 @@
               <File
                   Id="ClientExe"
                   Name="betterframe-windows-client.exe"
-                  Source="$(var.CargoTargetBinDir)\betterframe-windows-client.exe"
+                  Source="$(var.CargoTargetBinDir)\betterframe-client.exe"
                   KeyPath="yes" />
             </Component>
             <Component Id="LicenseSummaryFile" Guid="*">

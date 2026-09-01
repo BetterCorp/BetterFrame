@@ -169,7 +169,7 @@ betterframe/
   
   schemas/                     # exported .av.json — committed, source of truth
   
-  kiosk/                       # rust app (placeholder, future)
+  client/                      # unified Rust client; shared core + OS adapters
   
   nodered/                     # custom nodes (placeholder, future)
   
@@ -303,10 +303,11 @@ betterframe/
       web-templates/           ✅ jsx-htmx components (layout, auth pages, admin pages)
       web-static/              ✅ vendored htmx.min.js + @anyvali/js
   
-  kiosk/
-    Cargo.toml                 ✅ Rust GTK4 + GStreamer
-    src/
-      main.rs, ui.rs, bundle.rs, server.rs, pipeline.rs
+  client/
+    Cargo.toml                 ✅ unified Linux + Windows Rust client
+    core/src/                  shared models, commands, layout, protocol, state
+    src/platform/linux/        GTK4, WebKitGTK, host controls, GPIO, RAUC
+    src/platform/windows/      Win32, WebView2, DPAPI, Windows host policy
     prototype.sh               ✅ shell prototype for quick testing
   
   schemas/                     exported .av.json

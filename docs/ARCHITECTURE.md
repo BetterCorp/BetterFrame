@@ -17,8 +17,9 @@ is no recording path.
 - **Linux kiosk:** Rust, GTK4, WebKitGTK, and GStreamer. It opens one fullscreen
   window per detected display and maintains warm camera/web pools for layout
   switching.
-- **Windows client:** native fullscreen windows with RTSP camera cells rendered
-  by GStreamer `d3d11videosink`. Web and HTML cells remain Linux-only.
+- **Windows client:** currently experimental and not runtime-qualified. It is a
+  native adapter over the shared runtime described in
+  [unified-client.md](unified-client.md).
 
 ## Video path
 

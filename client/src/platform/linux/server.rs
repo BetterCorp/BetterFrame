@@ -391,12 +391,6 @@ pub fn load_key() -> String {
     key
 }
 
-#[derive(Deserialize)]
-struct InitiateResp {
-    code: String,
-    expires_at: String,
-}
-
 /// Initiate pairing — returns (code, expires_at).
 pub fn initiate_pairing(server: &str) -> (String, String) {
     let hostname = hostname::get()
@@ -408,7 +402,7 @@ pub fn initiate_pairing(server: &str) -> (String, String) {
         .replace('\0', "");
 
     let client = reqwest::blocking::Client::new();
-    let resp: InitiateResp = client
+    let resp: crate::core::protocol::PairInitiateResponse = client
         .post(format!("{server}/api/pair/initiate"))
         .json(&serde_json::json!({
             "proposed_name": hostname,
@@ -426,16 +420,6 @@ pub fn initiate_pairing(server: &str) -> (String, String) {
 
 fn encrypt_key_file() -> PathBuf {
     state_dir().join("encrypt.key")
-}
-
-#[derive(Deserialize)]
-struct ClaimResp {
-    status: String,
-    kiosk_id: Option<serde_json::Value>,
-    kiosk_key: Option<String>,
-    kiosk_name: Option<String>,
-    cluster_key: Option<String>,
-    encrypt_key: Option<String>,
 }
 
 /// Load the per-kiosk encryption key. Preferred over cluster_key for
@@ -486,7 +470,8 @@ fn poll_claim_once(server: &str, code: &str) -> Option<(String, String)> {
         .expect("claim request failed");
 
     if resp.status().as_u16() == 200 {
-        let claim: ClaimResp = resp.json().expect("bad claim response");
+        let claim: crate::core::protocol::PairClaimResponse =
+            resp.json().expect("bad claim response");
         if claim.status == "claimed" {
             let key = claim.kiosk_key.expect("missing kiosk_key");
             let name = claim.kiosk_name.unwrap_or_else(|| "kiosk".into());

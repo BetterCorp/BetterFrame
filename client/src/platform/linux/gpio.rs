@@ -13,12 +13,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio_gpiod as gpiod;
 use tracing::{info, warn};
 
 use crate::bundle::BundleGpioBinding;
 
 struct WorkerHandle {
     running: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
 }
 
 static WORKERS: Mutex<Vec<WorkerHandle>> = Mutex::new(Vec::new());
@@ -40,8 +42,8 @@ pub fn start_workers(bindings: &[BundleGpioBinding], server_url: &str, kiosk_key
         let server = server_url.to_string();
         let key = kiosk_key.to_string();
 
-        std::thread::spawn(move || run_binding(binding, server, key, r2));
-        handles.push(WorkerHandle { running });
+        let thread = std::thread::spawn(move || run_binding(binding, server, key, r2));
+        handles.push(WorkerHandle { running, thread });
     }
 
     if let Ok(mut w) = WORKERS.lock() {
@@ -51,10 +53,15 @@ pub fn start_workers(bindings: &[BundleGpioBinding], server_url: &str, kiosk_key
 }
 
 fn stop_workers() {
-    if let Ok(mut w) = WORKERS.lock() {
-        for h in w.drain(..) {
-            h.running.store(false, Ordering::Relaxed);
-        }
+    let handles = WORKERS
+        .lock()
+        .map(|mut workers| workers.drain(..).collect::<Vec<_>>());
+    let Ok(handles) = handles else { return };
+    for handle in &handles {
+        handle.running.store(false, Ordering::Relaxed);
+    }
+    for handle in handles {
+        let _ = handle.thread.join();
     }
 }
 
@@ -66,7 +73,26 @@ fn run_binding(b: BundleGpioBinding, server: String, key: String, running: Arc<A
         return;
     }
 
-    let chip = match gpiod::Chip::new(&b.chip) {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            warn!("gpio: runtime setup failed: {e}");
+            return;
+        }
+    };
+    runtime.block_on(run_input_binding(b, server, key, running));
+}
+
+async fn run_input_binding(
+    b: BundleGpioBinding,
+    server: String,
+    key: String,
+    running: Arc<AtomicBool>,
+) {
+    let chip = match gpiod::Chip::new(&b.chip).await {
         Ok(c) => c,
         Err(e) => {
             warn!("gpio: open chip {} failed: {e}", b.chip);
@@ -97,7 +123,7 @@ fn run_binding(b: BundleGpioBinding, server: String, key: String, running: Arc<A
         opts = opts.bias(bias);
     }
 
-    let mut lines = match chip.request_lines(opts) {
+    let mut lines = match chip.request_lines(opts).await {
         Ok(l) => l,
         Err(e) => {
             warn!("gpio: request {}:{} failed: {e}", b.chip, b.pin);
@@ -114,14 +140,17 @@ fn run_binding(b: BundleGpioBinding, server: String, key: String, running: Arc<A
         b.topic
     );
 
-    let http = reqwest::blocking::Client::builder()
+    let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .expect("reqwest client build");
 
     while running.load(Ordering::Relaxed) {
-        // Poll with a timeout so the running flag is checked periodically.
-        match lines.read_event() {
+        let event = tokio::select! {
+            event = lines.read_event() => event,
+            _ = wait_for_stop(&running) => break,
+        };
+        match event {
             Ok(event) => {
                 let edge_str = match event.edge {
                     gpiod::Edge::Rising => "rising",
@@ -132,21 +161,33 @@ fn run_binding(b: BundleGpioBinding, server: String, key: String, running: Arc<A
                     "pin": b.pin,
                     "edge": edge_str,
                 });
-                let _ = http
+                let request = http
                     .post(format!("{server}/api/kiosk/event"))
                     .header("Authorization", format!("Bearer {key}"))
                     .json(&serde_json::json!({
                         "topic": b.topic,
                         "source_type": "gpio",
                         "payload": payload,
-                    }))
-                    .send();
+                    }));
+                tokio::select! {
+                    _ = request.send() => {}
+                    _ = wait_for_stop(&running) => break,
+                }
             }
             Err(e) => {
                 warn!("gpio: read_event {}:{} failed: {e}", b.chip, b.pin);
-                std::thread::sleep(Duration::from_secs(1));
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    _ = wait_for_stop(&running) => break,
+                }
             }
         }
     }
     info!("gpio: worker {}:{} stopped", b.chip, b.pin);
+}
+
+async fn wait_for_stop(running: &AtomicBool) {
+    while running.load(Ordering::Relaxed) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }

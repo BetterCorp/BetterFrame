@@ -5,18 +5,12 @@
 #   firmware-signing.key  (private, PKCS8 PEM, 0600)
 #   firmware-signing.pub  (public,  SPKI    PEM, 0644)
 #
-# Use cases:
-#   1. Local dev: drop the .key into the server's dataDir
-#      (/var/lib/betterframe/firmware-signing.key) — server picks it up on
-#      next boot. The server auto-generates one if missing, this script is
-#      only needed when you want a reproducible / shared key.
-#   2. Cloud deploy: paste the .key content into the
-#      BF_FIRMWARE_SIGNING_KEY env var on your hosting platform (Coolify,
-#      k8s secret, GitHub Actions secret, etc.). The server detects the env
-#      var and prefers it over the on-disk file.
-#
-# Pinning on kiosks: the public key gets shipped to kiosks via the
-# /api/kiosk/firmware/check response — no manual distribution needed.
+# Vendor client signing key:
+#   1. Store the private PEM only in the GitHub Actions secret
+#      BF_CLIENT_FIRMWARE_SIGNING_KEY. Release builds embed the derived
+#      public key and sign the final stripped binary.
+#   2. Configure the public PEM on the server as
+#      BF_CLIENT_FIRMWARE_PUBLIC_KEY so imports can be verified.
 
 set -euo pipefail
 
@@ -38,8 +32,5 @@ chmod 644 "$pub"
 echo "wrote: $priv"
 echo "wrote: $pub"
 echo
-echo "To use in cloud:"
-echo "  set BF_FIRMWARE_SIGNING_KEY environment variable to the contents of $priv"
-echo
-echo "To use locally:"
-echo "  install $priv to /var/lib/betterframe/firmware-signing.key (mode 0600)"
+echo "Configure GitHub Actions secret BF_CLIENT_FIRMWARE_SIGNING_KEY from $priv"
+echo "Configure server env BF_CLIENT_FIRMWARE_PUBLIC_KEY from $pub"

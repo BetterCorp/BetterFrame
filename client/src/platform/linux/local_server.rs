@@ -38,6 +38,7 @@ use crate::WorkerMsg;
 
 static ACTIVE_LOCAL_KEY: OnceLock<Arc<Mutex<String>>> = OnceLock::new();
 static VMS_PATHS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+const OPERATOR_COOKIE: &str = "betterframe_operator";
 
 #[derive(Clone)]
 pub struct LocalServerState {
@@ -352,7 +353,16 @@ async fn operator_enroll_handler(
     Json(body): Json<OperatorEnrollBody>,
 ) -> Response {
     match state.operator_auth.enroll(&body.code) {
-        Ok(station) => Json(station).into_response(),
+        Ok(station) => Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .header(
+                "set-cookie",
+                format!("{OPERATOR_COOKIE}={}; Path=/operator; Max-Age=31536000; Secure; HttpOnly; SameSite=Strict", station.token),
+            )
+            .header("cache-control", "no-store")
+            .body(Body::from(json!({ "id": station.id, "name": station.name }).to_string()))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
         Err(err) => (StatusCode::UNAUTHORIZED, err).into_response(),
     }
 }
@@ -802,9 +812,14 @@ async fn operator_playback_proxy_handler(
 }
 
 fn require_operator(state: &LocalServerState, headers: &HeaderMap) -> Option<Response> {
-    let token = headers.get("authorization").and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer ")).unwrap_or("");
+    let token = operator_token(headers).unwrap_or("");
     if state.operator_auth.verify(token) { None } else { Some(StatusCode::UNAUTHORIZED.into_response()) }
+}
+
+fn operator_token(headers: &HeaderMap) -> Option<&str> {
+    headers.get("cookie")?.to_str().ok()?.split(';')
+        .filter_map(|part| part.trim().split_once('='))
+        .find_map(|(name, value)| (name == OPERATOR_COOKIE).then_some(value))
 }
 
 async fn local_iobox_check_handler(
@@ -1335,3 +1350,20 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 /// Drop in Request unused-import suppression on non-feature builds.
 #[allow(dead_code)]
 fn _request_marker(_: Request) {}
+
+#[cfg(test)]
+mod tests {
+    use super::operator_token;
+    use axum::http::HeaderMap;
+
+    #[test]
+    fn operator_token_comes_from_the_http_only_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "cookie",
+            "unrelated=value; betterframe_operator=bfs_secret".parse().unwrap(),
+        );
+        headers.insert("authorization", "Bearer ignored".parse().unwrap());
+        assert_eq!(operator_token(&headers), Some("bfs_secret"));
+    }
+}

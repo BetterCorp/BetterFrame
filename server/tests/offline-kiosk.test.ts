@@ -64,3 +64,14 @@ test("operator PTZ controls are capability-gated and read kiosk preset data", ()
   assert.match(script, /item\.toLowerCase\(\)===\"ptz\"/);
   assert.match(script, /result\.result\?\.data\?\.presets/);
 });
+
+test("operator credentials stay in HttpOnly cookies and stale previews are aborted", () => {
+  const script = readFileSync(new URL("../../client/operator-console/app.js", import.meta.url), "utf8");
+  const workScript = readFileSync(new URL("../../client/operator-console/work.js", import.meta.url), "utf8");
+  const server = readFileSync(new URL("../../client/src/platform/linux/local_server.rs", import.meta.url), "utf8");
+
+  assert.doesNotMatch(script + workScript, /stationToken|Authorization.*Bearer/);
+  assert.match(server, /Secure; HttpOnly; SameSite=Strict/);
+  assert.match(script, /new AbortController\(\)/);
+  assert.match(script, /generation!==state\.previewGeneration/);
+});

@@ -483,7 +483,8 @@ function registerPairingRoutes(
         signature: release.signature,
         size_bytes: release.size_bytes,
         download_url: `/api/firmware/public/download/${release.id}`,
-        public_key_pem: firmware.publicKeyPem(),
+        // Older clients require this field; current clients ignore it and use their embedded key.
+        public_key_pem: process.env["BF_CLIENT_FIRMWARE_PUBLIC_KEY"] ?? "",
       },
     };
   });
@@ -1449,7 +1450,8 @@ function registerKioskRoutes(
         signature: release.signature,
         size_bytes: release.size_bytes,
         download_url: `/api/kiosk/firmware/download/${release.id}`,
-        public_key_pem: firmware.publicKeyPem(),
+        // Older clients require this field; current clients ignore it and use their embedded key.
+        public_key_pem: process.env["BF_CLIENT_FIRMWARE_PUBLIC_KEY"] ?? "",
       },
     };
   });

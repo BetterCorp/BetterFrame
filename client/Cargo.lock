@@ -198,7 +198,6 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "gdk-pixbuf 0.20.10",
- "gpiod",
  "gst-plugin-gtk4",
  "gstreamer",
  "gstreamer-video",
@@ -217,6 +216,7 @@ dependencies = [
  "sha2",
  "time",
  "tokio",
+ "tokio-gpiod",
  "tokio-rustls",
  "tokio-tungstenite",
  "tower",
@@ -1297,15 +1297,6 @@ dependencies = [
  "glib-sys 0.20.10",
  "libc",
  "system-deps 7.0.8",
-]
-
-[[package]]
-name = "gpiod"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f851b1c607b36b4a493448ef80d8693bf74145712074c667a008a58264f8da49"
-dependencies = [
- "gpiod-core",
 ]
 
 [[package]]
@@ -3634,6 +3625,17 @@ dependencies = [
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tokio-gpiod"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce15fa0021a7acacd2be506f72aeb5044a0a8b53d684963f133b37ace5c57f47"
+dependencies = [
+ "gpiod-core",
+ "libc",
+ "tokio",
 ]
 
 [[package]]

@@ -3,8 +3,8 @@
 //! 1. `check(server, key, arch, current_version)` → asks BF server if there's
 //!    a newer release for this kiosk's channel/pin.
 //! 2. `apply(server, key, info)` → downloads, verifies sha256 +
-//!    Ed25519 signature (server's firmware-signing pubkey, PEM, embedded in
-//!    the check response), atomically swaps the running binary, reports
+//!    Ed25519 signature against the vendor key embedded at build time,
+//!    atomically swaps the running binary, reports
 //!    outcome, and exits so systemd's `Restart=always` brings up the new
 //!    binary.
 //!
@@ -45,7 +45,9 @@ pub const FIRMWARE_TARGET: &str = match option_env!("BF_FIRMWARE_TARGET") {
 const DEFAULT_BIN_PATH: &str = "/opt/betterframe/kiosk/betterframe-kiosk";
 const FIRMWARE_MARKER: &str = "/var/lib/betterframe/kiosk/firmware-applying.json";
 const FIRMWARE_ATTEMPTS: &str = "/var/lib/betterframe/kiosk/firmware-applying.attempts";
+const MAX_FIRMWARE_BYTES: u64 = 256 * 1024 * 1024;
 static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
+const FIRMWARE_SIGNING_PUBLIC_KEY: Option<&str> = option_env!("BF_FIRMWARE_SIGNING_PUBLIC_KEY");
 
 fn binary_path() -> PathBuf {
     std::env::var("BF_KIOSK_BINARY")
@@ -90,7 +92,6 @@ pub struct UpdateInfo {
     pub signature: String,
     pub size_bytes: u64,
     pub download_url: String,
-    pub public_key_pem: String,
 }
 
 /// Public pre-boot firmware check — no auth needed. Always checks stable
@@ -127,17 +128,14 @@ pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
     if !resp.status().is_success() {
         return Err(format!("download HTTP {}", resp.status()));
     }
-    let bytes = resp.bytes().map_err(|e| format!("read failed: {e}"))?;
-    if bytes.len() as u64 != info.size_bytes {
-        return Err(format!("size mismatch: expected {}, got {}", info.size_bytes, bytes.len()));
-    }
+    let bytes = read_firmware_body(resp, info.size_bytes, || false)?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     let got_sha = hex_lower(&hasher.finalize());
     if got_sha != info.sha256 {
         return Err(format!("sha256 mismatch: expected {}, got {}", info.sha256, got_sha));
     }
-    verify_signature(&info.public_key_pem, &info.sha256, &info.signature)
+    verify_signature(&info.sha256, &info.signature)
         .map_err(|e| format!("signature verify: {e}"))?;
 
     let bin = binary_path();
@@ -236,27 +234,12 @@ pub fn apply(
     if !resp.status().is_success() {
         return Err(format!("download HTTP {}", resp.status()));
     }
-    let mut reader = resp;
-    let mut bytes = Vec::with_capacity(info.size_bytes.min(64 * 1024 * 1024) as usize);
-    let mut buf = [0u8; 256 * 1024];
-    loop {
+    let bytes = read_firmware_body(resp, info.size_bytes, cancel_requested).map_err(|err| {
         if cancel_requested() {
             cleanup_partial_update();
-            return Err("firmware update canceled after channel change".to_string());
         }
-        match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => bytes.extend_from_slice(&buf[..n]),
-            Err(e) => return Err(format!("download body: {e}")),
-        }
-    }
-    if bytes.len() as u64 != info.size_bytes {
-        return Err(format!(
-            "size mismatch: expected {}, got {}",
-            info.size_bytes,
-            bytes.len()
-        ));
-    }
+        err
+    })?;
     if cancel_requested() {
         cleanup_partial_update();
         return Err("firmware update canceled after channel change".to_string());
@@ -273,7 +256,7 @@ pub fn apply(
     }
 
     // 3. Ed25519 signature verify (sig is over the hex-encoded sha256 string)
-    verify_signature(&info.public_key_pem, &info.sha256, &info.signature)
+    verify_signature(&info.sha256, &info.signature)
         .map_err(|e| format!("signature verify: {e}"))?;
     if cancel_requested() {
         cleanup_partial_update();
@@ -354,7 +337,58 @@ pub fn apply(
     }
 }
 
-fn verify_signature(public_key_pem: &str, sha256_hex: &str, sig_b64url: &str) -> Result<(), String> {
+fn read_firmware_body(
+    mut reader: impl Read,
+    expected_size: u64,
+    canceled: impl Fn() -> bool,
+) -> Result<Vec<u8>, String> {
+    if expected_size > MAX_FIRMWARE_BYTES {
+        return Err(format!(
+            "firmware size {expected_size} exceeds {MAX_FIRMWARE_BYTES} byte limit"
+        ));
+    }
+    let mut bytes = Vec::with_capacity(expected_size.min(64 * 1024 * 1024) as usize);
+    let mut buf = [0u8; 256 * 1024];
+    loop {
+        if canceled() {
+            return Err("firmware update canceled after channel change".to_string());
+        }
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| format!("download body: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        if n as u64 > expected_size.saturating_sub(bytes.len() as u64) {
+            return Err(format!(
+                "size mismatch: expected {expected_size}, download exceeded limit"
+            ));
+        }
+        bytes.extend_from_slice(&buf[..n]);
+    }
+    if bytes.len() as u64 != expected_size {
+        return Err(format!(
+            "size mismatch: expected {expected_size}, got {}",
+            bytes.len()
+        ));
+    }
+    Ok(bytes)
+}
+
+fn verify_signature(sha256_hex: &str, sig_b64url: &str) -> Result<(), String> {
+    let public_key_pem = FIRMWARE_SIGNING_PUBLIC_KEY
+        .filter(|key| !key.trim().is_empty())
+        .ok_or_else(|| {
+            "OTA disabled: vendor signing key was not embedded in this build".to_string()
+        })?;
+    verify_signature_with_key(public_key_pem, sha256_hex, sig_b64url)
+}
+
+fn verify_signature_with_key(
+    public_key_pem: &str,
+    sha256_hex: &str,
+    sig_b64url: &str,
+) -> Result<(), String> {
     let vk = VerifyingKey::from_public_key_pem(public_key_pem)
         .map_err(|e| format!("parse pubkey: {e}"))?;
     let sig_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -423,4 +457,36 @@ impl OpenOptionsModeExt for fs::OpenOptions {
 #[cfg(not(unix))]
 impl OpenOptionsModeExt for fs::OpenOptions {
     fn mode_for_unix(&mut self, _mode: u32) -> &mut Self { self }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_firmware_body, verify_signature_with_key};
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey, pkcs8::EncodePublicKey};
+    use std::io::Cursor;
+
+    #[test]
+    fn firmware_body_is_bounded_by_declared_size() {
+        let error = read_firmware_body(Cursor::new(vec![0; 5]), 4, || false).unwrap_err();
+        assert!(error.contains("exceeded limit"));
+        assert!(
+            read_firmware_body(Cursor::new([]), super::MAX_FIRMWARE_BYTES + 1, || false).is_err()
+        );
+    }
+
+    #[test]
+    fn signature_is_verified_with_the_configured_key() {
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let public_key = signing_key
+            .verifying_key()
+            .to_public_key_pem(Default::default())
+            .unwrap();
+        let digest = "0123456789abcdef";
+        let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(signing_key.sign(digest.as_bytes()).to_bytes());
+
+        assert!(verify_signature_with_key(&public_key, digest, &signature).is_ok());
+        assert!(verify_signature_with_key(&public_key, "changed", &signature).is_err());
+    }
 }

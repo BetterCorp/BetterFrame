@@ -32,6 +32,8 @@ on:
         type: boolean
         default: true
     secrets:
+      BF_CLIENT_FIRMWARE_SIGNING_KEY:
+        required: true
       BF_AUTOIMPORT_URL:
         required: false
       BF_AUTOIMPORT_API_KEY:
@@ -174,7 +176,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates curl git build-essential pkg-config jq sudo
+            ca-certificates curl git build-essential pkg-config jq openssl sudo
           git config --global --add safe.directory '*'
 
       - uses: actions/checkout@v6
@@ -192,6 +194,24 @@ jobs:
         with:
           targets: ${{ matrix.rust_target }}
 
+      - name: Prepare client firmware trust root
+        env:
+          BF_CLIENT_FIRMWARE_SIGNING_KEY: ${{ secrets.BF_CLIENT_FIRMWARE_SIGNING_KEY }}
+        run: |
+          set -e
+          key="$RUNNER_TEMP/client-firmware-signing.key"
+          pub="$RUNNER_TEMP/client-firmware-signing.pub.pem"
+          printf '%s\n' "$BF_CLIENT_FIRMWARE_SIGNING_KEY" > "$key"
+          chmod 600 "$key"
+          openssl pkey -in "$key" -pubout > "$pub"
+          {
+            echo 'BF_FIRMWARE_SIGNING_PUBLIC_KEY<<BF_EOF'
+            cat "$pub"
+            echo 'BF_EOF'
+            echo "BF_CLIENT_FIRMWARE_SIGNING_KEY_PATH=$key"
+            echo "BF_CLIENT_FIRMWARE_PUBLIC_KEY_PATH=$pub"
+          } >> "$GITHUB_ENV"
+
       - name: cargo build --release
         working-directory: client
         env:
@@ -205,15 +225,26 @@ jobs:
       - name: Strip + rename
         working-directory: client
         run: |
+          set -e
           strip target/${{ matrix.rust_target }}/release/betterframe-client
-          cp target/${{ matrix.rust_target }}/release/betterframe-client \
-             betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
+          bin="betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}"
+          cp target/${{ matrix.rust_target }}/release/betterframe-client "$bin"
+          sha="$(sha256sum "$bin" | cut -d' ' -f1)"
+          printf '%s' "$sha" > "${bin}.sha256"
+          openssl pkeyutl -sign -rawin -in "${bin}.sha256" \
+            -inkey "$BF_CLIENT_FIRMWARE_SIGNING_KEY_PATH" \
+            | base64 -w 0 | tr '+/' '-_' | tr -d '=' > "${bin}.sig"
+          cp "$BF_CLIENT_FIRMWARE_PUBLIC_KEY_PATH" "${bin}.pub.pem"
 
       - name: Upload to GitHub Release (binary)
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag }}
-          files: client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
+          files: |
+            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
+            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}.sha256
+            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}.sig
+            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}.pub.pem
 
       - name: Auto-import into BF server
         if: env.BF_AUTOIMPORT_URL != '' && env.BF_AUTOIMPORT_API_KEY != ''
@@ -230,7 +261,8 @@ jobs:
             --arg t "${{ matrix.firmware_target }}" \
             --arg n "GitHub Actions ${{ matrix.label }} build of ${{ inputs.tag }} (${{ github.sha }})" \
             --rawfile b "${bin}.b64" \
-            '{version:$v, channel:$c, target:$t, release_notes:$n, content_b64:$b}' \
+            --rawfile s "${bin}.sig" \
+            '{version:$v, channel:$c, target:$t, release_notes:$n, content_b64:$b, signature:$s}' \
             > "${bin}.import.json"
           for attempt in 1 2 3; do
             if curl -sSf --retry 2 --retry-delay 5 -X POST \
@@ -248,7 +280,11 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: betterframe-kiosk-${{ matrix.firmware_target }}
-          path: client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
+          path: |
+            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
+            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}.sha256
+            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}.sig
+            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}.pub.pem
           retention-days: 14
 
   # ---- Windows client + MSI -------------------------------------------------

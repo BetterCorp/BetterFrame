@@ -26,7 +26,8 @@ BF_PG_PASSWORD=<random database password>
 BF_NODERED_MANAGER_SECRET=<random value, at least 32 characters>
 BF_NODERED_URL=http://nodered:1880
 BF_SELF_URL=http://server:18080
-BF_FIRMWARE_SIGNING_KEY=        # paste Ed25519 PEM for stable signing key
+BF_FIRMWARE_SIGNING_KEY=        # optional server-owned key for ioBOX firmware
+BF_CLIENT_FIRMWARE_PUBLIC_KEY=  # vendor public PEM used to verify client releases
 BF_MQTT_URL=                     # optional MQTT telemetry export
 ```
 
@@ -45,6 +46,13 @@ sudo ~/betterframe/deploy/scripts/setup-pi-kiosk.sh client
 
 Pairs with whichever `bf-server` is set in `/etc/default/betterframe-kiosk`
 (`BETTERFRAME_SERVER=http://<server-host>`).
+
+Client release builds require the vendor private PEM in the GitHub Actions
+secret `BF_CLIENT_FIRMWARE_SIGNING_KEY`. Generate the pair with
+`scripts/gen-firmware-signing-key.sh`; configure only its public PEM on the
+server as `BF_CLIENT_FIRMWARE_PUBLIC_KEY`.
+Re-import existing client releases with vendor signatures before deploying the
+new trust root; server-signed client artifacts are intentionally rejected.
 
 ## Recommended: Docker services + native kiosk
 

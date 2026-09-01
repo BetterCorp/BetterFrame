@@ -1,10 +1,7 @@
-const TOKEN_KEY = "betterframe.operator.stationToken";
-const token = () => localStorage.getItem(TOKEN_KEY) || "";
 let playbackUrl = null;
 
 async function authenticatedFetch(path, options = {}) {
   const headers = new Headers(options.headers || {});
-  headers.set("Authorization", `Bearer ${token()}`);
   const response = await fetch(path, { ...options, headers });
   if (response.status === 401) {
     location.href = "/operator/";

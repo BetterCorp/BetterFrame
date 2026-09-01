@@ -1161,30 +1161,7 @@ fn extract_tag(xml: &str, tag: &str) -> Option<String> {
             }
         }
     }
-    // Try with namespace prefix
-    for part in xml.split('<') {
-        if let Some(rest) = part.strip_suffix('>').or_else(|| {
-            let idx = part.find('>')?;
-            Some(&part[..idx])
-        }) {
-            if rest.contains(':') && rest.ends_with(tag)
-                || rest
-                    .split_whitespace()
-                    .next()?
-                    .ends_with(&format!(":{tag}"))
-            {
-                // Found opening tag with namespace
-                let after_close = &xml[xml.find(part)? + part.len()..];
-                if let Some(_end_idx) = after_close.find(&format!(":{tag}>")) {
-                    let content = &after_close[after_close.find('>')? + 1..];
-                    if let Some(close) = content.find('<') {
-                        return Some(content[..close].trim().to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
+    extract_inner_text(xml, tag)
 }
 
 fn extract_inner_text(xml: &str, tag: &str) -> Option<String> {
@@ -1445,4 +1422,20 @@ fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     (y, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_notification_messages;
+
+    #[test]
+    fn parses_namespaced_topic_text() {
+        let xml = r#"<wsnt:NotificationMessage>
+          <wsnt:Topic Dialect="http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet">tns1:RuleEngine/CellMotionDetector/Motion</wsnt:Topic>
+        </wsnt:NotificationMessage>"#;
+
+        let events = parse_notification_messages(xml);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].topic, "tns1:RuleEngine/CellMotionDetector/Motion");
+    }
 }

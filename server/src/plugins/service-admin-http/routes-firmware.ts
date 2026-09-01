@@ -6,11 +6,11 @@
  *   - CI auto-import via Authorization: Bearer <token>. The token may be a
  *     DB-backed admin API key or the single-purpose BF_FIRMWARE_IMPORT_API_KEY.
  *     POST /api/admin/firmware/import with JSON {version, channel, arch,
- *     release_notes, content_b64} so GitHub Actions can publish releases
- *     without a session.
+ *     release_notes, content_b64, signature} so GitHub Actions can publish
+ *     vendor-signed releases without a session.
  */
 import { type H3, getRouterParam, readBody, createError } from "h3";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { htmlPage, htmlFragment } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
@@ -28,6 +28,7 @@ import {
   FIRMWARE_TARGET_RPI5,
   normalizeFirmwareTarget,
 } from "../../shared/firmware-targets.js";
+import { verifyDetached } from "../../shared/firmware.js";
 
 const ALLOWED_CHANNELS: ReadonlySet<FirmwareChannel> = new Set(["stable", "beta", "dev"]);
 const ALLOWED_TARGETS = new Set([
@@ -45,7 +46,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     return htmlPage(FirmwarePage({
       user: user.username,
       releases,
-      publicKeyPem: deps.firmware.publicKeyPem(),
+      publicKeyPem: deps.clientFirmwarePublicKey ?? "",
     }));
   });
 
@@ -56,8 +57,15 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     const req = event.req;
     const form = await req.formData();
     const file = form.get("artifact");
+    const signaturePart = form.get("signature");
     if (!(file instanceof File)) {
       throw createError({ statusCode: 400, statusMessage: "artifact file required" });
+    }
+    const signature = (signaturePart instanceof File
+      ? await signaturePart.text()
+      : String(signaturePart ?? "")).trim();
+    if (!signature) {
+      throw createError({ statusCode: 400, statusMessage: "vendor signature required" });
     }
     const version = String(form.get("version") ?? "").trim();
     const channelRaw = String(form.get("channel") ?? "stable").trim();
@@ -75,7 +83,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     }
 
     const buf = Buffer.from(await file.arrayBuffer());
-    const { sha256, signature } = deps.firmware.signBlob(buf);
+    const sha256 = verifyClientFirmware(deps, buf, signature);
     const artifactPath = await deps.firmware.storeBlob(buf, sha256);
 
     const release = await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.createFirmwareRelease({
@@ -100,8 +108,7 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // ---- CI auto-import (JSON, API-key-auth) --------------------------------
-  // Body: {version, channel, target, release_notes?, content_b64}; legacy arch is accepted.
-  // Server signs server-side (no client-side trust required for signing key)
+  // Body: {version, channel, target, release_notes?, content_b64, signature}; legacy arch is accepted.
   app.post("/api/admin/firmware/import", async (event) => {
     // Middleware already verified API key on /api/admin/* — admin scope
     // checked there. No further auth needed here.
@@ -112,11 +119,12 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
       arch?: string;
       release_notes?: string;
       content_b64: string;
+      signature: string;
     }>(event);
 
     const target = normalizeFirmwareTarget(body?.target || body?.arch);
-    if (!body?.version || !body.channel || !target || !body.content_b64) {
-      throw createError({ statusCode: 400, statusMessage: "version, channel, target, content_b64 required" });
+    if (!body?.version || !body.channel || !target || !body.content_b64 || !body.signature) {
+      throw createError({ statusCode: 400, statusMessage: "version, channel, target, content_b64, signature required" });
     }
     if (!ALLOWED_CHANNELS.has(body.channel)) {
       throw createError({ statusCode: 400, statusMessage: `invalid channel '${body.channel}'` });
@@ -130,7 +138,8 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
       throw createError({ statusCode: 400, statusMessage: "empty artifact" });
     }
 
-    const { sha256, signature } = deps.firmware.signBlob(buf);
+    const signature = body.signature.trim();
+    const sha256 = verifyClientFirmware(deps, buf, signature);
     const artifactPath = await deps.firmware.storeBlob(buf, sha256);
     const id = randomUUID();
     const release = await withDefaultTenant(deps.repo, currentTenantSchema(event), () => deps.repo.createFirmwareRelease({
@@ -352,4 +361,18 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
 function clamp(n: number, lo: number, hi: number): number {
   if (!Number.isFinite(n)) return lo;
   return Math.max(lo, Math.min(hi, Math.floor(n)));
+}
+
+export function verifyClientFirmware(deps: AdminDeps, bytes: Buffer, signature: string): string {
+  const publicKey = deps.clientFirmwarePublicKey?.trim();
+  if (!publicKey) {
+    throw createError({ statusCode: 503, statusMessage: "client firmware vendor key is not configured" });
+  }
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  try {
+    if (verifyDetached(publicKey, sha256, signature)) return sha256;
+  } catch {
+    // Invalid keys and malformed signatures are both rejected at this boundary.
+  }
+  throw createError({ statusCode: 400, statusMessage: "invalid client firmware vendor signature" });
 }

@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::net::IpAddr;
-
 use serde_json::Value;
 use url::Url;
 
@@ -78,22 +76,6 @@ pub fn same_origin(url: &str, server_url: &str) -> bool {
     }
 }
 
-pub fn credentials_allowed(url: &str, server_url: &str) -> bool {
-    if !same_origin(url, server_url) {
-        return false;
-    }
-    let Ok(server) = Url::parse(server_url) else {
-        return false;
-    };
-    server.scheme() == "https"
-        || server.host_str().is_some_and(|host| {
-            host.eq_ignore_ascii_case("localhost")
-                || host
-                    .parse::<IpAddr>()
-                    .is_ok_and(|address| address.is_loopback())
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,17 +119,17 @@ mod tests {
             "https://frame.example.evil.test",
             "https://frame.example"
         ));
-        assert!(credentials_allowed(
+        assert!(same_origin(
             "https://frame.example/dash/main",
             "https://frame.example"
         ));
-        assert!(credentials_allowed(
-            "http://localhost/dash/main",
-            "http://localhost"
+        assert!(same_origin(
+            "http://betterframe.local/dash/main",
+            "http://betterframe.local"
         ));
-        assert!(!credentials_allowed(
-            "http://frame.example/dash/main",
-            "http://frame.example"
+        assert!(!same_origin(
+            "http://evil.betterframe.local/dash/main",
+            "http://betterframe.local"
         ));
         assert_eq!(
             resolve_web_url("dash/main", "https://frame.example").as_deref(),

@@ -402,7 +402,7 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
             builder = builder.with_profile_name(profile);
         }
         if let Some(url) = &spec.url {
-            if credentials_allowed(url, &state.server_url) {
+            if same_origin(url, &state.server_url) {
                 if let Some(key) = &state.kiosk_key {
                     let server = reqwest::Url::parse(&state.server_url)
                         .map_err(|error| error.to_string())?;

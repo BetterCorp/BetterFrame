@@ -63,7 +63,7 @@ use crate::bundle::{
 };
 use crate::core::commands::ServerCommand as AgentCommand;
 use crate::core::layout::{
-    configured_cell_action, credentials_allowed, resolve_web_url, same_origin,
+    configured_cell_action, resolve_web_url, same_origin,
 };
 use crate::core::protocol::{
     HeartbeatResponse, PairClaimResponse, PairInitiateResponse, PendingConfig,

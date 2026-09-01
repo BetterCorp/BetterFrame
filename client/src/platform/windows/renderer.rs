@@ -395,30 +395,35 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
             .with_bounds(spec.bounds)
             .with_initialization_script(script)
             .with_devtools(false);
+        let mut authenticated_load = None;
         if let Some(profile) =
             ablesign_profile_name(spec.url.as_deref(), spec.local_storage.as_ref())
         {
             builder = builder.with_profile_name(profile);
         }
         if let Some(url) = &spec.url {
-            if same_origin(url, &state.server_url) {
+            if credentials_allowed(url, &state.server_url) {
                 if let Some(key) = &state.kiosk_key {
+                    let server = reqwest::Url::parse(&state.server_url)
+                        .map_err(|error| error.to_string())?;
+                    let trusted_origin = server.origin().ascii_serialization();
                     let mut headers = wry::http::HeaderMap::new();
                     headers.insert(
                         wry::http::header::AUTHORIZATION,
                         wry::http::HeaderValue::from_str(&format!("Bearer {key}"))
                             .map_err(|error| error.to_string())?,
                     );
-                    builder = builder.with_initialization_script(format!(
-                        "document.cookie='betterframe_kiosk_key={}; path=/; SameSite=Strict{}';",
-                        key,
-                        if url.starts_with("https://") {
-                            "; Secure"
-                        } else {
-                            ""
-                        },
-                    ));
-                    builder = builder.with_url_and_headers(url, headers);
+                    let cookie =
+                        wry::cookie::Cookie::build(("betterframe_kiosk_key", key.as_str()))
+                            .domain(server.host_str().unwrap_or("localhost").to_string())
+                            .path("/")
+                            .http_only(true)
+                            .secure(server.scheme() == "https")
+                            .same_site(wry::cookie::SameSite::Strict)
+                            .build();
+                    builder = builder
+                        .with_navigation_handler(move |next| same_origin(&next, &trusted_origin));
+                    authenticated_load = Some((url, headers, cookie));
                 } else {
                     builder = builder.with_url(url);
                 }
@@ -430,9 +435,16 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
         } else {
             return Err("web cell has no URL or HTML".to_string());
         }
-        builder
+        let view = builder
             .build_as_child(&NativeWindowHandle(hwnd))
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        if let Some((url, headers, cookie)) = authenticated_load {
+            view.set_cookie(&cookie)
+                .map_err(|error| error.to_string())?;
+            view.load_url_with_headers(url, headers)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(view)
     })
 }
 

@@ -29,12 +29,16 @@ pub struct PendingConfig {
     pub config: Value,
 }
 
-pub fn websocket_url(server_url: &str, token: &str) -> Result<String, url::ParseError> {
-    let mut url = Url::parse(server_url)?;
+pub fn websocket_url(server_url: &str, token: &str) -> Result<String, String> {
+    let mut url = Url::parse(server_url).map_err(|error| error.to_string())?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("server URL must use http or https".to_string());
+    }
     url.set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
-        .expect("ws schemes are valid");
+        .map_err(|_| "server URL cannot be converted to a WebSocket URL".to_string())?;
     if url.port() == Some(18081) {
-        url.set_port(Some(18082)).expect("18082 is a valid port");
+        url.set_port(Some(18082))
+            .map_err(|_| "server URL does not support an explicit port".to_string())?;
     }
     url.set_path("/ws/kiosk");
     url.set_query(None);
@@ -56,5 +60,6 @@ mod tests {
             websocket_url("http://10.0.0.2:18081", "key").unwrap(),
             "ws://10.0.0.2:18082/ws/kiosk?token=key"
         );
+        assert!(websocket_url("localhost:18081", "key").is_err());
     }
 }

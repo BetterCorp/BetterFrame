@@ -17,8 +17,8 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{info, warn};
 use windows_sys::Win32::Foundation::{
-    COLORREF, CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, LRESULT,
-    LocalFree, RECT, WPARAM,
+    COLORREF, CloseHandle, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GetLastError, HANDLE, HWND, LPARAM,
+    LRESULT, LocalFree, RECT, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreatePen, CreateSolidBrush, DEVMODEW, DISPLAY_DEVICE_ATTACHED_TO_DESKTOP,
@@ -27,8 +27,15 @@ use windows_sys::Win32::Graphics::Gdi::{
     EnumDisplaySettingsExW, FillRect, HBRUSH, HDC, InvalidateRect, LineTo, MoveToEx, PAINTSTRUCT,
     PS_SOLID, SelectObject, SetBkMode, SetTextColor, UpdateWindow,
 };
+use windows_sys::Win32::Security::Authorization::{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT,
+    SetNamedSecurityInfoW,
+};
 use windows_sys::Win32::Security::Cryptography::{
     CRYPT_INTEGER_BLOB, CRYPTPROTECT_LOCAL_MACHINE, CryptProtectData, CryptUnprotectData,
+};
+use windows_sys::Win32::Security::{
+    DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -38,9 +45,9 @@ use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     GetClientRect, GetMessageW, GetSystemMetrics, HMENU, HWND_BROADCAST, MSG, PostQuitMessage,
-    RegisterClassW, SC_MONITORPOWER, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWMAXIMIZED, SendMessageW,
-    ShowWindow, TranslateMessage, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_PAINT, WM_SYSCOMMAND, WNDCLASSW, WS_EX_TOPMOST, WS_POPUP,
+    RegisterClassW, SC_MONITORPOWER, SM_CXSCREEN, SM_CYSCREEN, SMTO_ABORTIFHUNG, SW_SHOWMAXIMIZED,
+    SendMessageTimeoutW, ShowWindow, TranslateMessage, WM_DESTROY, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_SYSCOMMAND, WNDCLASSW, WS_EX_TOPMOST, WS_POPUP,
 };
 use wry::raw_window_handle::{
     HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle,
@@ -54,7 +61,9 @@ use crate::bundle::{
     BundleCell, BundleDisplayWithLayouts as BundleDisplay, BundleLayout, KioskBundle,
 };
 use crate::core::commands::ServerCommand as AgentCommand;
-use crate::core::layout::{configured_cell_action, resolve_web_url, same_origin};
+use crate::core::layout::{
+    configured_cell_action, credentials_allowed, resolve_web_url, same_origin,
+};
 use crate::core::protocol::{
     HeartbeatResponse, PairClaimResponse, PairInitiateResponse, PendingConfig,
 };
@@ -73,21 +82,12 @@ const AGENT_TASK_NAME: &str = "BetterFrameWindowsAgent";
 const APP_TASK_NAME: &str = "BetterFrameWindowsApp";
 const PROTECTED_MAGIC: &[u8; 4] = b"BFW1";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct WindowsPolicy {
     #[serde(default)]
     controls: WindowsControls,
     #[serde(default)]
     displays: WindowsDisplayPolicy,
-}
-
-impl Default for WindowsPolicy {
-    fn default() -> Self {
-        Self {
-            controls: WindowsControls::default(),
-            displays: WindowsDisplayPolicy::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,7 +226,7 @@ pub fn run() {
 }
 
 fn self_test() -> Result<(), String> {
-    fs::create_dir_all(state_dir()).map_err(|error| format!("state directory: {error}"))?;
+    ensure_secure_state_dir()?;
     let probe = b"betterframe-self-test";
     let encrypted = protect_machine(probe)?;
     if unprotect_machine(&encrypted)? != probe {
@@ -235,7 +235,7 @@ fn self_test() -> Result<(), String> {
 
     let path = state_dir().join("self-test.tmp");
     write_protected(&path, probe)?;
-    let stored = read_protected_or_plain(&path)?;
+    let stored = read_protected(&path)?;
     let _ = fs::remove_file(&path);
     if stored != probe {
         return Err("protected state-file round-trip returned different data".to_string());
@@ -282,7 +282,7 @@ fn run_agent_cli(args: &[String]) -> Result<(), String> {
 }
 
 async fn run_agent(server_url: String) -> Result<(), String> {
-    fs::create_dir_all(state_dir()).map_err(|e| format!("create state dir: {e}"))?;
+    ensure_secure_state_dir()?;
     ensure_default_policy()?;
 
     let mut state = load_state();
@@ -402,7 +402,9 @@ async fn run_agent(server_url: String) -> Result<(), String> {
             }
             _ = tokio::time::sleep(Duration::from_secs(2)) => {
                 if last_supervise.elapsed() >= Duration::from_secs(10) {
-                    supervise_app(&app)?;
+                    if let Err(err) = supervise_app(&app) {
+                        warn!("app supervision failed: {err}");
+                    }
                     last_supervise = Instant::now();
                 }
             }
@@ -412,58 +414,66 @@ async fn run_agent(server_url: String) -> Result<(), String> {
 
 async fn pair(server_url: &str) -> Result<ClientState, String> {
     let client = reqwest::Client::new();
-    let init: PairInitiateResponse = client
-        .post(format!("{server_url}/api/pair/initiate"))
-        .json(&serde_json::json!({
-            "proposed_name": hostname::get().ok().and_then(|h| h.into_string().ok()).unwrap_or_else(|| "Windows Kiosk".to_string()),
-            "hardware_model": "Windows Desktop",
-            "firmware_target": "windows-x64",
-            "capabilities": ["windows", "desktop_app", "rtsp", "d3d11", "mouse", "keyboard", "app_restart", "display_select"],
-            "managed_image": false
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("pair initiate: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("pair initiate response: {e}"))?;
-
-    println!("BetterFrame Windows pairing code: {}", init.code);
-    println!("Enter it in admin before it expires at {}", init.expires_at);
-    let mut pending = unpaired_state(server_url);
-    pending.pairing_code = Some(init.code.clone());
-    pending.pairing_expires_at = Some(init.expires_at.clone());
-    save_state(&pending)?;
-
     loop {
-        let resp = client
-            .post(format!("{server_url}/api/pair/claim"))
-            .json(&serde_json::json!({ "code": init.code }))
+        let init: PairInitiateResponse = client
+            .post(format!("{server_url}/api/pair/initiate"))
+            .json(&serde_json::json!({
+                "proposed_name": hostname::get().ok().and_then(|h| h.into_string().ok()).unwrap_or_else(|| "Windows Kiosk".to_string()),
+                "hardware_model": "Windows Desktop",
+                "firmware_target": "windows-x64",
+                "capabilities": ["windows", "desktop_app", "rtsp", "d3d11", "mouse", "keyboard", "app_restart", "display_select"],
+                "managed_image": false
+            }))
             .send()
             .await
-            .map_err(|e| format!("pair claim: {e}"))?;
-        if resp.status().as_u16() == 200 {
-            let claim: PairClaimResponse = resp
-                .json()
+            .map_err(|e| format!("pair initiate: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("pair initiate response: {e}"))?;
+        let expires_at = time::OffsetDateTime::parse(
+            &init.expires_at,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .map_err(|error| format!("pair initiate expiry: {error}"))?;
+
+        println!("BetterFrame Windows pairing code: {}", init.code);
+        println!("Enter it in admin before it expires at {}", init.expires_at);
+        let mut pending = unpaired_state(server_url);
+        pending.pairing_code = Some(init.code.clone());
+        pending.pairing_expires_at = Some(init.expires_at.clone());
+        save_state(&pending)?;
+
+        while time::OffsetDateTime::now_utc() < expires_at {
+            let resp = client
+                .post(format!("{server_url}/api/pair/claim"))
+                .json(&serde_json::json!({ "code": &init.code }))
+                .send()
                 .await
-                .map_err(|e| format!("pair claim response: {e}"))?;
-            if claim.status == "claimed" {
-                return Ok(ClientState {
-                    server_url: server_url.to_string(),
-                    kiosk_key: claim.kiosk_key,
-                    encrypt_key: claim.encrypt_key,
-                    kiosk_id: claim.kiosk_id.map(flexible_id),
-                    kiosk_name: claim.kiosk_name,
-                    bundle_version: None,
-                    managed_config_applied_version: 0,
-                    managed_config_error: None,
-                    pairing_code: None,
-                    pairing_expires_at: None,
-                    active_layouts: HashMap::new(),
-                });
+                .map_err(|e| format!("pair claim: {e}"))?;
+            if resp.status().as_u16() == 200 {
+                let claim: PairClaimResponse = resp
+                    .json()
+                    .await
+                    .map_err(|e| format!("pair claim response: {e}"))?;
+                if claim.status == "claimed" {
+                    return Ok(ClientState {
+                        server_url: server_url.to_string(),
+                        kiosk_key: claim.kiosk_key,
+                        encrypt_key: claim.encrypt_key,
+                        kiosk_id: claim.kiosk_id.map(flexible_id),
+                        kiosk_name: claim.kiosk_name,
+                        bundle_version: None,
+                        managed_config_applied_version: 0,
+                        managed_config_error: None,
+                        pairing_code: None,
+                        pairing_expires_at: None,
+                        active_layouts: HashMap::new(),
+                    });
+                }
             }
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        info!("pairing code expired; requesting a new code");
     }
 }
 
@@ -476,7 +486,7 @@ async fn websocket_loop(
         .map_err(|error| format!("invalid server URL: {error}"))?;
     let (ws, _) = connect_async(&ws_url)
         .await
-        .map_err(|e| format!("connect {ws_url}: {e}"))?;
+        .map_err(|e| format!("connect coordinator websocket: {e}"))?;
     info!("connected to coordinator");
     let (mut writer, mut reader) = ws.split();
     while let Some(msg) = reader.next().await {
@@ -573,7 +583,7 @@ async fn handle_agent_command(
         }
         AgentCommand::VolumeMute(muted) => {
             if current_policy.controls.volume {
-                set_mute(muted);
+                set_mute(muted)?;
             } else {
                 info!("volume mute ignored by Windows policy");
             }

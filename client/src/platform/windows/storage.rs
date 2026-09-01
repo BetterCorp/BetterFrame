@@ -42,8 +42,70 @@ pub(super) fn display_report_path() -> PathBuf {
     state_dir().join("displays.json")
 }
 
+pub(super) fn ensure_secure_state_dir() -> Result<(), String> {
+    let path = state_dir();
+    fs::create_dir_all(&path).map_err(|error| format!("create state directory: {error}"))?;
+    let sddl = wide("D:P(A;;FA;;;SY)(A;;FA;;;BA)");
+    let mut descriptor = null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            null_mut(),
+        )
+    } == 0
+    {
+        return Err(format!(
+            "create state directory security descriptor: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let mut dacl_present = 0;
+    let mut dacl_defaulted = 0;
+    let mut dacl = null_mut();
+    let dacl_result = unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor,
+            &mut dacl_present,
+            &mut dacl,
+            &mut dacl_defaulted,
+        )
+    };
+    if dacl_result == 0 || dacl_present == 0 {
+        unsafe { LocalFree(descriptor as _) };
+        return Err(format!(
+            "read state directory security descriptor: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let path = wide_path(path.as_os_str());
+    let status = unsafe {
+        SetNamedSecurityInfoW(
+            path.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            dacl,
+            null_mut(),
+        )
+    };
+    unsafe { LocalFree(descriptor as _) };
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "secure state directory: {}",
+            std::io::Error::from_raw_os_error(status as i32)
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn load_state() -> ClientState {
-    read_protected_or_plain(&state_path())
+    ensure_secure_state_dir()
+        .and_then(|()| read_protected(&state_path()))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_else(|| ClientState {
@@ -53,14 +115,14 @@ pub(super) fn load_state() -> ClientState {
 }
 
 pub(super) fn save_state(state: &ClientState) -> Result<(), String> {
-    fs::create_dir_all(state_dir()).map_err(|e| format!("create state dir: {e}"))?;
     write_protected(&state_path(), &serde_json::to_vec(state).unwrap())
 }
 
 pub(super) fn load_bundle() -> Option<KioskBundle> {
-    read_protected_or_plain(&bundle_path())
+    ensure_secure_state_dir()
+        .and_then(|()| read_protected_or_plain(&bundle_path()))
         .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .and_then(|bytes| deserialize_cached_bundle(&bytes))
 }
 
 pub(super) fn save_bundle(bundle: &KioskBundle) -> Result<(), String> {
@@ -154,7 +216,16 @@ pub(super) fn read_protected_or_plain(path: &std::path::Path) -> Result<Vec<u8>,
     }
 }
 
+pub(super) fn read_protected(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let bytes = fs::read(path).map_err(|error| format!("read protected state: {error}"))?;
+    if !bytes.starts_with(PROTECTED_MAGIC) {
+        return Err("state file is not DPAPI protected".to_string());
+    }
+    unprotect_machine(&bytes[PROTECTED_MAGIC.len()..])
+}
+
 pub(super) fn write_protected(path: &std::path::Path, plaintext: &[u8]) -> Result<(), String> {
+    ensure_secure_state_dir()?;
     let bytes = protect_machine(plaintext)?;
     let temporary = path.with_extension("tmp");
     fs::write(&temporary, bytes).map_err(|error| format!("write protected state: {error}"))?;
@@ -168,6 +239,7 @@ pub(super) fn write_protected(path: &std::path::Path, plaintext: &[u8]) -> Resul
         )
     } == 0
     {
+        let _ = fs::remove_file(&temporary);
         return Err(format!(
             "commit protected state: {}",
             std::io::Error::last_os_error()
@@ -181,6 +253,7 @@ pub(super) fn wide_path(value: &OsStr) -> Vec<u16> {
 }
 
 pub(super) fn ensure_default_policy() -> Result<(), String> {
+    ensure_secure_state_dir()?;
     if policy_path().exists() {
         return Ok(());
     }
@@ -192,7 +265,8 @@ pub(super) fn ensure_default_policy() -> Result<(), String> {
 }
 
 pub(super) fn load_policy() -> WindowsPolicy {
-    fs::read_to_string(policy_path())
+    ensure_secure_state_dir()
+        .and_then(|()| fs::read_to_string(policy_path()).map_err(|error| error.to_string()))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
@@ -204,6 +278,7 @@ pub(super) fn apply_pending_config(pending: &PendingConfig) -> Result<(), String
     };
     let policy: WindowsPolicy = serde_json::from_value(policy_value.clone())
         .map_err(|e| format!("parse windows_policy: {e}"))?;
+    ensure_secure_state_dir()?;
     fs::write(policy_path(), serde_json::to_vec_pretty(&policy).unwrap())
         .map_err(|e| format!("write windows policy: {e}"))?;
     Ok(())
@@ -244,4 +319,219 @@ pub(super) fn wide_to_string(buf: &[u16]) -> String {
 
 pub(super) fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
+}
+
+#[derive(Deserialize)]
+struct LegacyWindowsBundle {
+    kiosk_id: String,
+    kiosk_name: String,
+    displays: Vec<LegacyWindowsDisplay>,
+    #[serde(default)]
+    cameras: Vec<LegacyWindowsCamera>,
+    version: String,
+}
+
+#[derive(Deserialize)]
+struct LegacyWindowsDisplay {
+    id: String,
+    name: String,
+    default_layout_id: Option<String>,
+    layouts: Vec<LegacyWindowsLayout>,
+}
+
+#[derive(Deserialize)]
+struct LegacyWindowsLayout {
+    id: String,
+    name: String,
+    grid_cols: u32,
+    grid_rows: u32,
+    cells: Vec<LegacyWindowsCell>,
+}
+
+#[derive(Deserialize)]
+struct LegacyWindowsCell {
+    view_id: Option<String>,
+    entity_id: Option<String>,
+    row: u32,
+    col: u32,
+    row_span: u32,
+    col_span: u32,
+    content_type: String,
+    camera_id: Option<String>,
+    stream_selector: Option<String>,
+    web_url: Option<String>,
+    html_content: Option<String>,
+    #[serde(default)]
+    local_storage: Option<HashMap<String, String>>,
+    #[serde(default)]
+    input_options: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct LegacyWindowsCamera {
+    id: String,
+    name: String,
+    #[serde(default)]
+    playback_username: Option<String>,
+    #[serde(default)]
+    playback_password_encrypted: Option<String>,
+    #[serde(default)]
+    streams: Vec<LegacyWindowsStream>,
+}
+
+#[derive(Deserialize)]
+struct LegacyWindowsStream {
+    role: String,
+    rtsp_uri: String,
+}
+
+fn deserialize_cached_bundle(bytes: &[u8]) -> Option<KioskBundle> {
+    serde_json::from_slice(bytes).ok().or_else(|| {
+        serde_json::from_slice::<LegacyWindowsBundle>(bytes)
+            .ok()
+            .map(migrate_legacy_bundle)
+    })
+}
+
+fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
+    let displays = legacy
+        .displays
+        .into_iter()
+        .map(|display| {
+            let default_layout_id = display.default_layout_id;
+            let layouts = display
+                .layouts
+                .into_iter()
+                .map(|layout| crate::bundle::BundleLayout {
+                    is_default: default_layout_id.as_deref() == Some(layout.id.as_str()),
+                    id: layout.id,
+                    name: layout.name,
+                    grid_cols: layout.grid_cols,
+                    grid_rows: layout.grid_rows,
+                    priority: "normal".to_string(),
+                    cooling_timeout_seconds: None,
+                    idle_timeout_seconds: None,
+                    preload_camera_ids: Vec::new(),
+                    resets_idle_timer: true,
+                    input_options: None,
+                    cells: layout
+                        .cells
+                        .into_iter()
+                        .map(|cell| crate::bundle::BundleCell {
+                            view_id: cell.view_id,
+                            entity_id: cell.entity_id,
+                            row: cell.row,
+                            col: cell.col,
+                            row_span: cell.row_span,
+                            col_span: cell.col_span,
+                            content_type: cell.content_type,
+                            camera_id: cell.camera_id,
+                            stream_selector: cell.stream_selector,
+                            web_url: cell.web_url,
+                            html_content: cell.html_content,
+                            cooling_timeout_seconds: None,
+                            fit: "cover".to_string(),
+                            smart_url: None,
+                            local_storage: cell.local_storage,
+                            input_options: cell.input_options,
+                        })
+                        .collect(),
+                })
+                .collect();
+            crate::bundle::BundleDisplayWithLayouts {
+                id: display.id,
+                name: display.name,
+                width_px: 0,
+                height_px: 0,
+                idle_timeout_seconds: 0,
+                sleep_timeout_seconds: 0,
+                default_layout_id,
+                layouts,
+            }
+        })
+        .collect();
+    let cameras = legacy
+        .cameras
+        .into_iter()
+        .map(|camera| {
+            let streams: Vec<_> = camera
+                .streams
+                .into_iter()
+                .enumerate()
+                .map(|(index, stream)| crate::bundle::BundleStream {
+                    id: format!("legacy-{}-{index}", camera.id),
+                    name: stream.role.clone(),
+                    role: stream.role,
+                    profile_token: None,
+                    rtsp_uri: stream.rtsp_uri,
+                    width: None,
+                    height: None,
+                    encoding: None,
+                    framerate: None,
+                })
+                .collect();
+            crate::bundle::BundleCamera {
+                id: camera.id,
+                name: camera.name,
+                camera_number: None,
+                labels: Vec::new(),
+                capabilities: Vec::new(),
+                enabled: true,
+                last_seen_at: None,
+                simple_vms_managed: false,
+                recording_config: serde_json::Value::Null,
+                cam_type: "rtsp".to_string(),
+                rtsp_url: streams.first().map(|stream| stream.rtsp_uri.clone()),
+                stream_policy: "auto".to_string(),
+                streams,
+                playback_username: camera.playback_username,
+                playback_password_encrypted: camera.playback_password_encrypted,
+                onvif_host: None,
+                onvif_port: None,
+                onvif_username: None,
+                onvif_password_encrypted: None,
+                event_source: None,
+                event_sink: None,
+                event_callback_token: None,
+            }
+        })
+        .collect();
+    KioskBundle {
+        kiosk_id: legacy.kiosk_id,
+        kiosk_name: legacy.kiosk_name,
+        tenant_slug: "default".to_string(),
+        display: None,
+        layouts: Vec::new(),
+        displays,
+        cameras,
+        gpio_bindings: Vec::new(),
+        operator_console: crate::bundle::OperatorConsoleConfig::default(),
+        version: legacy.version,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrates_previous_windows_bundle_cache() {
+        let bundle = deserialize_cached_bundle(
+            br#"{
+                "kiosk_id":"1","kiosk_name":"Lobby","version":"7",
+                "displays":[{"id":"2","name":"Primary","default_layout_id":"3","layouts":[{
+                    "id":"3","name":"Default","grid_cols":1,"grid_rows":1,
+                    "cells":[{"view_id":"4","entity_id":null,"row":0,"col":0,
+                        "row_span":1,"col_span":1,"content_type":"camera","camera_id":"5",
+                        "stream_selector":"main","web_url":null,"html_content":null}]
+                }]}],
+                "cameras":[{"id":"5","name":"Front","streams":[{"role":"main","rtsp_uri":"rtsp://camera"}]}]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(bundle.displays[0].layouts[0].id, "3");
+        assert!(bundle.displays[0].layouts[0].is_default);
+        assert_eq!(bundle.cameras[0].streams[0].rtsp_uri, "rtsp://camera");
+    }
 }

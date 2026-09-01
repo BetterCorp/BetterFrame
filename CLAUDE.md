@@ -169,7 +169,7 @@ betterframe/
   
   schemas/                     # exported .av.json — committed, source of truth
   
-  kiosk/                       # rust app (placeholder, future)
+  client/                      # unified Rust client; shared core + OS adapters
   
   nodered/                     # custom nodes (placeholder, future)
   

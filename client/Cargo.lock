@@ -225,6 +225,7 @@ dependencies = [
  "url",
  "urlencoding",
  "webkit6",
+ "windows",
  "windows-sys 0.52.0",
  "wry",
 ]

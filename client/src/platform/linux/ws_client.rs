@@ -73,7 +73,7 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
             return;
         }
     };
-    info!("ws: connecting to {ws_url}");
+    info!("ws: connecting to coordinator");
 
     rt.block_on(async {
         let mut backoff = 1u64;
@@ -169,6 +169,10 @@ async fn handle_message(
     terminal_session: &Arc<Mutex<Option<remote_debug::TerminalSession>>>,
     pending_code: &Arc<Mutex<Option<String>>>,
 ) {
+    if serde_json::from_str::<serde_json::Value>(text).is_err() {
+        warn!("ws: ignored invalid JSON message");
+        return;
+    }
     if text.contains("\"type\":\"ping\"") {
         let _ = writer
             .send(Message::Text(r#"{"type":"pong"}"#.to_string()))

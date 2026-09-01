@@ -24,7 +24,7 @@ test("persistent kiosk data is mounted before services can use it", () => {
 });
 
 test("unpaired kiosks check signed OS updates before starting pairing", () => {
-  const kiosk = readFileSync(new URL("../../kiosk/src/ui.rs", import.meta.url), "utf8");
+  const kiosk = readFileSync(new URL("../../client/src/platform/linux/ui.rs", import.meta.url), "utf8");
   const api = readFileSync(new URL("../src/plugins/service-api-http/index.ts", import.meta.url), "utf8");
   assert.ok(kiosk.indexOf("os_update::check_public(&server)") < kiosk.indexOf("server::initiate_pairing(&server)"));
   assert.match(api, /\/api\/os\/public\/check/);
@@ -58,8 +58,8 @@ test("Pi setup creates the kiosk user before owned directories", () => {
 });
 
 test("operator PTZ controls are capability-gated and read kiosk preset data", () => {
-  const html = readFileSync(new URL("../../kiosk/operator-console/index.html", import.meta.url), "utf8");
-  const script = readFileSync(new URL("../../kiosk/operator-console/app.js", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../../client/operator-console/index.html", import.meta.url), "utf8");
+  const script = readFileSync(new URL("../../client/operator-console/app.js", import.meta.url), "utf8");
   assert.match(html, /id="ptz-controls" class="panel control-card hidden"/);
   assert.match(script, /item\.toLowerCase\(\)===\"ptz\"/);
   assert.match(script, /result\.result\?\.data\?\.presets/);

@@ -122,7 +122,7 @@ general plugin system or dependency-injection framework.
 
 The core owns:
 
-- the canonical `KioskBundle` model currently in `kiosk/src/bundle.rs`;
+- the canonical `KioskBundle` model in `client/core/src/bundle.rs`;
 - flexible ID deserialization and backward-compatible bundle normalization;
 - pairing initiation, retryable claim polling, and credential state;
 - public pre-pair update ordering;
@@ -143,7 +143,7 @@ runtime:
 
 | Area | Linux | Windows |
 |---|---|---|
-| Windows | GTK4 | Win32 |
+| UI toolkit | GTK4 | Win32 |
 | Web content | WebKitGTK | WebView2 via WRY |
 | Video sink | `gtk4paintablesink` | `d3d11videosink` |
 | Secret protection | TPM/hardware-derived AES-GCM | machine-scope DPAPI |
@@ -206,6 +206,9 @@ layout engine.
   command.
 
 ## Migration plan
+
+The source-tree and packaging cutover below is complete. Runtime acceptance
+gates remain open where noted.
 
 Each phase must leave the Linux release buildable and runnable. Avoid a
 big-bang directory move.

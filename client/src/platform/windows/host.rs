@@ -7,11 +7,15 @@ pub(super) fn set_monitor_power(on: bool) {
         } else {
             2isize as LPARAM
         };
-        SendMessageW(
+        let mut result = 0;
+        SendMessageTimeoutW(
             HWND_BROADCAST,
             WM_SYSCOMMAND,
             SC_MONITORPOWER as WPARAM,
             state,
+            SMTO_ABORTIFHUNG,
+            2_000,
+            &mut result,
         );
     }
 }
@@ -38,16 +42,43 @@ pub(super) fn set_volume_percent(percent: u32) {
         .spawn();
 }
 
-pub(super) fn set_mute(_muted: bool) {
-    let _ = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            "(New-Object -ComObject WScript.Shell).SendKeys([char]173)",
-        ])
-        .spawn();
+pub(super) fn set_mute(muted: bool) -> Result<(), String> {
+    use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+    use windows::Win32::Media::Audio::{
+        IMMDeviceEnumerator, MMDeviceEnumerator, eConsole, eRender,
+    };
+    use windows::Win32::System::Com::{
+        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+    };
+
+    unsafe {
+        let initialized = CoInitializeEx(None, COINIT_MULTITHREADED);
+        if initialized.is_err() && initialized != RPC_E_CHANGED_MODE {
+            return Err(format!(
+                "initialize Windows audio: {}",
+                windows::core::Error::from(initialized)
+            ));
+        }
+        let result = (|| {
+            let enumerator: IMMDeviceEnumerator =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                    .map_err(|error| format!("create audio endpoint enumerator: {error}"))?;
+            let device = enumerator
+                .GetDefaultAudioEndpoint(eRender, eConsole)
+                .map_err(|error| format!("get default audio endpoint: {error}"))?;
+            let volume: IAudioEndpointVolume = device
+                .Activate(CLSCTX_ALL, None)
+                .map_err(|error| format!("activate endpoint volume: {error}"))?;
+            volume
+                .SetMute(muted, null())
+                .map_err(|error| format!("set endpoint mute: {error}"))
+        })();
+        if initialized.is_ok() {
+            CoUninitialize();
+        }
+        result
+    }
 }
 
 pub(super) fn invalidate_app_windows() {

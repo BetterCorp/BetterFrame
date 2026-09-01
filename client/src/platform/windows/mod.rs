@@ -28,20 +28,21 @@ use windows_sys::Win32::Graphics::Gdi::{
     PS_SOLID, SelectObject, SetBkMode, SetTextColor, UpdateWindow,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT,
-    SetNamedSecurityInfoW,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    SE_FILE_OBJECT, SetNamedSecurityInfoW,
 };
 use windows_sys::Win32::Security::Cryptography::{
     CRYPT_INTEGER_BLOB, CRYPTPROTECT_LOCAL_MACHINE, CryptProtectData, CryptUnprotectData,
 };
 use windows_sys::Win32::Security::{
-    DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
+    DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetTokenInformation,
+    PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::System::Threading::CreateMutexW;
+use windows_sys::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, OpenProcessToken};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     GetClientRect, GetMessageW, GetSystemMetrics, HMENU, HWND_BROADCAST, MSG, PostQuitMessage,

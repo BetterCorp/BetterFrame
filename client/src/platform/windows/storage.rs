@@ -45,7 +45,10 @@ pub(super) fn display_report_path() -> PathBuf {
 pub(super) fn ensure_secure_state_dir() -> Result<(), String> {
     let path = state_dir();
     fs::create_dir_all(&path).map_err(|error| format!("create state directory: {error}"))?;
-    let sddl = wide("D:P(A;;FA;;;SY)(A;;FA;;;BA)");
+    let current_user_sid = current_user_sid()?;
+    let sddl = wide(&format!(
+        "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;{current_user_sid})"
+    ));
     let mut descriptor = null_mut();
     if unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -105,13 +108,28 @@ pub(super) fn ensure_secure_state_dir() -> Result<(), String> {
 
 pub(super) fn load_state() -> ClientState {
     ensure_secure_state_dir()
-        .and_then(|()| read_protected(&state_path()))
+        .and_then(|()| load_state_file(&state_path()))
         .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_else(|| ClientState {
             server_url: DEFAULT_SERVER_URL.to_string(),
             ..ClientState::default()
         })
+}
+
+fn load_state_file(path: &std::path::Path) -> Result<ClientState, String> {
+    let bytes = fs::read(path).map_err(|error| format!("read state: {error}"))?;
+    let was_protected = bytes.starts_with(PROTECTED_MAGIC);
+    let plaintext = if was_protected {
+        unprotect_machine(&bytes[PROTECTED_MAGIC.len()..])?
+    } else {
+        bytes
+    };
+    let state = serde_json::from_slice(&plaintext)
+        .map_err(|error| format!("deserialize state: {error}"))?;
+    if !was_protected {
+        write_protected(path, &plaintext)?;
+    }
+    Ok(state)
 }
 
 pub(super) fn save_state(state: &ClientState) -> Result<(), String> {
@@ -246,6 +264,63 @@ pub(super) fn write_protected(path: &std::path::Path, plaintext: &[u8]) -> Resul
         ));
     }
     Ok(())
+}
+
+fn current_user_sid() -> Result<String, String> {
+    let mut token = 0;
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(format!(
+            "open process token: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let result = (|| {
+        let mut length = 0;
+        unsafe { GetTokenInformation(token, TokenUser, null_mut(), 0, &mut length) };
+        if length == 0 {
+            return Err(format!(
+                "size process token user: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let mut buffer = vec![0u8; length as usize];
+        if unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                length,
+                &mut length,
+            )
+        } == 0
+        {
+            return Err(format!(
+                "read process token user: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let token_user = unsafe { (buffer.as_ptr() as *const TOKEN_USER).read_unaligned() };
+        let mut sid = null_mut();
+        if unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut sid) } == 0 {
+            return Err(format!(
+                "format process token user SID: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let sid_length = (0..)
+            .take_while(|&index| unsafe { *sid.add(index) } != 0)
+            .count();
+        let value =
+            String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(sid, sid_length) });
+        unsafe { LocalFree(sid as _) };
+        Ok(value)
+    })();
+
+    unsafe { CloseHandle(token) };
+    result
 }
 
 pub(super) fn wide_path(value: &OsStr) -> Vec<u16> {
@@ -533,5 +608,26 @@ mod tests {
         assert_eq!(bundle.displays[0].layouts[0].id, "3");
         assert!(bundle.displays[0].layouts[0].is_default);
         assert_eq!(bundle.cameras[0].streams[0].rtsp_uri, "rtsp://camera");
+    }
+
+    #[test]
+    fn migrates_plaintext_state_to_dpapi() {
+        let path = state_dir().join(format!("state-migration-{}.json", std::process::id()));
+        let plaintext = serde_json::to_vec(&ClientState {
+            server_url: "https://frame.example".to_string(),
+            kiosk_key: Some("secret".to_string()),
+            ..ClientState::default()
+        })
+        .unwrap();
+        ensure_secure_state_dir().unwrap();
+        fs::write(&path, plaintext).unwrap();
+
+        let state = load_state_file(&path).unwrap();
+        let stored = fs::read(&path).unwrap();
+        let _ = fs::remove_file(path);
+
+        assert_eq!(state.server_url, "https://frame.example");
+        assert_eq!(state.kiosk_key.as_deref(), Some("secret"));
+        assert!(stored.starts_with(PROTECTED_MAGIC));
     }
 }

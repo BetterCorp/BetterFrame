@@ -329,9 +329,26 @@ jobs:
           cargo wix --nocapture --install-version $msiVersion -L -sice:ICE30 -L -sice:ICE80
           $msi = Get-ChildItem target\wix\*.msi | Select-Object -First 1
           Copy-Item $msi.FullName "betterframe-windows-client-${{ inputs.version }}-x86_64.msi"
-      - name: Install and self-test Windows client
+      - uses: actions/upload-artifact@v7
+        with:
+          name: betterframe-windows-client-x86_64
+          path: client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi
+          retention-days: 14
+
+  windows-client-package-test:
+    needs: windows-client
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: betterframe-windows-client-x86_64
+          path: client
+      - name: Install and self-test Windows client without build SDK
         working-directory: client
         run: |
+          if (Test-Path "$env:ProgramFiles\gstreamer") {
+            throw "clean-host test runner unexpectedly contains a global GStreamer installation"
+          }
           $msi = Resolve-Path "betterframe-windows-client-${{ inputs.version }}-x86_64.msi"
           $installer = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
           if ($installer.ExitCode -notin 0, 3010) { throw "client install failed with exit code $($installer.ExitCode)" }
@@ -342,11 +359,6 @@ jobs:
         with:
           tag_name: ${{ inputs.tag }}
           files: client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi
-      - uses: actions/upload-artifact@v7
-        with:
-          name: betterframe-windows-client-x86_64
-          path: client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi
-          retention-days: 14
 
   # Source/dependency SBOM is attached to every release for licensing and
   # vulnerability inventory. Binary/image jobs remain traceable to this ref.

@@ -354,3 +354,68 @@ impl BundleCamera {
         Some((uri, badge))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_legacy_display_and_flexible_ids() {
+        let bundle: KioskBundle = serde_json::from_value(serde_json::json!({
+            "kiosk_id": 10,
+            "kiosk_name": "Lobby",
+            "display": {
+                "id": 20,
+                "name": "Main",
+                "width_px": 1920,
+                "height_px": 1080,
+                "idle_timeout_seconds": 0,
+                "sleep_timeout_seconds": 0,
+                "default_layout_id": 30
+            },
+            "layouts": [{
+                "id": 30,
+                "name": "Default",
+                "grid_cols": 1,
+                "grid_rows": 1,
+                "priority": "normal",
+                "cooling_timeout_seconds": null,
+                "idle_timeout_seconds": null,
+                "preload_camera_ids": [40],
+                "is_default": true,
+                "resets_idle_timer": true,
+                "cells": []
+            }],
+            "cameras": [],
+            "version": "1"
+        }))
+        .unwrap();
+
+        let displays = bundle.normalized_displays();
+        assert_eq!(bundle.kiosk_id, "10");
+        assert_eq!(displays[0].id, "20");
+        assert_eq!(displays[0].layouts[0].preload_camera_ids, ["40"]);
+    }
+
+    #[test]
+    fn stream_selection_is_shared_across_platforms() {
+        let camera: BundleCamera = serde_json::from_value(serde_json::json!({
+            "id": "camera",
+            "name": "Front",
+            "type": "rtsp",
+            "stream_policy": "auto",
+            "streams": [
+                {"id":"main","role":"main","name":"Main","rtsp_uri":"rtsp://main","width":1920,"height":1080,"encoding":"H264","framerate":25},
+                {"id":"sub","role":"sub","name":"Sub","rtsp_uri":"rtsp://sub","width":640,"height":360,"encoding":"H264","framerate":15}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(camera.pick_stream(None, 0.19).unwrap().0, "rtsp://sub");
+        assert_eq!(camera.pick_stream(None, 0.20).unwrap().0, "rtsp://main");
+        assert_eq!(
+            camera.pick_stream(Some("sub"), 1.0).unwrap().0,
+            "rtsp://sub"
+        );
+    }
+}

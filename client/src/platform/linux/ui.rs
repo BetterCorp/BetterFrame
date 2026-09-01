@@ -70,14 +70,7 @@ struct FocusOverride {
     generation: u64,
 }
 
-pub struct OperatorFocusRequest {
-    pub display_id: String,
-    pub camera_id: String,
-    pub stream: String,
-    pub cell_id: Option<String>,
-    pub fullscreen: bool,
-    pub duration_seconds: Option<u64>,
-}
+pub use crate::core::commands::OperatorFocusRequest;
 
 #[derive(Clone)]
 struct WebCellPos {
@@ -177,8 +170,8 @@ thread_local! {
 }
 
 const APP_ID: &str = "dev.betterframe.kiosk";
-const BETTERFRAME_LOGO_PNG: &[u8] = include_bytes!("../assets/betterframe-logo-dark.png");
-const BETTERFRAME_MARK_PNG: &[u8] = include_bytes!("../assets/betterframe-mark.png");
+const BETTERFRAME_LOGO_PNG: &[u8] = include_bytes!("../../../assets/betterframe-logo-dark.png");
+const BETTERFRAME_MARK_PNG: &[u8] = include_bytes!("../../../assets/betterframe-mark.png");
 
 pub fn build_app() -> Application {
     let app = Application::builder().application_id(APP_ID).build();
@@ -1465,7 +1458,7 @@ fn render_bundle(
 
     // Now render each display's initial layout.
     for bd in &displays {
-        let target = pick_initial_layout(bd);
+        let target = crate::core::layout::initial_layout_id(bd);
         if let Some(layout_id) = target {
             render_layout(&bd.id, &layout_id);
         } else {
@@ -1484,18 +1477,6 @@ fn render_bundle(
     // A rendered cached bundle is healthy even when the server is offline.
     // RAUC rollback protects app startup, not server reachability.
     mark_kiosk_healthy();
-}
-
-fn pick_initial_layout(bd: &BundleDisplayWithLayouts) -> Option<String> {
-    bd.default_layout_id
-        .clone()
-        .or_else(|| {
-            bd.layouts
-                .iter()
-                .find(|l| l.is_default)
-                .map(|l| l.id.clone())
-        })
-        .or_else(|| bd.layouts.first().map(|l| l.id.clone()))
 }
 
 /// Find which display owns a given layout_id and render it there.

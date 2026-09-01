@@ -1,0 +1,60 @@
+use serde::Deserialize;
+use serde_json::Value;
+use url::Url;
+
+#[derive(Debug, Deserialize)]
+pub struct PairInitiateResponse {
+    pub code: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PairClaimResponse {
+    pub status: String,
+    pub kiosk_id: Option<Value>,
+    pub kiosk_name: Option<String>,
+    pub kiosk_key: Option<String>,
+    pub cluster_key: Option<String>,
+    pub encrypt_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HeartbeatResponse {
+    pub pending_config: Option<PendingConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PendingConfig {
+    pub version: u64,
+    pub config: Value,
+}
+
+pub fn websocket_url(server_url: &str, token: &str) -> Result<String, url::ParseError> {
+    let mut url = Url::parse(server_url)?;
+    url.set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
+        .expect("ws schemes are valid");
+    if url.port() == Some(18081) {
+        url.set_port(Some(18082)).expect("18082 is a valid port");
+    }
+    url.set_path("/ws/kiosk");
+    url.set_query(None);
+    url.query_pairs_mut().append_pair("token", token);
+    Ok(url.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn websocket_url_preserves_proxy_or_maps_direct_api_port() {
+        assert_eq!(
+            websocket_url("https://frame.example/base", "a b").unwrap(),
+            "wss://frame.example/ws/kiosk?token=a+b"
+        );
+        assert_eq!(
+            websocket_url("http://10.0.0.2:18081", "key").unwrap(),
+            "ws://10.0.0.2:18082/ws/kiosk?token=key"
+        );
+    }
+}

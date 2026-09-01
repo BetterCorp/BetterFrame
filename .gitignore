@@ -5,7 +5,8 @@ node_modules/
 server/lib/
 server/bsb-plugin.json
 nodered/lib/
-kiosk/target/
+client/target/
+client/core/target/
 windows-client/target/
 iobox-firmware/.pio/
 

@@ -9,7 +9,7 @@ Install the logon task:
 
 ```powershell
 cargo build --release
-.\target\release\betterframe-windows-client.exe install --server http://betterframe.local
+.\target\release\betterframe-client.exe install --server http://betterframe.local
 ```
 
 Run manually during development:
@@ -17,6 +17,7 @@ Run manually during development:
 ```powershell
 cargo run -- agent --server http://localhost
 cargo run -- app
+cargo run -- self-test
 ```
 
 Release MSIs include the 64-bit GStreamer runtime required by the client.

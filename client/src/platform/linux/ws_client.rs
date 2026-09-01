@@ -66,7 +66,13 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
         }
     };
 
-    let ws_url = build_ws_url(server_url, kiosk_key);
+    let ws_url = match crate::core::protocol::websocket_url(server_url, kiosk_key) {
+        Ok(url) => url,
+        Err(error) => {
+            warn!("ws: invalid server URL: {error}");
+            return;
+        }
+    };
     info!("ws: connecting to {ws_url}");
 
     rt.block_on(async {
@@ -272,111 +278,13 @@ async fn handle_message(
         };
         let response = perform_camera_proxy_request(req).await;
         let _ = writer.send(Message::Text(response)).await;
-    } else if text.contains("\"type\":\"reload-bundle\"") {
-        info!("ws: reload-bundle received");
-        let _ = tx.send(ServerMsg::ReloadBundle);
-    } else if text.contains("\"type\":\"standby\"") {
-        let display_id = serde_json::from_str::<serde_json::Value>(text)
-            .ok()
-            .and_then(|m| m.get("display_id").and_then(flexible_id_from_value));
-        let _ = tx.send(ServerMsg::Standby(display_id));
-    } else if text.contains("\"type\":\"wake\"") {
-        let display_id = serde_json::from_str::<serde_json::Value>(text)
-            .ok()
-            .and_then(|m| m.get("display_id").and_then(flexible_id_from_value));
-        let _ = tx.send(ServerMsg::Wake(display_id));
-    } else if text.contains("\"type\":\"layout-switch\"") {
-        let msg = serde_json::from_str::<serde_json::Value>(text).ok();
-        let layout_id = msg
-            .as_ref()
-            .and_then(|m| m.get("layout_id"))
-            .and_then(flexible_id_from_value);
-        let display_id = msg
-            .as_ref()
-            .and_then(|m| m.get("display_id"))
-            .and_then(flexible_id_from_value);
-        if let Some(layout_id) = layout_id {
-            let _ = tx.send(ServerMsg::SwitchLayout {
-                display_id,
-                layout_id,
-            });
-        }
-    } else if text.contains("\"type\":\"operator-focus\"") {
-        let msg = serde_json::from_str::<serde_json::Value>(text).unwrap_or_default();
-        let display_id = msg.get("display_id").and_then(flexible_id_from_value);
-        let camera_id = msg.get("camera_id").and_then(flexible_id_from_value);
-        let stream = msg.get("stream").and_then(|value| value.as_str()).unwrap_or("auto");
-        if let (Some(display_id), Some(camera_id)) = (display_id, camera_id) {
-            let _ = tx.send(ServerMsg::OperatorFocus(crate::ui::OperatorFocusRequest {
-                display_id,
-                camera_id,
-                stream: stream.to_string(),
-                cell_id: msg.get("cell_id").and_then(flexible_id_from_value),
-                fullscreen: msg.get("fullscreen").and_then(|value| value.as_bool()).unwrap_or(false),
-                duration_seconds: msg.get("duration_seconds").and_then(|value| value.as_u64()),
-            }));
-        }
-    } else if text.contains("\"type\":\"operator-clear\"") {
-        if let Some(display_id) = serde_json::from_str::<serde_json::Value>(text).ok()
-            .and_then(|msg| msg.get("display_id").and_then(flexible_id_from_value))
-        {
-            let _ = tx.send(ServerMsg::OperatorClear(display_id));
-        }
-    } else if text.contains("\"type\":\"operator-restore\"") {
-        if let Some(display_id) = serde_json::from_str::<serde_json::Value>(text).ok()
-            .and_then(|msg| msg.get("display_id").and_then(flexible_id_from_value))
-        {
-            let _ = tx.send(ServerMsg::OperatorRestore(display_id));
-        }
-    } else if text.contains("\"type\":\"tailscale-auth\"") {
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
-            return;
-        };
-        if let Some(key) = msg.get("auth_key").and_then(|v| v.as_str()) {
-            let _ = tx.send(ServerMsg::TailscaleAuth(key.to_string()));
-        }
-    } else if text.contains("\"type\":\"reboot\"") {
-        let _ = tx.send(ServerMsg::Reboot);
+    } else if let Ok(Some(command)) = crate::core::commands::decode(text) {
+        let _ = tx.send(command);
     } else if text.contains("\"type\":\"operator-console-restart\"") {
         tokio::spawn(async {
             tokio::time::sleep(Duration::from_secs(2)).await;
             std::process::exit(0);
         });
-    } else if text.contains("\"type\":\"firmware_check\"") {
-        let force = serde_json::from_str::<serde_json::Value>(text)
-            .ok()
-            .and_then(|msg| msg.get("force").and_then(|v| v.as_bool()))
-            .unwrap_or(false);
-        let _ = tx.send(ServerMsg::FirmwareCheck { force });
-    } else if text.contains("\"type\":\"os_check\"") {
-        let force = serde_json::from_str::<serde_json::Value>(text)
-            .ok()
-            .and_then(|msg| msg.get("force").and_then(|v| v.as_bool()))
-            .unwrap_or(false);
-        let _ = tx.send(ServerMsg::OsCheck { force });
-    } else if text.contains("\"type\":\"update_cancel\"") {
-        let _ = tx.send(ServerMsg::CancelUpdates);
-    } else if text.contains("\"type\":\"volume-set\"") {
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
-            return;
-        };
-        if let Some(vol) = msg.get("volume").and_then(|v| v.as_u64()) {
-            let _ = tx.send(ServerMsg::VolumeSet(vol.min(100) as u32));
-        }
-    } else if text.contains("\"type\":\"volume-mute\"") {
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
-            return;
-        };
-        let muted = msg.get("muted").and_then(|v| v.as_bool()).unwrap_or(true);
-        let _ = tx.send(ServerMsg::VolumeMute(muted));
-    } else if text.contains("\"type\":\"audio-output\"") {
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
-            return;
-        };
-        if let Some(id) = msg.get("output_id").and_then(|v| v.as_str()) {
-            let _ = tx.send(ServerMsg::AudioOutputSet(id.to_string()));
-        }
-
     // ---- Journal streaming --------------------------------------------------
     } else if text.contains("\"type\":\"journal-start\"") {
         info!("ws: journal-start");
@@ -1078,39 +986,4 @@ fn flexible_id_from_value(v: &serde_json::Value) -> Option<String> {
         serde_json::Value::Number(n) => Some(n.to_string()),
         _ => None,
     }
-}
-
-fn build_ws_url(http_url: &str, token: &str) -> String {
-    let base = if let Some(rest) = http_url.strip_prefix("https://") {
-        format!("wss://{}", rest.split('/').next().unwrap_or(rest))
-    } else if let Some(rest) = http_url.strip_prefix("http://") {
-        format!("ws://{}", rest.split('/').next().unwrap_or(rest))
-    } else {
-        format!("ws://{http_url}")
-    };
-
-    let base_port = base.rsplit(':').next().unwrap_or("");
-    let base = if base_port == "18081" {
-        base.replace(":18081", ":18082")
-    } else if !base.contains(':') {
-        format!("{base}:18082")
-    } else {
-        base
-    };
-
-    format!("{base}/ws/kiosk?token={}", urlencoding(token))
-}
-
-fn urlencoding(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~') {
-            out.push(ch);
-        } else {
-            for b in ch.to_string().bytes() {
-                out.push_str(&format!("%{b:02X}"));
-            }
-        }
-    }
-    out
 }

@@ -179,13 +179,13 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
     useradd -m -s /usr/sbin/nologin bfkiosk
   fi
 
-  BIN_SRC="${REPO_ROOT}/kiosk/target/release/betterframe-kiosk"
+  BIN_SRC="${REPO_ROOT}/client/target/release/betterframe-client"
   BIN_DST_DIR="/opt/betterframe/kiosk"
   BIN_DST="${BIN_DST_DIR}/betterframe-kiosk"
 
   if [ "${SKIP_BUILD:-0}" != "1" ]; then
     echo "==> Building kiosk binary (release)"
-    run_as_user "cd '${REPO_ROOT}' && cargo build --release --manifest-path kiosk/Cargo.toml"
+    run_as_user "cd '${REPO_ROOT}' && cargo build --release --manifest-path client/Cargo.toml"
   fi
 
   if [ ! -f "${BIN_SRC}" ]; then

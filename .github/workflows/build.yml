@@ -53,6 +53,16 @@ permissions:
   contents: write
 
 jobs:
+  client-core:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test shared client behavior
+        run: cargo test --manifest-path client/Cargo.toml -p betterframe-client-core --locked
+
   # ---- ESP32-S3 ioBOX firmware ---------------------------------------------
   iobox-firmware:
     runs-on: ubuntu-24.04
@@ -142,6 +152,7 @@ jobs:
 
   # ---- Per-arch kiosk binary ------------------------------------------------
   binary:
+    needs: client-core
     strategy:
       fail-fast: false
       matrix:
@@ -182,7 +193,7 @@ jobs:
           targets: ${{ matrix.rust_target }}
 
       - name: cargo build --release
-        working-directory: kiosk
+        working-directory: client
         env:
           BF_BUILD_ARCH: ${{ matrix.rust_target }}
           BF_FIRMWARE_TARGET: ${{ matrix.firmware_target }}
@@ -192,24 +203,24 @@ jobs:
         run: cargo build --release --target ${{ matrix.rust_target }}
 
       - name: Strip + rename
-        working-directory: kiosk
+        working-directory: client
         run: |
-          strip target/${{ matrix.rust_target }}/release/betterframe-kiosk
-          cp target/${{ matrix.rust_target }}/release/betterframe-kiosk \
+          strip target/${{ matrix.rust_target }}/release/betterframe-client
+          cp target/${{ matrix.rust_target }}/release/betterframe-client \
              betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
 
       - name: Upload to GitHub Release (binary)
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag }}
-          files: kiosk/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
+          files: client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
 
       - name: Auto-import into BF server
         if: env.BF_AUTOIMPORT_URL != '' && env.BF_AUTOIMPORT_API_KEY != ''
         env:
           BF_AUTOIMPORT_URL: ${{ secrets.BF_AUTOIMPORT_URL }}
           BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}
-        working-directory: kiosk
+        working-directory: client
         run: |
           bin="betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}"
           base64 -w 0 "$bin" > "${bin}.b64"
@@ -237,11 +248,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: betterframe-kiosk-${{ matrix.firmware_target }}
-          path: kiosk/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
+          path: client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
           retention-days: 14
 
   # ---- Windows client + MSI -------------------------------------------------
   windows-client:
+    needs: client-core
     runs-on: windows-latest
     env:
       GSTREAMER_VERSION: "1.26.9"
@@ -285,10 +297,10 @@ jobs:
           "PKG_CONFIG_PATH=$pkgConfigPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "LIB=C:\Program Files\gstreamer\1.0\msvc_x86_64\lib;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build and test Windows client
-        working-directory: windows-client
+        working-directory: client
         run: cargo test --release
       - name: Build MSI
-        working-directory: windows-client
+        working-directory: client
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -317,15 +329,23 @@ jobs:
           cargo wix --nocapture --install-version $msiVersion -L -sice:ICE30 -L -sice:ICE80
           $msi = Get-ChildItem target\wix\*.msi | Select-Object -First 1
           Copy-Item $msi.FullName "betterframe-windows-client-${{ inputs.version }}-x86_64.msi"
+      - name: Install and self-test Windows client
+        working-directory: client
+        run: |
+          $msi = Resolve-Path "betterframe-windows-client-${{ inputs.version }}-x86_64.msi"
+          $installer = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
+          if ($installer.ExitCode -notin 0, 3010) { throw "client install failed with exit code $($installer.ExitCode)" }
+          & "$env:ProgramFiles\betterframe-windows-client\bin\betterframe-windows-client.exe" self-test
+          if ($LASTEXITCODE -ne 0) { throw "installed client self-test failed with exit code $LASTEXITCODE" }
       - name: Upload Windows installer to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag }}
-          files: windows-client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi
+          files: client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi
       - uses: actions/upload-artifact@v7
         with:
           name: betterframe-windows-client-x86_64
-          path: windows-client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi
+          path: client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi
           retention-days: 14
 
   # Source/dependency SBOM is attached to every release for licensing and

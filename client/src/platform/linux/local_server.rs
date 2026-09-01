@@ -316,23 +316,23 @@ async fn operator_certificate_handler() -> Response {
 }
 
 async fn operator_index_handler() -> Response {
-    operator_asset(include_str!("../operator-console/index.html"), "text/html; charset=utf-8")
+    operator_asset(include_str!("../../../operator-console/index.html"), "text/html; charset=utf-8")
 }
 
 async fn operator_work_handler() -> Response {
-    operator_asset(include_str!("../operator-console/work.html"), "text/html; charset=utf-8")
+    operator_asset(include_str!("../../../operator-console/work.html"), "text/html; charset=utf-8")
 }
 
 async fn operator_css_handler() -> Response {
-    operator_asset(include_str!("../operator-console/app.css"), "text/css; charset=utf-8")
+    operator_asset(include_str!("../../../operator-console/app.css"), "text/css; charset=utf-8")
 }
 
 async fn operator_js_handler() -> Response {
-    operator_asset(include_str!("../operator-console/app.js"), "text/javascript; charset=utf-8")
+    operator_asset(include_str!("../../../operator-console/app.js"), "text/javascript; charset=utf-8")
 }
 
 async fn operator_work_js_handler() -> Response {
-    operator_asset(include_str!("../operator-console/work.js"), "text/javascript; charset=utf-8")
+    operator_asset(include_str!("../../../operator-console/work.js"), "text/javascript; charset=utf-8")
 }
 
 fn operator_asset(content: &'static str, content_type: &'static str) -> Response {

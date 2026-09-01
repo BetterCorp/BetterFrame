@@ -123,7 +123,8 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
     }>(event);
 
     const target = normalizeFirmwareTarget(body?.target || body?.arch);
-    if (!body?.version || !body.channel || !target || !body.content_b64 || !body.signature) {
+    const signature = normalizeFirmwareSignature(body?.signature);
+    if (!body?.version || !body.channel || !target || !body.content_b64 || !signature) {
       throw createError({ statusCode: 400, statusMessage: "version, channel, target, content_b64, signature required" });
     }
     if (!ALLOWED_CHANNELS.has(body.channel)) {
@@ -138,7 +139,6 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
       throw createError({ statusCode: 400, statusMessage: "empty artifact" });
     }
 
-    const signature = body.signature.trim();
     const sha256 = verifyClientFirmware(deps, buf, signature);
     const artifactPath = await deps.firmware.storeBlob(buf, sha256);
     const id = randomUUID();
@@ -361,6 +361,11 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
 function clamp(n: number, lo: number, hi: number): number {
   if (!Number.isFinite(n)) return lo;
   return Math.max(lo, Math.min(hi, Math.floor(n)));
+}
+
+export function normalizeFirmwareSignature(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return value.trim() || null;
 }
 
 export function verifyClientFirmware(deps: AdminDeps, bytes: Buffer, signature: string): string {

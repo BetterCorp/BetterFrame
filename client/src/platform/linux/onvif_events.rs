@@ -1165,12 +1165,21 @@ fn extract_tag(xml: &str, tag: &str) -> Option<String> {
 }
 
 fn extract_inner_text(xml: &str, tag: &str) -> Option<String> {
-    let start = xml.find(&format!(":{tag}"))?;
-    let after = &xml[start..];
-    let gt = after.find('>')?;
-    let content = &after[gt + 1..];
-    let lt = content.find('<')?;
-    Some(content[..lt].trim().to_string())
+    for element in xml.split('<').skip(1) {
+        let Some((opening, content)) = element.split_once('>') else {
+            continue;
+        };
+        let Some(name) = opening.split_ascii_whitespace().next() else {
+            continue;
+        };
+        if name.starts_with('/')
+            || name.rsplit_once(':').map(|(_, local)| local) != Some(tag)
+        {
+            continue;
+        }
+        return Some(content.trim().to_string());
+    }
+    None
 }
 
 fn extract_section(xml: &str, section: &str) -> Option<String> {
@@ -1432,6 +1441,18 @@ mod tests {
     fn parses_namespaced_topic_text() {
         let xml = r#"<wsnt:NotificationMessage>
           <wsnt:Topic Dialect="http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet">tns1:RuleEngine/CellMotionDetector/Motion</wsnt:Topic>
+        </wsnt:NotificationMessage>"#;
+
+        let events = parse_notification_messages(xml);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].topic, "tns1:RuleEngine/CellMotionDetector/Motion");
+    }
+
+    #[test]
+    fn ignores_namespaced_topic_near_matches() {
+        let xml = r#"<wsnt:NotificationMessage>
+          <tt:TopicDescription>wrong</tt:TopicDescription>
+          <wsnt:Topic>tns1:RuleEngine/CellMotionDetector/Motion</wsnt:Topic>
         </wsnt:NotificationMessage>"#;
 
         let events = parse_notification_messages(xml);

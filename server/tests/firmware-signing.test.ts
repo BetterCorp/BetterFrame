@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
 
-import { verifyClientFirmware } from "../src/plugins/service-admin-http/routes-firmware.js";
+import {
+  normalizeFirmwareSignature,
+  verifyClientFirmware,
+} from "../src/plugins/service-admin-http/routes-firmware.js";
 import type { AdminDeps } from "../src/plugins/service-admin-http/index.js";
 
 test("client firmware imports require a vendor signature", () => {
@@ -16,4 +19,10 @@ test("client firmware imports require a vendor signature", () => {
 
   assert.equal(verifyClientFirmware(deps, bytes, signature), sha256);
   assert.throws(() => verifyClientFirmware(deps, Buffer.from("tampered"), signature));
+});
+
+test("client firmware import rejects malformed signatures before verification", () => {
+  assert.equal(normalizeFirmwareSignature(123), null);
+  assert.equal(normalizeFirmwareSignature("   "), null);
+  assert.equal(normalizeFirmwareSignature(" signed "), "signed");
 });

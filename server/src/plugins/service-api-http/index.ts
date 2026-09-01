@@ -233,13 +233,17 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     app.get("/api/kiosk/_check", async (event) => {
       const kiosk = (event.context as any).verifiedKiosk;
       const token = authorizationBearerToken(event);
+      const forwardedProto = getRequestHeader(event, "x-forwarded-proto")?.split(",", 1)[0]?.trim();
+      const secure = forwardedProto
+        ? forwardedProto.toLowerCase() === "https"
+        : new URL(event.req.url).protocol === "https:";
       return new Response(null, {
         status: 200,
         headers: {
           "x-betterframe-kiosk-id": String(kiosk.id),
           "x-betterframe-tenant": kiosk.tenant_id,
           "x-betterframe-tenant-slug": kiosk.tenant_slug,
-          ...(token ? { "set-cookie": kioskSessionCookie(token) } : {}),
+          ...(token ? { "set-cookie": kioskSessionCookie(token, secure) } : {}),
         },
       });
     });
@@ -306,8 +310,8 @@ function authorizationBearerToken(event: any): string | null {
   return header?.startsWith("Bearer ") ? header.slice(7) : null;
 }
 
-export function kioskSessionCookie(token: string): string {
-  return `betterframe_kiosk_key=${token}; Path=/; Secure; HttpOnly; SameSite=Strict`;
+export function kioskSessionCookie(token: string, secure: boolean): string {
+  return `betterframe_kiosk_key=${token}; Path=/; ${secure ? "Secure; " : ""}HttpOnly; SameSite=Strict`;
 }
 
 async function requireKiosk(

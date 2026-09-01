@@ -41,8 +41,12 @@ hook can pull these on a schedule.
 ```bash
 sudo apt install -y git
 git clone https://github.com/BetterCorp/BetterFrame.git ~/betterframe
-sudo ~/betterframe/deploy/scripts/setup-pi-kiosk.sh client
+sudo BF_CLIENT_FIRMWARE_PUBLIC_KEY_FILE=/path/to/client-firmware-signing.pub.pem \
+  ~/betterframe/deploy/scripts/setup-pi-kiosk.sh client
 ```
+
+The installer validates and persists the vendor public key for later rebuilds;
+the environment override is only required on first install or key rotation.
 
 Pairs with whichever `bf-server` is set in `/etc/default/betterframe-kiosk`
 (`BETTERFRAME_SERVER=http://<server-host>`).

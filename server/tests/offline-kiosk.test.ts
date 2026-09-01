@@ -82,11 +82,20 @@ test("webview kiosk credentials become server-issued host-only cookies", () => {
   const linux = readFileSync(new URL("../../client/src/platform/linux/ui.rs", import.meta.url), "utf8");
   const windows = readFileSync(new URL("../../client/src/platform/windows/renderer.rs", import.meta.url), "utf8");
   const proxy = readFileSync(new URL("../../deploy/angie/betterframe.docker.conf", import.meta.url), "utf8");
-  const cookie = kioskSessionCookie("bf-test");
+  const secureCookie = kioskSessionCookie("bf-test", true);
+  const lanCookie = kioskSessionCookie("bf-test", false);
 
   assert.doesNotMatch(linux + windows, /Cookie::build|document\.cookie.*betterframe_kiosk_key/);
-  assert.equal(cookie, "betterframe_kiosk_key=bf-test; Path=/; Secure; HttpOnly; SameSite=Strict");
-  assert.doesNotMatch(cookie, /Domain=/i);
+  assert.equal(secureCookie, "betterframe_kiosk_key=bf-test; Path=/; Secure; HttpOnly; SameSite=Strict");
+  assert.equal(lanCookie, "betterframe_kiosk_key=bf-test; Path=/; HttpOnly; SameSite=Strict");
+  assert.doesNotMatch(secureCookie + lanCookie, /Domain=/i);
   assert.equal(proxy.match(/auth_request_set \$bf_kiosk_cookie/g)?.length, 2);
   assert.equal(proxy.match(/add_header Set-Cookie \$bf_kiosk_cookie always/g)?.length, 2);
+});
+
+test("source installer embeds the configured client firmware trust root", () => {
+  const script = readFileSync(new URL("../../deploy/scripts/setup-pi-kiosk.sh", import.meta.url), "utf8");
+  assert.match(script, /BF_CLIENT_FIRMWARE_PUBLIC_KEY_FILE/);
+  assert.match(script, /PUBLIC_KEY_DST="\/etc\/betterframe\/client-firmware-signing\.pub\.pem"/);
+  assert.match(script, /BF_FIRMWARE_SIGNING_PUBLIC_KEY=.*PUBLIC_KEY_DST/);
 });

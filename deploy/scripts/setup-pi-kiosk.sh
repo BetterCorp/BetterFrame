@@ -23,6 +23,8 @@
 # Env overrides:
 #   BF_HOME=/path/to/repo          override repo location (default: $HOME/betterframe)
 #   BF_REPO_URL=git@…              override clone URL (default: github)
+#   BF_CLIENT_FIRMWARE_PUBLIC_KEY_FILE=/path/to/public.pem
+#                                    vendor public key for client OTA verification
 #   SKIP_BUILD=1                   skip kiosk cargo build (expects existing binary)
 #   BF_SKIP_UPGRADE=1              skip apt full-upgrade (faster re-runs)
 #   BF_NO_REBOOT=1                 don't auto-reboot when boot-time files changed
@@ -83,7 +85,7 @@ fi
 
 echo "==> Installing base packages"
 apt-get install -y --no-install-recommends \
-  git ca-certificates curl gnupg lsb-release sudo
+  git ca-certificates curl gnupg lsb-release openssl sudo
 
 # ----------------------------------------------------------------------------
 # 2. Clone or update repo (always — pull is safety-first)
@@ -184,8 +186,31 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
   BIN_DST="${BIN_DST_DIR}/betterframe-kiosk"
 
   if [ "${SKIP_BUILD:-0}" != "1" ]; then
+    PUBLIC_KEY_DST="/etc/betterframe/client-firmware-signing.pub.pem"
+    if [ -n "${BF_CLIENT_FIRMWARE_PUBLIC_KEY_FILE:-}" ]; then
+      if [ ! -f "${BF_CLIENT_FIRMWARE_PUBLIC_KEY_FILE}" ]; then
+        echo "error: client firmware public key not found: ${BF_CLIENT_FIRMWARE_PUBLIC_KEY_FILE}" >&2
+        exit 1
+      fi
+      if ! openssl pkey -pubin -in "${BF_CLIENT_FIRMWARE_PUBLIC_KEY_FILE}" -noout >/dev/null 2>&1; then
+        echo "error: invalid client firmware public key: ${BF_CLIENT_FIRMWARE_PUBLIC_KEY_FILE}" >&2
+        exit 1
+      fi
+      install -d -m 755 /etc/betterframe
+      if [ "$(readlink -f "${BF_CLIENT_FIRMWARE_PUBLIC_KEY_FILE}")" != "${PUBLIC_KEY_DST}" ]; then
+        install -m 644 "${BF_CLIENT_FIRMWARE_PUBLIC_KEY_FILE}" "${PUBLIC_KEY_DST}"
+      fi
+    fi
+    if [ ! -s "${PUBLIC_KEY_DST}" ]; then
+      echo "error: set BF_CLIENT_FIRMWARE_PUBLIC_KEY_FILE to the vendor public PEM for the first kiosk build" >&2
+      exit 1
+    fi
+    if ! openssl pkey -pubin -in "${PUBLIC_KEY_DST}" -noout >/dev/null 2>&1; then
+      echo "error: invalid client firmware public key: ${PUBLIC_KEY_DST}" >&2
+      exit 1
+    fi
     echo "==> Building kiosk binary (release)"
-    run_as_user "cd '${REPO_ROOT}' && cargo build --release --manifest-path client/Cargo.toml"
+    run_as_user "cd '${REPO_ROOT}' && BF_FIRMWARE_SIGNING_PUBLIC_KEY=\"\$(cat '${PUBLIC_KEY_DST}')\" cargo build --release --manifest-path client/Cargo.toml"
   fi
 
   if [ ! -f "${BIN_SRC}" ]; then

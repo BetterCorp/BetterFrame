@@ -599,7 +599,7 @@ async fn handle_agent_command(
                 info!("reboot ignored by Windows policy");
             }
         }
-        unsupported => info!("command unsupported on Windows: {unsupported:?}"),
+        _ => info!("command unsupported on Windows"),
     }
     Ok(())
 }

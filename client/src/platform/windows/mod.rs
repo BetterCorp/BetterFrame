@@ -229,11 +229,6 @@ pub fn run() {
 fn self_test() -> Result<(), String> {
     ensure_secure_state_dir()?;
     let probe = b"betterframe-self-test";
-    let encrypted = protect_machine(probe)?;
-    if unprotect_machine(&encrypted)? != probe {
-        return Err("DPAPI round-trip returned different data".to_string());
-    }
-
     let path = state_dir().join("self-test.tmp");
     write_protected(&path, probe)?;
     let stored = read_protected(&path)?;

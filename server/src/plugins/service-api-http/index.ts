@@ -790,6 +790,7 @@ function registerIoBoxRoutes(
       source_kiosk_id: null,
       source_camera_id: null,
       source_iobox_id: box.id,
+      ingress_path: "/api/iobox/event",
       source_type: "io",
       topic: body.topic,
       property_op: body.action ?? null,
@@ -1279,6 +1280,7 @@ function registerKioskRoutes(
       eventId = await repo.insertEvent({
         source_kiosk_id: kiosk.id,
         source_camera_id: body.camera_id ?? null,
+        ingress_path: "/api/kiosk/event",
         source_type: (body.source_type as any) ?? "system",
         topic: body.topic,
         property_op: body.property_op ?? null,
@@ -1290,6 +1292,7 @@ function registerKioskRoutes(
         eventId = await repo.insertEvent({
           source_kiosk_id: kiosk.id,
           source_camera_id: null,
+          ingress_path: "/api/kiosk/event",
           source_type: (body.source_type as any) ?? "system",
           topic: body.topic,
           property_op: body.property_op ?? null,
@@ -1409,6 +1412,7 @@ function registerKioskRoutes(
         const eventId = await repo.insertEvent({
           source_kiosk_id: kioskId,
           source_camera_id: cameraId,
+          ingress_path: "/oce/:tenantSlug/:cameraId/:callbackToken",
           source_type: "onvif",
           topic: evt.topic,
           property_op: evt.propertyOp ?? null,

@@ -47,6 +47,7 @@
                     Name="BetterFrame"
                     Arguments="agent"
                     WorkingDirectory="APPLICATIONFOLDER"
+                    Icon="BetterFrameIcon.exe"
                     Advertise="yes" />
               </File>
             </Component>
@@ -96,8 +97,8 @@
     </Feature>
 
     <SetProperty Id="ARPINSTALLLOCATION" Value="[APPLICATIONFOLDER]" After="CostFinalize" />
-    <Icon Id="BetterFrameIcon" SourceFile="wix\betterframe.ico" />
-    <Property Id="ARPPRODUCTICON" Value="BetterFrameIcon" />
+    <Icon Id="BetterFrameIcon.exe" SourceFile="wix\betterframe.ico" />
+    <Property Id="ARPPRODUCTICON" Value="BetterFrameIcon.exe" />
     <WixVariable Id="WixUIBannerBmp" Value="wix\banner.bmp" />
     <WixVariable Id="WixUILicenseRtf" Value="wix\license.rtf" />
     <UIRef Id="WixUI_FeatureTree" />

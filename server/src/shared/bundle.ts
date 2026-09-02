@@ -621,6 +621,11 @@ export async function generateBundle(
   return bundle;
   } catch (cause) {
     const error = cause instanceof Error ? cause : new Error(String(cause));
+    span?.log.error("bundle generation failed for kiosk {id} during {phase}: {message}", {
+      id: String(kioskId),
+      phase,
+      message: error.message,
+    });
     span?.error(error, { "bundle.phase": phase });
     span?.end({ status: "error", "bundle.phase": phase });
     throw cause;

@@ -988,4 +988,5 @@ export const TENANT_MIGRATIONS: readonly string[] = [
       AND c.device_id IS NULL
       AND c.onvif_host = d.host
       AND COALESCE(c.onvif_port, 80) = d.port`,
+  `ALTER TABLE event_log ADD COLUMN IF NOT EXISTS ingress_path TEXT`,
 ];

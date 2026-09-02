@@ -731,8 +731,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const user = event.context.user!;
     const cameras = await deps.repo.listCameras();
     const kiosks = await deps.repo.listKiosks();
-    const layouts = await deps.repo.listDisplays(); // for count
-    const events = await deps.repo.recentEvents(10);
+    const [layouts, events, ioBoxes] = await Promise.all([
+      deps.repo.listDisplays(),
+      deps.repo.recentEvents(10),
+      deps.repo.listIoBoxes(),
+    ]);
     const onlineKiosks = kiosks.filter((k) => {
       if (!k.last_seen_at) return false;
       return Date.now() - new Date(k.last_seen_at).getTime() < 5 * 60 * 1000;
@@ -745,6 +748,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       onlineKioskCount: onlineKiosks.length,
       layoutCount: layouts.length,
       events,
+      cameraNames: new Map(cameras.map((camera) => [camera.id, camera.name])),
+      kioskNames: new Map(kiosks.map((kiosk) => [kiosk.id, kiosk.name])),
+      ioBoxNames: new Map(ioBoxes.map((box) => [box.id, box.name])),
     }));
   });
 

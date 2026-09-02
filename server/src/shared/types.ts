@@ -571,6 +571,7 @@ export interface EventLog {
   source_kiosk_id: string | null;
   source_camera_id: string | null;
   source_iobox_id: string | null;
+  ingress_path: string | null;
   source_type: EventSourceType;
   topic: string;
   property_op: string | null;

@@ -302,6 +302,9 @@ interface OverviewProps {
   onlineKioskCount: number;
   layoutCount: number;
   events: EventLog[];
+  cameraNames: Map<string, string>;
+  kioskNames: Map<string, string>;
+  ioBoxNames: Map<string, string>;
 }
 
 export function OverviewPage(props: OverviewProps) {
@@ -361,16 +364,49 @@ export function OverviewPage(props: OverviewProps) {
             {props.events.length === 0 ? (
               <tr><td colspan="4" style="text-align:center; color:#999; padding:2rem">No events yet</td></tr>
             ) : (
-              props.events.map((ev) => (
-                <tr>
-                  <td style="white-space:nowrap; font-size:0.8rem"><LocalTime value={ev.received_at} format="event" /></td>
-                  <td>{ev.topic}</td>
-                  <td><span class="badge badge-gray">{ev.source_type}</span></td>
-                  <td style="font-size:0.8rem; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
-                    {JSON.stringify(ev.payload)}
-                  </td>
-                </tr>
-              ))
+              props.events.map((ev) => {
+                const cameraName = ev.source_camera_id ? props.cameraNames.get(ev.source_camera_id) : null;
+                const kioskName = ev.source_kiosk_id ? props.kioskNames.get(ev.source_kiosk_id) : null;
+                const ioBoxName = ev.source_iobox_id ? props.ioBoxNames.get(ev.source_iobox_id) : null;
+                const dialogId = `event-${ev.id}`;
+                return (
+                  <tr>
+                    <td style="white-space:nowrap; font-size:0.8rem"><LocalTime value={ev.received_at} format="event" /></td>
+                    <td>{ev.topic}</td>
+                    <td>
+                      {cameraName && ev.source_camera_id ? <a href={`/admin/cameras/${ev.source_camera_id}`}>{cameraName}</a>
+                        : ioBoxName && ev.source_iobox_id ? <a href={`/admin/iobox/${ev.source_iobox_id}`}>{ioBoxName}</a>
+                        : kioskName && ev.source_kiosk_id ? <a href={`/admin/kiosks/${ev.source_kiosk_id}`}>{kioskName}</a>
+                        : <span class="badge badge-gray">{ev.source_type}</span>}
+                    </td>
+                    <td style="font-size:0.8rem; max-width:300px">
+                      <button class="btn btn-sm btn-ghost" type="button" onclick={`document.getElementById('${dialogId}').showModal()`} style="max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+                        {JSON.stringify(ev.payload)}
+                      </button>
+                      <dialog id={dialogId} aria-labelledby={`${dialogId}-title`} style="width:min(760px, calc(100vw - 2rem)); max-height:calc(100vh - 2rem); border:0; border-radius:12px; padding:1.25rem; box-shadow:0 20px 60px rgba(0,0,0,.35)">
+                        <div style="display:flex; justify-content:space-between; gap:1rem; align-items:start">
+                          <h2 id={`${dialogId}-title`} style="margin:0">Event details</h2>
+                          <form method="dialog"><button class="btn btn-sm btn-ghost" aria-label="Close event details">Close</button></form>
+                        </div>
+                        <dl style="display:grid; grid-template-columns:max-content 1fr; gap:.5rem 1rem; margin:1rem 0">
+                          <dt>Event ID</dt><dd style="margin:0"><code>{ev.id}</code></dd>
+                          <dt>Received</dt><dd style="margin:0"><LocalTime value={ev.received_at} format="event" /></dd>
+                          <dt>Ingress path</dt><dd style="margin:0"><code>{ev.ingress_path ?? "Not recorded"}</code></dd>
+                          <dt>Source type</dt><dd style="margin:0">{ev.source_type}</dd>
+                          <dt>Topic</dt><dd style="margin:0"><code>{ev.topic}</code></dd>
+                          <dt>Property op</dt><dd style="margin:0">{ev.property_op ?? "—"}</dd>
+                          <dt>Camera</dt><dd style="margin:0">{ev.source_camera_id ? <a href={`/admin/cameras/${ev.source_camera_id}`}>{cameraName ?? ev.source_camera_id}</a> : "—"}</dd>
+                          <dt>Kiosk</dt><dd style="margin:0">{ev.source_kiosk_id ? <a href={`/admin/kiosks/${ev.source_kiosk_id}`}>{kioskName ?? ev.source_kiosk_id}</a> : "—"}</dd>
+                          <dt>ioBOX</dt><dd style="margin:0">{ev.source_iobox_id ? <a href={`/admin/iobox/${ev.source_iobox_id}`}>{ioBoxName ?? ev.source_iobox_id}</a> : "—"}</dd>
+                          <dt>Node-RED</dt><dd style="margin:0">{ev.forwarded_to_nodered ? "Forwarded" : "Not forwarded"}</dd>
+                        </dl>
+                        <h3>Payload</h3>
+                        <pre style="white-space:pre-wrap; overflow-wrap:anywhere; max-height:45vh; overflow:auto; background:#111827; color:#e5e7eb; padding:1rem; border-radius:8px">{JSON.stringify(ev.payload, null, 2)}</pre>
+                      </dialog>
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>

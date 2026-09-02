@@ -585,6 +585,7 @@ export function rowToEventLog(r: Row): EventLog {
     source_kiosk_id: sn(r["source_kiosk_id"]),
     source_camera_id: sn(r["source_camera_id"]),
     source_iobox_id: sn(r["source_iobox_id"]),
+    ingress_path: sn(r["ingress_path"]),
     source_type: s(r["source_type"]) as EventSourceType,
     topic: s(r["topic"]),
     property_op: sn(r["property_op"]),

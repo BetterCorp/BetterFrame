@@ -47,7 +47,6 @@
                     Name="BetterFrame"
                     Arguments="agent"
                     WorkingDirectory="APPLICATIONFOLDER"
-                    Icon="BetterFrameIcon"
                     Advertise="yes" />
               </File>
             </Component>

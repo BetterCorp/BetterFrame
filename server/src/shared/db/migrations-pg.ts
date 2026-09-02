@@ -989,4 +989,12 @@ export const TENANT_MIGRATIONS: readonly string[] = [
       AND c.onvif_host = d.host
       AND COALESCE(c.onvif_port, 80) = d.port`,
   `ALTER TABLE event_log ADD COLUMN IF NOT EXISTS ingress_path TEXT`,
+
+  // Repair for existing databases: device_labels was originally inserted in
+  // the migration list above, so versioned installs skipped it.
+  `CREATE TABLE IF NOT EXISTS device_labels (
+    device_id TEXT NOT NULL REFERENCES camera_devices(id) ON DELETE CASCADE,
+    label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+    PRIMARY KEY(device_id, label_id)
+  )`,
 ];

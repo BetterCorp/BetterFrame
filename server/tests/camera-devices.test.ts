@@ -10,6 +10,7 @@ import {
   renderCameraLabels,
   renderKioskLabels,
 } from "../src/web-templates/admin-pages.js";
+import { TENANT_MIGRATIONS } from "../src/shared/db/migrations-pg.js";
 
 test("device cameras fill a compact grid in stable discovery order", () => {
   assert.deepEqual(deviceGridPositions(0), []);
@@ -48,4 +49,11 @@ test("camera labels distinguish inherited device labels", () => {
   assert.doesNotMatch(html, /device-label/);
   assert.match(html, /camera-label/);
   assert.match(String(renderCameraDeviceLabels("device-1", [], [])), /camera-devices\/device-1\/labels/);
+});
+
+test("existing tenants receive the appended device-label repair migration", () => {
+  assert.equal(
+    TENANT_MIGRATIONS.filter((sql) => sql.includes("CREATE TABLE IF NOT EXISTS device_labels")).length,
+    2,
+  );
 });

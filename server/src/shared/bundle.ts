@@ -182,8 +182,13 @@ export interface KioskBundle {
 }
 
 export class BundleGenerationError extends Error {
+  readonly code: string;
+
   constructor(readonly phase: string, cause: Error) {
     super(`bundle generation failed during ${phase}`, { cause });
+    this.code = typeof (cause as Error & { code?: unknown }).code === "string"
+      ? String((cause as Error & { code: string }).code)
+      : cause.name;
   }
 }
 
@@ -497,6 +502,7 @@ export async function generateBundle(
   phase = "build-cameras";
   const bundleCameras: BundleCamera[] = [];
   for (const cam of cameras) {
+    phase = `build-camera-streams:${cam.id}`;
     const streams = await repo.listCameraStreams(cam.id);
     const effectiveStreams = streams.length > 0 ? streams : (
       cam.type === "rtsp" && cam.rtsp_url
@@ -513,6 +519,7 @@ export async function generateBundle(
         }]
         : []
     );
+    phase = `build-camera-credentials:${cam.id}`;
     const playbackCreds = resolvePlaybackCredentials(cam, effectiveStreams);
     // Encrypt camera password with per-kiosk key if available (stronger
     // isolation — compromised SD only exposes this kiosk's cameras). Falls
@@ -527,11 +534,14 @@ export async function generateBundle(
     if (playbackCreds.password && encryptKey) {
       playbackPwEncrypted = encryptForBundle(playbackCreds.password, encryptKey, `playback:${cam.id}`);
     }
+    phase = `build-camera-labels:${cam.id}`;
+    const labels = await repo.cameraLabelNames(cam.id);
+    phase = `build-camera:${cam.id}`;
     bundleCameras.push({
       id: cam.id,
       name: cam.name,
       camera_number: cam.camera_number,
-      labels: await repo.cameraLabelNames(cam.id),
+      labels,
       capabilities: cam.capabilities,
       enabled: cam.enabled,
       last_seen_at: cam.last_seen_at,

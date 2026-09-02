@@ -962,6 +962,7 @@ function registerKioskRoutes(
         return new Response(JSON.stringify({
           error: "bundle_generation_failed",
           phase: error.phase,
+          code: error.code,
           trace_id: event.context.obs?.traceId ?? null,
         }), {
           status: 500,

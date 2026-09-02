@@ -181,6 +181,12 @@ export interface KioskBundle {
   version: string;
 }
 
+export class BundleGenerationError extends Error {
+  constructor(readonly phase: string, cause: Error) {
+    super(`bundle generation failed during ${phase}`, { cause });
+  }
+}
+
 export async function generateBundle(
   repo: Repository,
   secrets: SecretsApi,
@@ -628,7 +634,7 @@ export async function generateBundle(
     });
     span?.error(error, { "bundle.phase": phase });
     span?.end({ status: "error", "bundle.phase": phase });
-    throw cause;
+    throw new BundleGenerationError(phase, error);
   }
 }
 

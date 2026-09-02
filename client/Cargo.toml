@@ -68,3 +68,6 @@ windows = { version = "0.61", features = [
   "Win32_System_Variant",
 ] }
 wry = { version = "0.56", default-features = false, features = ["os-webview"] }
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource = { version = "0.1.31", default-features = false }

@@ -292,6 +292,7 @@ jobs:
     needs: client-core
     runs-on: windows-latest
     env:
+      BF_BUILD_VERSION: ${{ inputs.version }}
       GSTREAMER_VERSION: "1.26.9"
       GSTREAMER_RELEASE: deps-1
       GSTREAMER_RUNTIME_SHA256: ef56a1e9077c6cadcf8384369d1e435a0f3bc0d5a26594773256cffe79f40ecb

@@ -45,10 +45,11 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, OpenProcessToken};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-    GetClientRect, GetMessageW, GetSystemMetrics, HMENU, HWND_BROADCAST, MSG, PostQuitMessage,
-    RegisterClassW, SC_MONITORPOWER, SM_CXSCREEN, SM_CYSCREEN, SMTO_ABORTIFHUNG, SW_SHOWMAXIMIZED,
-    SendMessageTimeoutW, ShowWindow, TranslateMessage, WM_DESTROY, WM_LBUTTONDBLCLK,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_SYSCOMMAND, WNDCLASSW, WS_EX_TOPMOST, WS_POPUP,
+    GetClientRect, GetMessageW, GetSystemMetrics, HMENU, HWND_BROADCAST, LoadIconW, MSG,
+    PostQuitMessage, RegisterClassW, SC_MONITORPOWER, SM_CXSCREEN, SM_CYSCREEN, SMTO_ABORTIFHUNG,
+    SW_SHOWMAXIMIZED, SendMessageTimeoutW, ShowWindow, TranslateMessage, WM_DESTROY,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_SYSCOMMAND, WNDCLASSW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 use wry::raw_window_handle::{
     HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle,
@@ -80,6 +81,10 @@ const DEFAULT_SERVER_URL: &str = crate::core::protocol::LOCAL_SERVER_URL;
 const AGENT_TASK_NAME: &str = "BetterFrameWindowsAgent";
 const APP_TASK_NAME: &str = "BetterFrameWindowsApp";
 const PROTECTED_MAGIC: &[u8; 4] = b"BFW1";
+
+fn kiosk_app_version() -> &'static str {
+    option_env!("BF_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct WindowsPolicy {
@@ -201,6 +206,12 @@ pub fn run() {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
+    info!(
+        "BetterFrame Windows client {} starting (mode={}, arch={})",
+        kiosk_app_version(),
+        args.get(1).map(String::as_str).unwrap_or("help"),
+        std::env::consts::ARCH
+    );
     let result = match args.get(1).map(|s| s.as_str()) {
         Some("agent") => run_agent_cli(&args[2..]),
         Some("app") => run_app(),
@@ -225,6 +236,10 @@ pub fn run() {
 }
 
 fn self_test() -> Result<(), String> {
+    let icon = unsafe { LoadIconW(GetModuleHandleW(null()), 1usize as *const u16) };
+    if icon == 0 {
+        return Err("BetterFrame icon resource is missing".to_string());
+    }
     ensure_secure_state_dir()?;
     let probe = b"betterframe-self-test";
     let path = state_dir().join("self-test.tmp");
@@ -623,8 +638,18 @@ async fn fetch_bundle(server_url: &str, key: &str) -> Result<KioskBundle, String
         .send()
         .await
         .map_err(|e| format!("bundle request: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("bundle response: HTTP {}", response.status()));
+    let status = response.status();
+    if !status.is_success() {
+        let detail = response.text().await.unwrap_or_default();
+        let detail = detail.trim();
+        return Err(format!(
+            "bundle response: HTTP {status}{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", detail.chars().take(512).collect::<String>())
+            }
+        ));
     }
     response
         .json::<KioskBundle>()
@@ -655,7 +680,7 @@ async fn heartbeat(
         .bearer_auth(key)
         .json(&serde_json::json!({
             "bundle_version": state.bundle_version.as_deref(),
-            "kiosk_app_version": env!("CARGO_PKG_VERSION"),
+            "kiosk_app_version": kiosk_app_version(),
             "firmware_target": "windows-x64",
             "os_version": std::env::consts::OS,
             "os_update_compatibility": "windows-desktop",

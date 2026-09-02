@@ -33,6 +33,7 @@ pub(super) fn run_app() -> Result<(), String> {
             style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
             lpfnWndProc: Some(window_proc),
             hInstance: hinstance,
+            hIcon: LoadIconW(hinstance, 1usize as *const u16),
             lpszClassName: class_name.as_ptr(),
             hbrBackground: CreateSolidBrush(rgb(17, 24, 39)) as HBRUSH,
             ..std::mem::zeroed()

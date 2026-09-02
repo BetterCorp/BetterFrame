@@ -21,7 +21,7 @@ import type { Repository } from "../../shared/db/repository.js";
 import { CLUSTER_SECRET_CONTEXT, initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
 import { initiatePairing, claimPairing } from "../../shared/pairing.js";
-import { generateBundle } from "../../shared/bundle.js";
+import { BundleGenerationError, generateBundle } from "../../shared/bundle.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
 import { initOsUpdates, type OsUpdateApi } from "../../shared/os-updates.js";
@@ -956,7 +956,19 @@ function registerKioskRoutes(
 
     event.context.obs?.log.info("bundle fetch for kiosk {id}", { id: String(kiosk.id) });
     const clusterKey = await getClusterKey(repo, secrets);
-    const bundle = await generateBundle(repo, secrets, kiosk.id, clusterKey, event.context.obs);
+    const bundle = await generateBundle(repo, secrets, kiosk.id, clusterKey, event.context.obs)
+      .catch((error: unknown) => {
+        if (!(error instanceof BundleGenerationError)) throw error;
+        return new Response(JSON.stringify({
+          error: "bundle_generation_failed",
+          phase: error.phase,
+          trace_id: event.context.obs?.traceId ?? null,
+        }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      });
+    if (bundle instanceof Response) return bundle;
     if (!bundle) throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
     bundle.tenant_slug = kiosk.tenant_slug;
 

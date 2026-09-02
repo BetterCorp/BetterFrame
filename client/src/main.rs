@@ -88,6 +88,12 @@ fn main() {
         registry.init();
     }
 
+    info!(
+        "BetterFrame client {} starting ({})",
+        server::kiosk_app_version(),
+        std::env::consts::ARCH
+    );
+
     gstreamer::init().expect("Failed to init GStreamer");
     gstgtk4::plugin_register_static().expect("Failed to register gtk4paintablesink");
 

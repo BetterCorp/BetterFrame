@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Re-vendor @anyvali/js from npm into server/src/web-static/anyvali/
+# Re-vendor AnyVali from npm into server/src/web-static/anyvali/
 # Usage: ./scripts/vendor-anyvali-js.sh [version]
 set -euo pipefail
-VERSION="${1:-0.2.0}"
+VERSION="${1:-1.1.0}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$ROOT/server/src/web-static/anyvali"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 cd "$TMP"
-echo "fetching @anyvali/js@$VERSION ..."
-npm pack "@anyvali/js@$VERSION" --silent
-TGZ=$(ls anyvali-js-*.tgz | head -1)
+echo "fetching anyvali@$VERSION ..."
+npm pack "anyvali@$VERSION" --silent
+TGZ=$(ls anyvali-*.tgz | head -1)
 tar xzf "$TGZ"
 echo "rebuilding $DEST ..."
 rm -rf "$DEST"

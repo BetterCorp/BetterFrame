@@ -31,6 +31,7 @@
     <Media Id="1" Cabinet="media1.cab" EmbedCab="yes" CompressionLevel="high" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramMenuFolder" />
       <Directory Id="$(var.PlatformProgramFilesFolder)" Name="PFiles">
         <Directory Id="APPLICATIONFOLDER" Name="betterframe-windows-client">
           <Directory Id="Bin" Name="bin">
@@ -39,7 +40,16 @@
                   Id="ClientExe"
                   Name="betterframe-windows-client.exe"
                   Source="$(var.CargoTargetBinDir)\betterframe-client.exe"
-                  KeyPath="yes" />
+                  KeyPath="yes">
+                <Shortcut
+                    Id="StartMenuShortcut"
+                    Directory="ProgramMenuFolder"
+                    Name="BetterFrame"
+                    Arguments="agent"
+                    WorkingDirectory="APPLICATIONFOLDER"
+                    Icon="BetterFrameIcon"
+                    Advertise="yes" />
+              </File>
             </Component>
             <Component Id="LicenseSummaryFile" Guid="*">
               <File Id="LicenseSummary" Source="..\LICENSE.md" KeyPath="yes" />

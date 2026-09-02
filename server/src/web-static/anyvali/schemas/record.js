@@ -19,12 +19,18 @@ export class RecordSchema extends BaseSchema {
             return undefined;
         }
         const obj = input;
-        const result = {};
+        const result = Object.create(null);
         for (const [key, value] of Object.entries(obj)) {
             ctx.path.push(key);
-            result[key] = this._valueSchema._runPipeline(value, ctx);
+            Object.defineProperty(result, key, {
+                value: this._valueSchema._runPipeline(value, ctx),
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            });
             ctx.path.pop();
         }
+        Object.setPrototypeOf(result, Object.prototype);
         return result;
     }
     _toNode() {

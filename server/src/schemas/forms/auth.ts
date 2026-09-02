@@ -2,9 +2,9 @@
  * Form schemas for the auth flow.
  *
  * Server: parsed from x-www-form-urlencoded body before any DB access.
- * Browser: same schemas drive HTML5 attributes via @anyvali/js/forms.
+ * Browser: same schemas drive HTML5 attributes via anyvali/forms.
  */
-import * as av from "@anyvali/js";
+import * as av from "anyvali";
 
 const usernamePattern = "^[a-zA-Z0-9_-]+$";
 

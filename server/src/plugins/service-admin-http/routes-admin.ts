@@ -6,6 +6,7 @@ import { type H3, readBody, getRouterParam, getRequestHeader } from "h3";
 import { debugHtmlPage, htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { confirmPairing } from "../../shared/pairing.js";
+import { CLUSTER_SECRET_CONTEXT } from "../../shared/secrets.js";
 import { getCoordinator } from "../../shared/coordinator-registry.js";
 import {
   OverviewPage,
@@ -998,7 +999,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     let clusterKey: string | undefined;
     try {
       const enc = await deps.repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
-      if (enc) clusterKey = deps.secrets.decryptString(enc, "cluster");
+      if (enc) clusterKey = deps.secrets.decryptString(enc, CLUSTER_SECRET_CONTEXT);
     } catch { /* ignore */ }
 
     const rows = [];
@@ -2769,7 +2770,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       const prev = kiosk.managed_config_json ? JSON.parse(kiosk.managed_config_json) : null;
       let pskCiphertext: string | null = prev?.wifi?.psk_ciphertext ?? null;
       if (pskPlaintext) {
-        pskCiphertext = deps.secrets.encryptString(pskPlaintext, "cluster");
+        pskCiphertext = deps.secrets.encryptString(pskPlaintext, CLUSTER_SECRET_CONTEXT);
       }
       if (pskCiphertext) {
         cfg["wifi"] = { ssid, psk_ciphertext: pskCiphertext };

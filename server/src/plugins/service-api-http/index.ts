@@ -4,7 +4,7 @@
  * Port 18081 behind Angie proxy. Handles pairing, bundle delivery,
  * heartbeat, and event forwarding.
  */
-import * as av from "@anyvali/js";
+import * as av from "anyvali";
 import {
   BSBService,
   type BSBServiceConstructor,
@@ -18,7 +18,7 @@ import type { Server } from "srvx";
 import type { DbConfig } from "../../shared/db/config.js";
 import { initDb } from "../../shared/db/init.js";
 import type { Repository } from "../../shared/db/repository.js";
-import { initSecrets } from "../../shared/secrets.js";
+import { CLUSTER_SECRET_CONTEXT, initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
 import { initiatePairing, claimPairing } from "../../shared/pairing.js";
 import { generateBundle } from "../../shared/bundle.js";
@@ -79,6 +79,10 @@ const ConfigSchema = av.object(
     mqttUsername: av.string().default(""),
     mqttPassword: av.string().default(""),
     mqttTopicPrefix: av.string().default("betterframe"),
+    firmwareSigningKey: av.string().default(""),
+    firmwareSigningKeyBase64: av.string().default(""),
+    clientFirmwarePublicKey: av.string().default(""),
+    clientFirmwarePublicKeyBase64: av.string().default(""),
   },
   { unknownKeys: "strip" },
 );
@@ -156,7 +160,12 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
     const firmware = initFirmware(
-      { dataDir },
+      {
+        dataDir,
+        signingKeyPem: this.config.firmwareSigningKey || (this.config.firmwareSigningKeyBase64
+          ? Buffer.from(this.config.firmwareSigningKeyBase64, "base64").toString("utf8")
+          : undefined),
+      },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
     const osUpdates = initOsUpdates({ dataDir });
@@ -189,12 +198,16 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       onError: (error, event) => {
         const reqObs = event.context.obs;
         const path = event.req.url ?? "unknown";
-        const err = error.message ?? String(error);
+        const attributes = {
+          "http.method": event.req.method ?? "unknown",
+          "http.path": path,
+          "http.status_code": Number((error as any).statusCode ?? (error as any).status ?? 500),
+        };
         if (!reqObs) {
-          obs.log.error("HTTP error {path}: {err} (no request trace)", { path, err });
+          obs.error(error, attributes);
           return;
         }
-        reqObs.log.error("HTTP error {path}: {err}", { path, err });
+        reqObs.error(error, attributes);
       },
       onResponse: (response, event) => {
         const reqObs = event.context.obs;
@@ -262,8 +275,11 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       });
     });
 
-    registerPairingRoutes(app, repo, auth, secrets, codeTtl, firmware, osUpdates);
-    registerKioskRoutes(app, repo, auth, secrets, nodered, firmware, osUpdates, mqtt);
+    const clientFirmwarePublicKey = this.config.clientFirmwarePublicKey || (this.config.clientFirmwarePublicKeyBase64
+      ? Buffer.from(this.config.clientFirmwarePublicKeyBase64, "base64").toString("utf8")
+      : "");
+    registerPairingRoutes(app, repo, auth, secrets, codeTtl, firmware, osUpdates, clientFirmwarePublicKey);
+    registerKioskRoutes(app, repo, auth, secrets, nodered, firmware, osUpdates, mqtt, clientFirmwarePublicKey);
     registerIoBoxRoutes(app, repo, auth, nodered, mqtt, firmware);
 
     this.server = serve(app, {
@@ -350,7 +366,7 @@ async function getClusterKey(repo: Repository, secrets: SecretsApi): Promise<str
   const enc = await repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
   if (!enc) return undefined;
   try {
-    return secrets.decryptString(enc, "cluster");
+    return secrets.decryptString(enc, CLUSTER_SECRET_CONTEXT);
   } catch {
     return undefined;
   }
@@ -410,6 +426,7 @@ function registerPairingRoutes(
   codeTtl: number,
   firmware: FirmwareApi,
   osUpdates: OsUpdateApi,
+  clientFirmwarePublicKey: string,
 ): void {
   // Constructed in-function so the BSB schema extractor (which evaluates the
   // module statically) doesn't see a top-level createRateLimiter call.
@@ -499,7 +516,7 @@ function registerPairingRoutes(
         size_bytes: release.size_bytes,
         download_url: `/api/firmware/public/download/${release.id}`,
         // Older clients require this field; current clients ignore it and use their embedded key.
-        public_key_pem: process.env["BF_CLIENT_FIRMWARE_PUBLIC_KEY"] ?? "",
+        public_key_pem: clientFirmwarePublicKey,
       },
     };
   });
@@ -929,6 +946,7 @@ function registerKioskRoutes(
   firmware: FirmwareApi,
   osUpdates: OsUpdateApi,
   mqtt: MqttBridge,
+  clientFirmwarePublicKey: string,
 ): void {
   const onvifCallbackGuard = createRateLimiter({ windowMs: 60_000, max: 300 });
   // Bundle delivery
@@ -965,7 +983,19 @@ function registerKioskRoutes(
     const kiosk = await requireKiosk(event, repo, auth);
     event.context.obs?.log.info("heartbeat from kiosk {id}", { id: String(kiosk.id) });
 
-    const body = validateBody(HeartbeatBody, await readBody(event));
+    const rawBody = await readBody(event);
+    const body = (() => {
+      try {
+        return validateBody(HeartbeatBody, rawBody);
+      } catch (cause) {
+        const error = cause instanceof Error ? cause : new Error(String(cause));
+        event.context.obs?.error(error, {
+          "heartbeat.phase": "validation",
+          "kiosk.id": String(kiosk.id),
+        });
+        throw cause;
+      }
+    })();
 
     // Capture the kiosk's LAN-side IP from the heartbeat connection so admin
     // can render a copy-paste URL even when the kiosk has no DNS name.
@@ -1065,12 +1095,24 @@ function registerKioskRoutes(
 
     // Sync displays reported by the kiosk
     if (Array.isArray(body.displays)) {
+      const displaySpan = event.context.obs?.startSpan("heartbeat-display-sync", {
+        "kiosk.id": String(kiosk.id),
+        "display.reported_count": body.displays.length,
+      });
+      let currentDisplay = "";
+      let currentIndex = -1;
+      let createdCount = 0;
+      let updatedCount = 0;
+      let removedCount = 0;
+      try {
       const existing = await repo.listDisplaysForKiosk(kiosk.id);
       const seenDisplayIds = new Set<string>();
       for (const [position, reported] of body.displays.entries()) {
         const reportedIndex = Number.isInteger(reported.index) && reported.index! >= 0
           ? reported.index!
           : position;
+        currentDisplay = reported.name;
+        currentIndex = reportedIndex;
         const displayName = kioskDisplayName(kioskFull?.name ?? String(kiosk.id), reported.name);
         const match = findReportedDisplayMatch(existing, seenDisplayIds, reported.name, reportedIndex);
         if (match) {
@@ -1099,6 +1141,12 @@ function registerKioskRoutes(
                 actual_power_state_at: new Date().toISOString(),
               } : {}),
             } as any);
+            updatedCount += 1;
+            displaySpan?.log.info("updated display {id} {name} at index {index}", {
+              id: match.id,
+              name: reported.name,
+              index: reportedIndex,
+            });
           }
         } else {
           // New display — create it
@@ -1120,11 +1168,39 @@ function registerKioskRoutes(
             } as any);
           }
           seenDisplayIds.add(created.id);
+          createdCount += 1;
+          displaySpan?.log.info("created display {id} {name} at index {index}", {
+            id: created.id,
+            name: reported.name,
+            index: reportedIndex,
+          });
         }
       }
       for (const display of existing) {
         if (seenDisplayIds.has(display.id)) continue;
-        await repo.deleteDisplayIfUnused(display.id);
+        if (await repo.deleteDisplayIfUnused(display.id)) {
+          removedCount += 1;
+          displaySpan?.log.info("removed stale display {id} {name}", {
+            id: display.id,
+            name: display.name,
+          });
+        }
+      }
+      displaySpan?.end({
+        status: "ok",
+        "display.existing_count": existing.length,
+        "display.created_count": createdCount,
+        "display.updated_count": updatedCount,
+        "display.removed_count": removedCount,
+      });
+      } catch (cause) {
+        const error = cause instanceof Error ? cause : new Error(String(cause));
+        displaySpan?.error(error, {
+          "display.name": currentDisplay,
+          "display.index": currentIndex,
+        });
+        displaySpan?.end({ status: "error" });
+        throw cause;
       }
     }
 
@@ -1466,7 +1542,7 @@ function registerKioskRoutes(
         size_bytes: release.size_bytes,
         download_url: `/api/kiosk/firmware/download/${release.id}`,
         // Older clients require this field; current clients ignore it and use their embedded key.
-        public_key_pem: process.env["BF_CLIENT_FIRMWARE_PUBLIC_KEY"] ?? "",
+        public_key_pem: clientFirmwarePublicKey,
       },
     };
   });

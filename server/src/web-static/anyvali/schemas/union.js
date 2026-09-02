@@ -12,6 +12,14 @@ export class UnionSchema extends BaseSchema {
             const innerCtx = {
                 path: [...ctx.path],
                 issues: [],
+                // Propagate recursion depth and circular-reference tracking so the
+                // depth guard is not reset (and bypassed) at each union boundary.
+                definitions: ctx.definitions,
+                seen: ctx.seen,
+                depth: ctx.depth,
+                sensitiveMode: ctx.sensitiveMode,
+                sensitiveTransform: ctx.sensitiveTransform,
+                sensitiveCache: ctx.sensitiveCache,
             };
             const result = variant._runPipeline(input, innerCtx);
             if (innerCtx.issues.length === 0) {

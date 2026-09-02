@@ -8,7 +8,7 @@
  * rule processing. Cross-language: imported by Rust kiosk for outbound calls
  * and by the Node-RED bridge to validate inbound payloads.
  */
-import * as av from "@anyvali/js";
+import * as av from "anyvali";
 
 export const kioskHeartbeat = av.object(
   {

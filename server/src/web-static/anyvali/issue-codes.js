@@ -13,5 +13,6 @@ export const ISSUE_CODES = {
     UNSUPPORTED_SCHEMA_KIND: "unsupported_schema_kind",
     COERCION_FAILED: "coercion_failed",
     DEFAULT_INVALID: "default_invalid",
+    TOO_DEEP: "too_deep",
 };
 //# sourceMappingURL=issue-codes.js.map

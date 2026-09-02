@@ -1,5 +1,6 @@
 export { ISSUE_CODES } from "./issue-codes.js";
 export { ValidationError } from "./errors.js";
+export { encrypt, decrypt, safeParseEncrypted } from "./sensitive.js";
 // ---- Re-export schema classes ----
 export { BaseSchema, ABSENT, StringSchema, NumberSchema, Float32Schema, Float64Schema, IntSchema, Int8Schema, Int16Schema, Int32Schema, Int64Schema, Uint8Schema, Uint16Schema, Uint32Schema, Uint64Schema, BoolSchema, NullSchema, AnySchema, UnknownSchema, NeverSchema, LiteralSchema, EnumSchema, ArraySchema, TupleSchema, ObjectSchema, RecordSchema, UnionSchema, IntersectionSchema, OptionalSchema, NullableSchema, RefSchema, } from "./schemas/index.js";
 // ---- Builder functions ----
@@ -135,12 +136,12 @@ export function nullable(schema) {
 }
 // ---- Top-level parse functions ----
 /** Parse input using the given schema. Throws ValidationError on failure. */
-export function parse(schema, input) {
-    return schema.parse(input);
+export function parse(schema, input, options) {
+    return schema.parse(input, options);
 }
 /** Parse input using the given schema. Returns a result object. */
-export function safeParse(schema, input) {
-    return schema.safeParse(input);
+export function safeParse(schema, input, options) {
+    return schema.safeParse(input, options);
 }
 // ---- Interchange functions ----
 import { exportSchema as _exportSchema } from "./interchange/exporter.js";

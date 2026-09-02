@@ -283,8 +283,14 @@ pub fn discover_server(override_url: Option<&str>) -> String {
     // The WS and bundle retry loops reconnect to this saved endpoint later.
     if let Ok(saved) = fs::read_to_string(server_file()) {
         let saved = saved.trim().to_string();
-        if !saved.is_empty() && (is_paired() || check_health(&saved)) {
-            return saved;
+        if !saved.is_empty() {
+            if is_paired() {
+                return saved;
+            }
+            if let Some(resolved) = healthy_server_origin(&saved) {
+                fs::write(server_file(), &resolved).ok();
+                return resolved;
+            }
         }
     }
 
@@ -292,30 +298,27 @@ pub fn discover_server(override_url: Option<&str>) -> String {
     // Single image works for aio (server beside kiosk on same Pi), on-prem
     // (server on the LAN, discoverable by mDNS), and client-only (no local
     // server — falls through to the cloud).
-    let candidates = [
-        "http://localhost",
-        "http://betterframe.local",
-        "https://frame-eu.betterportal.net",
-    ];
-
-    for url in candidates {
+    for url in crate::core::protocol::SERVER_CANDIDATES {
         info!("trying {url}...");
-        if check_health(url) {
-            fs::write(server_file(), url).ok();
-            return url.to_string();
+        if let Some(resolved) = healthy_server_origin(url) {
+            fs::write(server_file(), &resolved).ok();
+            return resolved;
         }
     }
 
     panic!("Could not find BetterFrame server");
 }
 
-fn check_health(url: &str) -> bool {
-    reqwest::blocking::Client::new()
+fn healthy_server_origin(url: &str) -> Option<String> {
+    let response = reqwest::blocking::Client::new()
         .get(format!("{url}/healthz"))
         .timeout(Duration::from_secs(3))
         .send()
-        .map(|r| r.status().is_success())
-        .unwrap_or(false)
+        .ok()?;
+    response
+        .status()
+        .is_success()
+        .then(|| crate::core::protocol::server_origin(response.url()))
 }
 
 /// Check if already paired (key file exists).

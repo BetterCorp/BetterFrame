@@ -21,8 +21,8 @@
   },
   "bsb": {},
   "dependencies": {
-    "@anyvali/js": "^0.2.0",
-    "@bsb/base": "^9.1.11",
+    "@bsb/base": "^9.6.87",
+    "anyvali": "^1.1.0",
     "argon2": "^0.44.0",
     "h3": "^2.0.1-rc.22",
     "jsx-htmx": "^2.0.2",
@@ -39,8 +39,5 @@
     "@types/ws": "^8.18.1",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
-  },
-  "peerDependencies": {
-    "@bsb/base": "^9.1.11"
   }
 }

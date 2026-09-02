@@ -10,6 +10,11 @@ export class StringSchema extends BaseSchema {
     _endsWith;
     _includes;
     _format;
+    /**
+     * Cached compiled pattern. `undefined` = not yet compiled, `null` =
+     * compilation failed (invalid pattern). Avoids recompiling on every value.
+     */
+    _patternRe;
     _getCoercionTarget() {
         return "string";
     }
@@ -26,7 +31,21 @@ export class StringSchema extends BaseSchema {
     pattern(p) {
         const clone = this._clone();
         clone._pattern = p;
+        // Reset cached compilation inherited from the source via _clone().
+        clone._patternRe = undefined;
         return clone;
+    }
+    /** Lazily compile and cache the pattern. Returns null if invalid. */
+    _getPatternRe() {
+        if (this._patternRe !== undefined)
+            return this._patternRe;
+        try {
+            this._patternRe = new RegExp(this._pattern);
+        }
+        catch {
+            this._patternRe = null;
+        }
+        return this._patternRe;
     }
     startsWith(s) {
         const clone = this._clone();
@@ -60,27 +79,38 @@ export class StringSchema extends BaseSchema {
             return undefined;
         }
         const val = input;
-        if (this._minLength !== undefined && val.length < this._minLength) {
+        const length = Array.from(val).length;
+        if (this._minLength !== undefined && length < this._minLength) {
             ctx.issues.push({
                 code: ISSUE_CODES.TOO_SMALL,
                 message: `String must have at least ${this._minLength} character(s)`,
                 path: [...ctx.path],
                 expected: String(this._minLength),
-                received: String(val.length),
+                received: String(length),
             });
         }
-        if (this._maxLength !== undefined && val.length > this._maxLength) {
+        if (this._maxLength !== undefined && length > this._maxLength) {
             ctx.issues.push({
                 code: ISSUE_CODES.TOO_LARGE,
                 message: `String must have at most ${this._maxLength} character(s)`,
                 path: [...ctx.path],
                 expected: String(this._maxLength),
-                received: String(val.length),
+                received: String(length),
             });
         }
         if (this._pattern !== undefined) {
-            const re = new RegExp(this._pattern);
-            if (!re.test(val)) {
+            const re = this._getPatternRe();
+            if (re === null) {
+                // Invalid regex pattern - treat as validation failure
+                ctx.issues.push({
+                    code: ISSUE_CODES.INVALID_STRING,
+                    message: `Invalid regex pattern: ${this._pattern}`,
+                    path: [...ctx.path],
+                    expected: this._pattern,
+                    received: val,
+                });
+            }
+            else if (!re.test(val)) {
                 ctx.issues.push({
                     code: ISSUE_CODES.INVALID_STRING,
                     message: `String does not match pattern: ${this._pattern}`,

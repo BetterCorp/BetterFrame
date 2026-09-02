@@ -2,6 +2,17 @@ use serde::Deserialize;
 use serde_json::Value;
 use url::Url;
 
+pub const LOCAL_SERVER_URL: &str = "http://localhost";
+pub const SERVER_CANDIDATES: [&str; 3] = [
+    LOCAL_SERVER_URL,
+    "http://betterframe.local",
+    "https://frame.betterportal.net",
+];
+
+pub fn server_origin(url: &Url) -> String {
+    url.origin().ascii_serialization()
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PairInitiateResponse {
     pub code: String,
@@ -61,5 +72,18 @@ mod tests {
             "ws://10.0.0.2:18082/ws/kiosk?token=key"
         );
         assert!(websocket_url("localhost:18081", "key").is_err());
+    }
+
+    #[test]
+    fn discovery_tries_local_before_the_regional_redirector() {
+        assert_eq!(SERVER_CANDIDATES[0], LOCAL_SERVER_URL);
+        assert_eq!(
+            SERVER_CANDIDATES.last(),
+            Some(&"https://frame.betterportal.net")
+        );
+        assert_eq!(
+            server_origin(&Url::parse("https://frame-eu.betterportal.net/healthz").unwrap()),
+            "https://frame-eu.betterportal.net"
+        );
     }
 }

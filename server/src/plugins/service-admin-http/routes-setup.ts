@@ -7,6 +7,7 @@ import type { AdminDeps } from "./index.js";
 import { SetupPage } from "../../web-templates/auth-pages.js";
 import { SetupBody, validateBody } from "../../shared/api-schemas.js";
 import { requestOriginIsValid } from "../../shared/csrf.js";
+import { CLUSTER_SECRET_CONTEXT } from "../../shared/secrets.js";
 
 export function registerSetupRoutes(app: H3, deps: AdminDeps): void {
   app.get("/setup", async () => {
@@ -44,7 +45,7 @@ export function registerSetupRoutes(app: H3, deps: AdminDeps): void {
     await deps.repo.createUser({ username, password_hash: hash, role: "admin" });
 
     const clusterKey = deps.secrets.generateClusterKey();
-    const encryptedCluster = deps.secrets.encryptString(clusterKey, "cluster");
+    const encryptedCluster = deps.secrets.encryptString(clusterKey, CLUSTER_SECRET_CONTEXT);
     await deps.repo.setSetupExtra("cluster_key_encrypted", encryptedCluster);
     await deps.repo.markClusterKeyProvisioned();
 

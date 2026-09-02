@@ -4,7 +4,7 @@
  * Port 18080 behind Angie proxy. Initializes secrets + auth as
  * shared modules (not BSB plugins).
  */
-import * as av from "@anyvali/js";
+import * as av from "anyvali";
 import {
   BSBService,
   type BSBServiceConstructor,
@@ -72,6 +72,9 @@ const ConfigSchema = av.object(
     selfUrl: av.string().minLength(1).default("http://127.0.0.1:18080"),
     systemdCredsDir: av.string().default(""),
     firmwareSigningKey: av.string().default(""),
+    firmwareSigningKeyBase64: av.string().default(""),
+    clientFirmwarePublicKey: av.string().default(""),
+    clientFirmwarePublicKeyBase64: av.string().default(""),
     firmwareImportApiKey: av.string().default(""),
     otaImportApiKey: av.string().default(""),
   },
@@ -176,7 +179,12 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     );
 
     const firmware = initFirmware(
-      { dataDir, signingKeyPem: this.config.firmwareSigningKey || process.env["BF_FIRMWARE_SIGNING_KEY"] || undefined },
+      {
+        dataDir,
+        signingKeyPem: this.config.firmwareSigningKey || (this.config.firmwareSigningKeyBase64
+          ? Buffer.from(this.config.firmwareSigningKeyBase64, "base64").toString("utf8")
+          : undefined),
+      },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
     const osUpdates = initOsUpdates({ dataDir });
@@ -190,7 +198,9 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       firmware,
       osUpdates,
       dataDir,
-      clientFirmwarePublicKey: process.env["BF_CLIENT_FIRMWARE_PUBLIC_KEY"] || undefined,
+      clientFirmwarePublicKey: this.config.clientFirmwarePublicKey || (this.config.clientFirmwarePublicKeyBase64
+        ? Buffer.from(this.config.clientFirmwarePublicKeyBase64, "base64").toString("utf8")
+        : undefined),
       firmwareImportApiKey: this.config.firmwareImportApiKey || undefined,
       otaImportApiKey: this.config.otaImportApiKey || undefined,
       scheduleNoderedReconcile: () => {
@@ -214,12 +224,16 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       onError: (error, event) => {
         const reqObs = event.context.obs;
         const path = event.req.url ?? "unknown";
-        const err = error.message ?? String(error);
+        const attributes = {
+          "http.method": event.req.method ?? "unknown",
+          "http.path": path,
+          "http.status_code": Number((error as any).statusCode ?? (error as any).status ?? 500),
+        };
         if (!reqObs) {
-          obs.log.error("HTTP error {path}: {err} (no request trace)", { path, err });
+          obs.error(error, attributes);
           return;
         }
-        reqObs.log.error("HTTP error {path}: {err}", { path, err });
+        reqObs.error(error, attributes);
       },
       onResponse: (response, event) => {
         const reqObs = event.context.obs;

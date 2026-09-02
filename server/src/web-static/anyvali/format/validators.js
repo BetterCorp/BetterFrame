@@ -12,6 +12,9 @@ function isValidDate(str) {
         return false;
     const [y, m, d] = str.split("-").map(Number);
     const date = new Date(y, m - 1, d);
+    // new Date() maps years 0-99 to 1900-1999; undo that so early ISO years
+    // (e.g. 0050-01-01) are not falsely rejected.
+    date.setFullYear(y);
     return (date.getFullYear() === y &&
         date.getMonth() === m - 1 &&
         date.getDate() === d);
@@ -42,10 +45,13 @@ const FORMAT_VALIDATORS = {
     date: isValidDate,
     "date-time": isValidDateTime,
 };
+const FORMAT_NAME_RE = /^[A-Za-z][A-Za-z0-9-]*$/;
 export function validateFormat(value, format) {
+    if (!FORMAT_NAME_RE.test(format))
+        return false;
     const validator = FORMAT_VALIDATORS[format];
     if (!validator)
-        return true; // unknown formats pass
+        return true; // valid custom formats pass
     return validator(value);
 }
 //# sourceMappingURL=validators.js.map

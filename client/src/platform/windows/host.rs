@@ -87,8 +87,10 @@ pub(super) fn invalidate_app_windows() {
 
 pub(super) fn install_tasks(args: &[String]) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
-    let server = arg_value(args, "--server").unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
-    let agent_tr = format!("\"{}\" agent --server {}", exe.display(), server);
+    let agent_tr = match arg_value(args, "--server") {
+        Some(server) => format!("\"{}\" agent --server {}", exe.display(), server),
+        None => format!("\"{}\" agent", exe.display()),
+    };
     run_command(
         "schtasks",
         &[

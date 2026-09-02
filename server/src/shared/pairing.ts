@@ -10,7 +10,7 @@ import { randomBytes } from "node:crypto";
 import type { Observable } from "@bsb/base";
 import type { Repository } from "./db/repository.js";
 import type { AuthApi } from "./auth.js";
-import type { SecretsApi } from "./secrets.js";
+import { CLUSTER_SECRET_CONTEXT, type SecretsApi } from "./secrets.js";
 import type { PairingCode } from "./types.js";
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
@@ -262,7 +262,7 @@ export async function confirmPairing(
   let clusterKey: string | undefined;
   if (clusterKeyEncrypted) {
     try {
-      clusterKey = secrets.decryptString(clusterKeyEncrypted, "cluster");
+      clusterKey = secrets.decryptString(clusterKeyEncrypted, CLUSTER_SECRET_CONTEXT);
     } catch {
       clusterKey = undefined;
     }

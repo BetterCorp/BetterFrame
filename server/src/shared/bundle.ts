@@ -189,6 +189,8 @@ export async function generateBundle(
   obs?: Observable,
 ): Promise<KioskBundle | null> {
   const span = obs?.startSpan("generateBundle", { "kiosk.id": kioskId });
+  let phase = "load-kiosk";
+  try {
   const kiosk = await repo.getKioskById(kioskId);
   if (!kiosk) {
     span?.log.info("bundle: kiosk {id} not found", { id: String(kioskId) });
@@ -206,6 +208,7 @@ export async function generateBundle(
     }
   }
 
+  phase = "load-displays";
   // Find all displays for this kiosk (displays now point to kiosks via kiosk_id)
   const kioskDisplays = await repo.listDisplaysForKiosk(kioskId);
   // Fall back to legacy kiosk.display_id if no displays point to this kiosk yet
@@ -221,6 +224,7 @@ export async function generateBundle(
     return null;
   }
 
+  phase = "load-scope";
   // Collect camera IDs across ALL displays' layouts (de-duped).
   const allLayoutIds = new Set<string>();
   for (const d of displays) {
@@ -445,6 +449,7 @@ export async function generateBundle(
     return result;
   }
 
+  phase = "build-displays";
   const bundleDisplays: BundleDisplayWithLayouts[] = [];
   for (const display of displays) {
     bundleDisplays.push({
@@ -459,6 +464,7 @@ export async function generateBundle(
     });
   }
 
+  phase = "event-ownership";
   // Release stale ONVIF event ownership: if the owning kiosk hasn't been
   // seen in 24h, revert to "auto" so this (or another) kiosk can claim it.
   await repo.releaseStaleEventOwnership(24);
@@ -482,6 +488,7 @@ export async function generateBundle(
     }
   }
 
+  phase = "build-cameras";
   const bundleCameras: BundleCamera[] = [];
   for (const cam of cameras) {
     const streams = await repo.listCameraStreams(cam.id);
@@ -551,6 +558,7 @@ export async function generateBundle(
     });
   }
 
+  phase = "load-gpio";
   const gpioBindings: BundleGpioBinding[] = (await repo.listGpioBindings(kioskId)).map((g) => ({
     id: g.id,
     chip: g.chip,
@@ -596,6 +604,7 @@ export async function generateBundle(
     version: "",
   };
 
+  phase = "serialize";
   bundle.version = createHash("sha256")
     .update(JSON.stringify(stableBundleForVersion(bundle, stableEncryptedValues)))
     .digest("hex");
@@ -604,8 +613,18 @@ export async function generateBundle(
     id: String(kioskId),
     ver: bundle.version.slice(0, 12),
   });
-  span?.end();
+  span?.end({
+    status: "ok",
+    "bundle.displays": bundleDisplays.length,
+    "bundle.cameras": bundleCameras.length,
+  });
   return bundle;
+  } catch (cause) {
+    const error = cause instanceof Error ? cause : new Error(String(cause));
+    span?.error(error, { "bundle.phase": phase });
+    span?.end({ status: "error", "bundle.phase": phase });
+    throw cause;
+  }
 }
 
 function parseJsonObject(raw: string | null): Record<string, unknown> {

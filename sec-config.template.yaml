@@ -44,9 +44,8 @@ default:
         noderedUrl: ${BF_NODERED_URL}
         selfUrl: ${BF_SELF_URL}
         systemdCredsDir: ""
-        # Read from BF_FIRMWARE_SIGNING_KEY at runtime so multiline PEM is
-        # never interpolated into YAML.
-        firmwareSigningKey: ""
+        firmwareSigningKeyBase64: "${BF_FIRMWARE_SIGNING_KEY_BASE64}"
+        clientFirmwarePublicKeyBase64: "${BF_CLIENT_FIRMWARE_PUBLIC_KEY_BASE64}"
         firmwareImportApiKey: "${BF_FIRMWARE_IMPORT_API_KEY}"
         otaImportApiKey: "${BF_OTA_IMPORT_API_KEY}"
 
@@ -76,6 +75,8 @@ default:
         mqttUsername: "${BF_MQTT_USERNAME}"
         mqttPassword: "${BF_MQTT_PASSWORD}"
         mqttTopicPrefix: ${BF_MQTT_TOPIC_PREFIX}
+        firmwareSigningKeyBase64: "${BF_FIRMWARE_SIGNING_KEY_BASE64}"
+        clientFirmwarePublicKeyBase64: "${BF_CLIENT_FIRMWARE_PUBLIC_KEY_BASE64}"
 
     service-coordinator-ws:
       package: betterframe

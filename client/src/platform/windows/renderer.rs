@@ -376,16 +376,7 @@ pub(super) fn sync_webviews(
 }
 
 fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result<WebView, String> {
-    let mut script = "document.documentElement.style.cursor='none';".to_string();
-    if let Some(values) = &spec.local_storage {
-        for (key, value) in values {
-            script.push_str(&format!(
-                "try{{localStorage.setItem({},{});}}catch(_e){{}}",
-                serde_json::to_string(key).unwrap(),
-                serde_json::to_string(value).unwrap(),
-            ));
-        }
-    }
+    let script = initialization_script(spec.local_storage.as_ref());
 
     WEB_CONTEXT.with(|context| {
         let mut context = context
@@ -436,6 +427,20 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
         }
         Ok(view)
     })
+}
+
+pub(super) fn initialization_script(local_storage: Option<&HashMap<String, String>>) -> String {
+    let mut script = "try{document.documentElement.style.cursor='none';}catch(_e){}".to_string();
+    if let Some(values) = local_storage {
+        for (key, value) in values {
+            script.push_str(&format!(
+                "try{{localStorage.setItem({},{});}}catch(_e){{}}",
+                serde_json::to_string(key).unwrap(),
+                serde_json::to_string(value).unwrap(),
+            ));
+        }
+    }
+    script
 }
 
 pub(super) fn ablesign_profile_name(

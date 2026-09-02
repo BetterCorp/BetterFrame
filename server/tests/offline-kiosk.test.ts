@@ -99,3 +99,13 @@ test("source installer embeds the configured client firmware trust root", () => 
   assert.match(script, /PUBLIC_KEY_DST="\/etc\/betterframe\/client-firmware-signing\.pub\.pem"/);
   assert.match(script, /BF_FIRMWARE_SIGNING_PUBLIC_KEY=.*PUBLIC_KEY_DST/);
 });
+
+test("Docker passes multiline firmware keys through typed BSB config", () => {
+  const entrypoint = readFileSync(new URL("../../deploy/docker/server-entrypoint.sh", import.meta.url), "utf8");
+  const config = readFileSync(new URL("../../sec-config.template.yaml", import.meta.url), "utf8");
+
+  assert.match(entrypoint, /BF_FIRMWARE_SIGNING_KEY_BASE64=.*base64/);
+  assert.match(entrypoint, /BF_CLIENT_FIRMWARE_PUBLIC_KEY_BASE64=.*base64/);
+  assert.equal(config.match(/firmwareSigningKeyBase64:/g)?.length, 2);
+  assert.equal(config.match(/clientFirmwarePublicKeyBase64:/g)?.length, 2);
+});

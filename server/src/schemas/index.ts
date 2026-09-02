@@ -8,7 +8,7 @@
  *
  * Add new schemas here and run `npm run schemas:export`.
  */
-import type { BaseSchema } from "@anyvali/js";
+import type { BaseSchema } from "anyvali";
 
 import { passwordChangeForm, totpConfirmForm, totpDisableForm } from "./forms/account.js";
 import {

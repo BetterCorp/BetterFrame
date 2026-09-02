@@ -1,3 +1,7 @@
+// Decimal floating-point grammar: optional sign, digits with optional
+// fraction (or bare fraction), optional decimal exponent. Excludes hex/octal/
+// binary literals, Infinity and NaN that JS `Number()` would otherwise accept.
+const DECIMAL_FLOAT_RE = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 /**
  * Normalize coercion config from the corpus/interchange format.
  * The corpus uses strings like "string->int", "trim", "lower", "upper"
@@ -43,8 +47,15 @@ export function applyCoercion(input, config, targetType) {
             value = value.toUpperCase();
         }
     }
-    // Type coercion from string to target
-    if (config.from === "string" && typeof value === "string") {
+    // Type coercion from string to target.
+    // The only portable coercion source is "string" (spec 5.1), so enabling
+    // coercion on a non-string target (e.g. `number().coerce()`) implies a
+    // string source even when `from` is omitted. Without this, a bare
+    // `.coerce()` on a numeric/bool schema would silently no-op and the raw
+    // string would fail validation with invalid_type.
+    const isTypeTarget = targetType !== "string" && targetType !== "unknown";
+    const fromString = config.from === "string" || (config.from === undefined && isTypeTarget);
+    if (fromString && typeof value === "string") {
         switch (targetType) {
             case "int":
             case "int8":
@@ -80,6 +91,16 @@ export function applyCoercion(input, config, targetType) {
                     return {
                         success: false,
                         message: `Cannot coerce empty string to ${targetType}`,
+                    };
+                }
+                // Spec 5.1: parse as DECIMAL floating-point. JS `Number()` also accepts
+                // hex (0x), octal (0o) and binary (0b) literals, which would let
+                // "0x10" slip through as 16 and bypass the decimal-only contract.
+                // Restrict to a decimal float grammar before parsing.
+                if (!DECIMAL_FLOAT_RE.test(trimmed)) {
+                    return {
+                        success: false,
+                        message: `Cannot coerce "${value}" to ${targetType}`,
                     };
                 }
                 const num = Number(trimmed);

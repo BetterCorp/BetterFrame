@@ -5,7 +5,7 @@
  * Node-RED TypeScript custom nodes. Authored here in TypeScript and exported
  * as canonical JSON to /schemas/wire.pair_*.av.json.
  */
-import * as av from "@anyvali/js";
+import * as av from "anyvali";
 
 /** Capability strings a kiosk reports. Keep this list in sync with the Rust enum. */
 export const KIOSK_CAPABILITIES = [

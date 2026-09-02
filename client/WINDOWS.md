@@ -9,16 +9,19 @@ Install the logon task:
 
 ```powershell
 cargo build --release
-.\target\release\betterframe-client.exe install --server http://betterframe.local
+.\target\release\betterframe-client.exe install
 ```
 
 Run manually during development:
 
 ```powershell
-cargo run -- agent --server http://localhost
+cargo run -- agent
 cargo run -- app
 cargo run -- self-test
 ```
+
+Without `--server`, the client tries localhost, LAN discovery, then
+`https://frame.betterportal.net`. Pass `--server URL` to force one endpoint.
 
 Release MSIs include the 64-bit GStreamer runtime required by the client.
 Camera cells use `d3d11videosink`; decoder selection and GPU acceleration are

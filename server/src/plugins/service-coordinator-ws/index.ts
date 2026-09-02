@@ -11,7 +11,7 @@
  *   - pong: keepalive reply
  *   - status: current state
  */
-import * as av from "@anyvali/js";
+import * as av from "anyvali";
 import {
   BSBService,
   type BSBServiceConstructor,

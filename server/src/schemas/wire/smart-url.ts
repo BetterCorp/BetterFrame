@@ -12,7 +12,7 @@
  * bundle. Credentials in "fill" steps are encrypted with the per-kiosk
  * encryption key.
  */
-import * as av from "@anyvali/js";
+import * as av from "anyvali";
 
 export const SMART_URL_STEP_TYPES = [
   "navigate",   // Go to a URL

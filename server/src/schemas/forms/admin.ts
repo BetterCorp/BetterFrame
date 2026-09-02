@@ -4,7 +4,7 @@
  * Camera-create is a discriminated union on `type`. anyvali's `union`
  * picks first match, with the `literal` field as the discriminant.
  */
-import * as av from "@anyvali/js";
+import * as av from "anyvali";
 
 const labelName = av.string().minLength(1).maxLength(64).pattern("^[a-z0-9][a-z0-9_-]*$");
 

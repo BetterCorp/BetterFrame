@@ -1,4 +1,4 @@
-import * as av from "@anyvali/js";
+import * as av from "anyvali";
 
 const id = av.string().minLength(1).maxLength(128);
 const streamRole = av.enum_(["main", "sub", "other"] as const);

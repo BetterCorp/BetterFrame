@@ -1,4 +1,4 @@
-import * as av from "@anyvali/js";
+import * as av from "anyvali";
 
 export const dbConfigSchema = av.object(
   {

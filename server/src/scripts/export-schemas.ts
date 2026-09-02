@@ -3,7 +3,7 @@
  *
  * Run: `npm run schemas:export` (after build) — writes every registered
  * anyvali schema to /schemas/<key>.av.json. The output is portable: Rust kiosk
- * + Node-RED nodes + the browser (via vendored @anyvali/js) all consume these
+ * + Node-RED nodes + the browser (via vendored AnyVali) all consume these
  * exact files.
  *
  * Also copies the JSON into server/src/web-static/schemas/ so the browser

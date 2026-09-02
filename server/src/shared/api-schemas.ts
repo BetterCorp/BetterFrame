@@ -2,7 +2,7 @@
  * Anyvali input schemas for all external-facing API endpoints.
  * Applied via validateBody() / validateQuery() helpers.
  */
-import * as av from "@anyvali/js";
+import * as av from "anyvali";
 
 // ---- Kiosk API (service-api-http) -------------------------------------------
 
@@ -49,25 +49,25 @@ const HeartbeatPartition = av.object(
 
 export const HeartbeatBody = av.object(
   {
-    bundle_version: av.nullable(av.string().maxLength(128)).default(null),
+    bundle_version: av.optional(av.nullable(av.string().maxLength(128))),
     kiosk_app_version: av.string().maxLength(64).default(""),
     firmware_target: av.string().maxLength(128).default(""),
     os_version: av.string().maxLength(64).default(""),
     os_update_compatibility: av.string().maxLength(128).default(""),
     displays: av.array(HeartbeatDisplay).default([]),
-    cpu_temp_c: av.nullable(av.number().min(-40).max(150)).default(null),
-    cpu_load_percent: av.nullable(av.number().min(0).max(100)).default(null),
-    gpu_load_percent: av.nullable(av.number().min(0).max(100)).default(null),
-    fan_rpm: av.nullable(av.int().min(0).max(50000)).default(null),
-    fan_pwm: av.nullable(av.int().min(0).max(255)).default(null),
-    memory_total_mb: av.nullable(av.int().min(0)).default(null),
-    memory_used_mb: av.nullable(av.int().min(0)).default(null),
-    disk_total_mb: av.nullable(av.int().min(0)).default(null),
-    disk_free_mb: av.nullable(av.int().min(0)).default(null),
-    disk_used_percent: av.nullable(av.number().min(0).max(100)).default(null),
-    local_key: av.nullable(av.string().maxLength(256)).default(null),
-    local_port: av.nullable(av.int().min(1).max(65535)).default(null),
-    reported_hostname: av.nullable(av.string().maxLength(256)).default(null),
+    cpu_temp_c: av.optional(av.nullable(av.number().min(-40).max(150))),
+    cpu_load_percent: av.optional(av.nullable(av.number().min(0).max(100))),
+    gpu_load_percent: av.optional(av.nullable(av.number().min(0).max(100))),
+    fan_rpm: av.optional(av.nullable(av.int().min(0).max(50000))),
+    fan_pwm: av.optional(av.nullable(av.int().min(0).max(255))),
+    memory_total_mb: av.optional(av.nullable(av.int().min(0))),
+    memory_used_mb: av.optional(av.nullable(av.int().min(0))),
+    disk_total_mb: av.optional(av.nullable(av.int().min(0))),
+    disk_free_mb: av.optional(av.nullable(av.int().min(0))),
+    disk_used_percent: av.optional(av.nullable(av.number().min(0).max(100))),
+    local_key: av.optional(av.nullable(av.string().maxLength(256))),
+    local_port: av.optional(av.nullable(av.int().min(1).max(65535))),
+    reported_hostname: av.optional(av.nullable(av.string().maxLength(256))),
     network_interfaces: av.array(av.any()).default([]),
     logging: av.optional(av.any()),
     partitions: av.array(HeartbeatPartition).default([]),

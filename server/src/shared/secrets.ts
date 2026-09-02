@@ -32,6 +32,8 @@ export interface SecretsLog {
   warn(msg: string): void;
 }
 
+export const CLUSTER_SECRET_CONTEXT = "cluster";
+
 export interface SecretsApi {
   encryptString(plaintext: string, info?: string): string;
   decryptString(ciphertext: string, info?: string): string;

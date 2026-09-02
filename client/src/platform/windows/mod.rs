@@ -62,9 +62,7 @@ use crate::bundle::{
     BundleCell, BundleDisplayWithLayouts as BundleDisplay, BundleLayout, KioskBundle,
 };
 use crate::core::commands::ServerCommand as AgentCommand;
-use crate::core::layout::{
-    configured_cell_action, resolve_web_url, same_origin,
-};
+use crate::core::layout::{configured_cell_action, resolve_web_url, same_origin};
 use crate::core::protocol::{
     HeartbeatResponse, PairClaimResponse, PairInitiateResponse, PendingConfig,
 };
@@ -78,7 +76,7 @@ use host::*;
 use renderer::*;
 use storage::*;
 
-const DEFAULT_SERVER_URL: &str = "http://localhost";
+const DEFAULT_SERVER_URL: &str = crate::core::protocol::LOCAL_SERVER_URL;
 const AGENT_TASK_NAME: &str = "BetterFrameWindowsAgent";
 const APP_TASK_NAME: &str = "BetterFrameWindowsApp";
 const PROTECTED_MAGIC: &[u8; 4] = b"BFW1";
@@ -259,22 +257,41 @@ fn self_test() -> Result<(), String> {
 }
 
 fn run_agent_cli(args: &[String]) -> Result<(), String> {
-    let server = arg_value(args, "--server")
-        .unwrap_or_else(|| load_state().server_url)
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
-    let server = if server.is_empty() {
-        DEFAULT_SERVER_URL.to_string()
-    } else {
-        server
-    };
-
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("tokio runtime: {e}"))?;
-    rt.block_on(run_agent(server))
+    let override_url = arg_value(args, "--server");
+    rt.block_on(async {
+        let server = discover_server(override_url.as_deref(), &load_state()).await?;
+        run_agent(server).await
+    })
+}
+
+async fn discover_server(
+    override_url: Option<&str>,
+    state: &ClientState,
+) -> Result<String, String> {
+    if let Some(url) = override_url.map(str::trim).filter(|url| !url.is_empty()) {
+        return Ok(url.trim_end_matches('/').to_string());
+    }
+    if state.kiosk_key.is_some() && !state.server_url.trim().is_empty() {
+        return Ok(state.server_url.trim().trim_end_matches('/').to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|error| format!("build server discovery client: {error}"))?;
+    for candidate in crate::core::protocol::SERVER_CANDIDATES {
+        info!("trying {candidate}...");
+        if let Ok(response) = client.get(format!("{candidate}/healthz")).send().await {
+            if response.status().is_success() {
+                return Ok(crate::core::protocol::server_origin(response.url()));
+            }
+        }
+    }
+    Err("could not find BetterFrame server".to_string())
 }
 
 async fn run_agent(server_url: String) -> Result<(), String> {
@@ -800,5 +817,18 @@ mod tests {
             ablesign_profile_name(Some("https://example.com"), Some(&first)),
             None
         );
+    }
+
+    #[test]
+    fn webview_initialization_cannot_skip_local_storage_when_dom_is_empty() {
+        let values = HashMap::from([
+            ("screenId".into(), "101".into()),
+            ("screenToken".into(), "token".into()),
+        ]);
+        let script = initialization_script(Some(&values));
+
+        assert!(script.starts_with("try{document.documentElement"));
+        assert!(script.contains("localStorage.setItem(\"screenId\",\"101\")"));
+        assert!(script.contains("localStorage.setItem(\"screenToken\",\"token\")"));
     }
 }

@@ -1,7 +1,7 @@
 /**
  * Form schemas for the account-management pages.
  */
-import * as av from "@anyvali/js";
+import * as av from "anyvali";
 
 export const passwordChangeForm = av.object(
   {

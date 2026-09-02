@@ -9,7 +9,7 @@
  * so the server can store ciphertext at rest and ship it to the kiosk
  * without a per-kiosk re-encryption step.
  */
-import * as av from "@anyvali/js";
+import * as av from "anyvali";
 
 export const NETWORK_MODES = ["dhcp", "static"] as const;
 

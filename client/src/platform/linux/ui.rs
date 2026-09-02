@@ -1274,6 +1274,9 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
     overlay.set_child(Some(&vbox));
     overlay.add_overlay(&ver_label);
     window.set_child(Some(&overlay));
+    window.queue_resize();
+    window.queue_draw();
+    info!("pairing display updated to {code}");
 }
 
 fn show_pairing_progress(window: &ApplicationWindow) {

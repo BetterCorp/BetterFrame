@@ -40,6 +40,8 @@ function resolvePlaybackCredentials(
 
 export interface BundleCamera {
   id: string;
+  device_id: string | null;
+  device_name: string | null;
   name: string;
   camera_number: string | null;
   labels: string[];
@@ -248,6 +250,7 @@ export async function generateBundle(
   const cameraById = new Map(layoutCameras.map((camera) => [camera.id, camera]));
   for (const camera of operateCameras) cameraById.set(camera.id, camera);
   const cameras = [...cameraById.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const deviceNames = new Map((await repo.listCameraDevices()).map((device) => [device.id, device.name]));
   const stableEncryptedValues = new Map<string, string>();
 
   function encryptForBundle(plaintext: string, key: string, stableContext: string): string {
@@ -539,6 +542,8 @@ export async function generateBundle(
     phase = `build-camera:${cam.id}`;
     bundleCameras.push({
       id: cam.id,
+      device_id: cam.device_id,
+      device_name: cam.device_id ? deviceNames.get(cam.device_id) ?? null : null,
       name: cam.name,
       camera_number: cam.camera_number,
       labels,

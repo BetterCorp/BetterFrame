@@ -547,6 +547,8 @@ fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
                 .collect();
             crate::bundle::BundleCamera {
                 id: camera.id,
+                device_id: None,
+                device_name: None,
                 name: camera.name,
                 camera_number: None,
                 labels: Vec::new(),

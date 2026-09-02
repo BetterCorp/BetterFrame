@@ -28,6 +28,11 @@
         <button data-filter="favorites">Favorites</button>
         <button data-filter="recent">Recent</button>
       </nav>
+      <div class="selection-tools">
+        <strong id="selection-count">0 selected</strong>
+        <button id="select-visible">Select visible</button>
+        <button id="clear-selection" disabled>Clear</button>
+      </div>
       <div id="camera-list" class="camera-list"></div>
       <a href="/operator/work" class="work-link">Open operational workspace →</a>
     </aside>
@@ -67,8 +72,9 @@
           <h2>Wall control</h2>
           <div id="wall-buttons" class="wall-buttons"></div>
           <label>Target tile<select id="wall-cell"><option value="">First empty tile</option></select></label>
+          <p class="muted wall-help">Checked cameras are sent in list order. With none checked, the preview camera is sent.</p>
           <div class="duration-row"><button data-duration="30">30s</button><button data-duration="60" class="active">60s</button><button data-duration="120">120s</button><button data-duration="pin">Pin</button></div>
-          <div class="wall-actions"><button id="wall-send">Send to selected tile</button><button id="wall-fullscreen">Full-screen</button><button id="wall-clear">Clear display</button><button id="wall-restore">Restore layout</button></div>
+          <div class="wall-actions"><button id="wall-send" class="primary">Send selection</button><button id="wall-span">Distribute across displays</button><button id="wall-fullscreen">Preview full-screen</button><button id="wall-clear">Clear display</button><button id="wall-restore">Restore layout</button></div>
           <p id="wall-state" class="muted"></p>
         </div>
       </section>

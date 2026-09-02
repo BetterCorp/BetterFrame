@@ -1881,6 +1881,25 @@ fn cell_id(cell: &BundleCell) -> String {
         .unwrap_or_else(|| format!("r{}c{}", cell.row, cell.col))
 }
 
+fn operator_target_cell(
+    layout: &crate::bundle::BundleLayout,
+    requested_id: Option<&str>,
+    overrides: &HashMap<String, FocusOverride>,
+) -> Option<String> {
+    if let Some(id) = requested_id {
+        return layout
+            .cells
+            .iter()
+            .find(|cell| cell_id(cell) == id)
+            .map(cell_id);
+    }
+    layout
+        .cells
+        .iter()
+        .find(|cell| cell.content_type == "none" && !overrides.contains_key(&cell_id(cell)))
+        .map(cell_id)
+}
+
 fn apply_operator_overrides(display_id: &str, layout: &mut crate::bundle::BundleLayout) {
     let snapshot = DISPLAYS.with(|ds| {
         ds.borrow().get(display_id).map(|st| {
@@ -1969,20 +1988,24 @@ fn operator_focus(request: OperatorFocusRequest) -> Result<serde_json::Value, St
         .iter()
         .find(|layout| layout.id == active_layout_id)
         .ok_or_else(|| "active layout not found".to_string())?;
+    let overrides = DISPLAYS.with(|states| {
+        states
+            .borrow()
+            .get(&request.display_id)
+            .map(|state| state.focus_overrides.clone())
+            .unwrap_or_default()
+    });
     let selected_cell = if request.fullscreen {
         None
-    } else if let Some(id) = request.cell_id.as_deref() {
-        layout.cells.iter().find(|cell| cell_id(cell) == id).map(cell_id)
     } else {
-        layout
-            .cells
-            .iter()
-            .find(|cell| cell.content_type == "none" || cell.camera_id.is_none())
-            .or_else(|| layout.cells.first())
-            .map(cell_id)
+        operator_target_cell(layout, request.cell_id.as_deref(), &overrides)
     };
     if !request.fullscreen && selected_cell.is_none() {
-        return Err("layout has no target cell".to_string());
+        return Err(if request.cell_id.is_some() {
+            "target tile not found".to_string()
+        } else {
+            "layout has no empty target tile".to_string()
+        });
     }
 
     let generation = DISPLAYS.with(|states| {
@@ -3007,13 +3030,36 @@ fn ensure_web(
 
 #[cfg(test)]
 mod display_tests {
-    use super::parse_drm_mode;
+    use super::{FocusOverride, operator_target_cell, parse_drm_mode};
+    use std::collections::HashMap;
 
     #[test]
     fn parses_only_valid_drm_modes() {
         assert_eq!(parse_drm_mode("1920x1080\n"), Some((1920, 1080)));
         assert_eq!(parse_drm_mode("0x1080"), None);
         assert_eq!(parse_drm_mode("unknown"), None);
+    }
+
+    #[test]
+    fn first_empty_skips_content_and_active_overrides() {
+        let layout = serde_json::from_value(serde_json::json!({
+            "id":"layout","name":"Layout","grid_cols":3,"grid_rows":1,
+            "priority":"normal","cooling_timeout_seconds":null,
+            "idle_timeout_seconds":null,"is_default":true,"resets_idle_timer":true,
+            "cells":[
+                {"view_id":"web","entity_id":null,"row":0,"col":0,"row_span":1,"col_span":1,"content_type":"web","camera_id":null,"stream_selector":null,"web_url":"https://example.test","html_content":null,"cooling_timeout_seconds":null},
+                {"view_id":"used","entity_id":null,"row":0,"col":1,"row_span":1,"col_span":1,"content_type":"none","camera_id":null,"stream_selector":null,"web_url":null,"html_content":null,"cooling_timeout_seconds":null},
+                {"view_id":"empty","entity_id":null,"row":0,"col":2,"row_span":1,"col_span":1,"content_type":"none","camera_id":null,"stream_selector":null,"web_url":null,"html_content":null,"cooling_timeout_seconds":null}
+            ]
+        })).unwrap();
+        let overrides = HashMap::from([("used".to_string(), FocusOverride {
+            camera_id: "camera".to_string(),
+            stream: "main".to_string(),
+            generation: 1,
+        })]);
+
+        assert_eq!(operator_target_cell(&layout, None, &overrides).as_deref(), Some("empty"));
+        assert_eq!(operator_target_cell(&layout, Some("web"), &overrides).as_deref(), Some("web"));
     }
 }
 

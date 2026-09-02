@@ -23,6 +23,8 @@ const cameraStream = av.object(
 const bundleCamera = av.object(
   {
     id,
+    device_id: av.optional(av.nullable(id)),
+    device_name: av.optional(av.nullable(av.string().maxLength(128))),
     name: av.string().minLength(1).maxLength(128),
     camera_number: av.nullable(av.string().maxLength(128)),
     labels: av.array(av.string().maxLength(128)),

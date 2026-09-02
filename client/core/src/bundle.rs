@@ -200,6 +200,10 @@ pub struct SmartUrlStep {
 pub struct BundleCamera {
     #[serde(deserialize_with = "de_flexible_id")]
     pub id: String,
+    #[serde(default, deserialize_with = "de_flexible_id_opt")]
+    pub device_id: Option<String>,
+    #[serde(default)]
+    pub device_name: Option<String>,
     pub name: String,
     #[serde(default)]
     pub camera_number: Option<String>,

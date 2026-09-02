@@ -384,6 +384,8 @@ async fn operator_bootstrap_handler(
         let status = camera.last_seen_at.as_deref().map(camera_freshness).unwrap_or("unknown");
         json!({
             "id": camera.id,
+            "device_id": camera.device_id,
+            "device_name": camera.device_name,
             "name": camera.name,
             "camera_number": camera.camera_number,
             "labels": camera.labels,

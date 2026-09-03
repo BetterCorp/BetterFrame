@@ -28,9 +28,11 @@ test("persistent kiosk data is mounted before services can use it", () => {
 test("unpaired kiosks check signed OS updates before starting pairing", () => {
   const kiosk = readFileSync(new URL("../../client/src/platform/linux/ui.rs", import.meta.url), "utf8");
   const api = readFileSync(new URL("../src/plugins/service-api-http/index.ts", import.meta.url), "utf8");
+  const proxy = readFileSync(new URL("../../deploy/angie/betterframe.docker.conf", import.meta.url), "utf8");
   assert.ok(kiosk.indexOf("os_update::check_public(&server)") < kiosk.indexOf("server::initiate_pairing(&server)"));
   assert.match(api, /\/api\/os\/public\/check/);
   assert.match(api, /\/api\/os\/public\/download\/:id/);
+  assert.match(proxy, /\^\/api\/\(firmware\|os\)\/public\//);
 });
 
 test("x86 GRUB falls back to its loaded partition when the FAT label is unavailable", () => {

@@ -32,6 +32,7 @@ import { normalizeUpdateSchedule, updateScheduleAllowsNow } from "../../shared/u
 import { normalizeFirmwareTarget } from "../../shared/firmware-targets.js";
 import { withDefaultTenant } from "../../shared/default-tenant.js";
 import { onvifCallbackTokenMatches } from "../../shared/onvif-callback-token.js";
+import { isVersionUpgrade } from "../../shared/version.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { AuthApi } from "../../shared/auth.js";
 import type { SecretsApi } from "../../shared/secrets.js";
@@ -502,7 +503,7 @@ function registerPairingRoutes(
     const current = url.searchParams.get("current")?.trim() ?? "";
 
     const release = await withDefaultTenant(repo, null, () => repo.getLatestFirmwareRelease("stable", target));
-    if (!release || release.version === current) {
+    if (!release || !isVersionUpgrade(release.version, current)) {
       return { up_to_date: true };
     }
 
@@ -558,7 +559,7 @@ function registerPairingRoutes(
     const release = await withDefaultTenant(repo, null, () =>
       repo.getLatestOsUpdateRelease("stable", compatibility)
     );
-    if (!release || release.version === current) return { up_to_date: true };
+    if (!release || !isVersionUpgrade(release.version, current)) return { up_to_date: true };
     return {
       up_to_date: false,
       update: {
@@ -847,7 +848,7 @@ function registerIoBoxRoutes(
       if (release?.yanked_at) release = null;
     }
     release ??= await repo.getLatestIoBoxFirmwareRelease(box.firmware_channel ?? "stable", arch, box.model_id);
-    if (!release || release.version === current) return { up_to_date: true };
+    if (!release || !isVersionUpgrade(release.version, current)) return { up_to_date: true };
     return {
       up_to_date: false,
       version: release.version,
@@ -1494,7 +1495,8 @@ function registerKioskRoutes(
    *   1. If kiosk.firmware_target_version is set → look up that version on the
    *      kiosk's arch; offer if it exists and isn't yanked.
    *   2. Otherwise pick latest non-yanked release on the kiosk's channel + arch.
-   *   3. If chosen.version === current_version (reported via heartbeat) →
+   *   3. Only offer the chosen release when it is newer than the installed
+   *      version reported by the kiosk.
    *      "up_to_date".
    *
    * `target` is supplied by the kiosk because the server has no other way to
@@ -1544,7 +1546,7 @@ function registerKioskRoutes(
       release = await withDefaultTenant(repo, verified.schema_name, () => repo.getLatestFirmwareRelease(channel, target));
     }
 
-    if (!release || release.version === currentVersion) {
+    if (!release || !isVersionUpgrade(release.version, currentVersion)) {
       return { up_to_date: true };
     }
 
@@ -1664,7 +1666,7 @@ function registerKioskRoutes(
       release = await withDefaultTenant(repo, verified.schema_name, () => repo.getLatestOsUpdateRelease(channel, compatibility));
     }
 
-    if (!release || release.version === currentVersion) {
+    if (!release || !isVersionUpgrade(release.version, currentVersion)) {
       return { up_to_date: true };
     }
 

@@ -109,15 +109,15 @@ pub fn check_public(server: &str, current_version: &str) -> Option<UpdateInfo> {
         Err(err) => { warn!("preboot firmware check: {err}"); return None; }
     };
     if !resp.status().is_success() { return None; }
-    match resp.json::<CheckResponse>() {
-        Ok(c) if !c.up_to_date => c.update,
-        _ => None,
-    }
+    resp.json::<CheckResponse>()
+        .ok()
+        .and_then(|check| newer_update(check, current_version))
 }
 
 /// Public download + verify + swap — no auth. Used with check_public.
 /// On success exits so systemd restarts with new binary.
 pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
+    ensure_upgrade(info, crate::server::kiosk_app_version())?;
     info!("preboot firmware: applying {} ({} bytes)", info.version, info.size_bytes);
     let download_url = format!("{server}{}", info.download_url);
     let client = reqwest::blocking::Client::new();
@@ -195,8 +195,7 @@ pub fn check(server: &str, key: &str, current_version: &str) -> Option<UpdateInf
         return None;
     }
     match resp.json::<CheckResponse>() {
-        Ok(c) if !c.up_to_date => c.update,
-        Ok(_) => None,
+        Ok(c) => newer_update(c, current_version),
         Err(err) => {
             warn!("firmware check: parse failed: {err}");
             None
@@ -213,6 +212,7 @@ pub fn apply(
     info: &UpdateInfo,
     on_progress: impl Fn(&str, u8),
 ) -> Result<(), String> {
+    ensure_upgrade(info, crate::server::kiosk_app_version())?;
     info!("firmware: applying {} ({} bytes)", info.version, info.size_bytes);
     on_progress("Downloading", 0);
 
@@ -334,6 +334,30 @@ pub fn apply(
             info!("systemctl reboot failed: {e}, falling back to exit");
             std::process::exit(0);
         }
+    }
+}
+
+fn newer_update(check: CheckResponse, current_version: &str) -> Option<UpdateInfo> {
+    if check.up_to_date {
+        return None;
+    }
+    let update = check.update.filter(|update| {
+        crate::core::version::is_version_upgrade(&update.version, current_version)
+    });
+    if update.is_none() {
+        warn!("firmware: refusing non-upgrade offered for installed version {current_version}");
+    }
+    update
+}
+
+fn ensure_upgrade(info: &UpdateInfo, current_version: &str) -> Result<(), String> {
+    if crate::core::version::is_version_upgrade(&info.version, current_version) {
+        Ok(())
+    } else {
+        Err(format!(
+            "refusing firmware downgrade or reinstall: installed {current_version}, offered {}",
+            info.version
+        ))
     }
 }
 

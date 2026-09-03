@@ -158,8 +158,7 @@ fn check_at(server: &str, key: Option<&str>, path: &str) -> Option<UpdateInfo> {
         return None;
     }
     match resp.json::<CheckResponse>() {
-        Ok(c) if !c.up_to_date => c.update,
-        Ok(_) => None,
+        Ok(c) => newer_update(c, &cur),
         Err(err) => {
             warn!("os-update check: parse failed: {err}");
             None
@@ -194,6 +193,7 @@ fn apply_inner(
     info: &UpdateInfo,
     on_progress: impl Fn(&str, u8),
 ) -> Result<(), String> {
+    ensure_upgrade(info, &current_os_version())?;
     info!(
         "os-update: applying {} ({} bytes, release {})",
         info.version, info.size_bytes, info.release_id
@@ -476,6 +476,30 @@ fn apply_inner(
     let message = "scheduled reboot did not occur".to_string();
     let _ = report_applied(server, key, &info.version, Some(&message));
     Err(message)
+}
+
+fn newer_update(check: CheckResponse, current_version: &str) -> Option<UpdateInfo> {
+    if check.up_to_date {
+        return None;
+    }
+    let update = check.update.filter(|update| {
+        crate::core::version::is_version_upgrade(&update.version, current_version)
+    });
+    if update.is_none() {
+        warn!("os-update: refusing non-upgrade offered for installed version {current_version}");
+    }
+    update
+}
+
+fn ensure_upgrade(info: &UpdateInfo, current_version: &str) -> Result<(), String> {
+    if crate::core::version::is_version_upgrade(&info.version, current_version) {
+        Ok(())
+    } else {
+        Err(format!(
+            "refusing OS downgrade or reinstall: installed {current_version}, offered {}",
+            info.version
+        ))
+    }
 }
 
 fn report_applied(

@@ -1,0 +1,124 @@
+name: Android release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      tag:
+        type: string
+        required: true
+      ref:
+        type: string
+        required: true
+      version-code:
+        description: Monotonic run number from the release entrypoint
+        type: string
+        required: true
+    secrets:
+      BF_ANDROID_KEYSTORE_BASE64:
+        required: true
+      BF_ANDROID_KEYSTORE_PASSWORD:
+        required: true
+      BF_ANDROID_KEY_ALIAS:
+        required: true
+      BF_ANDROID_KEY_PASSWORD:
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    # Production credentials only belong to the release entrypoint on trusted refs.
+    if: >-
+      github.repository == 'BetterCorp/BetterFrame' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Validate release identity and version
+        env:
+          RELEASE_REF: ${{ inputs.ref }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_RUN: ${{ inputs.version-code }}
+          VERSION_OFFSET: ${{ vars.BF_ANDROID_VERSION_CODE_OFFSET || '0' }}
+          CERTIFICATE_SHA256: ${{ vars.BF_ANDROID_CERT_SHA256 }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+          require(os.environ['RELEASE_REF'] == os.environ['GITHUB_SHA'], 'Release ref must match triggering commit')
+          require(subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == os.environ['GITHUB_SHA'], 'Checkout does not match release commit')
+          version = os.environ['RELEASE_VERSION']
+          require(re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(-(beta|dev)\.[0-9A-Za-z.-]+)?', version), 'Invalid release version')
+          require(os.environ['RELEASE_TAG'] == 'v' + version, 'Release tag/version mismatch')
+          require(re.fullmatch(r'[0-9A-Fa-f]{64}', os.environ['CERTIFICATE_SHA256']), 'Configure BF_ANDROID_CERT_SHA256 with the permanent certificate fingerprint')
+          run, offset = os.environ['RELEASE_RUN'], os.environ['VERSION_OFFSET']
+          require(re.fullmatch(r'[0-9]+', run) and re.fullmatch(r'[0-9]+', offset), 'Invalid version counter or offset')
+          require(int(run) == int(os.environ['GITHUB_RUN_NUMBER']), 'Use the release entrypoint run number')
+          code = int(run) + int(offset)
+          require(1 <= code <= 2100000000, 'Android versionCode is out of range')
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'BF_ANDROID_VERSION_CODE={code}\nBF_ANDROID_VERSION_NAME={version}\n')
+          PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android build dependencies
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+      - name: Build signed release APK
+        working-directory: client/android
+        env:
+          BF_ANDROID_KEYSTORE_BASE64: ${{ secrets.BF_ANDROID_KEYSTORE_BASE64 }}
+          BF_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.BF_ANDROID_KEYSTORE_PASSWORD }}
+          BF_ANDROID_KEY_ALIAS: ${{ secrets.BF_ANDROID_KEY_ALIAS }}
+          BF_ANDROID_KEY_PASSWORD: ${{ secrets.BF_ANDROID_KEY_PASSWORD }}
+          BF_ANDROID_REQUIRE_SIGNING: 'true'
+        run: |
+          set -euo pipefail
+          umask 077
+          export BF_ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/betterframe-release.p12"
+          trap 'rm -f -- "$BF_ANDROID_KEYSTORE_PATH"' EXIT
+          test -n "$BF_ANDROID_KEYSTORE_BASE64"
+          printf '%s' "$BF_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$BF_ANDROID_KEYSTORE_PATH"
+          unset BF_ANDROID_KEYSTORE_BASE64
+          ./gradlew --no-daemon assembleRelease
+      - name: Verify signed APK before publication
+        env:
+          CERTIFICATE_SHA256: ${{ vars.BF_ANDROID_CERT_SHA256 }}
+        run: |
+          mkdir -p dist/android
+          cp client/android/app/build/outputs/apk/release/app-release.apk dist/android/betterframe-android.apk
+          python3 client/android/scripts/verify-apk.py \
+            --apk dist/android/betterframe-android.apk \
+            --certificate-sha256 "$CERTIFICATE_SHA256" \
+            --version-code "$BF_ANDROID_VERSION_CODE" \
+            --version-name "$BF_ANDROID_VERSION_NAME" \
+            --apksigner "$ANDROID_HOME/build-tools/35.0.0/apksigner" \
+            --aapt "$ANDROID_HOME/build-tools/35.0.0/aapt" \
+            --metadata dist/android/betterframe-android.json
+      - name: Attach verified APK and public metadata to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            dist/android/betterframe-android.apk dist/android/betterframe-android.json --clobber
+      - name: Remove signing material
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/betterframe-release.p12"

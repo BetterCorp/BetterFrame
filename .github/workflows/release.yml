@@ -6,7 +6,7 @@
 #   - push of v* tag       → build that exact version/channel and create or
 #                            update its release
 #
-# Build steps live in build.yml (reusable). This file only owns versioning
+# Build steps live in build.yml and android-release.yml (reusable). This file owns versioning
 # + release creation. Every channel builds the kiosk binary and Pi image.
 
 name: release
@@ -166,3 +166,19 @@ jobs:
       BF_RAUC_SIGNING_KEY:   ${{ secrets.BF_RAUC_SIGNING_KEY }}
       BF_AXIOM_KEY:          ${{ secrets.BF_AXIOM_KEY }}
       BF_AXIOM_DATASET:      ${{ secrets.BF_AXIOM_DATASET }}
+
+  android:
+    needs: meta
+    permissions:
+      contents: write
+    uses: ./.github/workflows/android-release.yml
+    with:
+      version: ${{ needs.meta.outputs.version }}
+      tag: ${{ needs.meta.outputs.tag }}
+      ref: ${{ needs.meta.outputs.ref }}
+      version-code: ${{ format('{0}', github.run_number) }}
+    secrets:
+      BF_ANDROID_KEYSTORE_BASE64: ${{ secrets.BF_ANDROID_KEYSTORE_BASE64 }}
+      BF_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.BF_ANDROID_KEYSTORE_PASSWORD }}
+      BF_ANDROID_KEY_ALIAS: ${{ secrets.BF_ANDROID_KEY_ALIAS }}
+      BF_ANDROID_KEY_PASSWORD: ${{ secrets.BF_ANDROID_KEY_PASSWORD }}

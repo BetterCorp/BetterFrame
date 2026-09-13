@@ -222,9 +222,33 @@ def proxy_mount(api):
     return matches[0]
 
 
-def prevent_stale_deployment(containers, commit):
+def version_precedence(version):
+    """SemVer precedence for the version formats accepted by this deployment."""
+    if not isinstance(version, str):
+        raise DeploymentError("deployment version label is missing or invalid")
+    match = VERSION.fullmatch("v" + version)
+    if not match:
+        raise DeploymentError("deployment version label is missing or invalid")
+    core = tuple(int(match.group(index)) for index in (1, 2, 3))
+    prerelease = version.partition("-")[2]
+    # A stable version outranks its prereleases. Numeric identifiers compare as
+    # integers and sort before non-numeric identifiers; tuple prefix ordering
+    # makes a shorter otherwise-equal prerelease sort before the longer one.
+    identifiers = tuple((0, int(part)) if part.isdigit() else (1, part)
+                        for part in prerelease.split(".")) if prerelease else ()
+    return core, not prerelease, identifiers
+
+
+def prevent_stale_deployment(containers, commit, version):
     if not isinstance(containers, list):
         raise DeploymentError("could not inspect current deployment revisions")
+    requested_precedence = version_precedence(version)
+    for container in containers:
+        labels = container.get("Labels", {}) if isinstance(container, dict) else {}
+        if labels.get("org.opencontainers.image.revision") == commit:
+            current_precedence = version_precedence(labels.get("org.opencontainers.image.version"))
+            if requested_precedence < current_precedence:
+                raise DeploymentError("requested release version is older than the deployed version at this commit; refusing stale deployment")
     revisions = {container.get("Labels", {}).get("org.opencontainers.image.revision")
                  for container in containers if isinstance(container, dict)}
     for current in revisions:
@@ -250,11 +274,11 @@ def deploy(api, plan):
         if not isinstance(inspected, dict) or inspected.get("name") != service or inspected.get("projectName") != PROJECT:
             raise DeploymentError("deployment service preflight failed")
         containers = api.get("getDockerContainers", service=f"{PROJECT}_{service}")
-        prevent_stale_deployment(containers, plan["commit"])
+        prevent_stale_deployment(containers, plan["commit"], plan["version"])
     proxy_mount(api)
     for service in ("server", "nodered"):
         containers = api.get("getDockerContainers", service=f"{PROJECT}_{service}")
-        prevent_stale_deployment(containers, plan["commit"])
+        prevent_stale_deployment(containers, plan["commit"], plan["version"])
         if healthy_containers(containers, plan["commit"], plan["version"]):
             print(f"{service} already runs the healthy requested release; skipping rebuild.", flush=True)
             if service == "server":

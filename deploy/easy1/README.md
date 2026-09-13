@@ -15,7 +15,12 @@ does not wait for the separate APK, firmware, or OS image builds.
 All deployment entrypoints share one concurrency group and active deployments
 are never cancelled by a newer release. Duplicate invocations skip rebuilding
 healthy services already running the requested commit/version. An older commit
-cannot replace a deployed descendant. GitHub concurrency can replace a pending
+cannot replace a deployed descendant. When multiple release tags share a commit,
+SemVer ordering also prevents an older version from replacing a newer one:
+promotion from `1.2.3-dev.abc1234` to `1.2.3` is allowed, but a delayed dev
+deployment cannot replace that stable release. Numeric prerelease identifiers
+compare numerically, so `1.2.3-beta.10` follows `1.2.3-beta.2`.
+GitHub concurrency can replace a pending
 run with a newer pending run; it does not guarantee deployment of every
 intermediate release.
 

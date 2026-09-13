@@ -157,6 +157,39 @@ class DeploymentTests(unittest.TestCase):
                 DEPLOY.deploy(api, plan())
         self.assertFalse(any(method.startswith(("update", "deploy", "restart")) for method, _ in api.calls))
 
+    def test_same_commit_dev_to_stable_promotion_is_allowed(self):
+        api = FakeApi({"server": [container()], "nodered": [container()]})
+        stable = {**plan(), "tag": "v1.2.3", "version": "1.2.3"}
+        with patch.object(DEPLOY, "wait_service"), patch.object(DEPLOY, "wait_for"), contextlib.redirect_stdout(io.StringIO()):
+            DEPLOY.deploy(api, stable)
+        deployed = [values["serviceName"] for method, values in api.calls if method == "deployAppService"]
+        self.assertEqual(deployed, ["server", "nodered"])
+
+    def test_same_commit_older_versions_are_refused_before_any_mutation(self):
+        cases = (("1.2.3", "1.2.3-dev.abc1234"),
+                 ("1.10.0", "1.9.9"),
+                 ("2.0.0", "1.99.99"),
+                 ("1.2.3-beta.10", "1.2.3-beta.2"),
+                 ("1.2.3-beta.2.extra", "1.2.3-beta.2"),
+                 ("1.2.3-beta.build", "1.2.3-beta.10"))
+        for current, requested in cases:
+            # A downgrade on Node-RED must be caught during preflight, before
+            # even the server's source configuration is changed.
+            api = FakeApi({"nodered": [container(version=current)]})
+            release = {**plan(), "tag": "v" + requested, "version": requested}
+            with self.subTest(current=current, requested=requested), self.assertRaisesRegex(DEPLOY.DeploymentError, "older than the deployed version"):
+                DEPLOY.deploy(api, release)
+            self.assertFalse(any(method.startswith(("update", "deploy", "restart")) for method, _ in api.calls))
+
+    def test_same_commit_numeric_prerelease_promotion_and_same_version_are_allowed(self):
+        for current, requested in (("1.2.3-beta.2", "1.2.3-beta.10"), ("1.2.3", "1.2.3")):
+            with self.subTest(current=current, requested=requested):
+                DEPLOY.prevent_stale_deployment([container(version=current)], SHA, requested)
+
+    def test_same_commit_missing_version_cannot_bypass_stale_guard(self):
+        with self.assertRaisesRegex(DEPLOY.DeploymentError, "version label is missing or invalid"):
+            DEPLOY.prevent_stale_deployment([container(version=None)], SHA, VERSION)
+
     def test_retry_with_saved_proxy_mount_still_restarts_and_waits_for_replacement(self):
         api = FakeApi({"server": [container()], "nodered": [container()], "angie": [container()]}, proxy=PROXY)
         with patch.object(DEPLOY, "wait_service") as wait, patch.object(DEPLOY, "wait_for"), contextlib.redirect_stdout(io.StringIO()):

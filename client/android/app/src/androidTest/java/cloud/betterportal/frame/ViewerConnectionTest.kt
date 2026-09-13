@@ -38,7 +38,8 @@ class ViewerConnectionTest {
             }
             server.start()
             val origin = server.url("/").toString().trimEnd('/')
-            val state = JSONObject().put("server", origin)
+            // Discovery has already completed; this test exercises subsequent API failures.
+            val state = JSONObject().put("server", origin).put("resolved_server", origin)
             if (stage == "pending") state.put("pending", JSONObject().put("code", "ABC123").put("polling_secret", "test-secret"))
             if (stage == "paired") state.put("identity", JSONObject().put("kiosk_key", "test-device-key"))
             ProtectedStore(context).write(state)
@@ -78,7 +79,9 @@ class ViewerConnectionTest {
                 val server = MockWebServer()
                 server.enqueue(MockResponse().setResponseCode(307).setHeader("Location", destination.url("/api/redirected")))
                 server.start()
-                val state = JSONObject().put("server", server.url("/").toString().trimEnd('/'))
+                val origin = server.url("/").toString().trimEnd('/')
+                // API redirects remain forbidden after the origin has been discovered and pinned.
+                val state = JSONObject().put("server", origin).put("resolved_server", origin)
                 if (paired) state.put("identity", JSONObject().put("kiosk_key", "test-device-key"))
                 else state.put("pending", JSONObject().put("code", "ABC123").put("polling_secret", "test-secret"))
                 ProtectedStore(context).write(state)

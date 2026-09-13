@@ -53,6 +53,82 @@ class ViewerConnectionTest {
         enrollmentCleanupAcrossRecreation(restoredMarker = true, cleanupFailsOnce = true)
     }
 
+    @Test fun delayedOldStopSaveCannotOverwriteEnrollmentAfterReplacementResetFinishes() {
+        val (context, directory) = isolatedContext()
+        val oldBlocked = CountDownLatch(1)
+        val releaseOld = CountDownLatch(1)
+        val paired = CountDownLatch(1)
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val response = MockResponse().setHeader("Content-Type", "application/json")
+                return when (request.requestUrl!!.encodedPath) {
+                    "/api/pair/initiate" -> response.setBody("""{"code":"NEW123","polling_secret":"new-secret","poll_after_ms":1000}""")
+                    "/api/pair/claim" -> response.setBody("""{"status":"claimed","kiosk_id":"2","kiosk_key":"new-device-key","encrypt_key":"0000000000000000000000000000000000000000000000000000000000000000"}""")
+                    "/api/kiosk/heartbeat" -> response.setBody("""{"viewer_profile":"android-viewer-v1"}""")
+                    "/api/kiosk/bundle" -> response.setResponseCode(409).setBody("""{"error":"display_unassigned"}""")
+                    else -> response.setBody("{}")
+                }
+            }
+        }
+        server.start()
+        val target = server.url("/").toString().trimEnd('/')
+        val store = ProtectedStore(context)
+        store.write(JSONObject().put("server", target).put("resolved_server", target)
+            .put("identity", JSONObject().put("kiosk_key", "old-device-key"))
+            .put("bundle_profile", "android-viewer-v1")
+            .put("bundle", """{"kiosk_id":1,"kiosk_name":"Old display","version":"1","cameras":[],"displays":[]}"""))
+        val old = ViewerSession(context, object : ViewerSession.Listener {
+            override fun onStatus(message: String) {}
+            override fun onPairing(code: String) {}
+            override fun onPlan(plan: JSONObject) {}
+        })
+        val replacement = ViewerSession(context, object : ViewerSession.Listener {
+            override fun onStatus(message: String) { if (message.startsWith("Paired")) paired.countDown() }
+            override fun onPairing(code: String) {}
+            override fun onPlan(plan: JSONObject) {}
+        }, clearBrowserSessions = { _, done -> done(true) })
+        val workerField = ViewerSession::class.java.getDeclaredField("worker").apply { isAccessible = true }
+        val oldWorker = workerField.get(old) as java.util.concurrent.ScheduledExecutorService
+        try {
+            instrumentation.runOnMainSync {
+                old.start()
+                // Queue behind initial state loading, ahead of the eventual stop
+                // save, modelling an old worker stuck in slow asynchronous work.
+                oldWorker.execute {
+                    oldBlocked.countDown()
+                    releaseOld.await(30, TimeUnit.SECONDS)
+                }
+            }
+            assertTrue("Old session did not load and block", oldBlocked.await(5, TimeUnit.SECONDS))
+            assertEquals("old-device-key", old.kioskKey)
+            instrumentation.runOnMainSync {
+                old.close() // Its selection/state save remains queued behind the blocker.
+                replacement.unpair(target)
+                replacement.start()
+            }
+            assertTrue("Replacement did not complete reset and enrollment", paired.await(15, TimeUnit.SECONDS))
+            val replacementStopped = CountDownLatch(1)
+            instrumentation.runOnMainSync {
+                replacement.stop()
+                (workerField.get(replacement) as java.util.concurrent.Executor).execute { replacementStopped.countDown() }
+            }
+            assertTrue(replacementStopped.await(5, TimeUnit.SECONDS))
+            val beforeOldSave = store.read().toString()
+            assertEquals("new-device-key", store.read().getJSONObject("identity").getString("kiosk_key"))
+            assertFalse("Cleanup must have finished before releasing the stale save", store.read().has("enrollment_cleanup"))
+            releaseOld.countDown()
+            assertTrue("Old queued stop save did not drain", oldWorker.awaitTermination(5, TimeUnit.SECONDS))
+            assertEquals("A stale worker must not restore old identity/cache over new enrollment", beforeOldSave, store.read().toString())
+        } finally {
+            releaseOld.countDown()
+            instrumentation.runOnMainSync { old.close(); replacement.close() }
+            oldWorker.awaitTermination(5, TimeUnit.SECONDS)
+            server.shutdown()
+            directory.deleteRecursively()
+        }
+    }
+
     private fun enrollmentCleanupAcrossRecreation(restoredMarker: Boolean, cleanupFailsOnce: Boolean = false) {
         val (context, directory) = isolatedContext()
         val cleanupStarted = CountDownLatch(1)

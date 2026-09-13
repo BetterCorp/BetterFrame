@@ -27,6 +27,9 @@ private object EnrollmentCleanup {
         var started = false
     }
     private val jobs = mutableMapOf<String, Job>()
+    private data class ResetVersion(val generation: Long, val token: String)
+    // Keep the tombstone after cleanup so delayed writes stay invalidated.
+    private val versions = mutableMapOf<String, ResetVersion>()
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     private fun key(context: Context) = context.noBackupFilesDir.absolutePath
@@ -34,14 +37,28 @@ private object EnrollmentCleanup {
     @Synchronized fun pending(context: Context): String? = jobs[key(context)]?.token
 
     @Synchronized fun begin(context: Context, token: String): Boolean {
-        if (jobs.containsKey(key(context))) return false
-        jobs[key(context)] = Job(token, CompletableFuture())
+        val path = key(context)
+        if (jobs.containsKey(path)) return false
+        versions[path] = ResetVersion((versions[path]?.generation ?: 0L) + 1, token)
+        jobs[path] = Job(token, CompletableFuture())
         return true
     }
 
+    @Synchronized fun read(context: Context, read: () -> JSONObject): Pair<Long, JSONObject> {
+        val path = key(context)
+        val state = read()
+        val marker = state.optString(MARKER)
+        // Adopt a marker restored from disk once, before any session can write.
+        if (marker.isNotBlank() && !jobs.containsKey(path) && versions[path]?.token != marker) {
+            versions[path] = ResetVersion((versions[path]?.generation ?: 0L) + 1, marker)
+        }
+        return (versions[path]?.generation ?: 0L) to state
+    }
+
     // Share this lock with registration so an older session cannot write across reset.
-    @Synchronized fun writeIfIdle(context: Context, write: () -> Unit): Boolean {
-        if (jobs.containsKey(key(context))) return false
+    @Synchronized fun writeIfIdle(context: Context, generation: Long, write: () -> Unit): Boolean {
+        val path = key(context)
+        if (jobs.containsKey(path) || generation != (versions[path]?.generation ?: 0L)) return false
         write()
         return true
     }
@@ -123,6 +140,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
     @Volatile private var renderSnapshot: RenderSnapshot? = null
     private var serverResolved = false
     private var state = JSONObject()
+    @Volatile private var storageGeneration = -1L
     private var loop: ScheduledFuture<*>? = null
     private var socket: WebSocket? = null
     private var socketConnecting = false
@@ -157,7 +175,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
     private fun ensureActive() { check(active()) { "Session stopped" } }
     private fun persist() {
         ensureActive()
-        check(EnrollmentCleanup.writeIfIdle(app) { store.write(state) }) { "Enrollment cleanup pending" }
+        check(EnrollmentCleanup.writeIfIdle(app, storageGeneration) { store.write(state) }) { "Enrollment reset invalidated this session" }
     }
     private fun JSONObject.textValue(name: String): String? = optString(name).takeUnless { it.isBlank() || it == "null" }
     // OkHttp can deliver a final callback after Activity destruction.
@@ -200,7 +218,9 @@ class ViewerSession internal constructor(context: Context, private val listener:
             failures = 0
             awaitingAssignment = false
             try {
-                state = store.read()
+                val loaded = EnrollmentCleanup.read(app) { store.read() }
+                storageGeneration = loaded.first
+                state = loaded.second
                 val cleanup = EnrollmentCleanup.pending(app) ?: state.textValue(EnrollmentCleanup.MARKER)
                 if (cleanup != null) {
                     clearingEnrollment = true
@@ -244,6 +264,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
     fun stop() {
         pendingStart = null
         val saveSelection = running && !clearingEnrollment
+        val savedStorageGeneration = storageGeneration
         val selected = layoutId
         running = false
         generation++
@@ -254,7 +275,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
             socket?.cancel(); socket = null; socketConnecting = false
             if (saveSelection && state.has("identity")) {
                 if (selected == null) state.remove("layout_id") else state.put("layout_id", selected)
-                runCatching { EnrollmentCleanup.writeIfIdle(app) { store.write(state) } }
+                runCatching { EnrollmentCleanup.writeIfIdle(app, savedStorageGeneration) { store.write(state) } }
             }
         }
     }

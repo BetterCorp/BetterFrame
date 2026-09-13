@@ -1,1 +1,1 @@
--keep class net.bettercorp.betterframe.viewer.NativeCore { *; }
+-keep class cloud.betterportal.frame.NativeCore { *; }

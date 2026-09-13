@@ -82,7 +82,7 @@ fn output(env: &mut JNIEnv, result: Option<String>) -> jstring {
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_bettercorp_betterframe_viewer_NativeCore_renderPlan(
+pub extern "system" fn Java_cloud_betterportal_frame_NativeCore_renderPlan(
     mut env: JNIEnv,
     _object: JObject,
     bundle: JString,
@@ -102,7 +102,7 @@ pub extern "system" fn Java_net_bettercorp_betterframe_viewer_NativeCore_renderP
     )
 }
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_bettercorp_betterframe_viewer_NativeCore_cameraUri(
+pub extern "system" fn Java_cloud_betterportal_frame_NativeCore_cameraUri(
     mut env: JNIEnv,
     _object: JObject,
     uri: JString,
@@ -127,7 +127,7 @@ pub extern "system" fn Java_net_bettercorp_betterframe_viewer_NativeCore_cameraU
     )
 }
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_bettercorp_betterframe_viewer_NativeCore_resolveWebUrl(
+pub extern "system" fn Java_cloud_betterportal_frame_NativeCore_resolveWebUrl(
     mut env: JNIEnv,
     _object: JObject,
     value: JString,
@@ -143,7 +143,7 @@ pub extern "system" fn Java_net_bettercorp_betterframe_viewer_NativeCore_resolve
     )
 }
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_bettercorp_betterframe_viewer_NativeCore_websocketUrl(
+pub extern "system" fn Java_cloud_betterportal_frame_NativeCore_websocketUrl(
     mut env: JNIEnv,
     _object: JObject,
     server: JString,

@@ -170,7 +170,7 @@ thread_local! {
     static WATCHDOG_INSTALLED: Cell<bool> = const { Cell::new(false) };
 }
 
-const APP_ID: &str = "dev.betterframe.kiosk";
+const APP_ID: &str = "cloud.betterportal.frame";
 const BETTERFRAME_LOGO_PNG: &[u8] = include_bytes!("../../../assets/betterframe-logo-dark.png");
 const BETTERFRAME_MARK_PNG: &[u8] = include_bytes!("../../../assets/betterframe-mark.png");
 

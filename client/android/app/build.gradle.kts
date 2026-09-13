@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "net.bettercorp.betterframe.viewer"
+    namespace = "cloud.betterportal.frame"
     compileSdk = 35
     ndkVersion = "27.2.12479018"
     defaultConfig {
-        applicationId = "net.bettercorp.betterframe.viewer"
+        applicationId = "cloud.betterportal.frame"
         minSdk = 28
         targetSdk = 35
         versionCode = 1

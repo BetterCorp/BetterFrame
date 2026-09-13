@@ -1,4 +1,4 @@
-package net.bettercorp.betterframe.viewer
+package cloud.betterportal.frame
 
 /** The canonical BF bundle and layout policy live in client/core. No video crosses JNI. */
 object NativeCore {

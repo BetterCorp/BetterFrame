@@ -41,6 +41,9 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
     private var rendererFailures = 0
     private var networkRetries = 0
     private var pageFailed = false
+    private var pruneHistoryOnSuccess = false
+    private var networkRetry: Runnable? = null
+    private var rendererRetry: Runnable? = null
     private val body = android.widget.FrameLayout(context)
     private val status = message("Loading web content…")
     val contentLabel: String = cell.optString("label", "Web content")
@@ -60,15 +63,19 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
     fun activateAssignedAction() { if (!released) onActivate() }
 
     fun reload() {
+        if (released) return
+        cancelNetworkRetry()
+        cancelRendererRetry()
         rendererFailures = 0
         networkRetries = 0
-        createBrowser()
+        browser?.let(::loadAssignedPage) ?: createBrowser()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun createBrowser() {
         if (released) return
-        handler.removeCallbacksAndMessages(null)
+        cancelNetworkRetry()
+        cancelRendererRetry()
         destroyBrowser()
         body.removeAllViews()
         body.addView(status, LayoutParams(-1, -1))
@@ -101,6 +108,8 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
                 // Enabled below only when a document-start mute script is available.
                 mediaPlaybackRequiresUserGesture = true
                 cacheMode = WebSettings.LOAD_DEFAULT
+                // Keep default offscreen preraster disabled: extra raster tiles consume
+                // memory without helping this grid of already visible WebViews.
             }
             CookieManager.getInstance().setAcceptThirdPartyCookies(web, false)
             web.isFocusable = interactive
@@ -136,43 +145,56 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
             if (documentStart) WebViewCompat.addDocumentStartJavaScript(web, script, setOf(initialOrigin))
             web.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                    if (released || browser !== view) return true
                     if (!request.isForMainFrame) return false
                     val allowed = origin(request.url.toString()) == initialOrigin
                     if (!allowed) { status.text = "Navigation outside the assigned site was blocked"; status.visibility = View.VISIBLE }
                     return !allowed
                 }
                 override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                    if (released || browser !== view) return
                     pageFailed = false
                 }
                 override fun onPageFinished(view: WebView, url: String?) {
+                    if (released || browser !== view) return
                     if (!pageFailed) {
+                        cancelNetworkRetry()
+                        if (pruneHistoryOnSuccess) {
+                            // App reload/recovery returns to the assigned document. Keep
+                            // that page only; ordinary in-page navigation retains history.
+                            pruneHistoryOnSuccess = false
+                            view.clearHistory()
+                        }
                         status.visibility = View.GONE
                         networkRetries = 0
                     }
                     if (!documentStart && origin(url ?: "") == initialOrigin) view.evaluateJavascript(script, null)
                 }
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                    if (request.isForMainFrame) failedPage()
+                    if (!released && browser === view && request.isForMainFrame) failedPage(view)
                 }
                 override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, error: WebResourceResponse) {
-                    if (request.isForMainFrame && error.statusCode >= 400) failedPage()
+                    if (!released && browser === view && request.isForMainFrame && error.statusCode >= 400) failedPage(view)
                 }
                 override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-                    // Remove and destroy every affected tile through its own callback; no stale WebView reuse.
+                    if (released || browser !== view) return true
+                    // Renderer death requires a new WebView, unlike ordinary page errors.
+                    cancelNetworkRetry()
+                    cancelRendererRetry()
                     destroyBrowser()
                     status.visibility = View.VISIBLE
                     status.text = "Web renderer stopped"
                     rendererFailures++
-                    if (rendererFailures <= 3) handler.postDelayed({ createBrowser() }, 2_000L * rendererFailures)
-                    else status.text = "Web renderer repeatedly stopped · reload from the kiosk menu"
+                    if (rendererFailures <= 3) {
+                        rendererRetry = Runnable { rendererRetry = null; createBrowser() }.also {
+                            handler.postDelayed(it, 2_000L * rendererFailures)
+                        }
+                    } else status.text = "Web renderer repeatedly stopped · reload from the kiosk menu"
                     return true
                 }
             }
             body.addView(web, 0, LayoutParams(-1, -1))
-            if (html != null) {
-                // A synthetic origin prevents HTML from inheriting the authenticated BF origin.
-                web.loadDataWithBaseURL(htmlBase, html, "text/html", "UTF-8", null)
-            } else web.loadUrl(url)
+            loadAssignedPage(web)
         } catch (_: Exception) {
             destroyBrowser()
             status.text = "WebView unavailable · install or update Android System WebView"
@@ -180,13 +202,45 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
         }
     }
 
-    private fun failedPage() {
+    private fun loadAssignedPage(web: WebView) {
+        if (released || browser !== web) return
+        cancelNetworkRetry()
+        pageFailed = false
+        pruneHistoryOnSuccess = true
+        status.text = "Loading web content…"
+        status.visibility = View.VISIBLE
+        try {
+            web.stopLoading()
+            // Retry the assigned document, never a redirect target or a page in browser history.
+            if (html != null) web.loadDataWithBaseURL(htmlBase, html, "text/html", "UTF-8", null)
+            else web.loadUrl(url)
+        } catch (_: Exception) {
+            destroyBrowser()
+            status.text = "WebView unavailable · install or update Android System WebView"
+        }
+    }
+
+    private fun cancelNetworkRetry() {
+        networkRetry?.let(handler::removeCallbacks)
+        networkRetry = null
+    }
+
+    private fun cancelRendererRetry() {
+        rendererRetry?.let(handler::removeCallbacks)
+        rendererRetry = null
+    }
+
+    private fun failedPage(web: WebView) {
         pageFailed = true
+        pruneHistoryOnSuccess = false
         status.text = "Web content unavailable · retrying"
         status.visibility = View.VISIBLE
-        handler.removeCallbacksAndMessages(null)
+        cancelNetworkRetry()
         networkRetries = min(networkRetries + 1, 6)
-        handler.postDelayed({ createBrowser() }, min(60_000L, 1_000L shl networkRetries))
+        networkRetry = Runnable {
+            networkRetry = null
+            if (!released && browser === web) loadAssignedPage(web)
+        }.also { handler.postDelayed(it, min(60_000L, 1_000L shl networkRetries)) }
     }
 
     private fun destroyBrowser() {
@@ -200,7 +254,8 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
 
     override fun release() {
         released = true
-        handler.removeCallbacksAndMessages(null)
+        cancelNetworkRetry()
+        cancelRendererRetry()
         destroyBrowser()
     }
 

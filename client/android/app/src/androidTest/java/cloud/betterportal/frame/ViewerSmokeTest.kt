@@ -104,7 +104,7 @@ class ViewerSmokeTest {
         try {
             instrumentation.runOnMainSync {
                 val cell = JSONObject("""{"id":"html-test","label":"Offline signage","web":{
-                    "html":"<html><body data-ready='yes'><video id='signage' autoplay></video><button id='touch-target' style='position:fixed;top:0;right:0;bottom:0;left:0' onclick='document.body.dataset.tapped=1'>Touch content</button><script>localStorage.setItem('html-test','ready')</script></body></html>",
+                    "html":"<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head><body data-ready='yes'><video id='signage' autoplay></video><button id='touch-target' style='position:fixed;top:16px;left:16px;width:160px;height:80px' onclick='document.body.dataset.tapped=1'>Touch content</button><script>localStorage.setItem('html-test','ready')</script></body></html>",
                     "baseUrl":"https://bf-html-instrumentation.invalid/","localStorage":{}}}
                 """)
                 tile.set(WebTile(activity, cell) {})
@@ -116,19 +116,27 @@ class ViewerSmokeTest {
             }
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
             var ready = false
+            var touchGeometry = JSONObject()
             var diagnostic = "No JavaScript response"
             while (!ready && System.nanoTime() < deadline) {
                 val response = AtomicReference<String>()
                 val complete = CountDownLatch(1)
                 instrumentation.runOnMainSync {
                     browser.get().evaluateJavascript("""
-                        JSON.stringify({
+                        (function() {
+                        var target = document.getElementById('touch-target');
+                        var bounds = target ? target.getBoundingClientRect() : {left:0,top:0,width:0,height:0};
+                        var x = bounds.left + bounds.width / 2;
+                        var y = bounds.top + bounds.height / 2;
+                        return JSON.stringify({
+                          touchX: x, touchY: y, viewportWidth: innerWidth,
                           documentReady: document.body !== null && document.body.dataset.ready === 'yes',
                           origin: location.origin,
-                          touchTargetReady: (document.elementFromPoint(innerWidth / 2, innerHeight / 2) || {}).id === 'touch-target',
+                          touchTargetReady: (document.elementFromPoint(x, y) || {}).id === 'touch-target',
                           storageReady: (function() { try { return localStorage.getItem('html-test') === 'ready'; } catch (_) { return false; } })(),
                           muted: !!(document.getElementById('signage') && document.getElementById('signage').muted)
-                        })
+                        });
+                        })()
                     """.trimIndent()) {
                         response.set(it); complete.countDown()
                     }
@@ -138,7 +146,7 @@ class ViewerSmokeTest {
                 val result = runCatching { JSONObject(diagnostic) }.getOrNull()
                 ready = result != null && result.optBoolean("documentReady") && result.optBoolean("storageReady") &&
                     result.optBoolean("muted") && result.optBoolean("touchTargetReady") && result.optString("origin") == "https://bf-html-instrumentation.invalid"
-                if (!ready) Thread.sleep(100)
+                if (ready) touchGeometry = result!! else Thread.sleep(100)
             }
             assertTrue("Offline HTML, JS, isolated origin and muted media initialize: $diagnostic", ready)
             // Wait for Chromium's submitted frame, then inject a real touchscreen
@@ -147,11 +155,14 @@ class ViewerSmokeTest {
             val position = IntArray(2)
             instrumentation.runOnMainSync {
                 assertTrue("Interaction defaults to enabled", browser.get().isFocusableInTouchMode)
+                assertTrue("Web content uses the hardware-accelerated window", browser.get().isHardwareAccelerated)
+                assertEquals("No extra full-tile GPU texture is forced", View.LAYER_TYPE_NONE, browser.get().layerType)
                 assertEquals(tile.get().height, browser.get().height)
                 assertEquals(tile.get().width, browser.get().width)
                 browser.get().getLocationOnScreen(position)
-                position[0] += browser.get().width / 2
-                position[1] += browser.get().height / 2
+                val scale = browser.get().width / touchGeometry.getDouble("viewportWidth")
+                position[0] += (touchGeometry.getDouble("touchX") * scale).toInt()
+                position[1] += (touchGeometry.getDouble("touchY") * scale).toInt()
             }
             val downTime = SystemClock.uptimeMillis()
             for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
@@ -180,6 +191,33 @@ class ViewerSmokeTest {
         } finally {
             instrumentation.runOnMainSync { tile.get()?.release(); activity.finish() }
         }
+    }
+
+    @Test fun resizingWebContentKeepsTheBrowserButChangedContentReplacesIt() {
+        val activity = launch() as MainActivity
+        try {
+            instrumentation.runOnMainSync {
+                val field = MainActivity::class.java.getDeclaredField("session").apply { isAccessible = true }
+                (field.get(activity) as ViewerSession).stop()
+                val cell = JSONObject("""{"id":"web-resize","kind":"web","row":0,"col":0,"rowSpan":1,"colSpan":1,
+                    "web":{"html":"<p>Original</p>","baseUrl":"https://bf-resize.invalid/","localStorage":{}}}""")
+                val plan = JSONObject().put("layoutId", "3").put("rows", 2).put("cols", 2)
+                    .put("cells", org.json.JSONArray().put(cell))
+                activity.onPlan(plan)
+                val original = descendants(activity.window.decorView).filterIsInstance<WebView>().single()
+                val moved = JSONObject(plan.toString())
+                moved.getJSONArray("cells").getJSONObject(0).put("row", 1).put("colSpan", 2)
+                activity.onPlan(moved)
+                assertSame("Moving/resizing a tile must preserve its running page and media",
+                    original, descendants(activity.window.decorView).filterIsInstance<WebView>().single())
+                val updated = JSONObject(moved.toString())
+                updated.getJSONArray("cells").getJSONObject(0).getJSONObject("web").put("html", "<p>Updated</p>")
+                activity.onPlan(updated)
+                assertNotSame("Changed content still needs a new page", original,
+                    descendants(activity.window.decorView).filterIsInstance<WebView>().single())
+                assertNull("Retired browser is detached", original.parent)
+            }
+        } finally { instrumentation.runOnMainSync { activity.finish() } }
     }
 
     @Test fun cameraConnectionShowsOnlyASpinnerOnBlack() {

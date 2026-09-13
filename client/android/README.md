@@ -175,6 +175,58 @@ The resolved regional origin must serve `/api/**` and `/ws/**` directly. Android
 continues refusing redirects for pairing and device requests, so those requests
 cannot forward polling secrets or device credentials to another origin.
 
+## Web rendering performance
+
+The application window already enables Android hardware acceleration. WebView
+uses its normal compositor (`LAYER_TYPE_NONE`); this does not disable GPU
+rendering. Forcing every page into an additional hardware layer can allocate
+large textures and increase memory pressure, especially with many visible tiles.
+Geometry-only layout changes preserve existing browsers and camera decoders;
+changed URLs, HTML, storage settings or actions still replace their tile.
+Network retries and menu reloads reuse the browser and return to its original
+assigned document; renderer crashes recreate it. A successful page recovery
+cancels queued retries, and app-initiated reloads discard obsolete navigation
+history after loading. Normal page navigation keeps its own history.
+Hidden/replaced content is released before replacement content is allocated, and
+all players/browsers are released when the screen turns off or the app stops.
+
+WebView chooses web-video decoding based on its provider, the codec and device
+capabilities. The native camera decoder policy cannot force third-party web
+video into hardware decoding. Keep Android System WebView current; use device-
+appropriate video resolution/frame rate and reduce simultaneous heavy pages if
+needed. The 32-view ceiling does not guarantee smooth playback on every device.
+
+See [Android hardware acceleration](https://developer.android.com/topic/performance/hardware-accel)
+and [WebView rendering layers](https://developer.android.com/reference/android/webkit/WebView#setLayerType(int,%20android.graphics.Paint)).
+
+## Sleep and wake deployment
+
+Current behavior: BetterFrame keeps the screen awake while displaying content.
+When the user or Android turns the screen off, playback and synchronization stop;
+the current layout resumes when the existing activity becomes visible again.
+This does not bypass a secure lock screen or relaunch an app that Android has
+removed from the foreground. Android's configured BF sleep timeout and server
+power commands are not implemented by this viewer yet.
+
+Support is planned for both ordinary APKs and managed dedicated devices:
+
+- Ordinary installs: an in-app black standby surface can release media and wake
+  on the first touch/remote input. This is display blanking, not hardware sleep;
+  an LCD backlight may remain on. Actual screen-off uses Android's normal power
+  controls and wake/unlock behavior.
+- Managed kiosks: an EMM/device-owner controller can launch
+  `cloud.betterportal.frame/.MainActivity` in dedicated kiosk mode and manage
+  lock-screen/power policy. Unattended restart and genuine screen-off wake need
+  provisioning and validation against the target device/OEM. The BF APK is not
+  currently a device-policy controller or a Home intent handler.
+- Scheduled or remote wake additionally needs a supported wake source. A
+  WebSocket that is suspended with the app cannot itself wake a sleeping device;
+  a fully powered-off TV may need its own timer, HDMI-CEC or vendor control.
+
+See [Android dedicated devices](https://developer.android.com/work/dpc/dedicated-devices),
+[custom Home/kiosk setup](https://developer.android.com/work/dpc/dedicated-devices/cookbook)
+and [background activity restrictions](https://developer.android.com/guide/components/activities/background-starts).
+
 ## Initial limits
 
 - Android 9/API 28 minimum; arm64 and x86_64 only. A working System WebView is

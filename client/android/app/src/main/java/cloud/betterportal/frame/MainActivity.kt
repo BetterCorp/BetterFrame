@@ -313,14 +313,13 @@ class MainActivity : Activity(), ViewerSession.Listener {
         status.text = lastStatus
         if (cells == null) { releaseTiles(); return }
         val desired = compatibleWebSessions((0 until cells.length()).map { cells.getJSONObject(it) })
-        val ids = desired.map { it.getString("id") }.toSet()
+        val contentKeys = desired.associate { it.getString("id") to tileContentKey(it) }
         currentFocus?.let { focus ->
             tiles.entries.firstOrNull { (_, entry) -> containsView(entry.second, focus) }?.let { focusedCellId = it.key }
         }
         // Release replaced/hidden resources before allocating a single new decoder or browser.
         tiles.keys.toList().forEach { id ->
-            val next = desired.firstOrNull { it.optString("id") == id }
-            if (id !in ids || next.toString() != tiles[id]?.first) {
+            if (contentKeys[id] != tiles[id]?.first) {
                 tiles.remove(id)?.second?.let { it.release(); grid.removeView(it) }
             }
         }
@@ -357,7 +356,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
                 else -> PlaceholderTile(this, cell.optString("label"), cell.optString("message", "No content assigned")) { activate(cell) }
             }
             if (existing == null) {
-                tiles[id] = cell.toString() to tile
+                tiles[id] = contentKeys.getValue(id) to tile
                 grid.addView(tile)
             }
             tile.layoutParams = CellGrid.Params(
@@ -432,6 +431,13 @@ class MainActivity : Activity(), ViewerSession.Listener {
         if (::grid.isInitialized) grid.removeAllViews()
     }
 }
+
+/** Geometry changes resize existing browser/decoder surfaces without restarting content. */
+private fun tileContentKey(cell: JSONObject): String = JSONObject().apply {
+    cell.keys().forEach { key ->
+        if (key != "row" && key != "col" && key != "rowSpan" && key != "colSpan") put(key, cell.get(key))
+    }
+}.toString()
 
 /** All URLs are resolved by ViewerSession before this guard. WebViews share origin storage. */
 internal fun compatibleWebSessions(cells: List<JSONObject>): List<JSONObject> {

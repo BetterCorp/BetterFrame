@@ -28,6 +28,7 @@ import { initDb } from "../../shared/db/init.js";
 import { initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
 import { setCoordinator } from "../../shared/coordinator-registry.js";
+import { isAndroidViewer, androidViewerCommandAllowed, viewerAssignment } from "../../shared/android-viewer.js";
 import { KioskConnections } from "../../shared/kiosk-connections.js";
 import { createCoordinatorWebSocketServer } from "../../shared/coordinator-websocket.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
@@ -85,6 +86,7 @@ export const EventSchemas = createEventSchemas({
 
 // ---- Connected kiosks -------------------------------------------------------
 
+const viewerLayouts = new Map<string, (layoutId: string) => Promise<boolean>>();
 const connectedKiosks = new KioskConnections<WebSocket>();
 const pendingRequests = new Map<string, {
   kioskId: string;
@@ -135,6 +137,21 @@ const offlineQueues = new Map<string, string[]>();
 
 function sendToKiosk(kioskId: string, message: object, queueWhenOffline = true): boolean {
   const k = connectedKiosks.get(kioskId);
+  const validateLayout = viewerLayouts.get(kioskId);
+  if (validateLayout) {
+    const msg = message as Record<string, unknown>;
+    const layoutId = typeof msg["layout_id"] === "string" ? msg["layout_id"] : "";
+    if (!androidViewerCommandAllowed(message, new Set([layoutId]))) return false;
+    if (msg["type"] === "layout-switch") {
+      if (!k || k.ws.readyState !== WebSocket.OPEN) return false;
+      // The synchronous coordinator reports enqueueing; delivery happens only
+      // after current assignment validation, on the same authenticated socket.
+      void validateLayout(layoutId).then((allowed) => {
+        if (allowed && connectedKiosks.get(kioskId)?.ws === k.ws && k.ws.readyState === WebSocket.OPEN) k.ws.send(JSON.stringify(message));
+      }).catch(() => {});
+      return true;
+    }
+  }
   const payload = JSON.stringify(message);
   if (!k || k.ws.readyState !== WebSocket.OPEN) {
     if (!queueWhenOffline) return false;
@@ -159,7 +176,7 @@ function drainOfflineQueue(kioskId: string): void {
   const k = connectedKiosks.get(kioskId);
   if (!k || k.ws.readyState !== WebSocket.OPEN) return;
   for (const msg of q) {
-    try { k.ws.send(msg); } catch { break; }
+    try { sendToKiosk(kioskId, JSON.parse(msg), false); } catch { break; }
   }
   offlineQueues.delete(kioskId);
 }
@@ -195,7 +212,7 @@ function requestKiosk<T = unknown>(kioskId: string, message: object, timeoutMs =
 function broadcastAll(message: object): void {
   const payload = JSON.stringify(message);
   for (const k of connectedKiosks.values()) {
-    if (k.ws.readyState === WebSocket.OPEN) k.ws.send(payload);
+    sendToKiosk(k.id, message, false);
   }
 }
 
@@ -310,7 +327,8 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           }
           if (!authed) throw new Error("unauthorized");
           await repo.adapter.setSearchPath(targetTenant.schema_name);
-          if (!await repo.getKioskById(kioskId)) throw new Error("kiosk not owned by tenant");
+          const target = await repo.getKioskById(kioskId);
+          if (!target || isAndroidViewer(target)) throw new Error("kiosk does not support debug");
         } catch (authErr) {
           obs.log.warn("admin debug WS auth failed for kiosk {id}: {err} (cookie present: {hasCookie}, cookieName: {cn})", {
             id: kioskId,
@@ -360,11 +378,17 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
         }
         await repo.adapter.setSearchPath(kiosk.schema_name);
         const kioskData = await repo.getKioskById(kiosk.id);
-        if (!kioskData) {
+        if (!kioskData?.enabled) {
           socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
           socket.destroy();
           return;
         }
+        const viewer = isAndroidViewer(kioskData);
+        if (viewer) viewerLayouts.set(kiosk.id, (layoutId) => repo.adapter.withSearchPath(kiosk.schema_name, async () => {
+          const current = await repo.getKioskById(kiosk.id);
+          return Boolean(current?.enabled && isAndroidViewer(current) && (await viewerAssignment(repo, current)).layoutIds.has(layoutId));
+        }));
+        else viewerLayouts.delete(kiosk.id);
         wss.handleUpgrade(req, socket, head, (ws) => {
           const previous = connectedKiosks.get(kiosk.id);
           connectedKiosks.set(kiosk.id, { id: kiosk.id, name: kioskData.name, ws, lastPong: Date.now() });
@@ -397,6 +421,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
             try {
               const msg = JSON.parse(data.toString()) as Record<string, unknown>;
               if (msg["type"] === "pong") { connectedKiosks.pong(kiosk.id, ws); return; }
+              if (viewer) return; // heartbeat carries viewer health; no proxy/debug/event responses
               if (
                 msg["type"] === "onvif-soap-response"
                 || msg["type"] === "camera-proxy-response"

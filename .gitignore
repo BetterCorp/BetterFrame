@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+/node_modules
 
 # Build output
 server/lib/
@@ -7,6 +8,11 @@ server/bsb-plugin.json
 nodered/lib/
 client/target/
 client/core/target/
+client/android/.gradle/
+client/android/**/build/
+client/android/local.properties
+*.jks
+*.keystore
 windows-client/target/
 iobox-firmware/.pio/
 

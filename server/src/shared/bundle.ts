@@ -9,6 +9,7 @@ import type { Repository } from "./db/repository.js";
 import type { SecretsApi } from "./secrets.js";
 import type { Camera, CameraStream, CellContentType, Entity } from "./types.js";
 import { parseRtspUri, stripRtspCredentials } from "./rtsp.js";
+import { isAndroidViewer } from "./android-viewer.js";
 import { createOnvifCallbackToken } from "./onvif-callback-token.js";
 
 function resolvePlaybackCredentials(
@@ -211,6 +212,8 @@ export async function generateBundle(
     return null;
   }
 
+  const viewer = isAndroidViewer(kiosk);
+
   // Per-kiosk encryption key (preferred) — decrypt from server storage.
   let kioskEncryptKey: string | undefined;
   if (kiosk.encrypt_key_encrypted) {
@@ -230,7 +233,8 @@ export async function generateBundle(
     : (kiosk.display_id ? [await repo.getDisplayById(kiosk.display_id)].filter((d): d is NonNullable<typeof d> => d != null) : []);
 
   // Admin can disable a display — kiosk must never open a window on it.
-  const displays = allDisplays.filter((d) => d.is_enabled);
+  const enabledDisplays = allDisplays.filter((d) => d.is_enabled);
+  const displays = viewer ? enabledDisplays.slice(0, 1) : enabledDisplays;
   if (displays.length === 0) {
     span?.log.info("bundle: kiosk {id} has no enabled displays", { id: String(kioskId) });
     span?.end();
@@ -243,13 +247,12 @@ export async function generateBundle(
   for (const d of displays) {
     for (const l of await repo.layoutsForDisplayId(d.id)) allLayoutIds.add(l.id);
   }
-  const layoutCameras = await repo.camerasForLayoutIds([...allLayoutIds]);
-  const scope = await repo.bundleScope(kioskId);
-  const operateCameras = await repo.camerasForLabelIds(scope.operateLabelIds);
+  const layoutCameras = viewer ? [] : await repo.camerasForLayoutIds([...allLayoutIds]);
+  const operateCameras = viewer ? [] : await repo.camerasForLabelIds((await repo.bundleScope(kioskId)).operateLabelIds);
   const operateCameraIds = new Set(operateCameras.map((camera) => camera.id));
   const cameraById = new Map(layoutCameras.map((camera) => [camera.id, camera]));
   for (const camera of operateCameras) cameraById.set(camera.id, camera);
-  const cameras = [...cameraById.values()].sort((a, b) => a.name.localeCompare(b.name));
+  let cameras = [...cameraById.values()].sort((a, b) => a.name.localeCompare(b.name));
   const deviceNames = new Map((await repo.listCameraDevices()).map((device) => [device.id, device.name]));
   const stableEncryptedValues = new Map<string, string>();
 
@@ -293,7 +296,7 @@ export async function generateBundle(
     };
   }
 
-  const operatorContent = kiosk.operator_console_enabled
+  const operatorContent = !viewer && kiosk.operator_console_enabled
     ? (await repo.listEntities()).filter((entity) => entity.type !== "camera")
     : [];
 
@@ -353,7 +356,7 @@ export async function generateBundle(
           fit: c.fit,
           // Smart URL: encrypted credentials use per-kiosk key so each
           // kiosk's bundle has uniquely encrypted values.
-          smart_url: c.options?.["smart_url"] ? (() => {
+          smart_url: !viewer && c.options?.["smart_url"] ? (() => {
             const raw = c.options["smart_url"] as any;
             const steps = Array.isArray(raw.steps) ? raw.steps.map((s: any) => {
               const step = { ...s };
@@ -402,7 +405,7 @@ export async function generateBundle(
                 col_span: 1,
                 input_options: fullscreenInputOptions,
               }],
-              input_options: ent.input_options_json,
+              input_options: viewer ? undefined : ent.input_options_json,
             });
           }
         }
@@ -415,11 +418,11 @@ export async function generateBundle(
         priority: l.priority,
         cooling_timeout_seconds: l.cooling_timeout_seconds,
         idle_timeout_seconds: l.idle_timeout_seconds,
-        preload_camera_ids: l.preload_camera_ids,
+        preload_camera_ids: viewer ? [] : l.preload_camera_ids,
         resets_idle_timer: l.resets_idle_timer,
         is_default: defaultLayoutId === l.id,
         cells: bundleCells,
-        input_options: l.input_options_json,
+        input_options: viewer ? undefined : l.input_options_json,
       });
     }
     for (const ent of operatorContent) {
@@ -451,14 +454,21 @@ export async function generateBundle(
           cooling_timeout_seconds: null,
           fit: "contain",
           local_storage: resolved.localStorage,
-          input_options: ent.input_options_json,
+          input_options: viewer ? undefined : ent.input_options_json,
         }],
-        input_options: ent.input_options_json,
+        input_options: viewer ? undefined : ent.input_options_json,
       });
     }
     const realLayoutIds = new Set(result.map((layout) => layout.id));
     for (const [entityId, layout] of virtualLayouts) {
       if (!realLayoutIds.has(entityId)) result.push(layout);
+    }
+    if (viewer) {
+      const allowedIds = new Set(result.map((layout) => layout.id));
+      for (const layout of result) {
+        layout.input_options = undefined;
+        for (const cell of layout.cells) cell.input_options = viewerInputOptions(cell.input_options, allowedIds);
+      }
     }
     return result;
   }
@@ -478,16 +488,26 @@ export async function generateBundle(
     });
   }
 
+  if (viewer) {
+    const assignedIds = new Set(bundleDisplays.flatMap((display) => display.layouts.flatMap((layout) => layout.cells.flatMap((cell) => cell.content_type === "camera" && cell.camera_id ? [cell.camera_id] : []))));
+    cameras = [];
+    for (const id of assignedIds) {
+      const camera = await repo.getCameraById(id);
+      if (camera?.enabled) cameras.push(camera);
+    }
+    cameras.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
   phase = "event-ownership";
   // Release stale ONVIF event ownership: if the owning kiosk hasn't been
   // seen in 24h, revert to "auto" so this (or another) kiosk can claim it.
-  await repo.releaseStaleEventOwnership(24);
+  if (!viewer) await repo.releaseStaleEventOwnership(24);
 
   // ONVIF event ownership: for "auto" cameras, first kiosk to fetch bundle
   // claims ownership in the bundle output so the kiosk knows to subscribe.
   // We do NOT persist this to the cameras table — the DB stays "auto".
   const callbackTokens = new Map<string, string>();
-  for (const cam of cameras) {
+  for (const cam of viewer ? [] : cameras) {
     const callback = createOnvifCallbackToken(
       secrets,
       cam.id,
@@ -530,7 +550,7 @@ export async function generateBundle(
     // keys were introduced.
     let onvifPwEncrypted: string | null = null;
     const encryptKey = kioskEncryptKey ?? clusterKey;
-    if (cam.onvif_password && encryptKey) {
+    if (!viewer && cam.onvif_password && encryptKey) {
       onvifPwEncrypted = encryptForBundle(cam.onvif_password, encryptKey, `onvif:${cam.id}`);
     }
     let playbackPwEncrypted: string | null = null;
@@ -547,27 +567,27 @@ export async function generateBundle(
       name: cam.name,
       camera_number: cam.camera_number,
       labels,
-      capabilities: cam.capabilities,
+      capabilities: viewer ? [] : cam.capabilities,
       enabled: cam.enabled,
       last_seen_at: cam.last_seen_at,
       simple_vms_managed: operateCameraIds.has(cam.id),
-      recording_config: cam.recording_config_json,
+      recording_config: viewer ? {} : cam.recording_config_json,
       type: cam.type,
-      onvif_host: cam.onvif_host,
-      onvif_port: cam.onvif_port,
-      onvif_username: cam.onvif_username,
+      onvif_host: viewer ? null : cam.onvif_host,
+      onvif_port: viewer ? null : cam.onvif_port,
+      onvif_username: viewer ? null : cam.onvif_username,
       onvif_password_encrypted: onvifPwEncrypted,
       playback_username: playbackCreds.username,
       playback_password_encrypted: playbackPwEncrypted,
-      event_source: cam.event_source,
-      event_sink: cam.event_sink,
-      event_callback_token: callbackTokens.get(cam.id)!,
+      event_source: viewer ? "disabled" : cam.event_source,
+      event_sink: viewer ? "none" : cam.event_sink,
+      event_callback_token: callbackTokens.get(cam.id) ?? "",
       stream_policy: cam.stream_policy,
       streams: effectiveStreams.map((s) => ({
         id: s.id,
         role: s.role,
         name: s.name,
-        profile_token: s.profile_token ?? null,
+        profile_token: viewer ? null : s.profile_token ?? null,
         // Bundle ships credential-free RTSP endpoints; kiosk injects
         // playback credentials locally when starting the pipeline.
         rtsp_uri: stripRtspCredentials(s.rtsp_uri) ?? s.rtsp_uri,
@@ -580,7 +600,7 @@ export async function generateBundle(
   }
 
   phase = "load-gpio";
-  const gpioBindings: BundleGpioBinding[] = (await repo.listGpioBindings(kioskId)).map((g) => ({
+  const gpioBindings: BundleGpioBinding[] = (viewer ? [] : await repo.listGpioBindings(kioskId)).map((g) => ({
     id: g.id,
     chip: g.chip,
     pin: g.pin,
@@ -612,14 +632,14 @@ export async function generateBundle(
     cameras: bundleCameras,
     gpio_bindings: gpioBindings,
     operator_console: {
-      enabled: kiosk.operator_console_enabled,
-      host: kiosk.operator_console_host,
+      enabled: !viewer && kiosk.operator_console_enabled,
+      host: viewer ? null : kiosk.operator_console_host,
       port: kiosk.operator_console_port,
-      tools: parseOperatorTools(kiosk.operator_tools_json),
+      tools: viewer ? [] : parseOperatorTools(kiosk.operator_tools_json),
       simple_vms: {
-        enabled: kiosk.simple_vms_enabled,
-        storage_path: kiosk.simple_vms_storage_path,
-        settings: parseJsonObject(kiosk.simple_vms_settings_json),
+        enabled: !viewer && kiosk.simple_vms_enabled,
+        storage_path: viewer ? null : kiosk.simple_vms_storage_path,
+        settings: viewer ? {} : parseJsonObject(kiosk.simple_vms_settings_json),
       },
     },
     version: "",
@@ -708,4 +728,15 @@ function stableBundleForVersion(value: unknown, encryptedValues: Map<string, str
     }
   }
   return out;
+}
+
+/** Retain only local viewer click actions; never distribute script parameters. */
+function viewerInputOptions(options: Record<string, unknown> | undefined, layoutIds: Set<string>): Record<string, unknown> | undefined {
+  const click = (options?.["events"] as Record<string, unknown> | undefined)?.["click"] as Record<string, unknown> | undefined;
+  if (!click) return undefined;
+  const action = String(click["action"] ?? "");
+  if (["expand", "view.expand", "restore", "view.restore"].includes(action)) return { events: { click: { action, params: {} } } };
+  const id = (click["params"] as Record<string, unknown> | undefined)?.["layout_id"];
+  if (action === "layout.switch" && (typeof id === "string" || typeof id === "number") && layoutIds.has(String(id))) return { events: { click: { action, params: { layout_id: String(id) } } } };
+  return { events: { click: { action: "unsupported", params: {} } } };
 }

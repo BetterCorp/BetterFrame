@@ -166,7 +166,7 @@ class KioskPresentationTest {
         // Resolve localhost outside the UI thread (MockWebServer.url does DNS).
         val target = server.url("/").toString().trimEnd('/')
         val attemptedRemoteHosts = ConcurrentLinkedQueue<String>()
-        val http = OkHttpClient.Builder().addInterceptor { chain ->
+        val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).addInterceptor { chain ->
             val host = chain.request().url.host
             if (host == "localhost" || host == "127.0.0.1") chain.proceed(chain.request())
             else {

@@ -53,6 +53,48 @@ class ViewerConnectionTest {
         enrollmentCleanupAcrossRecreation(restoredMarker = true, cleanupFailsOnce = true)
     }
 
+    @Test fun cleanupCompletingBetweenClaimAndJoinStillNotifiesTheJoiningSession() {
+        val (context, directory) = isolatedContext()
+        val store = ProtectedStore(context)
+        val completeCleanup = AtomicReference<(Boolean) -> Unit>()
+        val cleanupStarted = CountDownLatch(1)
+        val firstFinished = CountDownLatch(1)
+        val joinedFinished = CountDownLatch(1)
+        val joinedSuccess = AtomicReference<Boolean>()
+        val cleanupCalls = AtomicInteger()
+        val first = EnrollmentCleanup.begin(context, "first-${System.nanoTime()}")
+        assertTrue(first.created)
+        store.write(JSONObject().put(EnrollmentCleanup.MARKER, first.token))
+        EnrollmentCleanup.persisted(context, first.token)
+        val cleanup: (Context, (Boolean) -> Unit) -> Unit = { _, done ->
+            cleanupCalls.incrementAndGet()
+            completeCleanup.set(done)
+            cleanupStarted.countDown()
+        }
+        try {
+            EnrollmentCleanup.request(context, first.token, cleanup) { firstFinished.countDown() }
+            assertTrue(cleanupStarted.await(5, TimeUnit.SECONDS))
+            val joining = EnrollmentCleanup.begin(context, "second-${System.nanoTime()}")
+            assertFalse(joining.created)
+            assertEquals("Joining must atomically retain the existing token", first.token, joining.token)
+            instrumentation.runOnMainSync { completeCleanup.getAndSet(null).invoke(true) }
+            assertTrue(firstFinished.await(5, TimeUnit.SECONDS))
+            assertNull("Force completion before the joining request", EnrollmentCleanup.pending(context))
+            EnrollmentCleanup.request(context, joining.token, cleanup) {
+                joinedSuccess.set(it)
+                joinedFinished.countDown()
+            }
+            assertTrue("A completed claimed token must still notify its joining session", joinedFinished.await(5, TimeUnit.SECONDS))
+            assertEquals(true, joinedSuccess.get())
+            assertEquals("Late joining must not repeat browser cleanup", 1, cleanupCalls.get())
+            assertEquals(0, store.read().length())
+        } finally {
+            instrumentation.runOnMainSync { completeCleanup.getAndSet(null)?.invoke(true) }
+            firstFinished.await(5, TimeUnit.SECONDS)
+            directory.deleteRecursively()
+        }
+    }
+
     @Test fun delayedOldStopSaveCannotOverwriteEnrollmentAfterReplacementResetFinishes() {
         val (context, directory) = isolatedContext()
         val oldBlocked = CountDownLatch(1)

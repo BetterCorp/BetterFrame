@@ -20,8 +20,9 @@ import java.util.concurrent.CompletableFuture
 import java.util.UUID
 
 /** Reset survives Activity destruction; the protected marker also survives process loss. */
-private object EnrollmentCleanup {
+internal object EnrollmentCleanup {
     const val MARKER = "enrollment_cleanup"
+    data class Claim(val token: String, val created: Boolean)
     private class Job(val token: String, val persisted: CompletableFuture<Unit>) {
         val listeners = mutableListOf<(Boolean) -> Unit>()
         var started = false
@@ -36,12 +37,12 @@ private object EnrollmentCleanup {
 
     @Synchronized fun pending(context: Context): String? = jobs[key(context)]?.token
 
-    @Synchronized fun begin(context: Context, token: String): Boolean {
+    @Synchronized fun begin(context: Context, token: String): Claim {
         val path = key(context)
-        if (jobs.containsKey(path)) return false
+        jobs[path]?.let { return Claim(it.token, false) }
         versions[path] = ResetVersion((versions[path]?.generation ?: 0L) + 1, token)
         jobs[path] = Job(token, CompletableFuture())
-        return true
+        return Claim(token, true)
     }
 
     @Synchronized fun read(context: Context, read: () -> JSONObject): Pair<Long, JSONObject> {
@@ -313,17 +314,14 @@ class ViewerSession internal constructor(context: Context, private val listener:
         // Validate before changing enrollment; retain the choice through activity recreation.
         val target = try { nextServer?.let { ServerAddress.parse(it).toString().trimEnd('/') } }
         catch (_: Exception) { status("Enter a valid BF server origin."); return }
-        val token = UUID.randomUUID().toString()
-        if (!EnrollmentCleanup.begin(app, token)) {
-            clearingEnrollment = true
-            stop()
-            EnrollmentCleanup.pending(app)?.let(::continueEnrollmentCleanup)
-            return
-        }
+        val claim = EnrollmentCleanup.begin(app, UUID.randomUUID().toString())
+        val token = claim.token
         clearingEnrollment = true
         stop()
         // Register cleanup outside this Activity's Handler before queueing storage.
+        // A joined job may finish now; its claimed token still receives completion.
         continueEnrollmentCleanup(token)
+        if (!claim.created) return
         enqueue {
             try {
                 val cleared = JSONObject().put(EnrollmentCleanup.MARKER, token).apply { if (target != null) put("server", target) }

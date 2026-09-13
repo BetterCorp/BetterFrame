@@ -104,7 +104,7 @@ class ViewerSmokeTest {
         try {
             instrumentation.runOnMainSync {
                 val cell = JSONObject("""{"id":"html-test","label":"Offline signage","web":{
-                    "html":"<html><body data-ready='yes'><video id='signage' autoplay></video><button style='position:fixed;inset:0' onclick='document.body.dataset.tapped=1'>Touch content</button><script>localStorage.setItem('html-test','ready')</script></body></html>",
+                    "html":"<html><body data-ready='yes'><video id='signage' autoplay></video><button id='touch-target' style='position:fixed;top:0;right:0;bottom:0;left:0' onclick='document.body.dataset.tapped=1'>Touch content</button><script>localStorage.setItem('html-test','ready')</script></body></html>",
                     "baseUrl":"https://bf-html-instrumentation.invalid/","localStorage":{}}}
                 """)
                 tile.set(WebTile(activity, cell) {})
@@ -125,6 +125,7 @@ class ViewerSmokeTest {
                         JSON.stringify({
                           documentReady: document.body !== null && document.body.dataset.ready === 'yes',
                           origin: location.origin,
+                          touchTargetReady: (document.elementFromPoint(innerWidth / 2, innerHeight / 2) || {}).id === 'touch-target',
                           storageReady: (function() { try { return localStorage.getItem('html-test') === 'ready'; } catch (_) { return false; } })(),
                           muted: !!(document.getElementById('signage') && document.getElementById('signage').muted)
                         })
@@ -136,20 +137,30 @@ class ViewerSmokeTest {
                 diagnostic = runCatching { org.json.JSONTokener(response.get()).nextValue() as? String }.getOrNull() ?: response.get()
                 val result = runCatching { JSONObject(diagnostic) }.getOrNull()
                 ready = result != null && result.optBoolean("documentReady") && result.optBoolean("storageReady") &&
-                    result.optBoolean("muted") && result.optString("origin") == "https://bf-html-instrumentation.invalid"
+                    result.optBoolean("muted") && result.optBoolean("touchTargetReady") && result.optString("origin") == "https://bf-html-instrumentation.invalid"
                 if (!ready) Thread.sleep(100)
             }
             assertTrue("Offline HTML, JS, isolated origin and muted media initialize: $diagnostic", ready)
+            // Wait for Chromium's submitted frame, then inject a real touchscreen
+            // gesture through the window (direct View dispatch omits input routing).
+            instrumentation.uiAutomation.waitForIdle(250, 3000)
+            val position = IntArray(2)
             instrumentation.runOnMainSync {
                 assertTrue("Interaction defaults to enabled", browser.get().isFocusableInTouchMode)
                 assertEquals(tile.get().height, browser.get().height)
                 assertEquals(tile.get().width, browser.get().width)
-                val downTime = SystemClock.uptimeMillis()
-                for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
-                    val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action,
-                        browser.get().width / 2f, browser.get().height / 2f, 0)
-                    try { browser.get().dispatchTouchEvent(event) } finally { event.recycle() }
+                browser.get().getLocationOnScreen(position)
+                position[0] += browser.get().width / 2
+                position[1] += browser.get().height / 2
+            }
+            val downTime = SystemClock.uptimeMillis()
+            for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+                val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action,
+                    position[0].toFloat(), position[1].toFloat(), 0).apply {
+                    source = android.view.InputDevice.SOURCE_TOUCHSCREEN
                 }
+                try { instrumentation.sendPointerSync(event) } finally { event.recycle() }
+                if (action == MotionEvent.ACTION_DOWN) Thread.sleep(80)
             }
             val touched = CountDownLatch(1)
             val touchDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)

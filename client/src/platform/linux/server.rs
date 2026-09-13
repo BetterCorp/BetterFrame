@@ -179,12 +179,25 @@ pub fn state_file(name: &str) -> PathBuf {
 }
 
 fn migrate_legacy_state(persistent: &PathBuf) {
+    static IMPORT: Mutex<()> = Mutex::new(());
+    let _import = IMPORT.lock().unwrap_or_else(|error| error.into_inner());
     let Some(home) = dirs::home_dir() else {
         return;
     };
     let legacy = home.join(".betterframe-kiosk");
+    if let Err(error) = import_legacy_state(&legacy, persistent) {
+        tracing::warn!("failed to import legacy kiosk state: {error}");
+    }
+}
+
+fn import_legacy_state(legacy: &std::path::Path, persistent: &std::path::Path) -> std::io::Result<()> {
+    use std::io::Write;
+    let complete = persistent.join(".legacy-state-imported");
+    if fs::read(&complete).is_ok_and(|bytes| bytes == b"complete-v1\n") {
+        return Ok(());
+    }
     if !legacy.is_dir() {
-        return;
+        return Ok(());
     }
 
     for name in [
@@ -201,11 +214,27 @@ fn migrate_legacy_state(persistent: &PathBuf) {
         let src = legacy.join(name);
         let dst = persistent.join(name);
         if src.is_file() && !dst.exists() {
-            if let Err(err) = fs::copy(&src, &dst) {
-                tracing::warn!("failed to migrate kiosk state file {name}: {err}");
+            let temporary = persistent.join(format!(".{name}.{}.tmp", rand::random::<u64>()));
+            let result = (|| {
+                fs::copy(&src, &temporary)?;
+                fs::File::open(&temporary)?.sync_all()?;
+                fs::rename(&temporary, &dst)
+            })();
+            if result.is_err() {
+                let _ = fs::remove_file(temporary);
             }
+            result?;
         }
     }
+    // Commit all imported filenames before acknowledging the source directory.
+    // A recovered/deleted journal must never be copied back on the next lookup.
+    fs::File::open(persistent)?.sync_all()?;
+    let temporary = persistent.join(".legacy-state-imported.tmp");
+    let mut file = fs::File::create(&temporary)?;
+    file.write_all(b"complete-v1\n")?;
+    file.sync_all()?;
+    fs::rename(temporary, complete)?;
+    fs::File::open(persistent)?.sync_all()
 }
 
 fn key_file() -> PathBuf {
@@ -1220,6 +1249,59 @@ fn validate_timezone(timezone: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_legacy_import_never_resurrects_a_consumed_journal_or_reset_identity() {
+        let root = std::env::temp_dir().join(format!("bf-legacy-import-{}", rand::random::<u64>()));
+        let legacy = root.join("legacy");
+        let persistent = root.join("persistent");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::create_dir_all(&persistent).unwrap();
+        let journal = b"{\"target\":\"https://frame-eu.betterportal.net\"}";
+        fs::write(legacy.join("origin-migration.json"), journal).unwrap();
+        fs::write(legacy.join("identity.json"), b"old canonical identity").unwrap();
+        import_legacy_state(&legacy, &persistent).unwrap();
+        assert_eq!(fs::read(persistent.join("origin-migration.json")).unwrap(), journal);
+
+        // Recovery updates the identity and consumes its destination journal.
+        fs::write(persistent.join("identity.json"), b"updated regional identity").unwrap();
+        fs::remove_file(persistent.join("origin-migration.json")).unwrap();
+        import_legacy_state(&legacy, &persistent).unwrap();
+        assert!(!persistent.join("origin-migration.json").exists());
+        assert_eq!(fs::read(persistent.join("identity.json")).unwrap(), b"updated regional identity");
+        assert!(legacy.join("origin-migration.json").exists());
+
+        // Resetting enrollment must not cause the old source identity to return.
+        fs::remove_file(persistent.join("identity.json")).unwrap();
+        import_legacy_state(&legacy, &persistent).unwrap();
+        assert!(!persistent.join("identity.json").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_legacy_import_commit_is_retryable_without_overwriting_current_state() {
+        let root = std::env::temp_dir().join(format!("bf-legacy-import-retry-{}", rand::random::<u64>()));
+        let legacy = root.join("legacy");
+        let persistent = root.join("persistent");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::create_dir_all(&persistent).unwrap();
+        fs::write(legacy.join("identity.json"), b"legacy identity").unwrap();
+        fs::write(legacy.join("origin-migration.json"), b"journal").unwrap();
+        fs::write(persistent.join("identity.json"), b"current identity").unwrap();
+        let blocked = persistent.join(".legacy-state-imported.tmp");
+        fs::create_dir(&blocked).unwrap();
+        assert!(import_legacy_state(&legacy, &persistent).is_err());
+        assert!(!persistent.join(".legacy-state-imported").exists());
+        assert_eq!(fs::read(persistent.join("identity.json")).unwrap(), b"current identity");
+        fs::remove_dir(blocked).unwrap();
+        import_legacy_state(&legacy, &persistent).unwrap();
+        assert!(persistent.join(".legacy-state-imported").exists());
+        assert_eq!(fs::read(persistent.join("identity.json")).unwrap(), b"current identity");
+        fs::remove_file(persistent.join("origin-migration.json")).unwrap();
+        import_legacy_state(&legacy, &persistent).unwrap();
+        assert!(!persistent.join("origin-migration.json").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn timezone_policy_success_does_not_invoke_legacy_helper() {

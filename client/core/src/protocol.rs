@@ -4,11 +4,16 @@ use std::time::Duration;
 use url::Url;
 
 pub const LOCAL_SERVER_URL: &str = "http://localhost";
+pub const CANONICAL_SERVER_URL: &str = "https://frame.betterportal.net";
 pub const SERVER_CANDIDATES: [&str; 3] = [
     LOCAL_SERVER_URL,
     "http://betterframe.local",
-    "https://frame.betterportal.net",
+    CANONICAL_SERVER_URL,
 ];
+
+pub fn needs_regional_migration(origin: &str) -> bool {
+    discovery_probe(origin).is_ok_and(|url| server_origin(&url) == CANONICAL_SERVER_URL)
+}
 
 pub fn server_origin(url: &Url) -> String {
     url.origin().ascii_serialization()
@@ -312,5 +317,22 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn legacy_regional_migration_only_matches_the_known_canonical_origin() {
+        for origin in [CANONICAL_SERVER_URL, "https://FRAME.BETTERPORTAL.NET:443/"] {
+            assert!(needs_regional_migration(origin));
+        }
+        for origin in [
+            "https://frame-eu.betterportal.net",
+            "https://custom.example",
+            "http://frame.betterportal.net",
+            "https://user:secret@frame.betterportal.net",
+            "https://frame.betterportal.net/path",
+            "https://frame.betterportal.net/?secret=x",
+        ] {
+            assert!(!needs_regional_migration(origin));
+        }
     }
 }

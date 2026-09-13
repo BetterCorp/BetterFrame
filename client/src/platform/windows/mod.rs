@@ -325,6 +325,20 @@ async fn run_agent(server_url: String) -> Result<(), String> {
     let mut state = load_agent_state()?;
     state.server_url = server_url;
     save_state(&state)?;
+    let app = Arc::new(Mutex::new(None::<Child>));
+    // The renderer reads protected cached state independently. Start it before
+    // regional discovery so an offline upgrade keeps showing the saved display.
+    if state.kiosk_key.is_some() { start_app(&app)?; }
+    while crate::core::protocol::needs_regional_migration(&state.server_url) {
+        match migrate_canonical_state(&mut state).await {
+            Ok(()) => break,
+            Err(error) => {
+                warn!("regional discovery: {error}; retaining saved identity and cached content");
+                if state.kiosk_key.is_some() { let _ = supervise_app(&app); }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+        }
+    }
     if state.kiosk_key.is_some() {
         acknowledge_pairing(&crate::network::client(), &mut state).await;
     }
@@ -336,7 +350,6 @@ async fn run_agent(server_url: String) -> Result<(), String> {
 
     let policy = Arc::new(Mutex::new(load_policy()));
     let state = Arc::new(Mutex::new(state));
-    let app = Arc::new(Mutex::new(None::<Child>));
     start_app(&app)?;
 
     let (tx, mut rx) = mpsc::unbounded_channel::<AgentCommand>();
@@ -441,6 +454,33 @@ async fn run_agent(server_url: String) -> Result<(), String> {
             }
         }
     }
+}
+
+async fn migrate_canonical_state(state: &mut ClientState) -> Result<(), String> {
+    if !crate::core::protocol::needs_regional_migration(&state.server_url) { return Ok(()); }
+    let target = crate::network::discover(&state.server_url, true).await?;
+    // Cached UI controls may update selections while discovery is offline.
+    let mut latest = load_agent_state()?;
+    apply_regional_state(&mut latest, target, save_state)?;
+    *state = latest;
+    Ok(())
+}
+
+fn apply_regional_state(
+    state: &mut ClientState,
+    target: String,
+    persist: impl FnOnce(&ClientState) -> Result<(), String>,
+) -> Result<(), String> {
+    if !crate::core::protocol::needs_regional_migration(&state.server_url) { return Ok(()); }
+    let destination = crate::core::protocol::discovery_probe(&target)?;
+    if destination.scheme() != "https" { return Err("Regional migration requires HTTPS".into()); }
+    let mut next = state.clone();
+    next.server_url = crate::core::protocol::server_origin(&destination);
+    // One protected atomic record contains origin, identity, pending secret and
+    // cache version. Failed persistence leaves the in-memory origin unchanged.
+    persist(&next)?;
+    *state = next;
+    Ok(())
 }
 
 async fn pair(server_url: &str) -> Result<ClientState, String> {
@@ -954,6 +994,47 @@ mod tests {
         assert_eq!(discover_server(None, &state).await.unwrap(), state.server_url);
         assert_eq!(discover_server(Some(&origin), &state).await.unwrap(), origin);
         peer.join().unwrap();
+    }
+
+    #[test]
+    fn legacy_canonical_migration_preserves_protected_identity_pending_state_and_cache() {
+        let directory = std::env::temp_dir().join(format!("bf-region-migration-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let state_file = directory.join("state.json");
+        let cache_file = directory.join("bundle.json");
+        let mut state = ClientState {
+            server_url: "https://FRAME.BETTERPORTAL.NET:443/".into(),
+            kiosk_key: Some("retained-device-key".into()),
+            encrypt_key: Some("retained-encryption-key".into()),
+            kiosk_id: Some("42".into()),
+            pairing_code: Some("ABC123".into()),
+            pairing_secret: Some("retained-polling-secret".into()),
+            bundle_version: Some("cached-v1".into()),
+            ..ClientState::default()
+        };
+        state.active_layouts.insert("display".into(), "layout".into());
+        write_protected(&state_file, &serde_json::to_vec(&state).unwrap()).unwrap();
+        let cached: KioskBundle = serde_json::from_value(serde_json::json!({
+            "kiosk_id":"42", "kiosk_name":"Recovered", "version":"cached-v1", "displays":[], "cameras":[]
+        })).unwrap();
+        write_protected(&cache_file, &serde_json::to_vec(&cached).unwrap()).unwrap();
+        let original = serde_json::to_value(&state).unwrap();
+        let cache_before = fs::read(&cache_file).unwrap();
+        assert!(apply_regional_state(&mut state, "https://frame-eu.betterportal.net".into(), |_| Err("storage unavailable".into())).is_err());
+        assert_eq!(serde_json::to_value(&state).unwrap(), original);
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&read_protected(&state_file).unwrap()).unwrap(), original);
+        apply_regional_state(&mut state, "https://frame-eu.betterportal.net".into(), |next|
+            write_protected(&state_file, &serde_json::to_vec(next).unwrap())).unwrap();
+        let restarted: ClientState = serde_json::from_slice(&read_protected(&state_file).unwrap()).unwrap();
+        assert_eq!(restarted.server_url, "https://frame-eu.betterportal.net");
+        assert_eq!(restarted.kiosk_key.as_deref(), Some("retained-device-key"));
+        assert_eq!(restarted.encrypt_key.as_deref(), Some("retained-encryption-key"));
+        assert_eq!(restarted.pairing_secret.as_deref(), Some("retained-polling-secret"));
+        assert_eq!(restarted.active_layouts.get("display").map(String::as_str), Some("layout"));
+        assert_eq!(fs::read(&cache_file).unwrap(), cache_before);
+        apply_regional_state(&mut state, "https://unrelated.example".into(), |_| panic!("A custom/regional origin must remain pinned")).unwrap();
+        assert_eq!(state.server_url, "https://frame-eu.betterportal.net");
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

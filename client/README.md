@@ -38,9 +38,17 @@ or device identity exists, its saved origin takes precedence over launch options
 Subsequent pairing, device API and WebSocket requests use the regional origin;
 authenticated HTTP requests never follow redirects. Changing launch arguments
 does not move existing credentials to another server: reset enrollment first
-to deliberately choose a new origin. Existing paired Linux/Windows identities
-remain pinned and can start from their cache while offline; this change does
-not migrate already-paired origins through discovery.
+to deliberately choose a new origin. Existing custom/regional paired origins
+remain pinned. Older identities saved against the known canonical
+`https://frame.betterportal.net` entrypoint migrate through anonymous discovery:
+cached content starts immediately, while a background retry loop waits for
+regional discovery and durable origin persistence before heartbeat, bundle
+retrieval and WebSocket loops start. Cached display interactions can still
+contact the original configured origin; their HTTP clients refuse redirects.
+Linux journals updates to identity, pending enrollment and `server.url` so an
+interrupted migration is completed on restart. Windows atomically replaces its
+single protected state record. Device keys, polling secrets and cached content
+are preserved; unavailable discovery never resets enrollment.
 
 Discovery rejects credential-bearing URLs, HTTPS downgrades, cross-origin
 cleartext redirects and locations containing a query, fragment or unrelated

@@ -88,6 +88,7 @@ jobs:
           disable-animations: true
           script: |
             cd client/android && ./gradlew --no-daemon connectedDebugAndroidTest
+            adb pull /sdcard/Android/data/cloud.betterportal.frame/files/screenshots "$GITHUB_WORKSPACE/client/android/app/build/reports/kiosk-screenshots"
             bash "$GITHUB_WORKSPACE/client/android/upgrade-test/run.sh"
       - name: Remove disposable signing material
         if: always()

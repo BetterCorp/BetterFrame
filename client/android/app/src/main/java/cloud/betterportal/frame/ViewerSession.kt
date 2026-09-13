@@ -182,14 +182,19 @@ class ViewerSession internal constructor(context: Context, private val listener:
         renderAndEmit(snapshot)
     }
 
-    fun unpair() {
+    fun unpair(nextServer: String? = null) {
         if (closed || clearingEnrollment) return
+        // Validate before changing enrollment; retain the choice through activity recreation.
+        val target = try { nextServer?.let { ServerAddress.parse(it).toString().trimEnd('/') } }
+        catch (_: Exception) { status("Enter a valid BF server origin."); return }
         clearingEnrollment = true
         stop()
         val epoch = generation
         enqueue {
             try {
-                store.clear(); state = JSONObject(); kioskKey = ""; serverUrl = ""; layoutId = null; expandedId = null
+                val cleared = JSONObject().apply { if (target != null) put("server", target) }
+                if (target == null) store.clear() else store.write(cleared)
+                state = cleared; kioskKey = ""; serverUrl = target.orEmpty(); layoutId = null; expandedId = null
                 main.post {
                     if (closed || generation != epoch) { clearingEnrollment = false; return@post }
                     // Allow another enrollment only after asynchronous browser cleanup completes.
@@ -197,7 +202,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
                         clearingEnrollment = false
                         if (!closed && generation == epoch) {
                             listener.onPairing("")
-                            listener.onStatus("Enrollment cleared. Enter the BF server address.")
+                            listener.onStatus("Enrollment cleared. Ready to pair.")
                         }
                     }
                 }

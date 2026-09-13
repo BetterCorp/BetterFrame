@@ -8,6 +8,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.TextView
+import android.widget.EditText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONObject
@@ -34,13 +35,15 @@ class ViewerSmokeTest {
 
     @After fun clearTestEnrollment() { ProtectedStore(context).clear() }
 
-    @Test fun setupActivityLaunchesAndShowsEnrollmentControls() {
+    @Test fun setupActivityLaunchesAsABrandedKioskWithEnrollmentInTheMenu() {
         val activity = launch()
         try {
             instrumentation.runOnMainSync {
-                val texts = descendants(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }
-                assertTrue(texts.contains("BetterFrame Viewer"))
-                assertTrue(texts.contains("Connect display"))
+                val views = descendants(activity.window.decorView)
+                assertTrue(views.any { it.contentDescription == "BetterFrame" && it.isShown })
+                assertTrue(views.any { it.contentDescription == "Kiosk menu" && it.isShown && it.isFocusable })
+                assertFalse("Server entry belongs in Settings", views.any { it is EditText && it.isShown })
+                assertFalse(views.filterIsInstance<TextView>().any { it.text.toString() == "Connect display" && it.isShown })
                 assertFalse(activity.isFinishing)
             }
         } finally { instrumentation.runOnMainSync { activity.finish() } }

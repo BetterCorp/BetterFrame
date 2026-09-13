@@ -5,6 +5,7 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.view.View
 import android.view.ViewGroup
+import android.view.KeyEvent
 import android.widget.Button
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -57,8 +58,8 @@ class ViewerActionsTest {
             fun tileButton(text: String): Button? = descendants(activity.window.decorView)
                 .filterIsInstance<WebTile>().flatMap(::descendants).filterIsInstance<Button>()
                 .firstOrNull { it.text.toString() == text }
-            fun globalRestore(): Button = descendants(activity.window.decorView)
-                .filterIsInstance<Button>().first { it.text.toString() == "Restore" }
+            fun expandedCell(): String? = (MainActivity::class.java.getDeclaredField("plan").apply { isAccessible = true }
+                .get(activity) as? JSONObject)?.optString("expandedCellId")?.takeUnless { it.isBlank() || it == "null" }
 
             awaitUi("Cached HTML layout did not load") { tileButton("Switch layout") != null }
             instrumentation.runOnMainSync {
@@ -71,9 +72,13 @@ class ViewerActionsTest {
                 tileButton("Switch layout") == null && tileButton("Restore") != null
             }
             instrumentation.runOnMainSync { session.expand("20") }
-            awaitUi("Expanded HTML must expose the global restore control") { globalRestore().isShown }
+            awaitUi("HTML must expand without requiring a persistent toolbar") { expandedCell() == "20" }
             instrumentation.runOnMainSync { tileButton("Restore")!!.performClick() }
-            awaitUi("Assigned restore action must leave the expanded view") { !globalRestore().isShown }
+            awaitUi("Assigned restore action must leave the expanded view") { expandedCell() == null }
+            instrumentation.runOnMainSync { session.expand("20") }
+            awaitUi("HTML must expand again before testing remote Back") { expandedCell() == "20" }
+            instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+            awaitUi("Remote Back must restore the layout without exiting the kiosk") { expandedCell() == null && !activity.isFinishing }
         } finally {
             instrumentation.runOnMainSync { activity.finish() }
             instrumentation.waitForIdleSync()

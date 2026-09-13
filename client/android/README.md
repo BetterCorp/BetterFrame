@@ -9,6 +9,20 @@ Application ID and Kotlin namespace: `cloud.betterportal.frame`.
 See [application identity](../../docs/application-identity.md) for domain
 conventions and migration from the initial experimental Android package.
 
+## Kiosk presentation
+
+Startup and pairing use the full desktop BetterFrame wordmark on black, a large
+pairing code, approval instructions, and small server/IP/firmware/device details.
+Connection messages do not replace the pairing code. The screen adapts to TV,
+landscape and portrait displays; no server form is shown during normal startup.
+
+Assigned content fills the window. Open the small bottom-right kiosk menu by
+touch or with the remote Menu key for layouts, refresh and settings. Back exits
+web interaction or restores an expanded camera; otherwise it opens the menu.
+Settings contains server selection and confirmed enrollment reset. Changing the
+server confirms a reset, clears saved enrollment/browser sessions, and connects
+to the selected server. The application ID and signing key remain unchanged.
+
 ## Build
 
 Requires JDK 17, Android SDK 35, NDK 27.2.12479018, and stable Rust. Linux and

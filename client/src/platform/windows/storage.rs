@@ -106,23 +106,33 @@ pub(super) fn ensure_secure_state_dir() -> Result<(), String> {
     Ok(())
 }
 
+// Lock a separate, stable file: state.json is replaced atomically on each write.
+// The OS releases this lock if either the agent or renderer exits unexpectedly.
+fn lock_state_file(path: &std::path::Path) -> Result<fs::File, String> {
+    let lock = fs::OpenOptions::new().read(true).write(true).create(true)
+        .truncate(false).open(path.with_extension("lock"))
+        .map_err(|error| format!("open state lock: {error}"))?;
+    lock.lock().map_err(|error| format!("lock state: {error}"))?;
+    Ok(lock)
+}
+
 pub(super) fn load_agent_state() -> Result<ClientState, String> {
     ensure_secure_state_dir()?;
-    if state_path().exists() {
-        load_state_file(&state_path())
-    } else {
-        Ok(ClientState::default())
-    }
+    let path = state_path();
+    let _lock = lock_state_file(&path)?;
+    read_state_or_default(&path)
 }
 
 pub(super) fn load_state() -> ClientState {
-    ensure_secure_state_dir()
-        .and_then(|()| load_state_file(&state_path()))
-        .ok()
-        .unwrap_or_else(|| ClientState {
-            server_url: DEFAULT_SERVER_URL.to_string(),
-            ..ClientState::default()
-        })
+    let mut state = load_agent_state().unwrap_or_default();
+    if state.server_url.trim().is_empty() {
+        state.server_url = DEFAULT_SERVER_URL.to_string();
+    }
+    state
+}
+
+fn read_state_or_default(path: &std::path::Path) -> Result<ClientState, String> {
+    if path.exists() { load_state_file(path) } else { Ok(ClientState::default()) }
 }
 
 fn load_state_file(path: &std::path::Path) -> Result<ClientState, String> {
@@ -141,8 +151,25 @@ fn load_state_file(path: &std::path::Path) -> Result<ClientState, String> {
     Ok(state)
 }
 
-pub(super) fn save_state(state: &ClientState) -> Result<(), String> {
-    write_protected(&state_path(), &serde_json::to_vec(state).unwrap())
+pub(super) fn update_state(
+    mutate: impl FnOnce(&mut ClientState) -> Result<(), String>,
+) -> Result<ClientState, String> {
+    ensure_secure_state_dir()?;
+    update_state_file(&state_path(), mutate)
+}
+
+fn update_state_file(
+    path: &std::path::Path,
+    mutate: impl FnOnce(&mut ClientState) -> Result<(), String>,
+) -> Result<ClientState, String> {
+    let _lock = lock_state_file(path)?;
+    let mut state = read_state_or_default(path)?;
+    // No network work inside this transaction. Each caller changes only its
+    // fields, preserving concurrent updates made by the other process.
+    mutate(&mut state)?;
+    let bytes = serde_json::to_vec(&state).map_err(|error| format!("serialize state: {error}"))?;
+    write_protected(path, &bytes)?;
+    Ok(state)
 }
 
 pub(super) fn load_bundle() -> Option<KioskBundle> {
@@ -615,6 +642,90 @@ fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Invoked in a separate test process by the race regression below. Normal
+    // test discovery intentionally does nothing without the private test path.
+    #[test]
+    fn state_transaction_child_process() {
+        let Some(path) = std::env::var_os("BF_STATE_RACE_TEST_PATH").map(PathBuf::from) else { return };
+        let action = std::env::var("BF_STATE_RACE_TEST_ACTION").unwrap();
+        fs::write(path.with_extension("ready"), b"ready").unwrap();
+        update_state_file(&path, |state| apply_test_mutation(state, &action)).unwrap();
+        fs::write(path.with_extension("done"), b"done").unwrap();
+    }
+
+    fn apply_test_mutation(state: &mut ClientState, action: &str) -> Result<(), String> {
+        if action == "migrate" {
+            apply_regional_state(state, "https://frame-eu.betterportal.net".into(), |_| Ok(()))
+        } else {
+            state.active_layouts.insert("display".into(), "chosen-layout".into());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn migration_and_renderer_transactions_preserve_both_updates_across_processes() {
+        for (first, second) in [("migrate", "layout"), ("layout", "migrate")] {
+            let directory = std::env::temp_dir().join(format!("bf-state-race-{}-{first}", std::process::id()));
+            fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("state.json");
+            update_state_file(&path, |state| {
+                *state = ClientState {
+                    server_url: crate::core::protocol::CANONICAL_SERVER_URL.into(),
+                    kiosk_key: Some("retained-device-key".into()),
+                    pairing_secret: Some("retained-poll-secret".into()),
+                    bundle_version: Some("cached-v1".into()),
+                    ..ClientState::default()
+                };
+                Ok(())
+            }).unwrap();
+            let mut child = None;
+            update_state_file(&path, |state| {
+                // Hold the first transaction open while a different process
+                // attempts its own read/modify/write of this protected record.
+                let test_name = format!("{}::state_transaction_child_process", module_path!().split_once("::").unwrap().1);
+                child = Some(Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", &test_name, "--nocapture"])
+                    .env("BF_STATE_RACE_TEST_PATH", &path)
+                    .env("BF_STATE_RACE_TEST_ACTION", second)
+                    .spawn().unwrap());
+                let started = Instant::now();
+                while !path.with_extension("ready").exists() {
+                    assert!(started.elapsed() < Duration::from_secs(10), "child did not start");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                std::thread::sleep(Duration::from_millis(150));
+                assert!(!path.with_extension("done").exists(), "second process bypassed the state lock");
+                apply_test_mutation(state, first)
+            }).unwrap();
+            let mut child = child.unwrap();
+            let started = Instant::now();
+            loop {
+                if let Some(status) = child.try_wait().unwrap() { assert!(status.success()); break; }
+                if started.elapsed() > Duration::from_secs(10) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("child stayed blocked after transaction released its lock");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // Reopen the real DPAPI-protected file, as a restarted renderer does.
+            let state = load_state_file(&path).unwrap();
+            assert_eq!(state.server_url, "https://frame-eu.betterportal.net");
+            assert_eq!(state.active_layouts.get("display").map(String::as_str), Some("chosen-layout"));
+            assert_eq!(state.kiosk_key.as_deref(), Some("retained-device-key"));
+            assert_eq!(state.pairing_secret.as_deref(), Some("retained-poll-secret"));
+            assert_eq!(state.bundle_version.as_deref(), Some("cached-v1"));
+            assert!(fs::read(&path).unwrap().starts_with(PROTECTED_MAGIC));
+            let before = fs::read(&path).unwrap();
+            assert!(update_state_file(&path, |state| {
+                state.server_url = "https://discarded.example".into();
+                Err("injected mutation failure".into())
+            }).is_err());
+            assert_eq!(fs::read(&path).unwrap(), before);
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
 
     #[test]
     fn migrates_previous_windows_bundle_cache() {

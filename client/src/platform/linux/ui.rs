@@ -174,6 +174,19 @@ const APP_ID: &str = "cloud.betterportal.frame";
 const BETTERFRAME_LOGO_PNG: &[u8] = include_bytes!("../../../assets/betterframe-logo-dark.png");
 const BETTERFRAME_MARK_PNG: &[u8] = include_bytes!("../../../assets/betterframe-mark.png");
 
+fn wait_for_regional_origin(origin: &str, tx: &mpsc::Sender<WorkerMsg>) -> String {
+    loop {
+        match server::migrate_canonical_origin(origin) {
+            Ok(resolved) => return resolved,
+            Err(error) => {
+                warn!("regional discovery: {error}; retaining saved enrollment and cache");
+                let _ = tx.send(WorkerMsg::StartupStatus("Regional server unavailable — retrying with saved enrollment".into()));
+                std::thread::sleep(Duration::from_secs(10));
+            }
+        }
+    }
+}
+
 pub fn build_app() -> Application {
     let app = Application::builder().application_id(APP_ID).build();
     app.connect_activate(activate);
@@ -210,7 +223,7 @@ fn activate(app: &Application) {
         let _ = tx.send(WorkerMsg::StartupStatus(
             "Finding BetterFrame server".into(),
         ));
-        let server = loop {
+        let mut server = loop {
             match server::discover_server(server_url.as_deref()) {
                 Ok(server) => break server,
                 Err(error) => {
@@ -223,6 +236,12 @@ fn activate(app: &Application) {
             }
         };
         info!("server: {server}");
+
+        // Pending enrollment has no cached renderer to start. Resolve its old
+        // canonical origin before polling a claim or sending a device secret.
+        if !server::is_paired() {
+            server = wait_for_regional_origin(&server, &tx);
+        }
 
         // Bootstrap updates run before pairing so an older image can repair
         // its client before talking to a newer server.
@@ -313,6 +332,16 @@ fn activate(app: &Application) {
                 server.clone(),
                 key.clone(),
             ));
+        }
+
+        // Paired displays render cache immediately, even if discovery is offline.
+        // This runs on the worker, before bundle, heartbeat and WebSocket loops.
+        let regional = wait_for_regional_origin(&server, &tx);
+        if regional != server {
+            server = regional;
+            if let Some(bundle) = &cached {
+                let _ = tx.send(WorkerMsg::RenderBundle(bundle.clone(), server.clone(), key.clone()));
+            }
         }
 
         // Fetch the current bundle and replace the cached render when the
@@ -1091,7 +1120,7 @@ fn run_firmware_update_worker(
                 "blocked": failures >= 3,
             }),
         );
-        let _ = reqwest::blocking::Client::new()
+        let _ = crate::network::blocking_client()
             .post(format!("{server_url}/api/kiosk/firmware/applied"))
             .header("Authorization", format!("Bearer {kiosk_key}"))
             .json(&serde_json::json!({ "version": info.version, "error": err }))

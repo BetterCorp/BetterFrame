@@ -279,7 +279,7 @@ fn run_agent_cli(args: &[String]) -> Result<(), String> {
     let override_url = arg_value(args, "--server");
     rt.block_on(async {
         let server = loop {
-            match discover_server(override_url.as_deref(), &load_state()).await {
+            match discover_server(override_url.as_deref(), &load_agent_state()?).await {
                 Ok(server) => break server,
                 Err(error) => {
                     warn!("server discovery: {error}; retrying");
@@ -295,23 +295,24 @@ async fn discover_server(
     override_url: Option<&str>,
     state: &ClientState,
 ) -> Result<String, String> {
+    let saved = state.server_url.trim().trim_end_matches('/');
+    // Pending or paired credentials bind the origin. A bare discovery result
+    // still allows an operator to correct an explicit server selection.
+    if state.kiosk_key.is_some() || state.pairing_code.is_some() || state.pairing_secret.is_some() {
+        return if saved.is_empty() {
+            Err("Saved enrollment has no server origin; restore storage or reset locally".into())
+        } else { Ok(saved.to_string()) };
+    }
     if let Some(url) = override_url.map(str::trim).filter(|url| !url.is_empty()) {
-        return Ok(url.trim_end_matches('/').to_string());
+        return crate::network::discover(url, true).await;
     }
-    if state.kiosk_key.is_some() && !state.server_url.trim().is_empty() {
-        return Ok(state.server_url.trim().trim_end_matches('/').to_string());
+    if !saved.is_empty() {
+        return Ok(saved.to_string());
     }
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .map_err(|error| format!("build server discovery client: {error}"))?;
     for candidate in crate::core::protocol::SERVER_CANDIDATES {
         info!("trying {candidate}...");
-        if let Ok(response) = client.get(format!("{candidate}/healthz")).send().await {
-            if response.status().is_success() {
-                return Ok(crate::core::protocol::server_origin(response.url()));
-            }
+        if let Ok(origin) = crate::network::discover(candidate, false).await {
+            return Ok(origin);
         }
     }
     Err("could not find BetterFrame server".to_string())
@@ -321,21 +322,34 @@ async fn run_agent(server_url: String) -> Result<(), String> {
     ensure_secure_state_dir()?;
     ensure_default_policy()?;
 
-    let mut state = load_agent_state()?;
-    state.server_url = server_url;
-    save_state(&state)?;
+    let mut state = update_state(|latest| {
+        latest.server_url = server_url;
+        Ok(())
+    })?;
+    let app = Arc::new(Mutex::new(None::<Child>));
+    // The renderer reads protected cached state independently. Start it before
+    // regional discovery so an offline upgrade keeps showing the saved display.
+    if state.kiosk_key.is_some() { start_app(&app)?; }
+    while crate::core::protocol::needs_regional_migration(&state.server_url) {
+        match migrate_canonical_state(&mut state).await {
+            Ok(()) => break,
+            Err(error) => {
+                warn!("regional discovery: {error}; retaining saved identity and cached content");
+                if state.kiosk_key.is_some() { let _ = supervise_app(&app); }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+        }
+    }
     if state.kiosk_key.is_some() {
-        acknowledge_pairing(&reqwest::Client::new(), &mut state).await;
+        acknowledge_pairing(&crate::network::client(), &mut state).await;
     }
 
     if state.kiosk_key.is_none() {
         state = pair(&state.server_url).await?;
-        save_state(&state)?;
     }
 
     let policy = Arc::new(Mutex::new(load_policy()));
     let state = Arc::new(Mutex::new(state));
-    let app = Arc::new(Mutex::new(None::<Child>));
     start_app(&app)?;
 
     let (tx, mut rx) = mpsc::unbounded_channel::<AgentCommand>();
@@ -364,8 +378,14 @@ async fn run_agent(server_url: String) -> Result<(), String> {
                 if let Some(key) = snapshot.kiosk_key.as_deref() {
                     match heartbeat(&snapshot.server_url, key, &snapshot).await {
                         Ok(next) => {
-                            let _ = save_state(&next);
-                            *state.lock().unwrap() = next;
+                            match update_state(|latest| {
+                                latest.managed_config_applied_version = next.managed_config_applied_version;
+                                latest.managed_config_error = next.managed_config_error;
+                                Ok(())
+                            }) {
+                                Ok(saved) => *state.lock().unwrap() = saved,
+                                Err(error) => warn!("save heartbeat state: {error}"),
+                            }
                         }
                         Err(HeartbeatError::Unauthorized) => {
                             warn!(
@@ -377,7 +397,6 @@ async fn run_agent(server_url: String) -> Result<(), String> {
                 } else {
                     match pair(&snapshot.server_url).await {
                         Ok(next) => {
-                            let _ = save_state(&next);
                             *state.lock().unwrap() = next;
                         }
                         Err(err) => warn!("pairing failed: {err}"),
@@ -395,24 +414,23 @@ async fn run_agent(server_url: String) -> Result<(), String> {
                 if let Some(key) = snapshot.kiosk_key.as_deref() {
                     match fetch_bundle(&snapshot.server_url, key).await {
                         Ok(bundle) => {
-                            let mut next = snapshot.clone();
-                            next.kiosk_id = Some(bundle.kiosk_id.clone());
-                            next.kiosk_name = Some(bundle.kiosk_name.clone());
-                            next.bundle_version = Some(bundle.version.clone());
-                            for display in &bundle.displays {
-                                if let Some(layout_id) = display
-                                    .default_layout_id
-                                    .clone()
-                                    .or_else(|| display.layouts.first().map(|l| l.id.clone()))
-                                {
-                                    next.active_layouts
-                                        .entry(display.id.clone())
-                                        .or_insert(layout_id);
-                                }
-                            }
                             let _ = save_bundle(&bundle);
-                            let _ = save_state(&next);
-                            *state.lock().unwrap() = next;
+                            match update_state(|latest| {
+                                latest.kiosk_id = Some(bundle.kiosk_id.clone());
+                                latest.kiosk_name = Some(bundle.kiosk_name.clone());
+                                latest.bundle_version = Some(bundle.version.clone());
+                                for display in &bundle.displays {
+                                    if let Some(layout_id) = display.default_layout_id.clone()
+                                        .or_else(|| display.layouts.first().map(|l| l.id.clone()))
+                                    {
+                                        latest.active_layouts.entry(display.id.clone()).or_insert(layout_id);
+                                    }
+                                }
+                                Ok(())
+                            }) {
+                                Ok(saved) => *state.lock().unwrap() = saved,
+                                Err(error) => warn!("save bundle state: {error}"),
+                            }
                         }
                         Err(err) => warn!("bundle fetch failed: {err}"),
                     }
@@ -442,8 +460,35 @@ async fn run_agent(server_url: String) -> Result<(), String> {
     }
 }
 
+async fn migrate_canonical_state(state: &mut ClientState) -> Result<(), String> {
+    if !crate::core::protocol::needs_regional_migration(&state.server_url) { return Ok(()); }
+    let target = crate::network::discover(&state.server_url, true).await?;
+    // Discover outside the lock; read and change the latest state in one
+    // cross-process transaction so cached UI selections cannot undo migration.
+    *state = update_state(|latest| apply_regional_state(latest, target, |_| Ok(())))?;
+    Ok(())
+}
+
+fn apply_regional_state(
+    state: &mut ClientState,
+    target: String,
+    persist: impl FnOnce(&ClientState) -> Result<(), String>,
+) -> Result<(), String> {
+    if !crate::core::protocol::needs_regional_migration(&state.server_url) { return Ok(()); }
+    let destination = crate::core::protocol::discovery_probe(&target)?;
+    if destination.scheme() != "https" { return Err("Regional migration requires HTTPS".into()); }
+    let mut next = state.clone();
+    next.server_url = crate::core::protocol::server_origin(&destination);
+    // One protected atomic record contains origin, identity, pending secret and
+    // cache version. Failed persistence leaves the in-memory origin unchanged.
+    persist(&next)?;
+    *state = next;
+    Ok(())
+}
+
 async fn pair(server_url: &str) -> Result<ClientState, String> {
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
         .build()
@@ -489,7 +534,7 @@ async fn pair(server_url: &str) -> Result<ClientState, String> {
         pending.pairing_code = Some(init.code.clone());
         pending.pairing_expires_at = Some(init.expires_at.clone());
         pending.pairing_secret = init.polling_secret.clone();
-        save_state(&pending)?;
+        update_state(|latest| { *latest = pending; Ok(()) })?;
         let mut deadline = Instant::now() + init.lifetime();
         let mut delay = init.poll_delay();
         loop {
@@ -548,8 +593,9 @@ async fn pair(server_url: &str) -> Result<ClientState, String> {
                                 pairing_secret: init.polling_secret.clone(),
                                 ..ClientState::default()
                             };
-                            match save_state(&state) {
-                                Ok(()) => {
+                            match update_state(|latest| { *latest = state.clone(); Ok(()) }) {
+                                Ok(saved) => {
+                                    state = saved;
                                     acknowledge_pairing(&client, &mut state).await;
                                     return Ok(state);
                                 }
@@ -583,7 +629,7 @@ async fn pair(server_url: &str) -> Result<ClientState, String> {
             })
             .await;
         }
-        save_state(&unpaired_state(server_url))?;
+        update_state(|latest| { *latest = unpaired_state(server_url); Ok(()) })?;
         info!("pairing session expired; requesting a new code");
     }
 }
@@ -604,11 +650,16 @@ async fn acknowledge_pairing(client: &reqwest::Client, state: &mut ClientState) 
         .await
     {
         if response.status().is_success() {
-            state.pairing_code = None;
-            state.pairing_expires_at = None;
-            state.pairing_secret = None;
-            if let Err(error) = save_state(state) {
-                warn!("save pairing acknowledgment: {error}");
+            match update_state(|latest| {
+                if latest.kiosk_key == state.kiosk_key && latest.pairing_code == state.pairing_code {
+                    latest.pairing_code = None;
+                    latest.pairing_expires_at = None;
+                    latest.pairing_secret = None;
+                }
+                Ok(())
+            }) {
+                Ok(saved) => *state = saved,
+                Err(error) => warn!("save pairing acknowledgment: {error}"),
             }
         }
     }
@@ -672,9 +723,10 @@ async fn handle_agent_command(
             if let Some(key) = snapshot.kiosk_key.as_deref() {
                 let bundle = fetch_bundle(&snapshot.server_url, key).await?;
                 save_bundle(&bundle)?;
-                let mut next = snapshot;
-                next.bundle_version = Some(bundle.version);
-                save_state(&next)?;
+                let next = update_state(|latest| {
+                    latest.bundle_version = Some(bundle.version);
+                    Ok(())
+                })?;
                 *state.lock().unwrap() = next;
             }
         }
@@ -682,36 +734,19 @@ async fn handle_agent_command(
             display_id,
             layout_id,
         } => {
-            let mut next = state.lock().unwrap().clone();
-            if let Some(display_id) = display_id {
-                next.active_layouts
-                    .insert(display_id.clone(), layout_id.clone());
-                report_layout_change(
-                    &next.server_url,
-                    next.kiosk_key.as_deref(),
-                    &display_id,
-                    &layout_id,
-                )
-                .await;
-            } else if let Some(bundle) = load_bundle() {
-                if let Some(display) = bundle
-                    .displays
-                    .iter()
+            let display_id = display_id.or_else(|| load_bundle().and_then(|bundle| {
+                bundle.displays.iter()
                     .find(|d| d.layouts.iter().any(|l| l.id == layout_id))
-                {
-                    next.active_layouts
-                        .insert(display.id.clone(), layout_id.clone());
-                    report_layout_change(
-                        &next.server_url,
-                        next.kiosk_key.as_deref(),
-                        &display.id,
-                        &layout_id,
-                    )
-                    .await;
-                }
+                    .map(|d| d.id.clone())
+            }));
+            if let Some(display_id) = display_id {
+                let next = update_state(|latest| {
+                    latest.active_layouts.insert(display_id.clone(), layout_id.clone());
+                    Ok(())
+                })?;
+                *state.lock().unwrap() = next.clone();
+                report_layout_change(&next.server_url, next.kiosk_key.as_deref(), &display_id, &layout_id).await;
             }
-            save_state(&next)?;
-            *state.lock().unwrap() = next;
             invalidate_app_windows();
         }
         AgentCommand::Standby(_) => {
@@ -758,7 +793,7 @@ async fn handle_agent_command(
 }
 
 async fn fetch_bundle(server_url: &str, key: &str) -> Result<KioskBundle, String> {
-    let response = reqwest::Client::new()
+    let response = crate::network::client()
         .get(format!("{server_url}/api/kiosk/bundle"))
         .bearer_auth(key)
         .timeout(Duration::from_secs(15))
@@ -802,7 +837,7 @@ async fn heartbeat(
             .collect::<Vec<_>>()
             .join(", ")
     );
-    let resp = reqwest::Client::new()
+    let resp = crate::network::client()
         .post(format!("{server_url}/api/kiosk/heartbeat"))
         .bearer_auth(key)
         .json(&serde_json::json!({
@@ -856,7 +891,7 @@ async fn report_layout_change(
     layout_id: &str,
 ) {
     let Some(key) = key else { return };
-    let _ = reqwest::Client::new()
+    let _ = crate::network::client()
         .post(format!("{server_url}/api/kiosk/event"))
         .bearer_auth(key)
         .json(&serde_json::json!({
@@ -913,6 +948,87 @@ fn restart_app(slot: &Arc<Mutex<Option<Child>>>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pending_and_paired_restarts_stay_on_saved_regional_origin_without_discovery() {
+        let mut state = ClientState::unpaired("https://frame-eu.betterportal.net");
+        state.pairing_code = Some("ABC123".into());
+        state.pairing_secret = Some("test-polling-secret".into());
+        let reloaded: ClientState = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(discover_server(Some("https://frame.betterportal.net"), &reloaded).await.unwrap(), state.server_url);
+        state.pairing_code = None;
+        assert_eq!(discover_server(Some("https://changed.example"), &state).await.unwrap(), state.server_url);
+        state.kiosk_key = Some("test-device-key".into());
+        state.pairing_secret = None;
+        assert_eq!(discover_server(Some("https://changed.example"), &state).await.unwrap(), state.server_url);
+    }
+
+    #[tokio::test]
+    async fn explicit_server_can_correct_a_saved_discovery_result_before_enrollment() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let peer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                let mut chunk = [0; 4096];
+                let read = stream.read(&mut chunk).unwrap();
+                assert!(read > 0);
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let request = String::from_utf8(request).unwrap().to_lowercase();
+            assert!(request.starts_with("get /healthz "));
+            assert!(!request.contains("authorization:"));
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let state = ClientState::unpaired("https://mistyped.example");
+        assert_eq!(discover_server(None, &state).await.unwrap(), state.server_url);
+        assert_eq!(discover_server(Some(&origin), &state).await.unwrap(), origin);
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn legacy_canonical_migration_preserves_protected_identity_pending_state_and_cache() {
+        let directory = std::env::temp_dir().join(format!("bf-region-migration-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let state_file = directory.join("state.json");
+        let cache_file = directory.join("bundle.json");
+        let mut state = ClientState {
+            server_url: "https://FRAME.BETTERPORTAL.NET:443/".into(),
+            kiosk_key: Some("retained-device-key".into()),
+            encrypt_key: Some("retained-encryption-key".into()),
+            kiosk_id: Some("42".into()),
+            pairing_code: Some("ABC123".into()),
+            pairing_secret: Some("retained-polling-secret".into()),
+            bundle_version: Some("cached-v1".into()),
+            ..ClientState::default()
+        };
+        state.active_layouts.insert("display".into(), "layout".into());
+        write_protected(&state_file, &serde_json::to_vec(&state).unwrap()).unwrap();
+        let cached: KioskBundle = serde_json::from_value(serde_json::json!({
+            "kiosk_id":"42", "kiosk_name":"Recovered", "version":"cached-v1", "displays":[], "cameras":[]
+        })).unwrap();
+        write_protected(&cache_file, &serde_json::to_vec(&cached).unwrap()).unwrap();
+        let original = serde_json::to_value(&state).unwrap();
+        let cache_before = fs::read(&cache_file).unwrap();
+        assert!(apply_regional_state(&mut state, "https://frame-eu.betterportal.net".into(), |_| Err("storage unavailable".into())).is_err());
+        assert_eq!(serde_json::to_value(&state).unwrap(), original);
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&read_protected(&state_file).unwrap()).unwrap(), original);
+        apply_regional_state(&mut state, "https://frame-eu.betterportal.net".into(), |next|
+            write_protected(&state_file, &serde_json::to_vec(next).unwrap())).unwrap();
+        let restarted: ClientState = serde_json::from_slice(&read_protected(&state_file).unwrap()).unwrap();
+        assert_eq!(restarted.server_url, "https://frame-eu.betterportal.net");
+        assert_eq!(restarted.kiosk_key.as_deref(), Some("retained-device-key"));
+        assert_eq!(restarted.encrypt_key.as_deref(), Some("retained-encryption-key"));
+        assert_eq!(restarted.pairing_secret.as_deref(), Some("retained-polling-secret"));
+        assert_eq!(restarted.active_layouts.get("display").map(String::as_str), Some("layout"));
+        assert_eq!(fs::read(&cache_file).unwrap(), cache_before);
+        apply_regional_state(&mut state, "https://unrelated.example".into(), |_| panic!("A custom/regional origin must remain pinned")).unwrap();
+        assert_eq!(state.server_url, "https://frame-eu.betterportal.net");
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn reset_and_display_reconciliation_keep_only_valid_identity() {

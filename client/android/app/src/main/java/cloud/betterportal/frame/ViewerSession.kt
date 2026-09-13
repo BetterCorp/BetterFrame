@@ -18,13 +18,18 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 /** Outbound display client only. All network/storage work is serialized away from the UI. */
-class ViewerSession(context: Context, private val listener: Listener) {
+class ViewerSession internal constructor(context: Context, private val listener: Listener,
+                                        private val http: OkHttpClient = defaultHttp()) {
     private companion object {
         const val VIEWER_PROFILE = "android-viewer-v1"
         const val AUTH_REJECTED = "Display authorization rejected. Check this device in BF."
         const val PROFILE_REQUIRED = "This BF server must support android-viewer-v1. Update the server to use this display."
+        fun defaultHttp() = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
+            .connectTimeout(8, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS)
+            .callTimeout(20, TimeUnit.SECONDS).pingInterval(25, TimeUnit.SECONDS).build()
     }
     interface Listener {
+        fun onServerAddress(address: String) {}
         fun onStatus(message: String)
         fun onPairing(code: String)
         fun onPlan(plan: JSONObject)
@@ -37,9 +42,7 @@ class ViewerSession(context: Context, private val listener: Listener) {
     private val renderer = Executors.newSingleThreadExecutor()
     private data class RenderSnapshot(val raw: String, val server: String, val encryptKey: String?, val cookieReady: Boolean, val epoch: Int)
     @Volatile private var renderSnapshot: RenderSnapshot? = null
-    private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
-        .connectTimeout(8, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS)
-        .callTimeout(20, TimeUnit.SECONDS).pingInterval(25, TimeUnit.SECONDS).build()
+    private var serverResolved = false
     private var state = JSONObject()
     private var loop: ScheduledFuture<*>? = null
     private var socket: WebSocket? = null
@@ -113,14 +116,11 @@ class ViewerSession(context: Context, private val listener: Listener) {
                 // Older app versions could cache an unrestricted legacy bundle.
                 if (state.optString("bundle_profile") != VIEWER_PROFILE) clearCachedBundle()
                 val saved = state.optString("server")
-                val chosen = serverUrl?.takeIf { it.isNotBlank() } ?: saved
-                if (chosen.isBlank()) {
-                    main.post { if (generation == epoch) { listener.onStatus("Enter the BF server address to pair this display"); running = false } }
-                    return@enqueue
-                }
-                val origin = ServerAddress.parse(chosen).toString().trimEnd('/')
+                val origin = ServerAddress.enrollmentOrigin(serverUrl, saved)
                 require(saved.isBlank() || saved == origin) { "Unpair before changing the BF server" }
                 this.serverUrl = origin
+                serverResolved = state.optString("resolved_server") == origin
+                ui(epoch) { listener.onServerAddress(origin) }
                 state.put("server", origin)
                 kioskKey = state.optJSONObject("identity")?.textValue("kiosk_key") ?: ""
                 layoutId = state.optString("layout_id").takeIf { it.isNotBlank() }
@@ -211,6 +211,16 @@ class ViewerSession(context: Context, private val listener: Listener) {
     private fun tick() {
         try {
             ensureActive()
+            if (!serverResolved) {
+                if (System.currentTimeMillis() < nextSync) return
+                val resolved = ServerDiscovery.resolve(serverUrl, http, ::ensureActive)
+                state.put("server", resolved).put("resolved_server", resolved)
+                persist() // Pin the discovered origin before sending any enrollment credentials.
+                serverUrl = resolved
+                serverResolved = true
+                ui(activeEpoch) { listener.onServerAddress(resolved) }
+                if (!state.optBoolean("blocked")) emitPlan()
+            }
             if (kioskKey.isBlank()) {
                 if (System.currentTimeMillis() >= nextPairPoll) { pair(); failures = 0 }
             } else {
@@ -226,14 +236,30 @@ class ViewerSession(context: Context, private val listener: Listener) {
                 }
                 if (profileVerified && !state.optBoolean("blocked") && socket == null && !socketConnecting && now >= nextSocketAttempt) connectSocket()
             }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
             if (!active()) return
             failures = (failures + 1).coerceAtMost(6)
             val delay = (2_000L shl failures).coerceAtMost(60_000) + (0..1000).random()
             nextSync = System.currentTimeMillis() + delay
             nextPairPoll = System.currentTimeMillis() + delay
-            status(if (state.optBoolean("blocked")) state.optString("block_reason", AUTH_REJECTED)
-                else "BF connection unavailable — retaining saved display configuration")
+            status(when {
+                state.optBoolean("blocked") -> state.optString("block_reason", AUTH_REJECTED)
+                error is ServerRedirectException -> "BF server returned a redirect. Ask your administrator to fix API routing or use the direct server address."
+                state.has("bundle") && state.optString("bundle_profile") == VIEWER_PROFILE ->
+                    "BF connection unavailable — retaining saved display configuration"
+                kioskKey.isNotBlank() -> "BF connection unavailable — no display configuration saved yet. Retrying."
+                state.has("pending") -> "BF connection unavailable — retrying pairing. Check the server address and connection."
+                else -> "Unable to start pairing with BF. Check the server address and connection. Retrying."
+            })
+        }
+    }
+
+    private class ServerRedirectException : java.io.IOException()
+
+    private fun rejectRedirect(response: Response) {
+        if (response.code in listOf(301, 302, 303, 307, 308)) {
+            response.close()
+            throw ServerRedirectException()
         }
     }
 
@@ -244,6 +270,7 @@ class ViewerSession(context: Context, private val listener: Listener) {
         if (body != null) builder.post(body.toString().toRequestBody("application/json".toMediaType()))
         val response = http.newCall(builder.build()).execute()
         if (!active()) { response.close(); ensureActive() }
+        rejectRedirect(response)
         return response
     }
 
@@ -365,6 +392,7 @@ class ViewerSession(context: Context, private val listener: Listener) {
         ensureActive()
         http.newCall(builder.build()).execute().use {
             ensureActive()
+            rejectRedirect(it)
             if (it.code == 304) { status("Connected"); return }
             if (it.code == 409) {
                 val problem = json(it)

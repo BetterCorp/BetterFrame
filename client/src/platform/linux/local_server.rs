@@ -851,7 +851,7 @@ async fn local_iobox_event_handler(
     }
 
     let target = format!("{}/api/kiosk/event", state.server_url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
+    let client = crate::network::client();
     match client
         .post(target)
         .bearer_auth(&state.kiosk_key)
@@ -1288,7 +1288,7 @@ async fn proxy_handler(
     let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
     let target = format!("{}{}{}", state.server_url.trim_end_matches('/'), path, q);
 
-    let client = reqwest::Client::new();
+    let client = crate::network::client();
     let mut req = client.request(reqwest_method(&method), &target);
     for (k, v) in headers.iter() {
         let name = k.as_str();

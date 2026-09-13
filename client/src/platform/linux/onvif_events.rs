@@ -1237,7 +1237,7 @@ pub fn forward_event(server: &str, kiosk_key: &str, camera_id: &str, evt: &Onvif
         "property_op": "changed",
         "payload": payload,
     });
-    let _ = reqwest::blocking::Client::new()
+    let _ = crate::network::blocking_client()
         .post(format!("{server}/api/kiosk/event"))
         .header("Authorization", format!("Bearer {kiosk_key}"))
         .json(&body)

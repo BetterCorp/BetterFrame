@@ -12,6 +12,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONObject
 import org.junit.Assert.*
+import org.junit.After
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -24,6 +26,13 @@ import java.util.concurrent.atomic.AtomicReference
 class ViewerSmokeTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private val context get() = instrumentation.targetContext
+
+    @Before fun useOfflineTestServer() {
+        // Activity startup enrolls automatically; instrumentation must never contact production.
+        ProtectedStore(context).write(JSONObject().put("server", "http://127.0.0.1:9"))
+    }
+
+    @After fun clearTestEnrollment() { ProtectedStore(context).clear() }
 
     @Test fun setupActivityLaunchesAndShowsEnrollmentControls() {
         val activity = launch()

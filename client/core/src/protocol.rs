@@ -4,14 +4,80 @@ use std::time::Duration;
 use url::Url;
 
 pub const LOCAL_SERVER_URL: &str = "http://localhost";
+pub const CANONICAL_SERVER_URL: &str = "https://frame.betterportal.net";
 pub const SERVER_CANDIDATES: [&str; 3] = [
     LOCAL_SERVER_URL,
     "http://betterframe.local",
-    "https://frame.betterportal.net",
+    CANONICAL_SERVER_URL,
 ];
+
+pub fn needs_regional_migration(origin: &str) -> bool {
+    discovery_probe(origin).is_ok_and(|url| server_origin(&url) == CANONICAL_SERVER_URL)
+}
 
 pub fn server_origin(url: &Url) -> String {
     url.origin().ascii_serialization()
+}
+
+pub const MAX_DISCOVERY_REDIRECTS: usize = 5;
+
+/// Discovery never sends enrollment material. Remote destinations must use TLS;
+/// explicit local HTTP remains usable for existing on-device/LAN installations.
+pub fn discovery_probe(origin: &str) -> Result<Url, String> {
+    let mut url = Url::parse(origin.trim()).map_err(|_| "invalid server origin")?;
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !matches!(url.path(), "" | "/")
+    {
+        return Err("server must be an origin without credentials, path, query or fragment".into());
+    }
+    if url.scheme() != "https" && !(url.scheme() == "http" && local_discovery_host(&url)) {
+        return Err(
+            "remote discovery requires HTTPS; HTTP is supported only for local servers".into(),
+        );
+    }
+    url.set_path("/healthz");
+    Ok(url)
+}
+
+fn local_discovery_host(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(host)) => host == "localhost" || host.ends_with(".local"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Some(url::Host::Ipv6(ip)) => {
+            ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local()
+        }
+        None => false,
+    }
+}
+
+pub fn validate_discovery_redirect(
+    previous: &Url,
+    next: &Url,
+    followed: usize,
+) -> Result<(), String> {
+    if followed >= MAX_DISCOVERY_REDIRECTS {
+        return Err("too many server discovery redirects".into());
+    }
+    if !next.username().is_empty()
+        || next.password().is_some()
+        || next.query().is_some()
+        || next.fragment().is_some()
+        || !matches!(next.path(), "/" | "/healthz")
+    {
+        return Err("invalid server discovery redirect".into());
+    }
+    if next.scheme() != "https"
+        && !(previous.scheme() == "http"
+            && next.scheme() == "http"
+            && previous.origin() == next.origin()
+            && local_discovery_host(next))
+    {
+        return Err("server discovery redirects must use HTTPS".into());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -203,5 +269,70 @@ mod tests {
             server_origin(&Url::parse("https://frame-eu.betterportal.net/healthz").unwrap()),
             "https://frame-eu.betterportal.net"
         );
+    }
+
+    #[test]
+    fn discovery_rejects_secrets_paths_remote_cleartext_and_downgrades() {
+        for origin in [
+            "https://user:password@frame.example",
+            "https://frame.example/?key=secret",
+            "https://frame.example/#token",
+            "https://frame.example/admin",
+            "http://public.example",
+        ] {
+            assert!(discovery_probe(origin).is_err(), "accepted {origin}");
+        }
+        assert_eq!(
+            discovery_probe("http://192.168.1.2:18081")
+                .unwrap()
+                .as_str(),
+            "http://192.168.1.2:18081/healthz"
+        );
+        assert!(discovery_probe("http://[fd00::1]").is_ok());
+        let canonical = discovery_probe("https://frame.betterportal.net").unwrap();
+        let regional = discovery_probe("https://frame-eu.betterportal.net").unwrap();
+        assert!(validate_discovery_redirect(&canonical, &regional, 0).is_ok());
+        assert!(validate_discovery_redirect(&canonical, &regional, 4).is_ok());
+        assert!(validate_discovery_redirect(&canonical, &regional, 5).is_err());
+        for target in [
+            "http://frame-eu.betterportal.net/healthz",
+            "http://127.0.0.1/healthz",
+            "https://user:password@frame-eu.betterportal.net/healthz",
+            "https://frame-eu.betterportal.net/healthz?secret=x",
+            "https://frame-eu.betterportal.net/healthz#secret",
+            "https://frame-eu.betterportal.net/login",
+        ] {
+            assert!(
+                validate_discovery_redirect(&canonical, &Url::parse(target).unwrap(), 0).is_err(),
+                "accepted {target}"
+            );
+        }
+        let local = discovery_probe("http://127.0.0.1:18081").unwrap();
+        assert!(validate_discovery_redirect(&local, &local.join("/").unwrap(), 0).is_ok());
+        assert!(
+            validate_discovery_redirect(
+                &local,
+                &Url::parse("http://127.0.0.1:18082/healthz").unwrap(),
+                0
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn legacy_regional_migration_only_matches_the_known_canonical_origin() {
+        for origin in [CANONICAL_SERVER_URL, "https://FRAME.BETTERPORTAL.NET:443/"] {
+            assert!(needs_regional_migration(origin));
+        }
+        for origin in [
+            "https://frame-eu.betterportal.net",
+            "https://custom.example",
+            "http://frame.betterportal.net",
+            "https://user:secret@frame.betterportal.net",
+            "https://frame.betterportal.net/path",
+            "https://frame.betterportal.net/?secret=x",
+        ] {
+            assert!(!needs_regional_migration(origin));
+        }
     }
 }

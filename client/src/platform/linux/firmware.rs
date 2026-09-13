@@ -103,7 +103,7 @@ pub fn check_public(server: &str, current_version: &str) -> Option<UpdateInfo> {
         arch = ARCH,
         cur = current_version,
     );
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     let resp = match client.get(&url).timeout(Duration::from_secs(10)).send() {
         Ok(r) => r,
         Err(err) => {
@@ -128,7 +128,7 @@ pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
         info.version, info.size_bytes
     );
     let download_url = format!("{server}{}", info.download_url);
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     let resp = client
         .get(&download_url)
         .timeout(Duration::from_secs(300))
@@ -182,7 +182,7 @@ pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
 /// available. Returns `None` on up-to-date / network error / unparsable
 /// response — never panics.
 pub fn check(server: &str, key: &str, current_version: &str) -> Option<UpdateInfo> {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     // current_version is semver-shaped (already URL-safe). Empty string is
     // fine — server treats it as "unknown" and offers any release.
     let url = format!(
@@ -235,7 +235,7 @@ pub fn apply(
 
     // 1. Download
     let url = format!("{}{}", server, info.download_url);
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     let resp = client
         .get(&url)
         .header("Authorization", format!("Bearer {key}"))

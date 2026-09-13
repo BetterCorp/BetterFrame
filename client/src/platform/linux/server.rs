@@ -179,17 +179,31 @@ pub fn state_file(name: &str) -> PathBuf {
 }
 
 fn migrate_legacy_state(persistent: &PathBuf) {
+    static IMPORT: Mutex<()> = Mutex::new(());
+    let _import = IMPORT.lock().unwrap_or_else(|error| error.into_inner());
     let Some(home) = dirs::home_dir() else {
         return;
     };
     let legacy = home.join(".betterframe-kiosk");
+    if let Err(error) = import_legacy_state(&legacy, persistent) {
+        tracing::warn!("failed to import legacy kiosk state: {error}");
+    }
+}
+
+fn import_legacy_state(legacy: &std::path::Path, persistent: &std::path::Path) -> std::io::Result<()> {
+    use std::io::Write;
+    let complete = persistent.join(".legacy-state-imported");
+    if fs::read(&complete).is_ok_and(|bytes| bytes == b"complete-v1\n") {
+        return Ok(());
+    }
     if !legacy.is_dir() {
-        return;
+        return Ok(());
     }
 
     for name in [
         "identity.json",
         "pairing.json",
+        "origin-migration.json",
         "kiosk.key",
         "server.url",
         "bundle.json",
@@ -200,11 +214,27 @@ fn migrate_legacy_state(persistent: &PathBuf) {
         let src = legacy.join(name);
         let dst = persistent.join(name);
         if src.is_file() && !dst.exists() {
-            if let Err(err) = fs::copy(&src, &dst) {
-                tracing::warn!("failed to migrate kiosk state file {name}: {err}");
+            let temporary = persistent.join(format!(".{name}.{}.tmp", rand::random::<u64>()));
+            let result = (|| {
+                fs::copy(&src, &temporary)?;
+                fs::File::open(&temporary)?.sync_all()?;
+                fs::rename(&temporary, &dst)
+            })();
+            if result.is_err() {
+                let _ = fs::remove_file(temporary);
             }
+            result?;
         }
     }
+    // Commit all imported filenames before acknowledging the source directory.
+    // A recovered/deleted journal must never be copied back on the next lookup.
+    fs::File::open(persistent)?.sync_all()?;
+    let temporary = persistent.join(".legacy-state-imported.tmp");
+    let mut file = fs::File::create(&temporary)?;
+    file.write_all(b"complete-v1\n")?;
+    file.sync_all()?;
+    fs::rename(temporary, complete)?;
+    fs::File::open(persistent)?.sync_all()
 }
 
 fn key_file() -> PathBuf {
@@ -292,56 +322,130 @@ pub fn load_kiosk_id() -> Option<String> {
         .or_else(|| load_cached_bundle().map(|b| b.kiosk_id))
 }
 
-/// Discover the BetterFrame server.
+/// Discover anonymously once, then use the saved regional origin on every restart.
 pub fn discover_server(override_url: Option<&str>) -> Result<String, String> {
-    if let Some(url) = override_url {
-        return Ok(url.to_string());
-    }
-
+    recover_origin_migration()?;
     if identity_file().exists() {
+        // Existing credentials stay bound to their origin and paired offline boot
+        // must never depend on contacting the global discovery service.
         return Ok(load_identity()?.server_url);
     }
-
-    // A paired kiosk must boot from cache without waiting for its server.
-    // The WS and bundle retry loops reconnect to this saved endpoint later.
-    if let Ok(saved) = fs::read_to_string(server_file()) {
-        let saved = saved.trim().to_string();
-        if !saved.is_empty() {
-            if is_paired() {
-                return Ok(saved);
-            }
-            if let Some(resolved) = healthy_server_origin(&saved) {
-                fs::write(server_file(), &resolved).ok();
-                return Ok(resolved);
-            }
-        }
+    let pending_path = state_dir().join("pairing.json");
+    if pending_path.exists() {
+        let bytes = crate::at_rest::read_maybe_encrypted(&pending_path)
+            .ok_or("Unable to read saved pairing session; restore storage or reset locally")?;
+        let (origin, _session): (String, PairInitiateResponse) = serde_json::from_slice(&bytes)
+            .map_err(|_| "Invalid saved pairing session; restore storage or reset locally")?;
+        return Ok(origin);
+    }
+    let saved = fs::read_to_string(server_file()).ok()
+        .map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    if is_paired() {
+        return saved.ok_or_else(|| "Saved kiosk key has no server origin; restore storage or reset locally".into());
     }
 
-    // Probe order: on-device → LAN mDNS → BetterCorp managed cloud.
-    // Single image works for aio (server beside kiosk on same Pi), on-prem
-    // (server on the LAN, discoverable by mDNS), and client-only (no local
-    // server — falls through to the cloud).
+    let save = |origin: String| -> Result<String, String> {
+        // Do not initiate enrollment unless its selected origin survives a restart.
+        let path = server_file();
+        let temporary = path.with_extension("url.tmp");
+        fs::write(&temporary, &origin).and_then(|()| fs::rename(&temporary, &path))
+            .map_err(|error| format!("Unable to save discovered server: {error}"))?;
+        Ok(origin)
+    };
+    if let Some(url) = override_url.map(str::trim).filter(|url| !url.is_empty()) {
+        return save(crate::network::discover(url, true)?);
+    }
+    if let Some(saved) = saved {
+        return Ok(saved);
+    }
     for url in crate::core::protocol::SERVER_CANDIDATES {
         info!("trying {url}...");
-        if let Some(resolved) = healthy_server_origin(url) {
-            fs::write(server_file(), &resolved).ok();
-            return Ok(resolved);
+        if let Ok(resolved) = crate::network::discover(url, false) {
+            return save(resolved);
         }
     }
-
     Err("Could not find BetterFrame server".into())
 }
 
-fn healthy_server_origin(url: &str) -> Option<String> {
-    let response = reqwest::blocking::Client::new()
-        .get(format!("{url}/healthz"))
-        .timeout(Duration::from_secs(3))
-        .send()
-        .ok()?;
-    response
-        .status()
-        .is_success()
-        .then(|| crate::core::protocol::server_origin(response.url()))
+#[derive(serde::Serialize, serde::Deserialize)]
+struct OriginMigration {
+    target: String,
+}
+
+fn migration_file() -> PathBuf { state_dir().join("origin-migration.json") }
+
+fn persist_server_origin(origin: &str) -> Result<(), String> {
+    use std::io::Write;
+    let path = server_file();
+    let temporary = path.with_extension("url.tmp");
+    let mut file = fs::File::create(&temporary).map_err(|error| error.to_string())?;
+    file.write_all(origin.as_bytes()).and_then(|()| file.sync_all())
+        .and_then(|()| fs::rename(&temporary, &path))
+        .and_then(|()| fs::File::open(state_dir())?.sync_all())
+        .map_err(|error| format!("Unable to save server origin: {error}"))
+}
+
+/// Complete a journaled origin update before startup selects its server.
+/// Every record accepts the old or final origin, making interrupted writes retryable.
+fn recover_origin_migration() -> Result<(), String> {
+    let journal = migration_file();
+    if !journal.exists() { return Ok(()); }
+    let bytes = crate::at_rest::read_maybe_encrypted(&journal).ok_or("Unable to read origin migration")?;
+    let migration: OriginMigration = serde_json::from_slice(&bytes).map_err(|_| "Invalid origin migration")?;
+    let target = crate::core::protocol::discovery_probe(&migration.target)?;
+    if target.scheme() != "https" { return Err("Invalid migration target".into()); }
+    let allowed = |origin: &str| origin == migration.target || crate::core::protocol::needs_regional_migration(origin);
+    // Validate all records before replacing any one of them.
+    let identity = if identity_file().exists() {
+        let mut identity = load_identity()?;
+        if !allowed(&identity.server_url) { return Err("Identity does not match origin migration".into()); }
+        identity.server_url = migration.target.clone();
+        Some(identity)
+    } else { None };
+    let pending_path = state_dir().join("pairing.json");
+    let pending = if pending_path.exists() {
+        let bytes = crate::at_rest::read_maybe_encrypted(&pending_path).ok_or("Unable to read pending enrollment")?;
+        let (origin, session): (String, PairInitiateResponse) = serde_json::from_slice(&bytes)
+            .map_err(|_| "Invalid pending enrollment")?;
+        if !allowed(&origin) { return Err("Pending enrollment does not match origin migration".into()); }
+        Some((migration.target.clone(), session))
+    } else { None };
+    if let Ok(saved) = fs::read_to_string(server_file()) {
+        if !allowed(saved.trim()) { return Err("Saved server does not match origin migration".into()); }
+    }
+    if let Some(identity) = identity {
+        crate::at_rest::write_encrypted(&identity_file(), &serde_json::to_vec(&identity).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+    }
+    if let Some(pending) = pending {
+        crate::at_rest::write_encrypted(&pending_path, &serde_json::to_vec(&pending).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+    }
+    persist_server_origin(&migration.target)?;
+    fs::remove_file(journal).and_then(|()| fs::File::open(state_dir())?.sync_all())
+        .map_err(|error| error.to_string())
+}
+
+pub fn migrate_canonical_origin(origin: &str) -> Result<String, String> {
+    migrate_canonical_origin_with(origin, |url| crate::network::discover(url, true))
+}
+
+fn migrate_canonical_origin_with(origin: &str, discover: impl FnOnce(&str) -> Result<String, String>) -> Result<String, String> {
+    if !crate::core::protocol::needs_regional_migration(origin) { return Ok(origin.to_string()); }
+    if migration_file().exists() {
+        recover_origin_migration()?;
+        return fs::read_to_string(server_file()).map_err(|error| error.to_string());
+    }
+    let discovered = discover(origin)?; // Anonymous; no identity or polling material is supplied.
+    let destination = crate::core::protocol::discovery_probe(&discovered)?;
+    if destination.scheme() != "https" { return Err("Regional migration requires HTTPS".into()); }
+    let target = crate::core::protocol::server_origin(&destination);
+    if target == origin { return Ok(target); }
+    let migration = OriginMigration { target: target.clone() };
+    crate::at_rest::write_encrypted(&migration_file(), &serde_json::to_vec(&migration).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    recover_origin_migration()?;
+    Ok(target)
 }
 
 /// Check if already paired (key file exists).
@@ -352,7 +456,7 @@ pub fn is_paired() -> bool {
 /// Confirm with the server that our key is truly rejected before wiping.
 /// Calls /api/kiosk/_check — if 200 the key is still valid (false alarm).
 fn confirm_deletion(server: &str, key: &str) -> bool {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     match client
         .get(format!("{server}/api/kiosk/_check"))
         .header("Authorization", format!("Bearer {key}"))
@@ -368,6 +472,7 @@ fn remove_pairing_state_files(dir: &PathBuf) {
     for name in [
         "identity.json",
         "pairing.json",
+        "origin-migration.json",
         "kiosk.key",
         "server.url",
         "bundle.json",
@@ -431,6 +536,7 @@ pub fn load_key() -> Result<String, String> {
 
 fn pairing_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
         .build()
@@ -639,7 +745,7 @@ static BUNDLE_ETAG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(Non
 
 pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
     acknowledge_identity(server);
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     let mut req = client
         .get(format!("{server}/api/kiosk/bundle"))
         .header("Authorization", format!("Bearer {key}"))
@@ -722,7 +828,7 @@ pub fn report_layout_change(
     layout_id: &str,
     layout_name: &str,
 ) {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     let _ = client
         .post(format!("{server}/api/kiosk/event"))
         .header("Authorization", format!("Bearer {key}"))
@@ -749,7 +855,7 @@ pub fn report_web_change(
     entity_id: Option<&str>,
     url: &str,
 ) {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     let _ = client
         .post(format!("{server}/api/kiosk/event"))
         .header("Authorization", format!("Bearer {key}"))
@@ -771,7 +877,7 @@ pub fn report_web_change(
 }
 
 pub fn report_kiosk_log(server: &str, key: &str, level: &str, message: &str, payload: Value) {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     let _ = client
         .post(format!("{server}/api/kiosk/event"))
         .header("Authorization", format!("Bearer {key}"))
@@ -809,7 +915,7 @@ pub fn heartbeat(
     displays: &[DisplayReport],
     hw: &crate::hwmon::HwInfo,
 ) -> bool {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     let display_info: Vec<_> = displays
         .iter()
         .map(|d| {
@@ -1145,6 +1251,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn completed_legacy_import_never_resurrects_a_consumed_journal_or_reset_identity() {
+        let root = std::env::temp_dir().join(format!("bf-legacy-import-{}", rand::random::<u64>()));
+        let legacy = root.join("legacy");
+        let persistent = root.join("persistent");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::create_dir_all(&persistent).unwrap();
+        let journal = b"{\"target\":\"https://frame-eu.betterportal.net\"}";
+        fs::write(legacy.join("origin-migration.json"), journal).unwrap();
+        fs::write(legacy.join("identity.json"), b"old canonical identity").unwrap();
+        import_legacy_state(&legacy, &persistent).unwrap();
+        assert_eq!(fs::read(persistent.join("origin-migration.json")).unwrap(), journal);
+
+        // Recovery updates the identity and consumes its destination journal.
+        fs::write(persistent.join("identity.json"), b"updated regional identity").unwrap();
+        fs::remove_file(persistent.join("origin-migration.json")).unwrap();
+        import_legacy_state(&legacy, &persistent).unwrap();
+        assert!(!persistent.join("origin-migration.json").exists());
+        assert_eq!(fs::read(persistent.join("identity.json")).unwrap(), b"updated regional identity");
+        assert!(legacy.join("origin-migration.json").exists());
+
+        // Resetting enrollment must not cause the old source identity to return.
+        fs::remove_file(persistent.join("identity.json")).unwrap();
+        import_legacy_state(&legacy, &persistent).unwrap();
+        assert!(!persistent.join("identity.json").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_legacy_import_commit_is_retryable_without_overwriting_current_state() {
+        let root = std::env::temp_dir().join(format!("bf-legacy-import-retry-{}", rand::random::<u64>()));
+        let legacy = root.join("legacy");
+        let persistent = root.join("persistent");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::create_dir_all(&persistent).unwrap();
+        fs::write(legacy.join("identity.json"), b"legacy identity").unwrap();
+        fs::write(legacy.join("origin-migration.json"), b"journal").unwrap();
+        fs::write(persistent.join("identity.json"), b"current identity").unwrap();
+        let blocked = persistent.join(".legacy-state-imported.tmp");
+        fs::create_dir(&blocked).unwrap();
+        assert!(import_legacy_state(&legacy, &persistent).is_err());
+        assert!(!persistent.join(".legacy-state-imported").exists());
+        assert_eq!(fs::read(persistent.join("identity.json")).unwrap(), b"current identity");
+        fs::remove_dir(blocked).unwrap();
+        import_legacy_state(&legacy, &persistent).unwrap();
+        assert!(persistent.join(".legacy-state-imported").exists());
+        assert_eq!(fs::read(persistent.join("identity.json")).unwrap(), b"current identity");
+        fs::remove_file(persistent.join("origin-migration.json")).unwrap();
+        import_legacy_state(&legacy, &persistent).unwrap();
+        assert!(!persistent.join("origin-migration.json").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn timezone_policy_success_does_not_invoke_legacy_helper() {
         let mut calls = Vec::new();
         set_timezone_with_fallback("Europe/London", Some("/legacy/helper"), |program, args| {
@@ -1236,6 +1395,7 @@ mod tests {
         let server = format!("http://{}", listener.local_addr().unwrap());
         let peer = std::thread::spawn(move || {
             for (status, body) in [
+                (200, "{}"), // Anonymous discovery before any enrollment request.
                 (500, "{}"),
                 (
                     200,
@@ -1280,8 +1440,16 @@ mod tests {
                 stream.write_all(response.as_bytes()).unwrap();
             }
         });
+        // A saved discovery result alone is not enrollment: an operator may
+        // correct --server before a pairing code or device key exists.
+        fs::write(server_file(), "https://mistyped.example").unwrap();
+        assert_eq!(discover_server(Some(&server)).unwrap(), server);
+        assert_eq!(fs::read_to_string(server_file()).unwrap(), server);
+        assert_eq!(discover_server(None).unwrap(), server);
         assert!(initiate_pairing(&server).is_err());
         let session = initiate_pairing(&server).unwrap();
+        assert_eq!(discover_server(None).unwrap(), server);
+        assert_eq!(discover_server(Some("https://changed.example")).unwrap(), server);
         let resumed = initiate_pairing(&server).unwrap();
         assert_eq!(resumed.code, session.code);
         let mut_statuses = std::sync::Mutex::new(Vec::new());
@@ -1292,10 +1460,65 @@ mod tests {
         assert_eq!(name, "Recovered");
         assert!(!mut_statuses.lock().unwrap().is_empty());
         assert_eq!(load_key().unwrap(), key);
+        assert_eq!(discover_server(None).unwrap(), server);
+        assert_eq!(discover_server(Some("https://changed.example")).unwrap(), server);
         assert_eq!(load_encrypt_key().as_deref(), Some("encrypt"));
         assert!(fetch_bundle(&server, &key).is_none());
         assert_eq!(load_key().unwrap(), key);
         peer.join().unwrap();
+
+        // Upgrade an old --server canonical enrollment without losing its key,
+        // polling secret or cache. Offline discovery must leave everything alone.
+        let canonical = crate::core::protocol::CANONICAL_SERVER_URL;
+        let regional = "https://frame-eu.betterportal.net";
+        let mut identity = load_identity().unwrap();
+        identity.server_url = canonical.into();
+        crate::at_rest::write_encrypted(&identity_file(), &serde_json::to_vec(&identity).unwrap()).unwrap();
+        crate::at_rest::write_encrypted(&state_dir().join("pairing.json"),
+            &serde_json::to_vec(&(canonical, &session)).unwrap()).unwrap();
+        persist_server_origin(canonical).unwrap();
+        let cached: KioskBundle = serde_json::from_value(serde_json::json!({
+            "kiosk_id":"42", "kiosk_name":"Recovered", "version":"cached-v1", "displays":[], "cameras":[]
+        })).unwrap();
+        save_bundle(&cached);
+        let cache_before = fs::read(bundle_cache_path()).unwrap();
+        assert!(migrate_canonical_origin_with(canonical, |_| Err("offline".into())).is_err());
+        assert_eq!(load_identity().unwrap().server_url, canonical);
+        assert_eq!(load_cached_bundle().unwrap().version, "cached-v1");
+        assert_eq!(load_key().unwrap(), key);
+        assert!(!migration_file().exists());
+
+        // Fail the final origin-file write after both encrypted records have
+        // changed. Startup must replay the journal before selecting its origin.
+        let blocked_temporary = server_file().with_extension("url.tmp");
+        fs::create_dir(&blocked_temporary).unwrap();
+        assert!(migrate_canonical_origin_with(canonical, |_| Ok(regional.into())).is_err());
+        assert!(migration_file().exists());
+        assert_eq!(load_identity().unwrap().server_url, regional);
+        assert_eq!(fs::read_to_string(server_file()).unwrap(), canonical);
+        fs::remove_dir(blocked_temporary).unwrap();
+        assert_eq!(discover_server(None).unwrap(), regional);
+        assert!(!migration_file().exists());
+        let pending: (String, PairInitiateResponse) = serde_json::from_slice(
+            &crate::at_rest::read_maybe_encrypted(&state_dir().join("pairing.json")).unwrap()).unwrap();
+        assert_eq!(pending.0, regional);
+        assert_eq!(pending.1.polling_secret, session.polling_secret);
+        assert_eq!(load_key().unwrap(), key);
+        assert_eq!(load_encrypt_key().as_deref(), Some("encrypt"));
+        assert_eq!(fs::read(bundle_cache_path()).unwrap(), cache_before);
+        assert_eq!(fs::read_to_string(server_file()).unwrap(), regional);
+
+        // Earlier images used a separate key file instead of identity.json.
+        fs::remove_file(identity_file()).unwrap();
+        fs::remove_file(state_dir().join("pairing.json")).unwrap();
+        crate::at_rest::write_encrypted(&key_file(), key.as_bytes()).unwrap();
+        persist_server_origin(canonical).unwrap();
+        assert_eq!(discover_server(Some("https://custom.example")).unwrap(), canonical);
+        assert_eq!(migrate_canonical_origin_with(canonical, |_| Ok(regional.into())).unwrap(), regional);
+        assert_eq!(discover_server(None).unwrap(), regional);
+        assert_eq!(load_key().unwrap(), key);
+        assert_eq!(fs::read(bundle_cache_path()).unwrap(), cache_before);
+
         crate::at_rest::write_encrypted(
             &state_dir().join("pairing.json"),
             b"broken pending session",

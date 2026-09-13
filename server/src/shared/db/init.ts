@@ -7,7 +7,7 @@
 import { Repository } from "./repository.js";
 import type { DbAdapter } from "./db-adapter.js";
 import type { DbConfig } from "./config.js";
-import { tenantSchemaName } from "./tenant-schema.js";
+import { tenantSchemaName, legacyTenantSchemaName, storedPostgresIdentifier } from "./tenant-schema.js";
 import { quotedSchema } from "./platform-admin.js";
 import { mirrorPlatformAdmins } from "./platform-admin.js";
 
@@ -51,16 +51,31 @@ export async function initDb(
       const tenants = await adapter.all<{ slug: string; schema_name: string }>(
         "SELECT slug, schema_name FROM public.tenants WHERE slug <> 'default' ORDER BY created_at",
       );
+      // Old registration names were unbounded, but PostgreSQL identifiers are
+      // not. Refuse ambiguous ownership before renaming any tenant schema.
+      const schemaOwners = new Map<string, string>();
+      for (const tenant of tenants) {
+        const storedName = storedPostgresIdentifier(tenant.schema_name);
+        const previousOwner = schemaOwners.get(storedName);
+        if (previousOwner) throw new Error(`ambiguous legacy tenant schema ${storedName}: registered by ${previousOwner} and ${tenant.slug}`);
+        schemaOwners.set(storedName, tenant.slug);
+      }
       for (const tenant of tenants) {
         let schemaName = tenant.schema_name;
         // Repair registrations made by older builds with invalid/overlong names.
         if (!/^[a-z_][a-z0-9_]{0,62}$/.test(schemaName)) {
-          const repaired = tenantSchemaName(tenant.slug);
-          const exists = await adapter.get("SELECT 1 FROM pg_namespace WHERE nspname = ?", [schemaName]);
+          const repaired = legacyTenantSchemaName(tenant.slug);
+          const storedName = storedPostgresIdentifier(schemaName);
+          // Cast to text: comparing pg_namespace.name to a name-typed parameter
+          // can silently truncate the lookup argument too.
+          const exists = await adapter.get("SELECT 1 FROM pg_namespace WHERE nspname::text = ?", [storedName]);
           if (exists) {
-            const oldQuoted = `"${schemaName.replaceAll('"', '""')}"`;
+            const oldQuoted = `"${storedName.replaceAll('"', '""')}"`;
             await adapter.exec(`ALTER SCHEMA ${oldQuoted} RENAME TO ${quotedSchema(repaired)}`);
-            await adapter.run("UPDATE public.schema_migrations SET schema_name = ? WHERE schema_name = ?", [repaired, schemaName]);
+            await adapter.run(`INSERT INTO public.schema_migrations (schema_name, version, applied_at)
+              SELECT ?, version, applied_at FROM public.schema_migrations WHERE schema_name IN (?, ?)
+              ON CONFLICT (schema_name, version) DO NOTHING`, [repaired, schemaName, storedName]);
+            await adapter.run("DELETE FROM public.schema_migrations WHERE schema_name IN (?, ?)", [schemaName, storedName]);
           }
           await adapter.run("UPDATE public.tenants SET schema_name = ? WHERE slug = ?", [repaired, tenant.slug]);
           schemaName = repaired;

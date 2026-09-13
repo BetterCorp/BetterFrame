@@ -6,7 +6,7 @@ import { initDb, createTenantSchema } from "../src/shared/db/init.js";
 import { Repository } from "../src/shared/db/repository.js";
 import { initiatePairing, confirmPairing, claimPairing, acknowledgePairing } from "../src/shared/pairing.js";
 import { claimIoBox, acknowledgeIoBox } from "../src/shared/iobox-pairing.js";
-import { tenantSchemaName } from "../src/shared/db/tenant-schema.js";
+import { tenantSchemaName, legacyTenantSchemaName, storedPostgresIdentifier } from "../src/shared/db/tenant-schema.js";
 
 const url = process.env["BF_TEST_PG_URL"];
 const log = { info() {}, warn() {} };
@@ -102,9 +102,38 @@ test("PostgreSQL migrations, tenant transactions and concurrent credential deliv
     await assert.rejects(claimIoBox(repo, auth as never, secrets as never, claimInput, ioTenant));
     // The old route committed a hyphenated registration before schema DDL failed.
     await repo.adapter.run("INSERT INTO public.tenants (name, slug, schema_name) VALUES (?, ?, ?)", ["Legacy broken", "legacy-broken", "tenant_legacy-broken"]);
+    // Old CREATE SCHEMA and SET search_path silently truncated long names,
+    // while tenant registration and migration records kept the full string.
+    const legacySlug = "long" + "a".repeat(140);
+    const legacySchema = `tenant_${legacySlug}`;
+    const storedSchema = storedPostgresIdentifier(legacySchema);
+    await repo.adapter.run("INSERT INTO public.tenants (name, slug, schema_name) VALUES (?, ?, ?)", ["Long legacy", legacySlug, legacySchema]);
+    await createTenantSchema(repo.adapter, legacySlug, log, storedSchema);
+    await repo.adapter.exec(`CREATE TABLE "${storedSchema}".preserved_marker (value TEXT NOT NULL)`);
+    await repo.adapter.run(`INSERT INTO "${storedSchema}".preserved_marker (value) VALUES ('existing tenant data')`);
+    await repo.adapter.run("UPDATE public.schema_migrations SET schema_name = ? WHERE schema_name = ?", [legacySchema, storedSchema]);
     const third = await initDb(config, log); handles.push(third);
     assert.ok(await third.repo.getTenantBySlug("branch-one"));
     assert.equal((await third.repo.getTenantBySlug("legacy-broken"))?.schema_name, tenantSchemaName("legacy-broken"));
+    const repairedSchema = legacyTenantSchemaName(legacySlug);
+    assert.equal((await third.repo.getTenantBySlug(legacySlug))?.schema_name, repairedSchema);
+    assert.deepEqual(await repo.adapter.get(`SELECT value FROM "${repairedSchema}".preserved_marker`), { value: "existing tenant data" });
+    assert.equal(await repo.adapter.get("SELECT 1 FROM pg_namespace WHERE nspname::text = ?", [storedSchema]), undefined);
+    assert.equal(await repo.adapter.get("SELECT 1 FROM public.schema_migrations WHERE schema_name = ?", [legacySchema]), undefined);
+
+    const collisionPrefix = "collision" + "z".repeat(60);
+    const collisionOne = `tenant_${collisionPrefix}one`;
+    const collisionTwo = `tenant_${collisionPrefix}two`;
+    const collisionStored = storedPostgresIdentifier(collisionOne);
+    await repo.adapter.exec(`CREATE SCHEMA "${collisionStored}"`);
+    await repo.adapter.exec(`CREATE TABLE "${collisionStored}".preserved_marker (value TEXT NOT NULL)`);
+    await repo.adapter.run(`INSERT INTO "${collisionStored}".preserved_marker (value) VALUES ('ambiguous data retained')`);
+    for (const schema of [collisionOne, collisionTwo]) {
+      await repo.adapter.run("INSERT INTO public.tenants (name, slug, schema_name) VALUES (?, ?, ?)", [schema, schema.slice(7), schema]);
+    }
+    await assert.rejects(initDb(config, log), /ambiguous legacy tenant schema/);
+    assert.deepEqual(await repo.adapter.get(`SELECT value FROM "${collisionStored}".preserved_marker`), { value: "ambiguous data retained" });
+    assert.equal((await repo.getTenantBySlug(collisionOne.slice(7)))?.schema_name, collisionOne);
   } finally {
     await Promise.all(handles.map((handle) => handle.close()));
     await admin.exec(`DROP DATABASE "${dbName}" WITH (FORCE)`);

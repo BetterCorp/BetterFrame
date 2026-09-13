@@ -13,6 +13,7 @@
 #include "ota_signature.h"
 #include <sys/time.h>
 #include "trust_config.h"
+#include "http_policy.h"
 #include <mbedtls/sha256.h>
 
 #if BF_ETHERNET_VARIANT
@@ -178,24 +179,20 @@ String joinUrl(const String &base, const char *path) {
 }
 
 bool parseUrl(const String &url, ParsedUrl &out) {
-  if (!url.startsWith("https://") && !url.startsWith("http://")) return false;
-  if (url.indexOf('\r') >= 0 || url.indexOf('\n') >= 0 || url.indexOf('@') >= 0) return false;
-  out.https = url.startsWith("https://");
-  int schemeEnd = url.indexOf("://");
-  if (schemeEnd < 0) return false;
-  int hostStart = schemeEnd + 3;
-  int pathStart = url.indexOf('/', hostStart);
-  String hostPort = pathStart >= 0 ? url.substring(hostStart, pathStart) : url.substring(hostStart);
-  out.path = pathStart >= 0 ? url.substring(pathStart) : "/";
-  int colon = hostPort.lastIndexOf(':');
-  out.port = out.https ? 443 : 80;
-  if (colon > 0) {
-    out.host = hostPort.substring(0, colon);
-    out.port = static_cast<uint16_t>(hostPort.substring(colon + 1).toInt());
-  } else {
-    out.host = hostPort;
-  }
-  return out.host.length() > 0;
+  bf::HttpUrl parsed;
+  if (!bf::parseHttpUrl(std::string(url.c_str(), url.length()), parsed)) return false;
+  out.host = parsed.host.c_str();
+  out.path = parsed.path.c_str();
+  out.port = parsed.port;
+  out.https = parsed.https;
+  return true;
+}
+
+bool allowRequest(const String &url, bf::HttpTarget target = bf::HttpTarget::Server) {
+  // Preserve lengths so embedded NUL bytes cannot make validation inspect a
+  // different authority than Arduino HTTPClient later parses from String.
+  return bf::allowHttpRequest(std::string(serverUrl.c_str(), serverUrl.length()),
+                             std::string(url.c_str(), url.length()), target);
 }
 
 String sha256Hex(const uint8_t digest[32]) {
@@ -422,11 +419,15 @@ bool ethernetHttpBody(const char *method, const String &url, const String &paylo
 }
 #endif
 
-bool httpJson(const char *method, const String &url, const JsonDocument *body, JsonDocument &out, bool auth = true) {
-  if (url.startsWith(serverUrl + "/") && !serverUrl.startsWith("https://")) {
-    report("Server URL must use HTTPS; re-provision URL and trust root (identity retained)");
+bool httpJson(const char *method, const String &url, const JsonDocument *body, JsonDocument &out,
+              bf::HttpTarget target = bf::HttpTarget::Server) {
+  // Scope is explicit: enrollment JSON is secret-bearing even without a bearer
+  // header. Enforce parsed HTTPS origins before serialization or either transport.
+  if (!allowRequest(url, target)) {
+    report("Request blocked: server credentials require the configured HTTPS origin (identity retained)");
     return false;
   }
+  const bool auth = target == bf::HttpTarget::Server;
   String payload;
   if (body) serializeJson(*body, payload);
 
@@ -634,7 +635,7 @@ void announceOrClaim() {
   body["firmware_version"] = BF_IOBOX_FW_VERSION;
   body["firmware_arch"] = "esp32s3";
   body["network_mode"] = modeName(mode);
-  if (!httpJson("POST", joinUrl(serverUrl, "/api/iobox/announce"), &body, response, false)) return;
+  if (!httpJson("POST", joinUrl(serverUrl, "/api/iobox/announce"), &body, response, bf::HttpTarget::Enrollment)) return;
   const char *status = response["status"] | "";
   if (strcmp(status, "unknown_serial") == 0) { report("Serial not registered; waiting for administrator"); return; }
   if (response["model_id"].is<const char *>()) modelId = String(response["model_id"].as<const char *>());
@@ -643,7 +644,7 @@ void announceOrClaim() {
   claim["provisioning_secret"] = provisioningSecret;
   claim["firmware_version"] = BF_IOBOX_FW_VERSION;
   claim["network_mode"] = modeName(mode);
-  if (!httpJson("POST", joinUrl(serverUrl, "/api/iobox/pair/claim"), &claim, claimResponse, false)) return;
+  if (!httpJson("POST", joinUrl(serverUrl, "/api/iobox/pair/claim"), &claim, claimResponse, bf::HttpTarget::Enrollment)) return;
   String id = String(claimResponse["iobox_id"] | "");
   String key = String(claimResponse["iobox_key"] | "");
   if (saveIdentity(id, key, true)) {
@@ -692,14 +693,14 @@ bool checkLocalKiosk() {
   if (assignedKioskIp.length() == 0 || assignedKioskLocalKey.length() == 0) return false;
   StaticJsonDocument<256> response;
   String url = "http://" + assignedKioskIp + ":" + String(assignedKioskPort) + "/local/iobox/check?key=" + assignedKioskLocalKey;
-  return httpJson("GET", url, nullptr, response, false);
+  return httpJson("GET", url, nullptr, response, bf::HttpTarget::LocalKiosk);
 }
 
 bool postEventToLocalKiosk(JsonDocument &event) {
   if (!localKioskReachable) return false;
   String url = "http://" + assignedKioskIp + ":" + String(assignedKioskPort) + "/local/iobox/event?key=" + assignedKioskLocalKey;
   StaticJsonDocument<256> response;
-  return httpJson("POST", url, &event, response, false);
+  return httpJson("POST", url, &event, response, bf::HttpTarget::LocalKiosk);
 }
 
 void postEventToServer(JsonDocument &event, const char *route) {
@@ -738,7 +739,7 @@ bool runLocalMapping(JsonObject mapping) {
     if (assignedKioskIp.length() == 0 || assignedKioskLocalKey.length() == 0 || strlen(layoutId) == 0) return false;
     String url = "http://" + assignedKioskIp + ":" + String(assignedKioskPort) + "/local/layout/" + String(layoutId) + "?key=" + assignedKioskLocalKey;
     StaticJsonDocument<256> response;
-    return httpJson("GET", url, nullptr, response, false);
+    return httpJson("GET", url, nullptr, response, bf::HttpTarget::LocalKiosk);
   }
   return false;
 }
@@ -840,9 +841,7 @@ void otaCheck() {
     return;
   }
   String absolute = downloadUrl.startsWith("http") ? downloadUrl : joinUrl(serverUrl, downloadUrl.c_str());
-  ParsedUrl download, origin;
-  if (!parseUrl(absolute, download) || !parseUrl(serverUrl, origin) || !download.https ||
-      download.host != origin.host || download.port != origin.port || !tlsReady()) {
+  if (!allowRequest(absolute) || !tlsReady()) {
     report("OTA rejected: download must use the configured HTTPS origin");
     return;
   }

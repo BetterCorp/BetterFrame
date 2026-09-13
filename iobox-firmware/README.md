@@ -41,7 +41,11 @@ Set deployment values with PlatformIO build flags or a private local override:
 
 Both variants verify the server certificate and hostname against an embedded
 root CA. W5500 uses ESP_SSLClient over EthernetClient. Server pairing and API
-traffic require HTTPS. The existing local kiosk LAN protocol remains HTTP.
+traffic require HTTPS. Enrollment bodies and bearer-authenticated requests are
+explicitly scoped to the parsed configured HTTPS origin, including when the
+stored URL has trailing slashes. Hostname prefixes, different ports and scheme
+downgrades cannot bypass this check. The existing local kiosk LAN protocol remains
+HTTP through explicitly local calls, which never attach the server bearer key.
 
 ### Required trust provisioning and upgrade order
 
@@ -132,3 +136,6 @@ The native signature test compiles the same verification helper and Crypto libra
 used by firmware, verifies a Node-generated server-format signature, and rejects
 modified firmware digests, signatures, and public keys. The provisioning tests
 reject invalid certificates, private key input, and non-Ed25519 signing keys.
+The native HTTP policy tests exercise the same origin/scope helper as firmware,
+including insecure configurations with trailing slashes, HTTPS origins, malformed
+URLs, server/enrollment credential isolation, and local kiosk HTTP compatibility.

@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(AndroidJUnit4::class)
 class ViewerConnectionTest {
@@ -30,6 +31,79 @@ class ViewerConnectionTest {
             override fun getApplicationContext(): Context = this
             override fun getNoBackupFilesDir(): File = directory
         } to directory
+    }
+
+    @Test fun resumeDuringEnrollmentCleanupRestartsAfterCleanupWithoutAnotherConnect() {
+        enrollmentCleanupAcrossLifecycle(stopAgain = false)
+    }
+
+    @Test fun stoppingAgainDuringEnrollmentCleanupCancelsTheDeferredRestart() {
+        enrollmentCleanupAcrossLifecycle(stopAgain = true)
+    }
+
+    private fun enrollmentCleanupAcrossLifecycle(stopAgain: Boolean) {
+        val (context, directory) = isolatedContext()
+        val cleanupStarted = CountDownLatch(1)
+        val cleanupFinished = CountDownLatch(1)
+        val completeCleanup = AtomicReference<() -> Unit>()
+        val pairing = CountDownLatch(1)
+        val requests = ConcurrentLinkedQueue<RecordedRequest>()
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requests.add(request)
+                val response = MockResponse().setHeader("Content-Type", "application/json")
+                return when (request.requestUrl!!.encodedPath) {
+                    "/healthz" -> response.setBody("{}")
+                    "/api/pair/initiate" -> response.setBody("""{"code":"NEW123","polling_secret":"new-secret","poll_after_ms":1000}""")
+                    "/api/pair/claim" -> response.setBody("""{"status":"pending"}""")
+                    else -> response.setResponseCode(404)
+                }
+            }
+        }
+        server.start()
+        val selectedOrigin = server.url("/").toString().trimEnd('/')
+        ProtectedStore(context).write(JSONObject().put("server", "http://127.0.0.1:9")
+            .put("identity", JSONObject().put("kiosk_key", "old-device-key")))
+        val session = ViewerSession(context, object : ViewerSession.Listener {
+            override fun onStatus(message: String) {}
+            override fun onPairing(code: String) {
+                if (code.isBlank()) cleanupFinished.countDown()
+                if (code == "NEW123") pairing.countDown()
+            }
+            override fun onPlan(plan: JSONObject) {}
+        }, clearBrowserSessions = { _, done ->
+            completeCleanup.set(done)
+            cleanupStarted.countDown()
+        })
+        try {
+            instrumentation.runOnMainSync {
+                session.unpair(selectedOrigin)
+                // Change generation before the main-thread cleanup even starts.
+                session.stop()
+                session.start()
+            }
+            assertTrue("Lifecycle change discarded browser cleanup", cleanupStarted.await(5, TimeUnit.SECONDS))
+            assertEquals("Enrollment must wait for browser cleanup", 0, server.requestCount)
+            assertEquals(selectedOrigin, ProtectedStore(context).read().getString("server"))
+            assertFalse("Old identity must already be removed", ProtectedStore(context).read().has("identity"))
+            if (stopAgain) instrumentation.runOnMainSync { session.stop() }
+            instrumentation.runOnMainSync { completeCleanup.get().invoke() }
+            assertTrue("Reset completion must survive lifecycle changes", cleanupFinished.await(5, TimeUnit.SECONDS))
+            if (stopAgain) {
+                assertNull("Stopped display must not restart on cleanup completion", server.takeRequest(500, TimeUnit.MILLISECONDS))
+                instrumentation.runOnMainSync { session.start() }
+            }
+            assertTrue("Resume was lost while cleanup was pending", pairing.await(10, TimeUnit.SECONDS))
+            assertTrue(requests.any { it.requestUrl!!.encodedPath == "/api/pair/initiate" })
+            assertTrue("Old enrollment credentials must never be reused", requests.all { it.getHeader("Authorization") == null })
+            assertEquals(selectedOrigin, ProtectedStore(context).read().getString("server"))
+            assertFalse(ProtectedStore(context).read().has("identity"))
+        } finally {
+            instrumentation.runOnMainSync { session.close() }
+            server.shutdown()
+            directory.deleteRecursively()
+        }
     }
 
     @Test fun savedCustomServerIsRetainedAndHttpFailuresIdentifyTheFailedRequest() {

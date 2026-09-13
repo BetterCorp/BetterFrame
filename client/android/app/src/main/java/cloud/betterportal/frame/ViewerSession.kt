@@ -19,7 +19,8 @@ import java.util.concurrent.TimeUnit
 
 /** Outbound display client only. All network/storage work is serialized away from the UI. */
 class ViewerSession internal constructor(context: Context, private val listener: Listener,
-                                        private val http: OkHttpClient = defaultHttp()) {
+                                        private val http: OkHttpClient = defaultHttp(),
+                                        private val clearBrowserSessions: (Context, () -> Unit) -> Unit = { app, done -> WebTile.clearSessions(app, done) }) {
     private companion object {
         const val VIEWER_PROFILE = "android-viewer-v1"
         const val AUTH_REJECTED = "Display authorization rejected. Check this device in BF."
@@ -60,6 +61,8 @@ class ViewerSession internal constructor(context: Context, private val listener:
     private var profileVerified = false
     @Volatile private var closed = false
     @Volatile private var clearingEnrollment = false
+    private data class PendingStart(val server: String?)
+    private var pendingStart: PendingStart? = null
     @Volatile private var layoutId: String? = null
     @Volatile private var expandedId: String? = null
     @Volatile private var generation = 0
@@ -102,7 +105,8 @@ class ViewerSession internal constructor(context: Context, private val listener:
     }
 
     fun start(serverUrl: String? = null) {
-        if (closed || clearingEnrollment) return
+        if (closed) return
+        if (clearingEnrollment) { pendingStart = PendingStart(serverUrl); return }
         if (running) { if (serverUrl != null && serverUrl.trimEnd('/') != this.serverUrl) status("Unpair before changing the BF server"); return }
         running = true
         val epoch = ++generation
@@ -147,6 +151,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
     }
 
     fun stop() {
+        pendingStart = null
         val saveSelection = running
         val selected = layoutId
         running = false
@@ -198,26 +203,32 @@ class ViewerSession internal constructor(context: Context, private val listener:
         catch (_: Exception) { status("Enter a valid BF server origin."); return }
         clearingEnrollment = true
         stop()
-        val epoch = generation
         enqueue {
             try {
                 val cleared = JSONObject().apply { if (target != null) put("server", target) }
                 if (target == null) store.clear() else store.write(cleared)
                 state = cleared; kioskKey = ""; serverUrl = target.orEmpty(); layoutId = null; expandedId = null
                 main.post {
-                    if (closed || generation != epoch) { clearingEnrollment = false; return@post }
+                    if (closed) { clearingEnrollment = false; return@post }
                     // Allow another enrollment only after asynchronous browser cleanup completes.
-                    WebTile.clearSessions(app) {
+                    // Cleanup belongs to enrollment, not an Activity start/stop generation.
+                    clearBrowserSessions(app) {
                         clearingEnrollment = false
-                        if (!closed && generation == epoch) {
+                        val restart = pendingStart
+                        pendingStart = null
+                        if (!closed) {
                             listener.onPairing("")
                             listener.onStatus("Enrollment cleared. Ready to pair.")
+                            if (restart != null) start(restart.server)
                         }
                     }
                 }
             } catch (_: Exception) {
-                clearingEnrollment = false
-                main.post { if (!closed && generation == epoch) listener.onStatus("Unable to clear saved enrollment") }
+                main.post {
+                    clearingEnrollment = false
+                    pendingStart = null
+                    if (!closed) listener.onStatus("Unable to clear saved enrollment")
+                }
             }
         }
     }

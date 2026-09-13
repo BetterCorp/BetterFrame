@@ -1071,16 +1071,55 @@ fn apply_timezone(timezone: &str) -> Result<(), String> {
             return Ok(());
         }
     }
-    let out = Command::new("timedatectl")
-        .args(["--no-ask-password", "set-timezone", timezone])
-        .output()
-        .map_err(|e| format!("set timezone: {e}"))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(format!("timedatectl set-timezone failed: {stderr}"))
-    }
+    const LEGACY_HELPER: &str = "/usr/local/sbin/betterframe-apply-managed-config.sh";
+    set_timezone_with_fallback(
+        timezone,
+        std::path::Path::new(LEGACY_HELPER)
+            .is_file()
+            .then_some(LEGACY_HELPER),
+        |program, args| {
+            let out = Command::new(program)
+                .args(args)
+                .output()
+                .map_err(|error| format!("{program}: {error}"))?;
+            if out.status.success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{program}: {}: {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ))
+            }
+        },
+    )
+}
+
+fn set_timezone_with_fallback(
+    timezone: &str,
+    legacy_helper: Option<&str>,
+    mut run: impl FnMut(&str, &[&str]) -> Result<(), String>,
+) -> Result<(), String> {
+    let direct_error = match run(
+        "timedatectl",
+        &["--no-ask-password", "set-timezone", timezone],
+    ) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    // App OTA cannot install the new polkit rule. Preserve the provisioned
+    // sudoers/helper path on older installations where escalation is allowed.
+    // sudo -n fails promptly under NoNewPrivileges; never weaken the service.
+    let fallback_error = match legacy_helper {
+        Some(helper) => match run("sudo", &["-n", helper, "timezone", timezone]) {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        },
+        None => "legacy managed-config helper is unavailable".to_string(),
+    };
+    Err(format!(
+        "Unable to set timezone ({direct_error}; {fallback_error}). Check the managed timezone policy; hardened legacy images require an OS policy update."
+    ))
 }
 
 fn validate_timezone(timezone: &str) -> Result<(), String> {
@@ -1104,6 +1143,91 @@ fn validate_timezone(timezone: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timezone_policy_success_does_not_invoke_legacy_helper() {
+        let mut calls = Vec::new();
+        set_timezone_with_fallback("Europe/London", Some("/legacy/helper"), |program, args| {
+            calls.push((
+                program.to_string(),
+                args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>(),
+            ));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            calls,
+            vec![(
+                "timedatectl".into(),
+                vec![
+                    "--no-ask-password".into(),
+                    "set-timezone".into(),
+                    "Europe/London".into()
+                ]
+            )]
+        );
+    }
+
+    #[test]
+    fn timezone_uses_noninteractive_helper_when_direct_authorization_fails() {
+        let mut calls = Vec::new();
+        set_timezone_with_fallback("Europe/London", Some("/legacy/helper"), |program, args| {
+            calls.push((
+                program.to_string(),
+                args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>(),
+            ));
+            if program == "timedatectl" {
+                Err("access denied".into())
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[1],
+            (
+                "sudo".into(),
+                vec![
+                    "-n".into(),
+                    "/legacy/helper".into(),
+                    "timezone".into(),
+                    "Europe/London".into()
+                ]
+            )
+        );
+    }
+
+    #[test]
+    fn timezone_reports_missing_helper_without_attempting_sudo() {
+        let mut calls = 0;
+        let error = set_timezone_with_fallback("Etc/UTC", None, |program, _| {
+            calls += 1;
+            assert_eq!(program, "timedatectl");
+            Err("policy denied".into())
+        })
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert!(error.contains("policy denied"));
+        assert!(error.contains("helper is unavailable"));
+        assert!(error.contains("OS policy update"));
+    }
+
+    #[test]
+    fn timezone_does_not_report_success_when_hardening_blocks_legacy_helper() {
+        let error = set_timezone_with_fallback("Etc/UTC", Some("/legacy/helper"), |program, _| {
+            Err(if program == "sudo" {
+                "NoNewPrivileges prevents sudo"
+            } else {
+                "policy denied"
+            }
+            .into())
+        })
+        .unwrap_err();
+        assert!(error.contains("policy denied"));
+        assert!(error.contains("NoNewPrivileges prevents sudo"));
+        assert!(error.contains("OS policy update"));
+    }
 
     #[test]
     fn pairing_recovers_bad_response_and_preserves_identity_after_bundle_rejection() {

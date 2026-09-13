@@ -35,7 +35,13 @@ New managed images and the source installer install
 `/etc/betterframe/managed-image` and a narrow polkit rule allowing `bfkiosk` to
 set the timezone via timedated. Existing images need those deployment changes
 as well as the new binary to report managed-image support. The service retains
-`NoNewPrivileges`; timezone changes no longer invoke sudo from that service.
+`NoNewPrivileges`. The client first uses timedated through polkit, then tries
+the existing `sudo -n` managed-config helper if direct authorization fails.
+This preserves older installations whose sudo policy permits that helper;
+it cannot bypass `NoNewPrivileges` on hardened images. App OTA does not install
+OS policy: update the OS image or install the new polkit rule and restart the
+kiosk service before retrying failed managed configuration. If both paths fail,
+the client reports the failure instead of acknowledging the configuration.
 
 For ioBOX, configure verified public `BF_IOBOX_TLS_CA_PEM` and
 `BF_IOBOX_OTA_PUBLIC_KEY_PEM` repository variables before the release build.

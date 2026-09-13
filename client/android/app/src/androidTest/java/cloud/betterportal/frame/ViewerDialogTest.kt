@@ -27,7 +27,8 @@ class ViewerDialogTest {
         await("Kiosk menu opens") { visibleText("Settings") }
         instrumentation.uiAutomation.waitForIdle(250, 3000)
         clock.addAndGet(2_001)
-        await("Idle closes menu even on the default layout") { !visibleText("Settings") }
+        await("Idle closes menu even on the default layout") { hasWindowFocus(activity) && !visibleText("Settings") }
+        instrumentation.uiAutomation.waitForIdle(250, 3000)
 
         instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_MENU)
         clickText("Settings")
@@ -40,7 +41,8 @@ class ViewerDialogTest {
         Thread.sleep(500)
         assertTrue("Input in a dialog renews inactivity", visibleText("Display settings"))
         clock.addAndGet(501)
-        await("Idle dismisses Settings") { !visibleText("Display settings") }
+        await("Idle dismisses Settings") { hasWindowFocus(activity) && !visibleText("Display settings") }
+        instrumentation.uiAutomation.waitForIdle(250, 3000)
 
         instrumentation.runOnMainSync { session.expand("10") }
         await("Content expands") { expanded(activity) == "10" }
@@ -49,7 +51,7 @@ class ViewerDialogTest {
         instrumentation.uiAutomation.waitForIdle(250, 3000)
         clock.addAndGet(2_001)
         await("Idle restores content and dismisses the modal together") {
-            expanded(activity) == null && !visibleText("Restore layout") && !visibleText("Settings")
+            hasWindowFocus(activity) && expanded(activity) == null && !visibleText("Restore layout") && !visibleText("Settings")
         }
     }
 
@@ -96,7 +98,8 @@ class ViewerDialogTest {
                 field.set(activity, session)
                 session.start()
             }
-            await("Cached default layout loads") { plan(activity)?.optString("layoutId") == "3" }
+            await("Cached default layout loads") { hasWindowFocus(activity) && plan(activity)?.optString("layoutId") == "3" }
+            instrumentation.uiAutomation.waitForIdle(250, 3000)
             test(activity, session, clock)
         } finally {
             instrumentation.runOnMainSync { activity.finish() }
@@ -115,6 +118,11 @@ class ViewerDialogTest {
     }
     private fun expanded(activity: MainActivity) = plan(activity)?.optString("expandedCellId")
         ?.takeUnless { it.isBlank() || it == "null" }
+    private fun hasWindowFocus(activity: MainActivity): Boolean {
+        var focused = false
+        instrumentation.runOnMainSync { focused = activity.hasWindowFocus() }
+        return focused
+    }
     private fun nodes(node: AccessibilityNodeInfo): List<AccessibilityNodeInfo> = buildList {
         add(node)
         for (index in 0 until node.childCount) node.getChild(index)?.let { addAll(nodes(it)) }

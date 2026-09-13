@@ -451,20 +451,17 @@ class MainActivity : Activity(), ViewerSession.Listener {
 
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         if (::session.isInitialized && event.action == android.view.KeyEvent.ACTION_DOWN) session.recordActivity()
+        // Keep the kiosk menu reachable when an interactive WebView owns keyboard focus.
+        if (event.keyCode == android.view.KeyEvent.KEYCODE_MENU) {
+            if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) showKioskMenu()
+            return true
+        }
         return super.dispatchKeyEvent(event)
     }
 
     override fun dispatchGenericMotionEvent(event: android.view.MotionEvent): Boolean {
         recordMotionActivity(event)
         return super.dispatchGenericMotionEvent(event)
-    }
-
-    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
-        if (keyCode == android.view.KeyEvent.KEYCODE_MENU) {
-            if (event.repeatCount == 0) showKioskMenu()
-            return true
-        }
-        return super.onKeyDown(keyCode, event)
     }
 
     override fun onTrimMemory(level: Int) {

@@ -119,6 +119,11 @@ class ViewerSession internal constructor(context: Context, private val listener:
                 state = store.read()
                 // Older app versions could cache an unrestricted legacy bundle.
                 if (state.optString("bundle_profile") != VIEWER_PROFILE) clearCachedBundle()
+                // A resumed unassigned cache may keep receiving 304 responses.
+                // Restore its setup polling cadence before the first heartbeat.
+                awaitingAssignment = state.optString("bundle").takeIf { it.isNotBlank() }?.let {
+                    JSONObject(NativeCore.renderPlan(it, null, null)).optString("error") == NO_LAYOUTS_ASSIGNED
+                } ?: false
                 val saved = state.optString("server")
                 val origin = ServerAddress.enrollmentOrigin(serverUrl, saved)
                 require(saved.isBlank() || saved == origin) { "Unpair before changing the BF server" }
@@ -425,7 +430,10 @@ class ViewerSession internal constructor(context: Context, private val listener:
         http.newCall(builder.build()).execute().use {
             ensureActive()
             rejectRedirect(it)
-            if (it.code == 304) { status("Connected"); return }
+            if (it.code == 304) {
+                status(if (awaitingAssignment) "Connected — waiting for assigned layouts" else "Connected")
+                return
+            }
             if (it.code == 409) {
                 val problem = json(it)
                 if (problem.optString("error") == "display_unassigned") {

@@ -139,6 +139,63 @@ class ViewerConnectionTest {
         }
     }
 
+    @Test fun cachedUnassignedDisplayKeepsFastPollingAfterRestartAndNotModifiedResponse() {
+        val (context, directory) = isolatedContext()
+        val requests = ConcurrentLinkedQueue<RecordedRequest>()
+        val statuses = ConcurrentLinkedQueue<String>()
+        val bundleCalls = AtomicInteger()
+        val noAssignment = CountDownLatch(1)
+        val assigned = CountDownLatch(1)
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requests.add(request)
+                val response = MockResponse().setHeader("Content-Type", "application/json")
+                return when (request.requestUrl!!.encodedPath) {
+                    "/api/kiosk/heartbeat" -> response.setBody("""{"viewer_profile":"android-viewer-v1"}""")
+                    "/api/kiosk/bundle" -> if (bundleCalls.incrementAndGet() == 1)
+                        response.setResponseCode(304)
+                        else response.setBody("""{"kiosk_id":1,"kiosk_name":"Lobby","version":"2","cameras":[],"displays":[{
+                          "id":2,"name":"TV","width_px":1920,"height_px":1080,"idle_timeout_seconds":0,"sleep_timeout_seconds":0,"default_layout_id":3,
+                          "layouts":[{"id":3,"name":"New assignment","grid_cols":1,"grid_rows":1,"priority":"normal","is_default":true,"resets_idle_timer":true,"cells":[]}]}]}""")
+                    "/api/kiosk/display-session" -> response.setBody("{}")
+                    else -> response.setResponseCode(404) // No WebSocket can trigger a refresh.
+                }
+            }
+        }
+        server.start()
+        val origin = server.url("/").toString().trimEnd('/')
+        ProtectedStore(context).write(JSONObject().put("server", origin).put("resolved_server", origin)
+            .put("identity", JSONObject().put("kiosk_key", "fixture-device-key"))
+            .put("bundle_profile", "android-viewer-v1").put("etag", "\"unassigned-v1\"")
+            .put("bundle", """{"kiosk_id":1,"kiosk_name":"Lobby","version":"1","cameras":[],"displays":[]}"""))
+        val session = ViewerSession(context, object : ViewerSession.Listener {
+            override fun onStatus(message: String) { statuses.add(message) }
+            override fun onPairing(code: String) {}
+            override fun onPlan(plan: JSONObject) {
+                if (plan.optString("error") == "go into BetterFrame and assign layouts to this display") noAssignment.countDown()
+                if (plan.optString("layoutId") == "3") assigned.countDown()
+            }
+        })
+        try {
+            // Start from a previous run's protected cache; a 304 must not revert
+            // assignment polling to the normal 30-second content interval.
+            instrumentation.runOnMainSync { session.start() }
+            assertTrue("Cached assignment guidance was not restored", noAssignment.await(5, TimeUnit.SECONDS))
+            assertTrue("304 lost the fast assignment polling cadence: $statuses", assigned.await(15, TimeUnit.SECONDS))
+            assertTrue(statuses.contains("Connected — waiting for assigned layouts"))
+            val firstBundle = requests.first { it.requestUrl!!.encodedPath == "/api/kiosk/bundle" }
+            assertEquals("\"unassigned-v1\"", firstBundle.getHeader("If-None-Match"))
+            assertEquals("Bearer fixture-device-key", firstBundle.getHeader("Authorization"))
+            assertTrue(bundleCalls.get() >= 2)
+            assertFalse(requests.any { it.requestUrl!!.encodedPath.startsWith("/api/pair/") })
+        } finally {
+            instrumentation.runOnMainSync { session.close() }
+            server.shutdown()
+            directory.deleteRecursively()
+        }
+    }
+
     @Test fun redirectsExplainRoutingFailureAndNeverForwardEnrollmentCredentials() {
         val destination = MockWebServer()
         destination.start()

@@ -1,3 +1,4 @@
+import { isAndroidViewer } from "./android-viewer.js";
 /**
  * Pairing state machine — shared module.
  *
@@ -153,7 +154,7 @@ export async function claimPairing(
     kioskId: pc.consumed_by_kiosk_id,
     kioskName: kiosk?.name ?? pc.kiosk_proposed_name ?? "kiosk",
     kioskKey,
-    clusterKey: claim.clusterKey,
+    clusterKey: isAndroidViewer(kiosk) ? undefined : claim.clusterKey,
     encryptKey: claim.encryptKey,
     bundleUrl: "/api/kiosk/bundle",
   };

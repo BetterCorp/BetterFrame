@@ -34,6 +34,8 @@ import { normalizeFirmwareTarget } from "../../shared/firmware-targets.js";
 import { withDefaultTenant } from "../../shared/default-tenant.js";
 import { onvifCallbackTokenMatches } from "../../shared/onvif-callback-token.js";
 import { isVersionUpgrade } from "../../shared/version.js";
+import { registerViewerDeviceAuth } from "../../shared/display-session.js";
+import { isAndroidViewer } from "../../shared/android-viewer.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { AuthApi } from "../../shared/auth.js";
 import type { SecretsApi } from "../../shared/secrets.js";
@@ -222,18 +224,10 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       },
     });
 
-    // Keep the verified device schema active for the complete H3 middleware
-    // and route chain. Setting AsyncLocalStorage inside an auth helper alone
-    // does not cross back over the caller's await continuation.
+    registerViewerDeviceAuth(app, repo, auth, secrets);
     app.use(async (event, next) => {
       const path = new URL(event.req.url).pathname;
-      if (path.startsWith("/api/kiosk/")) {
-        const token = extractBearerToken(event);
-        const kiosk = token ? await auth.verifyKioskKey(token) : null;
-        if (!kiosk) return new Response(null, { status: 401 });
-        (event.context as any).verifiedKiosk = kiosk;
-        return repo.adapter.withSearchPath(kiosk.schema_name, next);
-      }
+      if (path.startsWith("/api/kiosk/")) return next();
       if (path.startsWith("/api/iobox/") &&
           path !== "/api/iobox/announce" && path !== "/api/iobox/pair/claim") {
         const token = extractBearerToken(event);
@@ -258,7 +252,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           "x-betterframe-kiosk-id": String(kiosk.id),
           "x-betterframe-tenant": kiosk.tenant_id,
           "x-betterframe-tenant-slug": kiosk.tenant_slug,
-          ...(token ? { "set-cookie": kioskSessionCookie(token, secure) } : {}),
+          ...(token && !(event.context as any).displaySession ? { "set-cookie": kioskSessionCookie(token, secure) } : {}),
         },
       });
     });
@@ -939,7 +933,7 @@ async function proxyIoBoxEventToKiosk(
 // Event deduplication cache: key → last-seen timestamp (ms).
 const eventDedupCache = new Map<string, number>();
 
-function registerKioskRoutes(
+export function registerKioskRoutes(
   app: H3,
   repo: Repository,
   auth: AuthApi,
@@ -971,7 +965,13 @@ function registerKioskRoutes(
         });
       });
     if (bundle instanceof Response) return bundle;
-    if (!bundle) throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
+    if (!bundle) {
+      if (isAndroidViewer((event.context as any).kioskProfile)) return new Response(JSON.stringify({ error: "display_unassigned" }), { status: 409, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+      throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
+    }
+    if (isAndroidViewer((event.context as any).kioskProfile) && !bundle.displays[0]?.layouts.length) {
+      return new Response(JSON.stringify({ error: "display_unassigned" }), { status: 409, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+    }
     bundle.tenant_slug = kiosk.tenant_slug;
 
     // Stable bundle ETag: the payload contains randomized encrypted fields,
@@ -980,7 +980,7 @@ function registerKioskRoutes(
     const etag = `"${bundle.version}"`;
     const ifNoneMatch = getRequestHeader(event, "if-none-match");
     if (ifNoneMatch === etag) {
-      return new Response(null, { status: 304 });
+      return new Response(null, { status: 304, headers: { "cache-control": "private, no-store", "etag": etag, "vary": "Authorization, Cookie" } });
     }
 
     return new Response(json, {
@@ -989,6 +989,8 @@ function registerKioskRoutes(
         "content-type": "application/json",
         "etag": etag,
         "x-bf-bundle-version": bundle.version,
+        "cache-control": "private, no-store",
+        "vary": "Authorization, Cookie",
       },
     });
   });
@@ -1012,6 +1014,14 @@ function registerKioskRoutes(
       }
     })();
 
+    const profile = (event.context as any).kioskProfile;
+    const viewer = isAndroidViewer(profile);
+    if (viewer && body.displays.length > 1) throw createError({ statusCode: 400, statusMessage: "Android viewer supports one display" });
+    if (viewer && body.capabilities) {
+      // The restrictive identity cannot be removed by a later heartbeat.
+      await repo.updateKiosk(kiosk.id, { capabilities: [...new Set(["android-viewer", ...body.capabilities])] } as any);
+    }
+
     // Capture the kiosk's LAN-side IP from the heartbeat connection so admin
     // can render a copy-paste URL even when the kiosk has no DNS name.
     const remoteIp = getRequestHeader(event, "x-real-ip")
@@ -1034,8 +1044,8 @@ function registerKioskRoutes(
       disk_total_mb: body.disk_total_mb ?? null,
       disk_free_mb: body.disk_free_mb ?? null,
       disk_used_percent: body.disk_used_percent ?? null,
-      local_key: body.local_key ?? null,
-      local_port: body.local_port ?? null,
+      local_key: viewer ? null : body.local_key ?? null,
+      local_port: viewer ? null : body.local_port ?? null,
       local_last_ip: remoteIp,
       reported_hostname: body.reported_hostname ?? null,
       network_interfaces_json: Array.isArray(body.network_interfaces)
@@ -1058,8 +1068,8 @@ function registerKioskRoutes(
     // successful apply (kiosk omits it). verifyKioskKey returns just {id};
     // re-read the full row to check the managed_image flag.
     const kioskFull = await repo.getKioskById(kiosk.id);
-    const acceptsManagedConfig = Boolean(kioskFull?.managed_image)
-      || (Array.isArray(kioskFull?.capabilities) && kioskFull.capabilities.includes("windows"));
+    const acceptsManagedConfig = !viewer && (Boolean(kioskFull?.managed_image)
+      || (Array.isArray(kioskFull?.capabilities) && kioskFull.capabilities.includes("windows")));
     if (acceptsManagedConfig && typeof body.managed_config_applied_version === "number") {
       const patch: Record<string, unknown> = {
         managed_config_applied_version: body.managed_config_applied_version,
@@ -1100,7 +1110,7 @@ function registerKioskRoutes(
     // This is the mechanism that keeps camera_event_subscriptions fresh
     // across kiosk reboots — the kiosk reports its current subscription
     // state and the server upserts it.
-    if (body.onvif_subscriptions && typeof body.onvif_subscriptions === "object") {
+    if (!viewer && body.onvif_subscriptions && typeof body.onvif_subscriptions === "object") {
       try {
         await repo.syncKioskSubscriptions(kiosk.id, body.onvif_subscriptions as any);
       } catch (err: any) {
@@ -1142,7 +1152,7 @@ function registerKioskRoutes(
             || match.index !== reportedIndex
             || match.width_px !== reported.width_px
             || match.height_px !== reported.height_px
-            || !match.is_enabled
+            || (!viewer && !match.is_enabled)
             || (powerState != null && match.actual_power_state !== powerState)
           ) {
             await repo.updateDisplay(match.id, {
@@ -1150,7 +1160,7 @@ function registerKioskRoutes(
               index: reportedIndex,
               width_px: reported.width_px,
               height_px: reported.height_px,
-              is_enabled: true,
+              is_enabled: viewer ? match.is_enabled : true,
               ...(powerState != null ? {
                 actual_power_state: powerState,
                 actual_power_state_at: new Date().toISOString(),
@@ -1222,11 +1232,12 @@ function registerKioskRoutes(
     // Re-read kiosk so we see the freshly-persisted applied_version above when
     // computing whether the server still has a newer config to deliver.
     const fresh = await repo.getKioskById(kiosk.id);
+    if (viewer) return { ok: true, now: new Date().toISOString(), viewer_profile: "android-viewer-v1" };
     const updateSchedule = normalizeUpdateSchedule(await repo.getSetupExtra("update_schedule"));
     let pendingConfig: { version: number; config: unknown } | undefined;
     const isWindowsClient = Array.isArray(fresh?.capabilities) && fresh.capabilities.includes("windows");
     if (
-      (fresh?.managed_image || isWindowsClient)
+      (!viewer && (fresh?.managed_image || isWindowsClient))
       && fresh.managed_config_version > fresh.managed_config_applied_version
       && fresh.managed_config_json
     ) {

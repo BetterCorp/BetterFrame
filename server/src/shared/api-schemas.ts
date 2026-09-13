@@ -51,6 +51,7 @@ const HeartbeatPartition = av.object(
 
 export const HeartbeatBody = av.object(
   {
+    capabilities: av.optional(av.array(av.string().maxLength(64))),
     bundle_version: av.optional(av.nullable(av.string().maxLength(128))),
     kiosk_app_version: av.string().maxLength(64).default(""),
     firmware_target: av.string().maxLength(128).default(""),

@@ -7,6 +7,7 @@ export interface KioskConnection<S extends KioskSocket> {
   name: string;
   ws: S;
   lastPong: number;
+  validateViewerLayout?: (layoutId: string) => Promise<boolean>;
 }
 
 /** Connection ownership survives delayed close events from a replaced socket. */

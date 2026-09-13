@@ -56,3 +56,18 @@ test("confirmed claim uses delivery grace instead of the original code deadline"
   };
   assert.equal((await claimPairing(repo as never, "ABCDEFGH", { decryptString: () => '{"kioskKey":"key"}' } as never)).status, "claimed");
 });
+
+test("Android claims receive only their per-device encryption key", async () => {
+  const repo = {
+    getPairingCode: async () => ({
+      expires_at: new Date(Date.now() + 60_000).toISOString(), consumed_at: new Date().toISOString(), consumed_by_kiosk_id: "viewer",
+      extras: { pairing_claim_encrypted: "envelope" },
+    }),
+    adapter: { withSearchPath: async (_s: string, fn: () => unknown) => fn() },
+    getKioskById: async () => ({ name: "Viewer", capabilities: ["android-viewer"], enabled: true }),
+  };
+  const result = await claimPairing(repo as never, "ABCDEFGH", { decryptString: () => JSON.stringify({ kioskKey: "device-key", encryptKey: "device-encrypt", clusterKey: "shared-secret" }) } as never);
+  assert.equal(result.status, "claimed");
+  assert.equal(result.encryptKey, "device-encrypt");
+  assert.equal(result.clusterKey, undefined);
+});

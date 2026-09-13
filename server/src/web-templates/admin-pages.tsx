@@ -2,6 +2,7 @@
  * Admin page templates: overview, cameras, kiosks, account, etc.
  */
 import { js } from "jsx-htmx";
+import { isAndroidViewer } from "../shared/android-viewer.js";
 import { formatTimeFallback, Layout, LocalTime, localTimeData } from "./layout.js";
 import type {
   AuditEntry,
@@ -2486,26 +2487,28 @@ export function KioskEditPage(props: KioskEditProps) {
               </div>
             ) : null}
           </div>
-          <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
-            <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Display Power</div>
-            <button
-              type="button"
-              class="btn btn-sm"
-              {...{
-                "hx-post": `/admin/kiosks/${String(k.id)}/power/wake`,
-                "hx-swap": "none",
-              }}
-            >Wake</button>
-            <button
-              type="button"
-              class="btn btn-sm btn-ghost"
-              style="margin-left:0.5rem"
-              {...{
-                "hx-post": `/admin/kiosks/${String(k.id)}/power/standby`,
-                "hx-swap": "none",
-              }}
-            >Standby</button>
-          </div>
+          {!isAndroidViewer(k) ? (
+            <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
+              <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Display Power</div>
+              <button
+                type="button"
+                class="btn btn-sm"
+                {...{
+                  "hx-post": `/admin/kiosks/${String(k.id)}/power/wake`,
+                  "hx-swap": "none",
+                }}
+              >Wake</button>
+              <button
+                type="button"
+                class="btn btn-sm btn-ghost"
+                style="margin-left:0.5rem"
+                {...{
+                  "hx-post": `/admin/kiosks/${String(k.id)}/power/standby`,
+                  "hx-swap": "none",
+                }}
+              >Standby</button>
+            </div>
+          ) : null}
 
           {props.displayLayouts && props.displayLayouts.length > 0 ? (
             <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
@@ -3681,6 +3684,7 @@ interface DisplayEditPageProps {
   /** All other layouts that could be attached. */
   availableLayouts: LayoutType[];
   kioskName?: string | null;
+  kiosk?: Pick<Kiosk, "capabilities"> | null;
   error?: string;
   success?: string;
 }
@@ -3884,7 +3888,7 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
             </div>
           ) : null}
 
-          {d.kiosk_id ? (
+          {d.kiosk_id && !isAndroidViewer(props.kiosk) ? (
             <div style="margin-bottom:1rem; display:flex; gap:0.5rem; flex-wrap:wrap">
               <button
                 type="button"

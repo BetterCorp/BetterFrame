@@ -69,6 +69,7 @@ import {
 import { currentTenantSchema, withDefaultTenant } from "../../shared/default-tenant.js";
 import { createOnvifCallbackToken } from "../../shared/onvif-callback-token.js";
 import { localTimeHtml } from "../../web-templates/layout.js";
+import { isAndroidViewer } from "../../shared/android-viewer.js";
 
 interface DiscoverAddStream {
   profile_name: string;
@@ -2092,6 +2093,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       attachedLayouts,
       availableLayouts,
       kioskName: kiosk?.name ?? null,
+      kiosk,
     }));
   });
 
@@ -3090,29 +3092,40 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/displays/:displayId/layout", displayLayoutSwitch);
   app.post("/admin/displays/:displayId/layout/:layoutId", displayLayoutSwitch);
 
+  const sendPowerCommand = async (kioskId: string, state: "on" | "standby", displayId?: string) => {
+    const kiosk = await deps.repo.getKioskById(kioskId);
+    if (!kiosk) return Response.json({ error: "Kiosk not found" }, { status: 404 });
+    if (isAndroidViewer(kiosk)) return Response.json({ error: "Power control is not supported by Android viewers" }, { status: 409 });
+    if (!kiosk.enabled) return Response.json({ error: "Kiosk is disabled" }, { status: 409 });
+    const sent = getCoordinator().sendToKiosk(kioskId, {
+      type: state === "on" ? "wake" : "standby",
+      ...(displayId ? { display_id: displayId } : {}),
+    }, false);
+    if (!sent) return Response.json({ error: "Power command could not be delivered" }, { status: 409 });
+    return null;
+  };
+
   const displayPower = async (event: any, state: "on" | "standby") => {
     const id = (getRouterParam(event, "id") ?? "");
     const display = await deps.repo.getDisplayById(id);
-    if (display?.kiosk_id) {
-      getCoordinator().sendToKiosk(display.kiosk_id, {
-        type: state === "on" ? "wake" : "standby",
+    if (!display) return Response.json({ error: "Display not found" }, { status: 404 });
+    if (!display.kiosk_id) return Response.json({ error: "Display has no kiosk" }, { status: 409 });
+    const rejected = await sendPowerCommand(display.kiosk_id, state, id);
+    if (rejected) return rejected;
+    await deps.repo.updateDisplay(id, {
+      actual_power_state: state === "on" ? "awake" : "standby",
+      actual_power_state_at: new Date().toISOString(),
+    } as any);
+    deps.nodered.forward(
+      "display.power.changed",
+      {
         display_id: id,
-      });
-      await deps.repo.updateDisplay(id, {
-        actual_power_state: state === "on" ? "awake" : "standby",
-        actual_power_state_at: new Date().toISOString(),
-      } as any);
-      deps.nodered.forward(
-        "display.power.changed",
-        {
-          display_id: id,
-          kiosk_id: display.kiosk_id,
-          state,
-          source: "server",
-        },
-        noderedTenant(event),
-      );
-    }
+        kiosk_id: display.kiosk_id,
+        state,
+        source: "server",
+      },
+      noderedTenant(event),
+    );
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${id}` } });
   };
   app.post("/admin/displays/:id/power/standby", (event) => displayPower(event, "standby"));
@@ -3150,7 +3163,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.post("/admin/kiosks/:id/power/standby", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
-    getCoordinator().sendToKiosk(id, { type: "standby" });
+    const rejected = await sendPowerCommand(id, "standby");
+    if (rejected) return rejected;
     await emitDisplayPower(event, id, "standby");
     await audit(deps.repo, event as any, "display.standby", { resource_type: "kiosk", resource_id: id });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
@@ -3158,7 +3172,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.post("/admin/kiosks/:id/power/wake", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
-    getCoordinator().sendToKiosk(id, { type: "wake" });
+    const rejected = await sendPowerCommand(id, "on");
+    if (rejected) return rejected;
     await emitDisplayPower(event, id, "on");
     await audit(deps.repo, event as any, "display.wake", { resource_type: "kiosk", resource_id: id });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });

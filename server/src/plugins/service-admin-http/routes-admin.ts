@@ -3191,6 +3191,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.post("/admin/kiosks/:id/reboot", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
+    if (isAndroidViewer(await deps.repo.getKioskById(id))) {
+      return Response.json({ error: "Reboot is not supported by Android viewers" }, { status: 409 });
+    }
     getCoordinator().sendToKiosk(id, { type: "reboot" });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
@@ -3213,6 +3216,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.post("/admin/kiosks/:id/volume", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
+    if (isAndroidViewer(await deps.repo.getKioskById(id))) {
+      return Response.json({ error: "Audio control is not supported by Android viewers" }, { status: 409 });
+    }
     const body = await readBody<Record<string, string>>(event);
     const action = body?.["action"];
     const vol = Math.max(0, Math.min(100, Number(body?.["volume"]) || 0));

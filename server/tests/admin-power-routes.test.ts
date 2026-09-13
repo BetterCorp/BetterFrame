@@ -7,6 +7,7 @@ import { getCoordinator, setCoordinator } from "../src/shared/coordinator-regist
 function fixture(capabilities: string[], delivered: boolean, enabled = true) {
   const commands: { id: string; message: object; queue?: boolean }[] = [];
   const updates: { id: string; patch: Record<string, unknown> }[] = [];
+  const kioskUpdates: { id: string; patch: Record<string, unknown> }[] = [];
   const events: unknown[][] = [];
   const audits: Record<string, unknown>[] = [];
   const display = { id: "display", kiosk_id: "kiosk", actual_power_state: "unknown" };
@@ -17,6 +18,7 @@ function fixture(capabilities: string[], delivered: boolean, enabled = true) {
       getDisplayById: async () => display,
       listDisplaysForKiosk: async () => [display],
       updateDisplay: async (id: string, patch: Record<string, unknown>) => { updates.push({ id, patch }); },
+      updateKiosk: async (id: string, patch: Record<string, unknown>) => { kioskUpdates.push({ id, patch }); },
       insertAudit: async (entry: Record<string, unknown>) => { audits.push(entry); },
     },
     nodered: { forward: (...args: unknown[]) => { events.push(args); } },
@@ -25,7 +27,7 @@ function fixture(capabilities: string[], delivered: boolean, enabled = true) {
     ...getCoordinator(),
     sendToKiosk: (id, message, queue) => { commands.push({ id, message, queue }); return delivered; },
   });
-  return { app, commands, updates, events, audits };
+  return { app, commands, updates, kioskUpdates, events, audits };
 }
 
 test("power routes reject unsupported or undelivered commands without reporting a state change", async (t) => {
@@ -46,6 +48,41 @@ test("power routes reject unsupported or undelivered commands without reporting 
         if (mode === "undelivered") assert.equal(f.commands[0]?.queue, false);
       }
     }
+  }
+});
+
+test("viewer reboot and every audio action reject direct requests before sending or saving settings", async (t) => {
+  const original = getCoordinator();
+  t.after(() => setCoordinator(original));
+  for (const delivered of [true, false]) {
+    for (const action of ["reboot", "apply", "mute", "unmute", "output", "save_default"]) {
+      const f = fixture(["android-viewer"], delivered);
+      const response = await f.app.request(`http://bf.test/admin/kiosks/kiosk/${action === "reboot" ? "reboot" : "volume"}`, {
+        method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ action, volume: "75", output_id: "hdmi" }).toString(),
+      });
+      assert.equal(response.status, 409, action);
+      assert.equal(response.headers.get("location"), null);
+      assert.deepEqual(f.commands, []);
+      assert.deepEqual(f.kioskUpdates, []);
+      assert.deepEqual(f.updates, []);
+    }
+  }
+});
+
+test("desktop reboot and saved boot volume remain available", async (t) => {
+  const original = getCoordinator();
+  t.after(() => setCoordinator(original));
+  for (const capabilities of [["linux"], ["windows"]]) {
+    const f = fixture(capabilities, false);
+    assert.equal((await f.app.request("http://bf.test/admin/kiosks/kiosk/reboot", { method: "POST" })).status, 302);
+    const response = await f.app.request("http://bf.test/admin/kiosks/kiosk/volume", {
+      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "action=save_default&volume=75",
+    });
+    assert.equal(response.status, 302);
+    assert.deepEqual(f.kioskUpdates, [{ id: "kiosk", patch: { audio_default_volume_percent: 75 } }]);
+    assert.deepEqual(f.commands.map(({ message }) => message), [{ type: "reboot" }, { type: "volume-set", volume: 75 }]);
   }
 });
 

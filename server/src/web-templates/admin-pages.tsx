@@ -2599,46 +2599,50 @@ export function KioskEditPage(props: KioskEditProps) {
                 </div>
               );
             })()}
-            <div style="margin-top:1rem; padding-top:0.75rem; border-top:1px solid #f0f0f0; display:flex; gap:0.5rem; align-items:center">
-              <div style="font-size:0.8rem; font-weight:600">Power</div>
-              <button type="button" class="btn btn-sm btn-ghost" style="color:#c00" {...{
-                "hx-post": `/admin/kiosks/${String(k.id)}/reboot`,
-                "hx-swap": "none",
-                "hx-confirm": "Reboot this kiosk? It will be offline for ~30 seconds.",
-              }}>Reboot</button>
-            </div>
-            <div style="margin-top:1rem; padding-top:0.75rem; border-top:1px solid #f0f0f0">
-              <div style="font-size:0.8rem; font-weight:600; margin-bottom:0.5rem">Audio</div>
-              <form style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.5rem" {...{
-                "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
-                "hx-swap": "none",
-              }}>
-                <input
-                  type="range"
-                  name="volume"
-                  min="0"
-                  max="100"
-                  value={String((k as any).audio_default_volume_percent ?? 50)}
-                  style="width:12rem"
-                  {...{"oninput": "this.nextElementSibling.value = this.value + '%'"}}
-                />
-                <output style="font-size:0.85rem; min-width:3rem">{String((k as any).audio_default_volume_percent ?? 50)}%</output>
-                <button type="submit" name="action" value="apply" class="btn btn-sm btn-ghost">Apply</button>
-                <button type="submit" name="action" value="save_default" class="btn btn-sm">Save Boot Default</button>
-              </form>
-              <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
-                <button type="button" class="btn btn-sm btn-ghost" {...{
-                  "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
-                  "hx-vals": JSON.stringify({ action: "mute" }),
-                  "hx-swap": "none",
-                }}>Mute</button>
-                <button type="button" class="btn btn-sm btn-ghost" {...{
-                  "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
-                  "hx-vals": JSON.stringify({ action: "unmute" }),
-                  "hx-swap": "none",
-                }}>Unmute</button>
-              </div>
-            </div>
+            {!isAndroidViewer(k) ? (
+              <>
+                <div style="margin-top:1rem; padding-top:0.75rem; border-top:1px solid #f0f0f0; display:flex; gap:0.5rem; align-items:center">
+                  <div style="font-size:0.8rem; font-weight:600">Power</div>
+                  <button type="button" class="btn btn-sm btn-ghost" style="color:#c00" {...{
+                    "hx-post": `/admin/kiosks/${String(k.id)}/reboot`,
+                    "hx-swap": "none",
+                    "hx-confirm": "Reboot this kiosk? It will be offline for ~30 seconds.",
+                  }}>Reboot</button>
+                </div>
+                <div style="margin-top:1rem; padding-top:0.75rem; border-top:1px solid #f0f0f0">
+                  <div style="font-size:0.8rem; font-weight:600; margin-bottom:0.5rem">Audio</div>
+                  <form style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.5rem" {...{
+                    "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
+                    "hx-swap": "none",
+                  }}>
+                    <input
+                      type="range"
+                      name="volume"
+                      min="0"
+                      max="100"
+                      value={String((k as any).audio_default_volume_percent ?? 50)}
+                      style="width:12rem"
+                      {...{"oninput": "this.nextElementSibling.value = this.value + '%'"}}
+                    />
+                    <output style="font-size:0.85rem; min-width:3rem">{String((k as any).audio_default_volume_percent ?? 50)}%</output>
+                    <button type="submit" name="action" value="apply" class="btn btn-sm btn-ghost">Apply</button>
+                    <button type="submit" name="action" value="save_default" class="btn btn-sm">Save Boot Default</button>
+                  </form>
+                  <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
+                    <button type="button" class="btn btn-sm btn-ghost" {...{
+                      "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
+                      "hx-vals": JSON.stringify({ action: "mute" }),
+                      "hx-swap": "none",
+                    }}>Mute</button>
+                    <button type="button" class="btn btn-sm btn-ghost" {...{
+                      "hx-post": `/admin/kiosks/${String(k.id)}/volume`,
+                      "hx-vals": JSON.stringify({ action: "unmute" }),
+                      "hx-swap": "none",
+                    }}>Unmute</button>
+                  </div>
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
 

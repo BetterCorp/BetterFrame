@@ -13,6 +13,8 @@ client/android/**/build/
 client/android/local.properties
 *.jks
 *.keystore
+*.p12
+android-signing-material/
 windows-client/target/
 iobox-firmware/.pio/
 

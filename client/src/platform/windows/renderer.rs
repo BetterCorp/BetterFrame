@@ -1,3 +1,8 @@
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    DI_NORMAL, DrawIconEx, IMAGE_ICON, LR_SHARED, LoadImageW,
+};
+use windows_sys::Win32::Graphics::Gdi::DT_WORDBREAK;
+
 use super::*;
 
 pub(super) fn run_app() -> Result<(), String> {
@@ -35,7 +40,7 @@ pub(super) fn run_app() -> Result<(), String> {
             hInstance: hinstance,
             hIcon: LoadIconW(hinstance, 1usize as *const u16),
             lpszClassName: class_name.as_ptr(),
-            hbrBackground: CreateSolidBrush(rgb(17, 24, 39)) as HBRUSH,
+            hbrBackground: CreateSolidBrush(rgb(0, 0, 0)) as HBRUSH,
             ..std::mem::zeroed()
         };
         if RegisterClassW(&wc) == 0 {
@@ -176,7 +181,7 @@ pub(super) fn paint_window(hwnd: HWND) {
     unsafe {
         let mut ps: PAINTSTRUCT = std::mem::zeroed();
         let hdc = BeginPaint(hwnd, &mut ps);
-        let brush = CreateSolidBrush(rgb(17, 24, 39));
+        let brush = CreateSolidBrush(rgb(0, 0, 0));
         FillRect(hdc, &ps.rcPaint, brush);
         DeleteObject(brush as _);
 
@@ -209,16 +214,18 @@ pub(super) fn resolved_display_id(hwnd: HWND) -> Option<String> {
 pub(super) fn paint_layout(hwnd: HWND, hdc: HDC, rect: RECT, display_id: &str) {
     let state = load_state();
     let bundle = load_bundle();
-    let Some((display, layout)) = active_layout_for_display(bundle.as_ref(), &state, display_id)
+    let Some((_display, layout)) = active_layout_for_display(bundle.as_ref(), &state, display_id)
     else {
         remove_webviews(hwnd);
+        remove_camera_pipelines(hwnd);
         let message = empty_layout_message(bundle.as_ref(), &state);
-        draw_centered(hdc, rect, &message);
+        draw_empty_state(hdc, rect, &message);
         return;
     };
     if layout.cells.is_empty() {
         remove_webviews(hwnd);
-        draw_centered(hdc, rect, &format!("{} - {}", display.name, layout.name));
+        remove_camera_pipelines(hwnd);
+        draw_empty_state(hdc, rect, "This layout is empty. Add content to it in BetterFrame.");
         return;
     }
 
@@ -229,6 +236,10 @@ pub(super) fn paint_layout(hwnd: HWND, hdc: HDC, rect: RECT, display_id: &str) {
 
     for cell in &layout.cells {
         let cell_rect = cell_rect(rect, cols, rows, cell);
+        if matches!(cell.content_type.as_str(), "none" | "empty" | "placeholder") {
+            draw_empty_state(hdc, cell_rect, "No content assigned");
+            continue;
+        }
         let brush = unsafe { CreateSolidBrush(color_for_content(&cell.content_type)) };
         unsafe {
             FillRect(hdc, &cell_rect, brush);
@@ -558,7 +569,7 @@ pub(super) fn color_for_content(kind: &str) -> COLORREF {
         "web" => rgb(30, 64, 175),
         "html" => rgb(146, 64, 14),
         "ablesign" => rgb(88, 28, 135),
-        _ => rgb(55, 65, 81),
+        _ => rgb(0, 0, 0),
     }
 }
 
@@ -573,6 +584,33 @@ pub(super) fn cell_label(cell: &BundleCell) -> String {
         return format!("web {url}");
     }
     cell.content_type.clone()
+}
+
+fn draw_empty_state(hdc: HDC, rect: RECT, message: &str) {
+    let width = (rect.right - rect.left).max(1);
+    let height = (rect.bottom - rect.top).max(1);
+    let size = (width / 2).min(height / 3).clamp(1, 128);
+    let x = rect.left + (width - size) / 2;
+    let y = rect.top + (height - size - 76).max(0) / 2;
+    unsafe {
+        let brush = CreateSolidBrush(rgb(0, 0, 0));
+        FillRect(hdc, &rect, brush);
+        DeleteObject(brush as _);
+        // Resource 1 is the embedded BetterFrame logo used by the application.
+        // LR_SHARED keeps the icon owned by Windows across repeated paints.
+        let icon = LoadImageW(GetModuleHandleW(null()), 1usize as *const u16,
+            IMAGE_ICON, size, size, LR_SHARED);
+        if icon != 0 {
+            DrawIconEx(hdc, x, y, icon, size, size, 0, 0, DI_NORMAL);
+        }
+        SetBkMode(hdc, 1);
+        SetTextColor(hdc, rgb(229, 231, 235));
+        let mut text_rect = RECT {
+            left: rect.left + 12, top: y + size + 20,
+            right: rect.right - 12, bottom: rect.bottom - 12,
+        };
+        DrawTextW(hdc, wide(message).as_ptr(), -1, &mut text_rect, DT_CENTER | DT_TOP | DT_WORDBREAK);
+    }
 }
 
 pub(super) fn draw_centered(hdc: HDC, rect: RECT, text: &str) {
@@ -988,6 +1026,45 @@ pub(super) fn display_allowed(policy: &WindowsPolicy, display_name: &str) -> boo
 #[cfg(test)]
 mod origin_cache_tests {
     use super::*;
+
+    #[test]
+    fn empty_state_paints_embedded_logo_on_black() {
+        use windows_sys::Win32::Graphics::Gdi::{
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC,
+            CreateDIBSection, DIB_RGB_COLORS, DeleteDC, GdiFlush,
+        };
+        unsafe {
+            let dc = CreateCompatibleDC(0);
+            assert_ne!(dc, 0);
+            let mut info: BITMAPINFO = std::mem::zeroed();
+            info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = 800;
+            info.bmiHeader.biHeight = -480;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            let mut bits = null_mut();
+            let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, 0, 0);
+            assert_ne!(bitmap, 0);
+            let previous = SelectObject(dc, bitmap as _);
+            draw_empty_state(dc, RECT { left: 0, top: 0, right: 800, bottom: 480 },
+                crate::core::layout::NO_LAYOUTS_ASSIGNED_MESSAGE);
+            GdiFlush();
+            let pixels = std::slice::from_raw_parts(bits as *const u8, 800 * 480 * 4);
+            let background = [0usize, 799, 479 * 800, 480 * 800 - 1]
+                .iter().all(|pixel| pixels[pixel * 4..pixel * 4 + 3] == [0, 0, 0]);
+            // The icon occupies this region above the instruction. Checking
+            // actual pixels catches missing linked resources as well as text-only UI.
+            let has_logo = (138..266).any(|y| (336..464).any(|x| {
+                pixels[(y * 800 + x) * 4..(y * 800 + x) * 4 + 3] != [0, 0, 0]
+            }));
+            SelectObject(dc, previous);
+            DeleteObject(bitmap as _);
+            DeleteDC(dc);
+            assert!(background, "unassigned displays must be black");
+            assert!(has_logo, "embedded BetterFrame logo must render");
+        }
+    }
 
     #[test]
     fn empty_assignments_are_configuration_not_pending_downloads() {

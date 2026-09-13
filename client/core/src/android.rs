@@ -8,9 +8,8 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use url::Url;
 
-pub const MAX_CAMERAS: usize = 4;
-pub const MAX_MIXED_CAMERAS: usize = 2;
-pub const MAX_WEB_VIEWS: usize = 1;
+pub const MAX_CAMERAS: usize = 32;
+pub const MAX_WEB_VIEWS: usize = 32;
 const MAX_CELLS: usize = 64;
 
 #[derive(Serialize)]
@@ -21,6 +20,9 @@ pub struct RenderPlan {
     pub layout_name: String,
     pub layouts: Vec<LayoutChoice>,
     pub expanded_cell_id: Option<String>,
+    pub idle_timeout_seconds: u32,
+    pub idle_return_layout_id: String,
+    pub resets_idle_timer: bool,
     pub background: &'static str,
     pub rows: u32,
     pub cols: u32,
@@ -135,14 +137,7 @@ pub fn render_plan(
         .enumerate()
         .filter(|(i, c)| expanded.as_ref().is_none_or(|id| *id == cell_id(c, *i)))
         .collect();
-    let has_web = visible.iter().any(|(_, c)| {
-        matches!(c.content_type.as_str(), "web" | "html") && web_content_error(c).is_none()
-    });
-    let camera_budget = if has_web {
-        MAX_MIXED_CAMERAS
-    } else {
-        MAX_CAMERAS
-    };
+    let camera_budget = MAX_CAMERAS;
     let mut camera_count = 0;
     let mut web_count = 0;
     let mut cells = Vec::new();
@@ -282,6 +277,11 @@ pub fn render_plan(
             selected_layout.grid_cols
         },
         expanded_cell_id: expanded,
+        idle_timeout_seconds: selected_layout
+            .idle_timeout_seconds
+            .unwrap_or(display.idle_timeout_seconds),
+        idle_return_layout_id: default.unwrap_or_else(|| selected_layout.id.clone()),
+        resets_idle_timer: selected_layout.resets_idle_timer,
         background: "#101418",
         gap: 4,
         max_camera_streams: camera_budget,
@@ -290,8 +290,7 @@ pub fn render_plan(
     })
 }
 
-/// Apply the same eligibility checks to resource budgeting and rendering so
-/// placeholders never reserve a WebView or reduce the camera allowance.
+/// Unsupported content remains a placeholder without reserving a WebView.
 fn web_content_error(cell: &BundleCell) -> Option<&'static str> {
     if cell.smart_url.is_some() {
         Some("Scripted login is not supported on Android")
@@ -465,6 +464,34 @@ mod tests {
         render_plan(&parse(v), layout, expanded).unwrap()
     }
     #[test]
+    fn idle_policy_uses_layout_override_display_fallback_and_assigned_default() {
+        let mut f = fixture();
+        f["displays"][0]["idle_timeout_seconds"] = json!(30);
+        let inherited = plan(f.clone(), None, Some("10"));
+        assert_eq!(inherited.idle_timeout_seconds, 30);
+        assert_eq!(inherited.idle_return_layout_id, "3");
+        assert!(inherited.resets_idle_timer);
+        let mut secondary = f["displays"][0]["layouts"][0].clone();
+        secondary["id"] = json!(4);
+        secondary["is_default"] = json!(false);
+        secondary["idle_timeout_seconds"] = json!(7);
+        secondary["resets_idle_timer"] = json!(false);
+        f["displays"][0]["layouts"]
+            .as_array_mut()
+            .unwrap()
+            .push(secondary);
+        let selected = plan(f.clone(), Some("4"), Some("10"));
+        assert_eq!(selected.idle_timeout_seconds, 7);
+        assert_eq!(selected.idle_return_layout_id, "3");
+        assert!(!selected.resets_idle_timer);
+        f["displays"][0]["layouts"][1]["idle_timeout_seconds"] = json!(0);
+        f["displays"][0]["default_layout_id"] = json!("removed");
+        let disabled = plan(f, Some("4"), None);
+        assert_eq!(disabled.idle_timeout_seconds, 0);
+        assert_eq!(disabled.idle_return_layout_id, "3");
+    }
+
+    #[test]
     fn missing_assignments_have_actionable_guidance_but_empty_assigned_layouts_are_valid() {
         let mut no_display = fixture();
         no_display["displays"] = json!([]);
@@ -518,7 +545,7 @@ mod tests {
             json!({"content_type":"web","web_url":"https://example.com","smart_url":{"steps":[]}}),
         ] {
             let p = plan(four_cameras_with_web_cells(vec![cell.clone()]), None, None);
-            assert_eq!(p.max_camera_streams, 4, "{cell}");
+            assert_eq!(p.max_camera_streams, 32, "{cell}");
             assert_eq!(
                 p.cells.iter().filter(|c| c.camera.is_some()).count(),
                 4,
@@ -531,16 +558,16 @@ mod tests {
     }
 
     #[test]
-    fn renderable_web_or_html_reserves_the_mixed_camera_budget() {
+    fn renderable_web_or_html_keeps_the_full_camera_budget() {
         for cell in [
             json!({"content_type":"web","web_url":"/dash/lobby"}),
             json!({"content_type":"html","html_content":"<h1>Welcome</h1>"}),
         ] {
             let p = plan(four_cameras_with_web_cells(vec![cell.clone()]), None, None);
-            assert_eq!(p.max_camera_streams, 2, "{cell}");
+            assert_eq!(p.max_camera_streams, 32, "{cell}");
             assert_eq!(
                 p.cells.iter().filter(|c| c.camera.is_some()).count(),
-                2,
+                4,
                 "{cell}"
             );
             assert_eq!(
@@ -553,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_web_before_valid_content_does_not_consume_the_web_view() {
+    fn unsupported_web_before_valid_content_does_not_consume_web_views() {
         let p = plan(
             four_cameras_with_web_cells(vec![
                 json!({"content_type":"web","web_url":"file:///private"}),
@@ -563,19 +590,15 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(p.max_camera_streams, 2);
-        assert_eq!(p.cells.iter().filter(|c| c.camera.is_some()).count(), 2);
-        assert_eq!(p.cells.iter().filter(|c| c.web.is_some()).count(), 1);
+        assert_eq!(p.max_camera_streams, 32);
+        assert_eq!(p.cells.iter().filter(|c| c.camera.is_some()).count(), 4);
+        assert_eq!(p.cells.iter().filter(|c| c.web.is_some()).count(), 2);
         assert_eq!(p.cells[4].kind, "placeholder");
         assert_eq!(
             p.cells[5].web.as_ref().unwrap().url.as_deref(),
             Some("/dash/lobby")
         );
-        assert_eq!(p.cells[6].kind, "placeholder");
-        assert_eq!(
-            p.cells[6].message.as_deref(),
-            Some("Web content limit reached; expand this tile to view")
-        );
+        assert_eq!(p.cells[6].kind, "web");
     }
 
     #[test]
@@ -589,8 +612,60 @@ mod tests {
             p.cells[1].web.as_ref().unwrap().url.as_deref(),
             Some("/dash/lobby")
         );
-        assert_eq!(p.cells[3].kind, "placeholder");
-        assert_eq!(p.max_camera_streams, 2);
+        assert_eq!(p.cells[3].kind, "camera");
+        assert_eq!(p.max_camera_streams, 32);
+    }
+    #[test]
+    fn thirty_two_cameras_render_with_or_without_web_and_excess_can_expand() {
+        for web in [
+            None,
+            Some(json!({"content_type":"web","web_url":"/dash/lobby"})),
+            Some(json!({"content_type":"html","html_content":"<h1>Welcome</h1>"})),
+        ] {
+            let mut f = fixture();
+            let mut cells: Vec<_> = (0..33)
+                .map(|index| {
+                    json!({"view_id":10 + index,"row":index / 8,"col":index % 8,
+                    "row_span":1,"col_span":1,"content_type":"camera","camera_id":5})
+                })
+                .collect();
+            let web_count = usize::from(web.is_some());
+            if let Some(mut cell) = web {
+                cell["view_id"] = json!(100);
+                cell["row"] = json!(4);
+                cell["col"] = json!(1);
+                cell["row_span"] = json!(1);
+                cell["col_span"] = json!(1);
+                cells.push(cell);
+            }
+            let layout = &mut f["displays"][0]["layouts"][0];
+            layout["grid_cols"] = json!(8);
+            layout["grid_rows"] = json!(5);
+            layout["cells"] = json!(cells);
+            let grid = plan(f.clone(), None, None);
+            assert_eq!(grid.max_camera_streams, 32);
+            assert_eq!(
+                grid.cells
+                    .iter()
+                    .filter(|cell| cell.camera.is_some())
+                    .count(),
+                32
+            );
+            assert_eq!(
+                grid.cells.iter().filter(|cell| cell.web.is_some()).count(),
+                web_count
+            );
+            assert_eq!(
+                grid.cells[32].message.as_deref(),
+                Some("Camera limit reached; expand this tile to view")
+            );
+            let expanded = plan(f, None, Some("42"));
+            assert_eq!(expanded.cells.len(), 1);
+            assert_eq!(
+                expanded.cells[0].camera.as_ref().unwrap().uri,
+                "rtsp://camera/main"
+            );
+        }
     }
     #[test]
     fn legacy_display_is_identical_and_numeric_ids_normalize() {
@@ -683,13 +758,57 @@ mod tests {
         assert_eq!(web.local_storage["screenId"], "screen-one");
     }
     #[test]
-    fn web_limit_is_enforced_and_expansion_can_view_second_page() {
+    fn thirty_two_web_and_html_cells_render_and_excess_can_expand() {
         let mut f = fixture();
-        let c = &mut f["displays"][0]["layouts"][0]["cells"][2];
-        c["content_type"] = json!("html");
-        c["html_content"] = json!("Hello");
-        assert_eq!(plan(f.clone(), None, None).cells[2].kind, "placeholder");
-        assert_eq!(plan(f, None, Some("12")).cells[0].kind, "web");
+        let mut cells = vec![
+            json!({"view_id":10,"row":0,"col":0,"row_span":1,"col_span":1,
+                "content_type":"web","web_url":"file:///private"}),
+            json!({"view_id":11,"row":0,"col":1,"row_span":1,"col_span":1,
+                "content_type":"camera","camera_id":5}),
+        ];
+        for index in 0..33 {
+            cells.push(
+                json!({"view_id":100 + index,"row":(index + 2) / 8,"col":(index + 2) % 8,
+                "row_span":1,"col_span":1,
+                "content_type":if index % 2 == 0 { "web" } else { "html" },
+                "web_url":"https://example.com/signage","html_content":"<h1>Signage</h1>"}),
+            );
+        }
+        let layout = &mut f["displays"][0]["layouts"][0];
+        layout["grid_cols"] = json!(8);
+        layout["grid_rows"] = json!(5);
+        layout["cells"] = json!(cells);
+        let rendered = plan(f.clone(), None, None);
+        assert_eq!(rendered.max_web_views, 32);
+        assert_eq!(
+            rendered
+                .cells
+                .iter()
+                .filter(|cell| cell.web.is_some())
+                .count(),
+            32
+        );
+        assert_eq!(
+            rendered
+                .cells
+                .iter()
+                .filter(|cell| cell.camera.is_some())
+                .count(),
+            1
+        );
+        assert_eq!(rendered.cells[0].kind, "placeholder");
+        assert_eq!(rendered.cells[33].kind, "web");
+        assert_eq!(
+            rendered.cells[34].message.as_deref(),
+            Some("Web content limit reached; expand this tile to view")
+        );
+        let expanded = plan(f, None, Some("132"));
+        assert_eq!(expanded.cells.len(), 1);
+        assert_eq!(expanded.cells[0].kind, "web");
+        assert_eq!(
+            expanded.cells[0].web.as_ref().unwrap().url.as_deref(),
+            Some("https://example.com/signage")
+        );
     }
     #[test]
     fn only_assigned_local_actions_are_exposed() {

@@ -170,10 +170,35 @@ class MainActivity : Activity(), ViewerSession.Listener {
         if ((plan?.optJSONArray("layouts")?.length() ?: 0) > 1) {
             actions += "Assigned layouts" to { chooseLayout() }
         }
+        val webTiles = tiles.values.map { it.second }.filterIsInstance<WebTile>()
+        if (webTiles.size == 1) {
+            val tile = webTiles.single()
+            tile.assignedActionLabel?.let { label ->
+                if (actions.none { it.first == label }) actions += label to { tile.activateAssignedAction() }
+            }
+            actions += "Reload web content" to { tile.reload() }
+        } else if (webTiles.isNotEmpty()) {
+            actions += "Web content" to {
+                AlertDialog.Builder(this).setTitle("Web content")
+                    .setItems(webTiles.map { it.contentLabel }.toTypedArray()) { _, index ->
+                        session.recordActivity()
+                        showWebMenu(webTiles[index])
+                    }.setNegativeButton("Close", null).show()
+            }
+        }
         actions += "Refresh" to { session.refresh() }
         actions += "Settings" to { showSettings() }
         AlertDialog.Builder(this).setTitle("BetterFrame")
-            .setItems(actions.map { it.first }.toTypedArray()) { _, index -> actions[index].second() }
+            .setItems(actions.map { it.first }.toTypedArray()) { _, index -> session.recordActivity(); actions[index].second() }
+            .setNegativeButton("Close", null).show()
+    }
+
+    private fun showWebMenu(tile: WebTile) {
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
+        tile.assignedActionLabel?.let { actions += it to { tile.activateAssignedAction() } }
+        actions += "Reload web content" to { tile.reload() }
+        AlertDialog.Builder(this).setTitle(tile.contentLabel)
+            .setItems(actions.map { it.first }.toTypedArray()) { _, index -> session.recordActivity(); actions[index].second() }
             .setNegativeButton("Close", null).show()
     }
 
@@ -287,7 +312,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
             else "This layout is empty. Add content to it in BetterFrame.")
         status.text = lastStatus
         if (cells == null) { releaseTiles(); return }
-        val desired = (0 until cells.length()).map { cells.getJSONObject(it) }
+        val desired = compatibleWebSessions((0 until cells.length()).map { cells.getJSONObject(it) })
         val ids = desired.map { it.getString("id") }.toSet()
         currentFocus?.let { focus ->
             tiles.entries.firstOrNull { (_, entry) -> containsView(entry.second, focus) }?.let { focusedCellId = it.key }
@@ -304,7 +329,6 @@ class MainActivity : Activity(), ViewerSession.Listener {
         grid.gap = value.optInt("gap", 4).coerceIn(0, 32)
         var cameraCount = 0
         var webCount = 0
-        val hasWeb = desired.any { it.optString("kind") == "web" }
         fun activate(cell: JSONObject) {
             val id = cell.getString("id")
             focusedCellId = id
@@ -320,8 +344,8 @@ class MainActivity : Activity(), ViewerSession.Listener {
             val id = cell.getString("id")
             val kind = cell.optString("kind")
             val allowed = when (kind) {
-                "camera" -> ++cameraCount <= if (hasWeb) 2 else 4
-                "web" -> ++webCount <= 1
+                "camera" -> ++cameraCount <= 32
+                "web" -> ++webCount <= 32
                 else -> true
             }
             val existing = tiles[id]?.second
@@ -329,7 +353,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
                 PlaceholderTile(this, cell.optString("label"), "Layout exceeds this device's playback budget")
             } else when (kind) {
                 "camera" -> CameraTile(this, cell) { activate(cell) }
-                "web" -> WebTile(this, cell) { activate(cell) }
+                "web" -> WebTile(this, cell, onActivity = session::recordActivity, onActivate = { activate(cell) })
                 else -> PlaceholderTile(this, cell.optString("label"), cell.optString("message", "No content assigned")) { activate(cell) }
             }
             if (existing == null) {
@@ -366,10 +390,27 @@ class MainActivity : Activity(), ViewerSession.Listener {
 
     @Deprecated("Required for TV and Android versions before predictive back")
     override fun onBackPressed() {
-        if (tiles.values.any { it.second.exitInteraction() }) return
         val expanded = plan?.optString("expandedCellId")
         if (!expanded.isNullOrBlank() && expanded != "null") { session.expand(null); return }
         showKioskMenu()
+    }
+
+    override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+        if (::session.isInitialized && (event.actionMasked == android.view.MotionEvent.ACTION_DOWN ||
+                event.actionMasked == android.view.MotionEvent.ACTION_MOVE ||
+                event.actionMasked == android.view.MotionEvent.ACTION_UP)) session.recordActivity()
+        return super.dispatchTouchEvent(event)
+    }
+
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (::session.isInitialized && event.action == android.view.KeyEvent.ACTION_DOWN) session.recordActivity()
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun dispatchGenericMotionEvent(event: android.view.MotionEvent): Boolean {
+        if (::session.isInitialized && (event.actionMasked == android.view.MotionEvent.ACTION_SCROLL ||
+                event.actionMasked == android.view.MotionEvent.ACTION_HOVER_MOVE)) session.recordActivity()
+        return super.dispatchGenericMotionEvent(event)
     }
 
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
@@ -389,6 +430,31 @@ class MainActivity : Activity(), ViewerSession.Listener {
         tiles.values.forEach { it.second.release() }
         tiles.clear()
         if (::grid.isInitialized) grid.removeAllViews()
+    }
+}
+
+/** All URLs are resolved by ViewerSession before this guard. WebViews share origin storage. */
+internal fun compatibleWebSessions(cells: List<JSONObject>): List<JSONObject> {
+    val sessions = mutableMapOf<String, Map<String, String>>()
+    return cells.map { cell ->
+        val web = cell.optJSONObject("web")
+        val html = web?.optString("html")
+        if (cell.optString("kind") != "web" || web == null || (!html.isNullOrBlank() && html != "null")) {
+            cell // HTML has a per-cell synthetic origin.
+        } else {
+            val origin = WebTile.origin(web.optString("url"))
+            val storage = web.optJSONObject("localStorage") ?: JSONObject()
+            val assigned = storage.keys().asSequence().associateWith { storage.optString(it) }
+            if (origin == null || sessions[origin]?.let { it == assigned } != false) {
+                if (origin != null) sessions[origin] = assigned
+                cell
+            } else {
+                // Compare before reconciliation so changed conflicts replace existing browsers.
+                JSONObject(cell.toString()).put("kind", "placeholder")
+                    .put("action", JSONObject().put("type", "expand"))
+                    .put("message", "Conflicting web session configuration · use a separate display or expand this tile")
+            }
+        }
     }
 }
 

@@ -1683,12 +1683,15 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
     }
 
     if layout.cells.is_empty() {
-        warn!("layout has no cells");
+        info!("layout has no assigned content");
         recompute_global_state();
         DISPLAYS.with(|ds| {
             if let Some(st) = ds.borrow_mut().get_mut(display_id) {
-                st.content_overlay
-                    .set_child(Some(&build_logo_content("Waiting for content")));
+                st.content_overlay.set_child(Some(&build_empty_display_message(
+                    &bundle,
+                    Some(bd),
+                    "This layout is empty. Add content to it in BetterFrame.",
+                )));
                 hide_all_webviews(&st.web_layer);
                 st.web_positions.clear();
             }
@@ -3303,7 +3306,17 @@ fn build_empty_display_reference(
     bundle: &KioskBundle,
     display: Option<&BundleDisplayWithLayouts>,
 ) -> gtk::Widget {
+    build_empty_display_message(bundle, display, crate::core::layout::NO_LAYOUTS_ASSIGNED_MESSAGE)
+}
+
+fn build_empty_display_message(
+    bundle: &KioskBundle,
+    display: Option<&BundleDisplayWithLayouts>,
+    message: &str,
+) -> gtk::Widget {
     let overlay = gtk::Overlay::new();
+    add_css(&overlay, ".bf-unassigned-display { background-color: #000; }");
+    overlay.add_css_class("bf-unassigned-display");
     overlay.set_vexpand(true);
     overlay.set_hexpand(true);
 
@@ -3313,7 +3326,7 @@ fn build_empty_display_reference(
     vbox.set_vexpand(true);
     vbox.set_hexpand(true);
     vbox.append(&logo_picture(BETTERFRAME_LOGO_PNG, 480, 118, "idle-logo"));
-    let instruction = Label::new(Some(crate::core::layout::NO_LAYOUTS_ASSIGNED_MESSAGE));
+    let instruction = Label::new(Some(message));
     instruction.set_wrap(true);
     instruction.set_justify(gtk::Justification::Center);
     instruction.set_max_width_chars(64);
@@ -3405,7 +3418,7 @@ fn placeholder(text: Option<&str>) -> gtk::Widget {
     let vbox = GtkBox::new(Orientation::Vertical, 8);
     add_css(
         &vbox,
-        ".bf-placeholder { background-color: #111; } .bf-placeholder-text { color: #666; font-size: 14px; }",
+        ".bf-placeholder { background-color: #000; } .bf-placeholder-text { color: #666; font-size: 14px; }",
     );
     vbox.add_css_class("bf-placeholder");
     vbox.set_valign(gtk::Align::Center);

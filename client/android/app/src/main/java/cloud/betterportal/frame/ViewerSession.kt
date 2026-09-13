@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.webkit.CookieManager
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
@@ -115,7 +116,8 @@ internal object EnrollmentCleanup {
 /** Outbound display client only. All network/storage work is serialized away from the UI. */
 class ViewerSession internal constructor(context: Context, private val listener: Listener,
                                         private val http: OkHttpClient = defaultHttp(),
-                                        private val clearBrowserSessions: (Context, (Boolean) -> Unit) -> Unit = { app, done -> WebTile.clearSessions(app, done) }) {
+                                        private val clearBrowserSessions: (Context, (Boolean) -> Unit) -> Unit = { app, done -> WebTile.clearSessions(app, done) },
+                                        private val monotonicTime: () -> Long = SystemClock::elapsedRealtime) {
     private companion object {
         const val VIEWER_PROFILE = "android-viewer-v1"
         const val AUTH_REJECTED = "Display authorization rejected. Check this device in BF."
@@ -136,9 +138,15 @@ class ViewerSession internal constructor(context: Context, private val listener:
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadScheduledExecutor()
     // Projection is independent of potentially slow network I/O, so local touch/remote actions stay responsive.
-    private val renderer = Executors.newSingleThreadExecutor()
+    private val renderer = Executors.newSingleThreadScheduledExecutor()
     private data class RenderSnapshot(val raw: String, val server: String, val encryptKey: String?, val cookieReady: Boolean, val epoch: Int)
     @Volatile private var renderSnapshot: RenderSnapshot? = null
+    private data class IdlePolicy(val snapshot: RenderSnapshot, val timeoutMs: Long,
+                                  val layout: String, val defaultLayout: String,
+                                  val returnToDefault: Boolean, val expanded: Boolean)
+    private var idlePolicy: IdlePolicy? = null // Renderer-thread owned.
+    @Volatile private var idleLoop: ScheduledFuture<*>? = null
+    @Volatile private var lastActivity = 0L
     private var serverResolved = false
     private var state = JSONObject()
     @Volatile private var storageGeneration = -1L
@@ -208,6 +216,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
         if (clearingEnrollment) { pendingStart = PendingStart(serverUrl); return }
         if (running) { if (serverUrl != null && serverUrl.trimEnd('/') != this.serverUrl) status("Unpair before changing the BF server"); return }
         running = true
+        recordActivity()
         val epoch = ++generation
         enqueue {
             if (generation != epoch || !running) return@enqueue
@@ -252,6 +261,10 @@ class ViewerSession internal constructor(context: Context, private val listener:
                 persist()
                 if (!state.optBoolean("blocked")) emitPlan()
                 else status(state.optString("block_reason", AUTH_REJECTED))
+                idleLoop?.cancel(false)
+                val idle = renderer.scheduleWithFixedDelay({ checkIdle(epoch) }, 250, 250, TimeUnit.MILLISECONDS)
+                idleLoop = idle
+                if (!active()) idle.cancel(false) // stop() may race initial cache loading.
                 nextSync = 0L
                 nextPairPoll = 0L
                 loop?.cancel(false)
@@ -270,6 +283,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
         running = false
         generation++
         renderSnapshot = null
+        idleLoop?.cancel(false)
         loop?.cancel(false)
         http.dispatcher.cancelAll()
         enqueue {
@@ -294,19 +308,43 @@ class ViewerSession internal constructor(context: Context, private val listener:
 
     fun refresh() { currentWork { nextSync = 0L; nextCookie = 0L; nextPairPoll = 0L } }
 
-    fun selectLayout(id: String) = renderWork { snapshot ->
-        try {
-            val plan = JSONObject(NativeCore.renderPlan(snapshot.raw, id, null))
-            if (plan.has("error") || renderSnapshot !== snapshot || generation != snapshot.epoch) return@renderWork
-            layoutId = id; expandedId = null
-            persistSelection(id, snapshot.epoch)
-            renderAndEmit(snapshot)
-        } catch (_: Exception) { ui(snapshot.epoch) { listener.onStatus("Unable to select that layout") } }
+    /** Input activity is local and must never wait for discovery/heartbeat I/O. */
+    fun recordActivity() { lastActivity = monotonicTime() }
+
+    fun selectLayout(id: String) {
+        recordActivity()
+        renderWork { snapshot ->
+            try {
+                val plan = JSONObject(NativeCore.renderPlan(snapshot.raw, id, null))
+                if (plan.has("error") || renderSnapshot !== snapshot || generation != snapshot.epoch) return@renderWork
+                layoutId = id; expandedId = null
+                persistSelection(id, snapshot.epoch)
+                renderAndEmit(snapshot)
+            } catch (_: Exception) { ui(snapshot.epoch) { listener.onStatus("Unable to select that layout") } }
+        }
     }
 
-    fun expand(cellId: String?) = renderWork { snapshot ->
-        expandedId = cellId
-        renderAndEmit(snapshot)
+    fun expand(cellId: String?) {
+        recordActivity()
+        renderWork { snapshot ->
+            expandedId = cellId
+            renderAndEmit(snapshot)
+        }
+    }
+
+    private fun checkIdle(epoch: Int) {
+        val policy = idlePolicy ?: return
+        if (!running || generation != epoch || closed || renderSnapshot !== policy.snapshot) return
+        if (policy.timeoutMs <= 0 || (!policy.expanded && (!policy.returnToDefault || policy.layout == policy.defaultLayout))) return
+        val activity = lastActivity
+        if (monotonicTime() - activity < policy.timeoutMs || lastActivity != activity) return
+        // Sticky layouts still collapse local fullscreen expansion, but retain
+        // their selected layout. Other layouts return to the assigned default.
+        val target = if (policy.returnToDefault) policy.defaultLayout else policy.layout
+        layoutId = target
+        expandedId = null
+        persistSelection(target, epoch)
+        renderAndEmit(policy.snapshot)
     }
 
     fun unpair(nextServer: String? = null) {
@@ -656,9 +694,16 @@ class ViewerSession internal constructor(context: Context, private val listener:
                 resetSelection = !plan.has("error")
             }
             if (renderSnapshot !== snapshot || !running || generation != snapshot.epoch) return
-            if (plan.has("error")) { ui(snapshot.epoch) { if (renderSnapshot === snapshot) listener.onPlan(plan) }; return }
+            if (plan.has("error")) {
+                idlePolicy = null
+                ui(snapshot.epoch) { if (renderSnapshot === snapshot) listener.onPlan(plan) }
+                return
+            }
             if (resetSelection) { layoutId = null; persistSelection(null, snapshot.epoch) }
             expandedId = plan.textValue("expandedCellId")
+            idlePolicy = IdlePolicy(snapshot, plan.optLong("idleTimeoutSeconds").coerceAtLeast(0) * 1000,
+                plan.getString("layoutId"), plan.optString("idleReturnLayoutId", plan.getString("layoutId")),
+                plan.optBoolean("resetsIdleTimer"), expandedId != null)
             fun enrich(cells: JSONArray?) {
                 if (cells == null) return
                 for (index in 0 until cells.length()) {

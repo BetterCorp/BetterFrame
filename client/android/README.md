@@ -17,8 +17,16 @@ Connection messages do not replace the pairing code. The screen adapts to TV,
 landscape and portrait displays; no server form is shown during normal startup.
 
 Assigned content fills the window. Open the small bottom-right kiosk menu by
-touch or with the remote Menu key for layouts, refresh and settings. Back exits
-web interaction or restores an expanded camera; otherwise it opens the menu.
+touch or with the remote Menu key for layouts, assigned content actions, reload,
+refresh and settings. Web, HTML and signage have no native header and accept touch,
+remote and keyboard input immediately. Back restores expanded content; otherwise
+it opens the menu. Camera connection/retry screens show only a spinner on black.
+Empty displays/layouts retain the BF logo on black with assignment instructions.
+
+Configured idle timeouts restore expanded content independently of network retries.
+The selected layout's timeout overrides the display timeout; zero disables idle.
+Sticky layouts retain their selection while collapsing expanded content. Touch,
+remote input and web text editing renew inactivity.
 Settings contains server selection and confirmed enrollment reset. Changing the
 server confirms a reset, clears saved enrollment/browser sessions, and connects
 to the selected server. The application ID and signing key remain unchanged.
@@ -172,15 +180,18 @@ cannot forward polling secrets or device credentials to another origin.
 - Android 9/API 28 minimum; arm64 and x86_64 only. A working System WebView is
   required for web content. AbleSign storage initialization needs WebView's
   document-start script feature.
-- Four camera substreams, or two cameras plus one web/HTML/signage cell.
-  Fullscreen expansion releases hidden media. Additional cells display a limit
-  message and can be expanded individually. Actual capacity depends on hardware
-  and page complexity; these ceilings are not a performance certification.
+- Up to 32 visible camera streams and 32 web/HTML/signage cells, within the
+  64-cell layout limit. Fullscreen expansion releases hidden media. Excess cells
+  display a limit message and can be expanded individually. Tune camera count,
+  substream resolution, frame rate and bitrate to the device and page workload;
+  32 is the application ceiling, not a guaranteed hardware capacity.
 - RTSP H.264 over TCP. Known H.265 streams are rejected; untagged streams are
   attempted and may fail. Expanded cameras prefer main streams and fall back to
   substreams. Camera audio is muted.
-- One active web cell bounds resource usage and prevents simultaneous AbleSign
-  screen identities from overwriting shared browser storage. Assigned storage is
+- Web cells sharing an origin must have matching assigned browser-storage
+  settings. The first visible configuration wins; a conflicting cell shows a
+  session-configuration message and can be expanded individually. Compatible
+  cells and independent origins can render together. Assigned storage is
   initialized only on its player origin. External top-level navigation/SSO,
   scripted smart-URL login and native JavaScript bridges are unsupported.
 - Raw HTML uses a unique unprivileged synthetic origin. Self-contained markup

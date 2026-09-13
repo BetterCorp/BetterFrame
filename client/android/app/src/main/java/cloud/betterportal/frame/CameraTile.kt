@@ -7,6 +7,8 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
+import android.widget.FrameLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -49,7 +51,20 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
             else -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
         }
     }
-    private val status = message("Connecting camera…")
+    private val status = FrameLayout(context).apply { setBackgroundColor(Color.BLACK) }
+    private val spinner = ProgressBar(context).apply {
+        isIndeterminate = true
+        indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.LTGRAY)
+        contentDescription = "Connecting camera"
+    }
+    private val errorMessage = message("").apply { setBackgroundColor(Color.BLACK); visibility = View.GONE }
+    private val label = TextView(context).apply {
+        text = cell.optString("label", "Camera")
+        setTextColor(Color.WHITE)
+        setBackgroundColor(0x99000000.toInt())
+        setPadding(12, 8, 12, 8)
+        visibility = View.GONE
+    }
     private val watchdog = object : Runnable {
         override fun run() {
             if (released) return
@@ -63,8 +78,7 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
                 return
             }
             if (firstFrame) {
-                status.text = "Camera stalled · reconnecting"
-                status.visibility = if (quietFor >= 5_000L) View.VISIBLE else View.GONE
+                if (quietFor >= 5_000L) showConnecting() else showReady()
             }
             handler.postDelayed(this, 5_000)
         }
@@ -73,13 +87,11 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
     init {
         setBackgroundColor(Color.BLACK)
         addView(playerView, LayoutParams(-1, -1))
+        val spinnerSize = (36 * resources.displayMetrics.density).toInt()
+        status.addView(errorMessage, LayoutParams(-1, -1))
+        status.addView(spinner, LayoutParams(spinnerSize, spinnerSize, Gravity.CENTER))
         addView(status, LayoutParams(-1, -1))
-        addView(TextView(context).apply {
-            text = cell.optString("label", "Camera")
-            setTextColor(Color.WHITE)
-            setBackgroundColor(0x99000000.toInt())
-            setPadding(12, 8, 12, 8)
-        }, LayoutParams(-1, -2, Gravity.BOTTOM))
+        addView(label, LayoutParams(-1, -2, Gravity.BOTTOM))
         // This app-owned surface is the single TV focus target and touch expand control.
         addView(View(context).apply {
             isFocusable = true
@@ -93,15 +105,16 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
 
     private fun connect() {
         if (released) return
-        status.visibility = View.VISIBLE
-        status.text = if (retries == 0) "Connecting camera…" else "Camera unavailable · reconnecting"
+        showConnecting()
         firstFrame = false
         connectionStartedAt = SystemClock.elapsedRealtime()
         lastVideoFrameAt = 0L
         lastPresentationTimeUs = Long.MIN_VALUE
         val frameEpoch = ++frameGeneration
         if (!uri.startsWith("rtsp://", ignoreCase = true)) {
-            status.text = "Camera requires a supported RTSP stream"
+            spinner.visibility = View.GONE
+            errorMessage.text = "Camera requires a supported RTSP stream"
+            errorMessage.visibility = View.VISIBLE
             return
         }
         try {
@@ -131,16 +144,15 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
                 override fun onRenderedFirstFrame() {
                     if (player !== next) return
                     firstFrame = true
-                    status.visibility = View.GONE
+                    showReady()
                     retries = 0
                 }
                 override fun onPlaybackStateChanged(state: Int) {
                     if (player !== next) return
                     if (state == Player.STATE_BUFFERING && firstFrame) {
-                        status.text = "Camera interrupted · reconnecting"
-                        status.visibility = View.VISIBLE
+                        showConnecting()
                     } else if (state == Player.STATE_READY && firstFrame) {
-                        status.visibility = View.GONE
+                        showReady()
                     } else if (state == Player.STATE_ENDED) recover()
                 }
                 override fun onPlayerError(error: PlaybackException) { if (player === next) recover() }
@@ -162,12 +174,23 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
         val previous = player
         player = null
         previous?.release()
-        status.text = "Camera unavailable · reconnecting"
-        status.visibility = View.VISIBLE
+        showConnecting()
         if (fallbackUri != null && uri != fallbackUri) uri = fallbackUri
         retries = min(retries + 1, 6)
         val delay = min(30_000L, 1_000L shl retries) + Random.nextLong(250, 1_000)
         handler.postDelayed({ connect() }, delay)
+    }
+
+    private fun showConnecting() {
+        status.visibility = View.VISIBLE
+        spinner.visibility = View.VISIBLE
+        errorMessage.visibility = View.GONE
+        label.visibility = View.GONE
+    }
+
+    private fun showReady() {
+        status.visibility = View.GONE
+        label.visibility = View.VISIBLE
     }
 
     override fun release() {

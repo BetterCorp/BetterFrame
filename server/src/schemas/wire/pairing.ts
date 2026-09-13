@@ -31,6 +31,7 @@ export const pairInitiateRequest = av.object(
     // True iff the kiosk runs our pre-built Pi OS image and ships the
     // betterframe-apply-config helper. Gates the admin Managed Config UI.
     managed_image: av.optional(av.bool()),
+    secure_claim: av.optional(av.bool()),
   },
   { unknownKeys: "reject" },
 );
@@ -43,20 +44,22 @@ export const pairInitiateResponse = av.object(
   {
     code: av.string().pattern("^[A-HJ-NP-Z2-9]{8}$"), // 0/O/1/I excluded
     expires_at: av.string().format("date-time"),
+    expires_in_seconds: av.optional(av.int().min(0)),
+    poll_after_ms: av.optional(av.int().min(0)),
+    polling_secret: av.optional(av.string().minLength(32)),
   },
   { unknownKeys: "reject" },
 );
 
 /**
- * Step 3: kiosk polls server. Body carries only the code. Three terminal
- * outcomes:
- *   - 202: still waiting for admin confirmation
- *   - 200 + body: confirmed; the response carries the kiosk_key + cluster_key
- *   - 4xx:        unknown / expired / already claimed
+ * Step 3: poll with the code and the negotiated session secret.
+ * Pending responses use 202; completed/expired/acknowledged responses use 200.
+ * Temporary delivery failures use 503 and preserve the current session.
  */
 export const pairClaimRequest = av.object(
   {
     code: av.string().pattern("^[A-HJ-NP-Z2-9]{8}$"),
+    polling_secret: av.optional(av.string().minLength(32)),
   },
   { unknownKeys: "reject" },
 );
@@ -68,10 +71,13 @@ export const pairClaimRequest = av.object(
  */
 export const pairClaimResponse = av.object(
   {
-    kiosk_id: av.int().min(1),
-    name: av.string().minLength(1).maxLength(128),
+    status: av.literal("claimed"),
+    kiosk_id: av.string().minLength(1),
+    kiosk_name: av.string().minLength(1).maxLength(128),
+    encrypt_key: av.optional(av.string().minLength(32)),
+    expires_in_seconds: av.optional(av.int().min(0)),
     kiosk_key: av.string().minLength(32),
-    cluster_key: av.string().minLength(32),
+    cluster_key: av.optional(av.string().minLength(32)),
     bundle_url: av.string().minLength(1),
   },
   { unknownKeys: "reject" },

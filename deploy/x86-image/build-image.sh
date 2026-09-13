@@ -154,7 +154,7 @@ apt-get -y install --no-install-recommends \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
   gstreamer1.0-libav gstreamer1.0-tools v4l-utils wlr-randr \
   gstreamer1.0-vaapi va-driver-all mesa-va-drivers vainfo intel-gpu-tools \
-  rauc dosfstools nftables cloud-guest-utils e2fsprogs openssl udev tpm2-tools qemu-guest-agent
+  polkitd rauc dosfstools nftables cloud-guest-utils e2fsprogs openssl udev tpm2-tools qemu-guest-agent
 
 locale-gen en_US.UTF-8 || true
 update-locale LANG=en_US.UTF-8 || true
@@ -225,11 +225,19 @@ install -m 644 /tmp/bf-files/de.pengutronix.rauc.service /usr/share/dbus-1/syste
 install -m 644 /tmp/bf-files/de.pengutronix.rauc.conf /usr/share/dbus-1/system.d/de.pengutronix.rauc.conf
 
 install -m 644 /tmp/bf-files/nftables.conf /etc/nftables.conf
-install -d -m 755 /etc/sudoers.d
-cat > /etc/sudoers.d/betterframe-managed-config <<'SUDOERS'
-bfkiosk ALL=(root) NOPASSWD: /usr/local/sbin/betterframe-apply-managed-config.sh *
-SUDOERS
-chmod 440 /etc/sudoers.d/betterframe-managed-config
+
+# Only timezone changes are authorized; the kiosk retains NoNewPrivileges.
+install -d -m 755 /etc/polkit-1/rules.d /etc/betterframe
+cat > /etc/polkit-1/rules.d/49-betterframe-timezone.rules <<'POLKIT'
+polkit.addRule(function(action, subject) {
+  if (subject.user === "bfkiosk" && action.id === "org.freedesktop.timedate1.set-timezone") {
+    return polkit.Result.YES;
+  }
+});
+POLKIT
+chmod 644 /etc/polkit-1/rules.d/49-betterframe-timezone.rules
+install -m 644 /dev/null /etc/betterframe/managed-image
+
 
 cat > /etc/default/betterframe-kiosk <<'EOF'
 BF_ENABLE_APP_OTA=0

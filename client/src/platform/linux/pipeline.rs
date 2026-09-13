@@ -76,6 +76,7 @@ pub fn create_camera_pipeline(
     Arc<AtomicU64>,
     Arc<AtomicU8>,
     Arc<PipelineStats>,
+    Box<dyn std::any::Any>,
 )> {
     let pipeline_name = format!(
         "cam-{name}-{}",
@@ -189,6 +190,11 @@ pub fn create_camera_pipeline(
             let Some(sink_pad) = sink.static_pad("sink") else {
                 return;
             };
+            // The previous software conversion chain may still own the sink
+            // after NULL -> PLAYING. Detach it before switching to zero-copy.
+            if let Some(peer) = sink_pad.peer() {
+                let _ = peer.unlink(&sink_pad);
+            }
             if pad.link(&sink_pad).is_ok() {
                 info!("[{decode_name}] decoder linked directly to GTK sink (zero-copy)");
                 return;
@@ -198,16 +204,35 @@ pub fn create_camera_pipeline(
         let Some(pipeline) = pipeline_weak.upgrade() else {
             return;
         };
-        let Ok(convert) = gst::ElementFactory::make("videoconvert").build() else {
-            error!("[{decode_name}] videoconvert is unavailable");
-            return;
+        let convert = if let Some(convert) = pipeline.by_name("software-convert") {
+            convert
+        } else {
+            let Ok(convert) = gst::ElementFactory::make("videoconvert")
+                .name("software-convert")
+                .build()
+            else {
+                error!("[{decode_name}] videoconvert is unavailable");
+                return;
+            };
+            if pipeline.add(&convert).is_err() {
+                error!("[{decode_name}] could not add software converter");
+                return;
+            }
+            convert
         };
         let Some(convert_sink) = convert.static_pad("sink") else {
             return;
         };
-        if pipeline.add(&convert).is_err()
-            || convert.link(&sink).is_err()
-            || pad.link(&convert_sink).is_err()
+        if let Some(peer) = convert_sink.peer() {
+            if peer != *pad {
+                let _ = peer.unlink(&convert_sink);
+            }
+        }
+        let Some(convert_src) = convert.static_pad("src") else {
+            return;
+        };
+        if (!convert_src.is_linked() && convert.link(&sink).is_err())
+            || (!convert_sink.is_linked() && pad.link(&convert_sink).is_err())
             || convert.sync_state_with_parent().is_err()
         {
             error!("[{decode_name}] software conversion link failed");
@@ -251,7 +276,6 @@ pub fn create_camera_pipeline(
             gst::glib::ControlFlow::Continue
         })
         .ok()?;
-    std::mem::forget(guard);
 
     let last_buffer = Arc::new(AtomicU64::new(epoch_millis()));
     if let Some(pad) = sink.static_pad("sink") {
@@ -267,7 +291,7 @@ pub fn create_camera_pipeline(
     }
 
     info!("[{pipeline_name}] pipeline created for {rtsp_uri}");
-    Some((pipeline, sink, last_buffer, status, stats))
+    Some((pipeline, sink, last_buffer, status, stats, Box::new(guard)))
 }
 
 pub fn play(pipeline: &Pipeline) {

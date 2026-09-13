@@ -13,6 +13,7 @@ export const PairInitiateBody = av.object(
     firmware_target: av.string().maxLength(128).default(""),
     capabilities: av.array(av.string().maxLength(64)).default([]),
     managed_image: av.bool().default(false),
+    secure_claim: av.bool().default(false),
   },
   { unknownKeys: "strip" },
 );
@@ -20,6 +21,7 @@ export const PairInitiateBody = av.object(
 export const PairClaimBody = av.object(
   {
     code: av.string().minLength(1).maxLength(16),
+    polling_secret: av.optional(av.string().minLength(32).maxLength(128)),
   },
   { unknownKeys: "strip" },
 );
@@ -137,6 +139,7 @@ export const OsStatusBody = av.object(
 export const IoBoxAnnounceBody = av.object(
   {
     serial: av.string().minLength(1).maxLength(128),
+    provisioning_secret: av.optional(av.string().minLength(32).maxLength(128)),
     firmware_version: av.string().maxLength(64).default(""),
     firmware_arch: av.string().maxLength(64).default("esp32s3"),
     hardware_variant_detected: av.string().maxLength(32).default(""),
@@ -148,6 +151,7 @@ export const IoBoxAnnounceBody = av.object(
 export const IoBoxPairClaimBody = av.object(
   {
     serial: av.string().minLength(1).maxLength(128),
+    provisioning_secret: av.optional(av.string().minLength(32).maxLength(128)),
     name: av.string().maxLength(128).default(""),
     assigned_display_id: av.optional(av.nullable(av.string().maxLength(128))).default(null),
   },
@@ -194,6 +198,7 @@ export const LoginBody = av.object(
 export const TotpBody = av.object(
   {
     code: av.string().minLength(1).maxLength(16),
+    polling_secret: av.optional(av.string().minLength(32).maxLength(128)),
   },
   { unknownKeys: "strip" },
 );

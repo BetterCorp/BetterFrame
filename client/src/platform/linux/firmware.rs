@@ -106,9 +106,14 @@ pub fn check_public(server: &str, current_version: &str) -> Option<UpdateInfo> {
     let client = reqwest::blocking::Client::new();
     let resp = match client.get(&url).timeout(Duration::from_secs(10)).send() {
         Ok(r) => r,
-        Err(err) => { warn!("preboot firmware check: {err}"); return None; }
+        Err(err) => {
+            warn!("preboot firmware check: {err}");
+            return None;
+        }
     };
-    if !resp.status().is_success() { return None; }
+    if !resp.status().is_success() {
+        return None;
+    }
     resp.json::<CheckResponse>()
         .ok()
         .and_then(|check| newer_update(check, current_version))
@@ -118,10 +123,14 @@ pub fn check_public(server: &str, current_version: &str) -> Option<UpdateInfo> {
 /// On success exits so systemd restarts with new binary.
 pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
     ensure_upgrade(info, crate::server::kiosk_app_version())?;
-    info!("preboot firmware: applying {} ({} bytes)", info.version, info.size_bytes);
+    info!(
+        "preboot firmware: applying {} ({} bytes)",
+        info.version, info.size_bytes
+    );
     let download_url = format!("{server}{}", info.download_url);
     let client = reqwest::blocking::Client::new();
-    let resp = client.get(&download_url)
+    let resp = client
+        .get(&download_url)
         .timeout(Duration::from_secs(300))
         .send()
         .map_err(|e| format!("download failed: {e}"))?;
@@ -133,7 +142,10 @@ pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
     hasher.update(&bytes);
     let got_sha = hex_lower(&hasher.finalize());
     if got_sha != info.sha256 {
-        return Err(format!("sha256 mismatch: expected {}, got {}", info.sha256, got_sha));
+        return Err(format!(
+            "sha256 mismatch: expected {}, got {}",
+            info.sha256, got_sha
+        ));
     }
     verify_signature(&info.sha256, &info.signature)
         .map_err(|e| format!("signature verify: {e}"))?;
@@ -144,7 +156,10 @@ pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
     {
         use std::os::unix::fs::OpenOptionsExt;
         let mut f = fs::OpenOptions::new()
-            .create(true).write(true).truncate(true).mode(0o755)
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o755)
             .open(&new_path)
             .map_err(|e| format!("open {}: {e}", new_path.display()))?;
         use std::io::Write;
@@ -156,7 +171,9 @@ pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
     }
     fs::rename(&new_path, &bin).map_err(|e| format!("rename: {e}"))?;
     info!("preboot firmware: updated to {}, rebooting", info.version);
-    let _ = std::process::Command::new("systemctl").arg("reboot").status();
+    let _ = std::process::Command::new("systemctl")
+        .arg("reboot")
+        .status();
     std::thread::sleep(Duration::from_secs(30));
     std::process::exit(0);
 }
@@ -186,9 +203,6 @@ pub fn check(server: &str, key: &str, current_version: &str) -> Option<UpdateInf
             return None;
         }
     };
-    if resp.status().as_u16() == 401 {
-        crate::server::reset_pairing_and_restart("server rejected kiosk key during firmware check");
-    }
 
     if !resp.status().is_success() {
         warn!("firmware check: HTTP {}", resp.status());
@@ -213,7 +227,10 @@ pub fn apply(
     on_progress: impl Fn(&str, u8),
 ) -> Result<(), String> {
     ensure_upgrade(info, crate::server::kiosk_app_version())?;
-    info!("firmware: applying {} ({} bytes)", info.version, info.size_bytes);
+    info!(
+        "firmware: applying {} ({} bytes)",
+        info.version, info.size_bytes
+    );
     on_progress("Downloading", 0);
 
     // 1. Download
@@ -225,11 +242,6 @@ pub fn apply(
         .timeout(Duration::from_secs(300))
         .send()
         .map_err(|e| format!("download request: {e}"))?;
-    if resp.status().as_u16() == 401 {
-        crate::server::reset_pairing_and_restart(
-            "server rejected kiosk key during firmware download",
-        );
-    }
 
     if !resp.status().is_success() {
         return Err(format!("download HTTP {}", resp.status()));
@@ -252,7 +264,10 @@ pub fn apply(
     let digest = hasher.finalize();
     let got_sha = hex_lower(&digest);
     if got_sha != info.sha256 {
-        return Err(format!("sha256 mismatch: expected {}, got {}", info.sha256, got_sha));
+        return Err(format!(
+            "sha256 mismatch: expected {}, got {}",
+            info.sha256, got_sha
+        ));
     }
 
     // 3. Ed25519 signature verify (sig is over the hex-encoded sha256 string)
@@ -277,7 +292,8 @@ pub fn apply(
             .mode_for_unix(0o755)
             .open(&new_path)
             .map_err(|e| format!("open {}: {e}", new_path.display()))?;
-        f.write_all(&bytes).map_err(|e| format!("write {}: {e}", new_path.display()))?;
+        f.write_all(&bytes)
+            .map_err(|e| format!("write {}: {e}", new_path.display()))?;
         f.sync_all().ok();
     }
     if cancel_requested() {
@@ -325,7 +341,10 @@ pub fn apply(
 
     on_progress("Rebooting", 100);
     info!("firmware: swap complete → rebooting to pick up new binary");
-    match std::process::Command::new("systemctl").arg("reboot").status() {
+    match std::process::Command::new("systemctl")
+        .arg("reboot")
+        .status()
+    {
         Ok(_) => {
             std::thread::sleep(Duration::from_secs(30));
             std::process::exit(0);
@@ -480,7 +499,9 @@ impl OpenOptionsModeExt for fs::OpenOptions {
 
 #[cfg(not(unix))]
 impl OpenOptionsModeExt for fs::OpenOptions {
-    fn mode_for_unix(&mut self, _mode: u32) -> &mut Self { self }
+    fn mode_for_unix(&mut self, _mode: u32) -> &mut Self {
+        self
+    }
 }
 
 #[cfg(test)]

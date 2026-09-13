@@ -80,6 +80,7 @@ export function initNoderedBridge(config: NoderedConfig, log: NoderedLog): Noder
       fetch(`${base}/api/internal/${encodeURIComponent(topic)}`, {
         method: "POST",
         headers: {
+          authorization: `Bearer ${managerToken}`,
           "content-type": "application/json",
           "x-betterframe-tenant": tenant.tenant_id ?? tenant.tenant_slug,
         },

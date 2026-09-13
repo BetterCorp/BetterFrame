@@ -1,0 +1,133 @@
+name: validate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: betterframe
+          POSTGRES_PASSWORD: integration-only
+          POSTGRES_DB: betterframe_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U betterframe -d betterframe_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      BF_TEST_PG_URL: postgres://betterframe:integration-only@127.0.0.1:5432/betterframe_test
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Node-RED routing and deployment syntax
+        env:
+          BF_NODERED_MANAGER_SECRET: 0123456789abcdef0123456789abcdef
+          BF_NODERED_MANAGER_SELF_TEST: "1"
+        run: |
+          node deploy/nodered-manager/manager.mjs
+          find deploy scripts -name '*.sh' -print0 | xargs -0 -n1 bash -n
+
+  client:
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native client dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwebkitgtk-6.0-dev libssl-dev
+      - run: cargo test --manifest-path client/Cargo.toml --workspace --locked
+
+  windows-client:
+    runs-on: windows-latest
+    env:
+      GSTREAMER_VERSION: "1.26.9"
+      GSTREAMER_RELEASE: deps-1
+      GSTREAMER_RUNTIME_SHA256: ef56a1e9077c6cadcf8384369d1e435a0f3bc0d5a26594773256cffe79f40ecb
+      GSTREAMER_DEVEL_SHA256: 79c7ca2a5013181d94a2c823ef1c8a575f3e036e813633dc3e5ac3d393581a15
+      GSTREAMER_MSM_SHA256: d3f16159d60ac5c7df6be73afdc6715b08e6de77906364ddb8560f706a09452d
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install GStreamer SDK
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $runtime = Join-Path $env:RUNNER_TEMP "gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.msi"
+          $devel = Join-Path $env:RUNNER_TEMP "gstreamer-1.0-devel-msvc-x86_64-$env:GSTREAMER_VERSION.msi"
+          gh release download $env:GSTREAMER_RELEASE --repo $env:GITHUB_REPOSITORY --dir $env:RUNNER_TEMP `
+            --pattern (Split-Path $runtime -Leaf) --pattern (Split-Path $devel -Leaf)
+          @(
+            @{ Path = $runtime; Hash = $env:GSTREAMER_RUNTIME_SHA256 },
+            @{ Path = $devel; Hash = $env:GSTREAMER_DEVEL_SHA256 }
+          ) | ForEach-Object {
+            $actualHash = (Get-FileHash $_.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $_.Hash) { throw "GStreamer checksum mismatch for $($_.Path): $actualHash" }
+            $arguments = "/i `"$($_.Path)`" ADDLOCAL=ALL /qn /norestart"
+            $installer = Start-Process msiexec.exe -ArgumentList $arguments -Wait -PassThru
+            if ($installer.ExitCode -notin 0, 3010) { throw "GStreamer install failed with exit code $($installer.ExitCode)" }
+          }
+          $pkgConfigPath = "C:/Program Files/gstreamer/1.0/msvc_x86_64/lib/pkgconfig"
+          if (-not (Test-Path "$pkgConfigPath/glib-2.0.pc")) { throw "GStreamer development files were not installed" }
+          C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm --needed mingw-w64-x86_64-pkgconf"
+          $pkgConfig = "C:\msys64\mingw64\bin\pkg-config.exe"
+          $env:PKG_CONFIG_PATH = $pkgConfigPath
+          & $pkgConfig --modversion glib-2.0
+          if ($LASTEXITCODE -ne 0) { throw "pkg-config could not find GStreamer GLib" }
+          "C:\Program Files\gstreamer\1.0\msvc_x86_64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "PKG_CONFIG=$pkgConfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PKG_CONFIG_PATH=$pkgConfigPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LIB=C:\Program Files\gstreamer\1.0\msvc_x86_64\lib;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Build and test Windows client
+        working-directory: client
+        run: cargo test --workspace --locked
+
+  iobox:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install pinned firmware toolchain manager
+        run: python3 -m pip install platformio==6.1.18
+      - name: Generate disposable public test trust anchors
+        working-directory: iobox-firmware
+        run: |
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=ioBOX CI test CA' -keyout "$RUNNER_TEMP/iobox-ca.key" -out "$RUNNER_TEMP/iobox-ca.pem"
+          openssl genpkey -algorithm ED25519 -out "$RUNNER_TEMP/iobox-sign.key"
+          openssl pkey -in "$RUNNER_TEMP/iobox-sign.key" -pubout -out "$RUNNER_TEMP/iobox-sign.pub.pem"
+          python3 scripts/provision_trust.py --ca "$RUNNER_TEMP/iobox-ca.pem" --signing-public-key "$RUNNER_TEMP/iobox-sign.pub.pem"
+      - name: Build Wi-Fi and W5500 variants with verification enabled
+        working-directory: iobox-firmware
+        run: pio run -e iobox_wifi -e iobox_eth
+      - name: Verify provisioning and server-to-firmware signature contract
+        working-directory: iobox-firmware
+        run: |
+          python3 -m unittest discover -s tests -v
+          node tests/test_ota_signature.mjs

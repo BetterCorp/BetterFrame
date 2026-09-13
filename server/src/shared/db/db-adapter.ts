@@ -22,6 +22,7 @@ export interface DbAdapter {
   all<T = Row>(sql: string, params?: ReadonlyArray<SqlValue>): Promise<T[]>;
   exec(sql: string): Promise<void>;
   transaction<T>(fn: () => Promise<T>): Promise<T>;
+  afterCommit?(fn: () => void): void;
   dialect(): "postgres";
   setSearchPath(schema: string): Promise<void>;
   withSearchPath<T>(schema: string, fn: () => T | Promise<T>): Promise<T>;

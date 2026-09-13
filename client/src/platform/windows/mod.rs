@@ -278,7 +278,15 @@ fn run_agent_cli(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("tokio runtime: {e}"))?;
     let override_url = arg_value(args, "--server");
     rt.block_on(async {
-        let server = discover_server(override_url.as_deref(), &load_state()).await?;
+        let server = loop {
+            match discover_server(override_url.as_deref(), &load_state()).await {
+                Ok(server) => break server,
+                Err(error) => {
+                    warn!("server discovery: {error}; retrying");
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                }
+            }
+        };
         run_agent(server).await
     })
 }
@@ -313,9 +321,12 @@ async fn run_agent(server_url: String) -> Result<(), String> {
     ensure_secure_state_dir()?;
     ensure_default_policy()?;
 
-    let mut state = load_state();
+    let mut state = load_agent_state()?;
     state.server_url = server_url;
     save_state(&state)?;
+    if state.kiosk_key.is_some() {
+        acknowledge_pairing(&reqwest::Client::new(), &mut state).await;
+    }
 
     if state.kiosk_key.is_none() {
         state = pair(&state.server_url).await?;
@@ -357,18 +368,9 @@ async fn run_agent(server_url: String) -> Result<(), String> {
                             *state.lock().unwrap() = next;
                         }
                         Err(HeartbeatError::Unauthorized) => {
-                            warn!("kiosk was removed from the server; restarting pairing");
-                            let reset = unpaired_state(&snapshot.server_url);
-                            let _ = remove_cached_bundle();
-                            let _ = save_state(&reset);
-                            *state.lock().unwrap() = reset;
-                            match pair(&snapshot.server_url).await {
-                                Ok(next) => {
-                                    let _ = save_state(&next);
-                                    *state.lock().unwrap() = next;
-                                }
-                                Err(err) => warn!("pairing failed: {err}"),
-                            }
+                            warn!(
+                                "server rejected kiosk key; retaining saved identity and cached content"
+                            );
                         }
                         Err(HeartbeatError::Other(err)) => warn!("heartbeat failed: {err}"),
                     }
@@ -441,67 +443,174 @@ async fn run_agent(server_url: String) -> Result<(), String> {
 }
 
 async fn pair(server_url: &str) -> Result<ClientState, String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|error| error.to_string())?;
     loop {
-        let init: PairInitiateResponse = client
-            .post(format!("{server_url}/api/pair/initiate"))
-            .json(&serde_json::json!({
-                "proposed_name": hostname::get().ok().and_then(|h| h.into_string().ok()).unwrap_or_else(|| "Windows Kiosk".to_string()),
-                "hardware_model": "Windows Desktop",
-                "firmware_target": "windows-x64",
-                "capabilities": ["windows", "desktop_app", "rtsp", "d3d11", "mouse", "keyboard", "app_restart", "display_select"],
-                "managed_image": false
-            }))
-            .send()
-            .await
-            .map_err(|e| format!("pair initiate: {e}"))?
-            .json()
-            .await
-            .map_err(|e| format!("pair initiate response: {e}"))?;
-        let expires_at = time::OffsetDateTime::parse(
-            &init.expires_at,
-            &time::format_description::well_known::Rfc3339,
-        )
-        .map_err(|error| format!("pair initiate expiry: {error}"))?;
-
+        let saved = load_agent_state()?;
+        let resume = if saved.server_url == server_url && saved.kiosk_key.is_none() {
+            saved.pairing_code.map(|code| PairInitiateResponse {
+                code,
+                expires_at: saved.pairing_expires_at.unwrap_or_default(),
+                polling_secret: saved.pairing_secret,
+                expires_in_seconds: None,
+                poll_after_ms: None,
+            })
+        } else {
+            None
+        };
+        let init = if let Some(session) = resume {
+            session
+        } else {
+            let response = client.post(format!("{server_url}/api/pair/initiate"))
+                .json(&serde_json::json!({
+                    "proposed_name": hostname::get().ok().and_then(|h| h.into_string().ok()).unwrap_or_else(|| "Windows Kiosk".to_string()),
+                    "hardware_model": "Windows Desktop", "firmware_target": "windows-x64",
+                    "capabilities": ["windows", "desktop_app", "rtsp", "d3d11", "mouse", "keyboard", "app_restart", "display_select"],
+                    "managed_image": false, "secure_claim": true
+                })).send().await.and_then(|response| response.error_for_status());
+            let init = match response {
+                Ok(response) => response.json::<PairInitiateResponse>().await,
+                Err(error) => Err(error),
+            };
+            match init {
+                Ok(init) if !init.code.trim().is_empty() => init,
+                _ => {
+                    warn!("pairing initiation unavailable; retrying");
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    continue;
+                }
+            }
+        };
         println!("BetterFrame Windows pairing code: {}", init.code);
-        println!("Enter it in admin before it expires at {}", init.expires_at);
         let mut pending = unpaired_state(server_url);
         pending.pairing_code = Some(init.code.clone());
         pending.pairing_expires_at = Some(init.expires_at.clone());
+        pending.pairing_secret = init.polling_secret.clone();
         save_state(&pending)?;
-
-        while time::OffsetDateTime::now_utc() < expires_at {
-            let resp = client
+        let mut deadline = Instant::now() + init.lifetime();
+        let mut delay = init.poll_delay();
+        loop {
+            let response = client
                 .post(format!("{server_url}/api/pair/claim"))
-                .json(&serde_json::json!({ "code": &init.code }))
+                .json(&crate::core::protocol::claim_body(
+                    &init.code,
+                    init.polling_secret.as_deref(),
+                ))
                 .send()
-                .await
-                .map_err(|e| format!("pair claim: {e}"))?;
-            if resp.status().as_u16() == 200 {
-                let claim: PairClaimResponse = resp
-                    .json()
-                    .await
-                    .map_err(|e| format!("pair claim response: {e}"))?;
-                if claim.status == "claimed" {
-                    return Ok(ClientState {
-                        server_url: server_url.to_string(),
-                        kiosk_key: claim.kiosk_key,
-                        encrypt_key: claim.encrypt_key,
-                        kiosk_id: claim.kiosk_id.map(flexible_id),
-                        kiosk_name: claim.kiosk_name,
-                        bundle_version: None,
-                        managed_config_applied_version: 0,
-                        managed_config_error: None,
-                        pairing_code: None,
-                        pairing_expires_at: None,
-                        active_layouts: HashMap::new(),
-                    });
+                .await;
+            let claim = match response {
+                Ok(response)
+                    if response.status().is_success() || response.status().as_u16() == 503 =>
+                {
+                    response.json::<PairClaimResponse>().await.ok()
                 }
+                Ok(response) => {
+                    delay = response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .map(|seconds| Duration::from_secs(seconds.clamp(1, 60)))
+                        .unwrap_or_else(|| (delay * 2).min(Duration::from_secs(60)));
+                    None
+                }
+                Err(_) => {
+                    delay = (delay * 2).min(Duration::from_secs(60));
+                    None
+                }
+            };
+            if let Some(claim) = claim {
+                if claim.status == "expired" {
+                    break;
+                }
+                if claim.status == "revoked" || claim.status == "acknowledged" {
+                    warn!(
+                        "pairing is {}; contact administrator or reset locally",
+                        claim.status
+                    );
+                    deadline = Instant::now() + Duration::from_secs(900);
+                    delay = Duration::from_secs(60);
+                } else if claim.status == "claimed" {
+                    match crate::core::protocol::DeviceIdentity::from_claim(
+                        server_url, &init, claim,
+                    ) {
+                        Ok(identity) => {
+                            let mut state = ClientState {
+                                server_url: identity.server_url,
+                                kiosk_key: Some(identity.kiosk_key),
+                                encrypt_key: identity.encrypt_key.or(identity.cluster_key),
+                                kiosk_id: Some(identity.kiosk_id),
+                                kiosk_name: Some(identity.kiosk_name),
+                                pairing_code: Some(init.code.clone()),
+                                pairing_secret: init.polling_secret.clone(),
+                                ..ClientState::default()
+                            };
+                            match save_state(&state) {
+                                Ok(()) => {
+                                    acknowledge_pairing(&client, &mut state).await;
+                                    return Ok(state);
+                                }
+                                Err(error) => {
+                                    warn!("pairing confirmed but identity storage failed: {error}")
+                                }
+                            }
+                            deadline = Instant::now() + Duration::from_secs(900);
+                        }
+                        Err(error) => warn!("invalid pairing claim: {error}"),
+                    }
+                } else {
+                    if let Some(seconds) = claim.expires_in_seconds {
+                        deadline = Instant::now() + Duration::from_secs(seconds.clamp(1, 1800));
+                    }
+                    delay = crate::core::protocol::poll_delay(claim.poll_after_ms);
+                    if claim.status == "failed" {
+                        warn!("pairing server configuration error; retrying");
+                    }
+                }
+            } else {
+                warn!("pairing connection unavailable; retrying");
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            if init.polling_secret.is_none() && Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(if init.polling_secret.is_some() {
+                delay
+            } else {
+                delay.min(deadline.saturating_duration_since(Instant::now()))
+            })
+            .await;
         }
-        info!("pairing code expired; requesting a new code");
+        save_state(&unpaired_state(server_url))?;
+        info!("pairing session expired; requesting a new code");
+    }
+}
+
+async fn acknowledge_pairing(client: &reqwest::Client, state: &mut ClientState) {
+    let (Some(code), Some(key)) = (&state.pairing_code, &state.kiosk_key) else {
+        return;
+    };
+    if let Ok(response) = client
+        .post(format!("{}/api/pair/ack", state.server_url))
+        .bearer_auth(key)
+        .timeout(Duration::from_secs(15))
+        .json(&crate::core::protocol::claim_body(
+            code,
+            state.pairing_secret.as_deref(),
+        ))
+        .send()
+        .await
+    {
+        if response.status().is_success() {
+            state.pairing_code = None;
+            state.pairing_expires_at = None;
+            state.pairing_secret = None;
+            if let Err(error) = save_state(state) {
+                warn!("save pairing acknowledgment: {error}");
+            }
+        }
     }
 }
 
@@ -512,18 +621,35 @@ async fn websocket_loop(
 ) -> Result<(), String> {
     let ws_url = crate::core::protocol::websocket_url(server_url, key)
         .map_err(|error| format!("invalid server URL: {error}"))?;
-    let (ws, _) = connect_async(&ws_url)
+    let (ws, _) = tokio::time::timeout(Duration::from_secs(15), connect_async(&ws_url))
         .await
+        .map_err(|_| "coordinator connection timed out")?
         .map_err(|e| format!("connect coordinator websocket: {e}"))?;
     info!("connected to coordinator");
     let (mut writer, mut reader) = ws.split();
-    while let Some(msg) = reader.next().await {
+    while let Some(msg) = tokio::time::timeout(Duration::from_secs(90), reader.next())
+        .await
+        .map_err(|_| "coordinator read deadline expired")?
+    {
         let msg = msg.map_err(|e| format!("ws read: {e}"))?;
-        let Message::Text(text) = msg else { continue };
+        let text = match msg {
+            Message::Text(text) => text,
+            Message::Ping(payload) => {
+                tokio::time::timeout(Duration::from_secs(10), writer.send(Message::Pong(payload)))
+                    .await
+                    .map_err(|_| "coordinator write timed out")?
+                    .map_err(|error| error.to_string())?;
+                continue;
+            }
+            Message::Close(_) => break,
+            _ => continue,
+        };
         if text.contains("\"type\":\"ping\"") {
-            let _ = writer
-                .send(Message::Text(r#"{"type":"pong"}"#.to_string()))
-                .await;
+            let _ = tokio::time::timeout(
+                Duration::from_secs(10),
+                writer.send(Message::Text(r#"{"type":"pong"}"#.to_string())),
+            )
+            .await;
             continue;
         }
         if let Ok(Some(command)) = crate::core::commands::decode(&text) {
@@ -635,6 +761,7 @@ async fn fetch_bundle(server_url: &str, key: &str) -> Result<KioskBundle, String
     let response = reqwest::Client::new()
         .get(format!("{server_url}/api/kiosk/bundle"))
         .bearer_auth(key)
+        .timeout(Duration::from_secs(15))
         .send()
         .await
         .map_err(|e| format!("bundle request: {e}"))?;
@@ -690,6 +817,7 @@ async fn heartbeat(
             "managed_config_applied_version": state.managed_config_applied_version,
             "managed_config_error": state.managed_config_error,
         }))
+        .timeout(Duration::from_secs(15))
         .send()
         .await
         .map_err(|e| HeartbeatError::Other(format!("heartbeat request: {e}")))?;

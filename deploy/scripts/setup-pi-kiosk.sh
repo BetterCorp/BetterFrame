@@ -240,7 +240,23 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
   rm -rf "${MEDIAMTX_TMP}"
   echo "    installed → ${BIN_DST}"
 
+  # Allow managed timezone changes through polkit.
+  apt-get install -y polkitd
+
+  # The kiosk retains NoNewPrivileges.
+  install -d -m 755 /etc/polkit-1/rules.d /etc/betterframe
+  cat > /etc/polkit-1/rules.d/49-betterframe-timezone.rules <<'POLKIT'
+polkit.addRule(function(action, subject) {
+  if (subject.user === "bfkiosk" && action.id === "org.freedesktop.timedate1.set-timezone") {
+    return polkit.Result.YES;
+  }
+});
+POLKIT
+  chmod 644 /etc/polkit-1/rules.d/49-betterframe-timezone.rules
+  install -m 644 /dev/null /etc/betterframe/managed-image
+
   # --------------------------------------------------------------------------
+
   # 8. bfkiosk user + PAM + systemd unit
   # --------------------------------------------------------------------------
   # Debian's seatd uses -g video (no separate 'seat' group) — only join groups

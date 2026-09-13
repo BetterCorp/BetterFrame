@@ -6,12 +6,24 @@
  *   2. Kiosk polls claim → 202 until admin confirms, then 200 + credentials
  *   3. Admin enters code in UI → confirmPairing creates kiosk + kiosk_key
  */
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import type { Observable } from "@bsb/base";
 import type { Repository } from "./db/repository.js";
 import type { AuthApi } from "./auth.js";
 import { CLUSTER_SECRET_CONTEXT, type SecretsApi } from "./secrets.js";
-import type { PairingCode } from "./types.js";
+
+export function secretHash(secret: string): string {
+  return createHash("sha256").update(secret).digest("hex");
+}
+export function matchesSecret(secret: string | undefined, hash: unknown): boolean {
+  if (typeof hash !== "string" || !secret) return false;
+  const expected = Buffer.from(hash, "hex");
+  const actual = Buffer.from(secretHash(secret), "hex");
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+const DELIVERY_GRACE_MS = 15 * 60_000;
+export const PAIR_POLL_AFTER_MS = 2_000;
+
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
 const CODE_LENGTH = 8;
@@ -33,11 +45,14 @@ export interface PairingInitiateInput {
   /** True iff kiosk runs our pre-built Pi image with the apply-config helper. */
   managedImage?: boolean;
   codeTtlSeconds: number;
+  secureClaim?: boolean;
 }
 
 export interface PairingInitiateResult {
   code: string;
   expiresAt: string;
+  pollingSecret?: string;
+  expiresInSeconds: number;
 }
 
 export async function initiatePairing(
@@ -54,6 +69,7 @@ export async function initiatePairing(
 
   const expiresAt = new Date(Date.now() + input.codeTtlSeconds * 1000).toISOString();
 
+  const pollingSecret = input.secureClaim ? randomBytes(32).toString("base64url") : undefined;
   await repo.createPairingCode({
     code,
     kiosk_proposed_name: input.proposedName,
@@ -61,14 +77,15 @@ export async function initiatePairing(
     kiosk_firmware_target: input.firmwareTarget ?? null,
     kiosk_capabilities: input.capabilities,
     expires_at: expiresAt,
-    extras: input.managedImage ? { managed_image: true } : {},
+    extras: { managed_image: input.managedImage === true, ...(pollingSecret ? { polling_secret_hash: secretHash(pollingSecret) } : {}) },
   });
 
-  return { code, expiresAt };
+  return { code, expiresAt, pollingSecret, expiresInSeconds: input.codeTtlSeconds };
 }
 
 export interface PairingClaimResult {
-  status: "pending" | "claimed";
+  status: "pending" | "claimed" | "expired" | "failed" | "acknowledged" | "revoked";
+  expiresInSeconds?: number;
   kioskId?: string;
   kioskName?: string;
   kioskKey?: string;
@@ -82,13 +99,22 @@ export async function claimPairing(
   code: string,
   secrets: SecretsApi,
   obs?: Observable,
+  pollingSecret?: string,
 ): Promise<PairingClaimResult> {
   const pc = await repo.getPairingCode(code);
-  if (!pc) { obs?.log.info("claim {code}: code not found", { code }); return { status: "pending" }; }
-  if (new Date(pc.expires_at) < new Date()) { obs?.log.info("claim {code}: expired", { code }); return { status: "pending" }; }
-  if (!pc.consumed_at) { obs?.log.info("claim {code}: not yet consumed", { code }); return { status: "pending" }; }
-
+  if (!pc) return { status: "expired" };
   const extras = pc.extras as Record<string, unknown>;
+  if (extras["polling_secret_hash"] && !matchesSecret(pollingSecret, extras["polling_secret_hash"])) {
+    return { status: "failed" };
+  }
+  if (extras["acknowledged_at"]) return { status: "acknowledged" };
+  const expiry = pc.consumed_at
+    ? String(extras["claim_expires_at"] ?? pc.expires_at) : pc.expires_at;
+  const remaining = Date.parse(expiry) - Date.now();
+  if (!Number.isFinite(remaining)) return { status: "failed" };
+  if (remaining <= 0) return { status: "expired" };
+  if (!pc.consumed_at) return { status: "pending", expiresInSeconds: Math.ceil(remaining / 1000) };
+
   let claim: { kioskKey?: string; clusterKey?: string; encryptKey?: string } = {};
   const encryptedClaim = extras["pairing_claim_encrypted"];
   if (typeof encryptedClaim === "string") {
@@ -100,8 +126,8 @@ export async function claimPairing(
         encryptKey: typeof parsed["encryptKey"] === "string" ? parsed["encryptKey"] : undefined,
       };
     } catch {
-      obs?.log.warn("claim {code}: encrypted credentials unreadable", { code });
-      return { status: "pending" };
+      obs?.log.warn("pairing credentials unreadable");
+      return { status: "failed" };
     }
   } else {
     // Compatibility with pairing codes confirmed by older server builds.
@@ -113,15 +139,17 @@ export async function claimPairing(
   }
   const kioskKey = claim.kioskKey;
 
-  if (!kioskKey || !pc.consumed_by_kiosk_id) { obs?.log.warn("claim {code}: consumed but missing key/id", { code }); return { status: "pending" }; }
+  if (!kioskKey || !pc.consumed_by_kiosk_id) return { status: "failed" };
 
   const tenantSchema = typeof extras["tenant_schema"] === "string" ? extras["tenant_schema"] : "public";
   const kiosk = await repo.adapter.withSearchPath(
     tenantSchema,
     () => repo.getKioskById(pc.consumed_by_kiosk_id!),
   );
+  if (!kiosk || kiosk.enabled === false) return { status: "revoked" };
   return {
     status: "claimed",
+    expiresInSeconds: Math.ceil(remaining / 1000),
     kioskId: pc.consumed_by_kiosk_id,
     kioskName: kiosk?.name ?? pc.kiosk_proposed_name ?? "kiosk",
     kioskKey,
@@ -154,132 +182,170 @@ export async function confirmPairing(
   input: PairingConfirmInput,
   obs?: Observable,
 ): Promise<{ kioskId: string; kioskName: string }> {
-  obs?.log.info("confirm pairing for code {code}", { code: input.code });
-  const pc = await repo.getPairingCode(input.code);
-  if (!pc) throw new Error("pairing code not found");
-  if (pc.consumed_at) throw new Error("pairing code already used");
-  if (new Date(pc.expires_at) < new Date()) throw new Error("pairing code expired");
+  return repo.adapter.withSearchPath(input.tenant?.schemaName ?? "public", () => repo.transact(async () => {
+    const pc = await repo.getPairingCode(input.code, true);
+    if (!pc) throw new Error("pairing code not found");
+    if (pc.consumed_at) {
+      // Retry only the same operation in the same tenant. Never leak another
+      // tenant's claimed kiosk through an operator's repeated submission.
+      if (pc.extras["tenant_schema"] !== (input.tenant?.schemaName ?? "public")
+        || pc.extras["confirmation_request"] !== JSON.stringify({
+          replaceKioskId: input.replaceKioskId ?? null,
+          nameOverride: input.nameOverride ?? null,
+          initialLabels: input.initialLabels ?? [],
+        })) throw new Error("pairing code already used");
+      const kiosk = pc.consumed_by_kiosk_id ? await repo.getKioskById(pc.consumed_by_kiosk_id) : null;
+      if (!kiosk) throw new Error("paired kiosk no longer exists");
+      return { kioskId: kiosk.id, kioskName: kiosk.name };
+    }
+    if (new Date(pc.expires_at) < new Date()) throw new Error("pairing code expired");
 
-  const kioskKeyPlaintext = `bf-${randomBytes(24).toString("base64url")}`;
-  const kioskKeyHash = await auth.hashPassword(kioskKeyPlaintext);
-  const kioskKeyPrefix = kioskKeyPlaintext.slice(0, 8);
+    const kioskKeyPlaintext = `bf-${randomBytes(24).toString("base64url")}`;
+    const kioskKeyHash = await auth.hashPassword(kioskKeyPlaintext);
+    const kioskKeyPrefix = kioskKeyPlaintext.slice(0, 8);
 
-  let kioskId: string;
-  let kioskName: string;
+    let kioskId: string;
+    let kioskName: string;
 
-  if (input.replaceKioskId != null) {
-    const existing = await repo.getKioskById(input.replaceKioskId);
-    if (!existing) throw new Error("replacement target kiosk not found");
+    if (input.replaceKioskId != null) {
+      const existing = await repo.getKioskById(input.replaceKioskId);
+      if (!existing) throw new Error("replacement target kiosk not found");
 
-    // Sanity-check the incoming device matches the slot it's replacing.
-    // Identity-bearing fields (hardware_model, managed_image) shouldn't drift
-    // on a like-for-like swap. Capabilities CAN narrow legitimately, so warn
-    // but don't block. force=1 from the form bypasses the whole check.
-    if (!input.force) {
-      const mismatches: string[] = [];
-      const newHw = pc.kiosk_hardware_model ?? null;
-      if (existing.hardware_model && newHw && existing.hardware_model !== newHw) {
-        mismatches.push(`hardware_model: ${existing.hardware_model} → ${newHw}`);
+      // Sanity-check the incoming device matches the slot it's replacing.
+      // Identity-bearing fields (hardware_model, managed_image) shouldn't drift
+      // on a like-for-like swap. Capabilities CAN narrow legitimately, so warn
+      // but don't block. force=1 from the form bypasses the whole check.
+      if (!input.force) {
+        const mismatches: string[] = [];
+        const newHw = pc.kiosk_hardware_model ?? null;
+        if (existing.hardware_model && newHw && existing.hardware_model !== newHw) {
+          mismatches.push(`hardware_model: ${existing.hardware_model} → ${newHw}`);
+        }
+        const newManaged = pc.extras?.["managed_image"] === true;
+        if (existing.managed_image !== newManaged) {
+          mismatches.push(`managed_image: ${existing.managed_image} → ${newManaged}`);
+        }
+        const lostCaps = existing.capabilities.filter((c) => !pc.kiosk_capabilities.includes(c));
+        if (lostCaps.length > 0) {
+          mismatches.push(`lost capabilities: ${lostCaps.join(", ")}`);
+        }
+        if (mismatches.length > 0) {
+          throw new Error(
+            `replacement device differs from existing kiosk — ${mismatches.join("; ")}. `
+            + `Re-submit with "force replace" to override.`,
+          );
+        }
       }
-      const newManaged = pc.extras?.["managed_image"] === true;
-      if (existing.managed_image !== newManaged) {
-        mismatches.push(`managed_image: ${existing.managed_image} → ${newManaged}`);
+
+      await repo.replaceKioskKey(existing.id, {
+        key_hash: kioskKeyHash,
+        key_prefix: kioskKeyPrefix,
+        capabilities: pc.kiosk_capabilities,
+        hardware_model: pc.kiosk_hardware_model,
+        firmware_target: pc.kiosk_firmware_target,
+      });
+      // managed_image flag follows the new device (handled on row above via
+      // capabilities/hw, but the explicit column is updated separately because
+      // replaceKioskKey doesn't touch it).
+      if (existing.managed_image !== (pc.extras?.["managed_image"] === true)) {
+        await repo.updateKiosk(existing.id, { managed_image: pc.extras?.["managed_image"] === true } as any);
       }
-      const lostCaps = existing.capabilities.filter((c) => !pc.kiosk_capabilities.includes(c));
-      if (lostCaps.length > 0) {
-        mismatches.push(`lost capabilities: ${lostCaps.join(", ")}`);
+      kioskId = existing.id;
+      kioskName = existing.name;
+    } else {
+      const baseName = input.nameOverride || pc.kiosk_proposed_name || `kiosk-${input.code.toLowerCase()}`;
+      let candidate = baseName;
+      let suffix = 2;
+      while (await repo.getKioskByName(candidate)) {
+        candidate = `${baseName}-${suffix}`;
+        suffix++;
+        if (suffix > 100) throw new Error("could not generate unique kiosk name");
       }
-      if (mismatches.length > 0) {
-        throw new Error(
-          `replacement device differs from existing kiosk — ${mismatches.join("; ")}. `
-          + `Re-submit with "force replace" to override.`,
-        );
+
+      const kiosk = await repo.createKiosk({
+        name: candidate,
+        key_hash: kioskKeyHash,
+        key_prefix: kioskKeyPrefix,
+        capabilities: pc.kiosk_capabilities,
+        hardware_model: pc.kiosk_hardware_model,
+        firmware_target: pc.kiosk_firmware_target,
+        managed_image: pc.extras?.["managed_image"] === true,
+      });
+
+      await repo.createDisplayForKiosk(kiosk.id, {
+        name: `${candidate}: HDMI-0`,
+      });
+
+      if (input.initialLabels?.length) {
+        for (const labelName of input.initialLabels) {
+          const trimmed = labelName.trim().toLowerCase();
+          if (!trimmed) continue;
+          const label = await repo.ensureLabel(trimmed);
+          await repo.attachKioskLabel(kiosk.id, label.id, "consume");
+        }
+      }
+
+      kioskId = kiosk.id;
+      kioskName = candidate;
+    }
+
+    // Per-kiosk encryption key: generate a fresh 32-byte key for this kiosk and
+    // deliver it through the server-encrypted, retryable pairing claim.
+    const kioskEncryptKey = randomBytes(32).toString("base64url");
+    const kioskEncryptKeyEncrypted = secrets.encryptString(kioskEncryptKey, "kiosk-encrypt");
+    await repo.updateKiosk(kioskId, { encrypt_key_encrypted: kioskEncryptKeyEncrypted } as any);
+
+    // Still deliver cluster_key for backward compat (old kiosk binaries
+    // that don't understand encrypt_key yet). Remove once all kiosks are
+    // on the new binary.
+    const clusterKeyEncrypted = await repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
+    let clusterKey: string | undefined;
+    if (clusterKeyEncrypted) {
+      try {
+        clusterKey = secrets.decryptString(clusterKeyEncrypted, CLUSTER_SECRET_CONTEXT);
+      } catch {
+        throw new Error("server cluster encryption key is unreadable");
       }
     }
 
-    await repo.replaceKioskKey(existing.id, {
-      key_hash: kioskKeyHash,
-      key_prefix: kioskKeyPrefix,
-      capabilities: pc.kiosk_capabilities,
-      hardware_model: pc.kiosk_hardware_model,
-      firmware_target: pc.kiosk_firmware_target,
+    const pairingClaimEncrypted = secrets.encryptString(JSON.stringify({
+      kioskKey: kioskKeyPlaintext,
+      clusterKey,
+      encryptKey: kioskEncryptKey,
+    }), "pairing-claim");
+    await repo.markPairingCodeClaimed(input.code, kioskId, {
+      ...pc.extras,
+      pairing_claim_encrypted: pairingClaimEncrypted,
+      claim_expires_at: new Date(Date.now() + DELIVERY_GRACE_MS).toISOString(),
+      confirmation_request: JSON.stringify({
+        replaceKioskId: input.replaceKioskId ?? null,
+        nameOverride: input.nameOverride ?? null,
+        initialLabels: input.initialLabels ?? [],
+      }),
+      tenant_id: input.tenant?.id ?? "default",
+      tenant_slug: input.tenant?.slug ?? "default",
+      tenant_schema: input.tenant?.schemaName ?? "public",
     });
-    // managed_image flag follows the new device (handled on row above via
-    // capabilities/hw, but the explicit column is updated separately because
-    // replaceKioskKey doesn't touch it).
-    if (existing.managed_image !== (pc.extras?.["managed_image"] === true)) {
-      await repo.updateKiosk(existing.id, { managed_image: pc.extras?.["managed_image"] === true } as any);
+
+    obs?.log.info("created kiosk {name} id {id}", { name: kioskName, id: String(kioskId) });
+    return { kioskId, kioskName };
+  }));
+}
+
+/** Credentials are removed only after the authenticated kiosk confirms durable storage. */
+export async function acknowledgePairing(
+  repo: Repository, code: string, kioskId: string, schemaName: string, pollingSecret?: string,
+): Promise<void> {
+  await repo.transact(async () => {
+    const pc = await repo.getPairingCode(code, true);
+    if (!pc || pc.consumed_by_kiosk_id !== kioskId || (pc.extras["tenant_schema"] ?? "public") !== schemaName) {
+      throw new Error("pairing session does not belong to device");
     }
-    kioskId = existing.id;
-    kioskName = existing.name;
-  } else {
-    const baseName = input.nameOverride || pc.kiosk_proposed_name || `kiosk-${input.code.toLowerCase()}`;
-    let candidate = baseName;
-    let suffix = 2;
-    while (await repo.getKioskByName(candidate)) {
-      candidate = `${baseName}-${suffix}`;
-      suffix++;
-      if (suffix > 100) throw new Error("could not generate unique kiosk name");
+    if (pc.extras["polling_secret_hash"] && !matchesSecret(pollingSecret, pc.extras["polling_secret_hash"])) {
+      throw new Error("invalid pairing session secret");
     }
-
-    const kiosk = await repo.createKiosk({
-      name: candidate,
-      key_hash: kioskKeyHash,
-      key_prefix: kioskKeyPrefix,
-      capabilities: pc.kiosk_capabilities,
-      hardware_model: pc.kiosk_hardware_model,
-      firmware_target: pc.kiosk_firmware_target,
-      managed_image: pc.extras?.["managed_image"] === true,
-    });
-
-    await repo.createDisplayForKiosk(kiosk.id, {
-      name: `${candidate}: HDMI-0`,
-    });
-
-    if (input.initialLabels?.length) {
-      for (const labelName of input.initialLabels) {
-        const trimmed = labelName.trim().toLowerCase();
-        if (!trimmed) continue;
-        const label = await repo.ensureLabel(trimmed);
-        await repo.attachKioskLabel(kiosk.id, label.id, "consume");
-      }
-    }
-
-    kioskId = kiosk.id;
-    kioskName = candidate;
-  }
-
-  // Per-kiosk encryption key: generate a fresh 32-byte key for this kiosk and
-  // deliver it through the server-encrypted, retryable pairing claim.
-  const kioskEncryptKey = randomBytes(32).toString("base64url");
-  const kioskEncryptKeyEncrypted = secrets.encryptString(kioskEncryptKey, "kiosk-encrypt");
-  await repo.updateKiosk(kioskId, { encrypt_key_encrypted: kioskEncryptKeyEncrypted } as any);
-
-  // Still deliver cluster_key for backward compat (old kiosk binaries
-  // that don't understand encrypt_key yet). Remove once all kiosks are
-  // on the new binary.
-  const clusterKeyEncrypted = await repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
-  let clusterKey: string | undefined;
-  if (clusterKeyEncrypted) {
-    try {
-      clusterKey = secrets.decryptString(clusterKeyEncrypted, CLUSTER_SECRET_CONTEXT);
-    } catch {
-      clusterKey = undefined;
-    }
-  }
-
-  const pairingClaimEncrypted = secrets.encryptString(JSON.stringify({
-    kioskKey: kioskKeyPlaintext,
-    clusterKey,
-    encryptKey: kioskEncryptKey,
-  }), "pairing-claim");
-  await repo.markPairingCodeClaimed(input.code, kioskId, {
-    pairing_claim_encrypted: pairingClaimEncrypted,
-    tenant_id: input.tenant?.id ?? "default",
-    tenant_slug: input.tenant?.slug ?? "default",
-    tenant_schema: input.tenant?.schemaName ?? "public",
+    const extras: Record<string, unknown> = { ...pc.extras, acknowledged_at: new Date().toISOString() };
+    for (const key of ["pairing_claim_encrypted", "kiosk_key_plaintext", "cluster_key", "encrypt_key"]) delete extras[key];
+    await repo.updatePairingCodeExtras(code, extras);
   });
-
-  obs?.log.info("created kiosk {name} id {id}", { name: kioskName, id: String(kioskId) });
-  return { kioskId, kioskName };
 }

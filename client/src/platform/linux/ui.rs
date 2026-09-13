@@ -97,6 +97,7 @@ const STALL_THRESHOLD_MS: u64 = 15_000;
 const HEAL_THRESHOLD_MS: u64 = 45_000;
 
 struct PipelineEntry {
+    _bus_watch: Box<dyn std::any::Any>,
     pipeline: gstreamer::Pipeline,
     paintable: gtk::gdk::Paintable,
     state: WarmthState,
@@ -205,20 +206,29 @@ fn activate(app: &Application) {
     let server_url = std::env::var("BETTERFRAME_SERVER")
         .ok()
         .or_else(|| std::env::args().nth(1));
-    std::thread::spawn(move || {
+    let worker = std::thread::spawn(move || {
         let _ = tx.send(WorkerMsg::StartupStatus(
             "Finding BetterFrame server".into(),
         ));
-        let server = server::discover_server(server_url.as_deref());
+        let server = loop {
+            match server::discover_server(server_url.as_deref()) {
+                Ok(server) => break server,
+                Err(error) => {
+                    warn!("startup: {error}");
+                    let _ = tx.send(WorkerMsg::StartupStatus(
+                        "Server or saved identity unavailable — retrying".into(),
+                    ));
+                    std::thread::sleep(Duration::from_secs(10));
+                }
+            }
+        };
         info!("server: {server}");
 
         // Bootstrap updates run before pairing so an older image can repair
         // its client before talking to a newer server.
         if !server::is_paired() {
             if server::ota_enabled("BF_ENABLE_APP_OTA") {
-                let _ = tx.send(WorkerMsg::StartupStatus(
-                    "Checking for app updates".into(),
-                ));
+                let _ = tx.send(WorkerMsg::StartupStatus("Checking for app updates".into()));
                 let current = crate::server::kiosk_app_version();
                 if let Some(update) = crate::firmware::check_public(&server, current) {
                     info!("preboot update available: {} → {}", current, update.version);
@@ -228,9 +238,7 @@ fn activate(app: &Application) {
                 }
             }
             if server::ota_enabled("BF_ENABLE_OS_OTA") {
-                let _ = tx.send(WorkerMsg::StartupStatus(
-                    "Checking for OS updates".into(),
-                ));
+                let _ = tx.send(WorkerMsg::StartupStatus("Checking for OS updates".into()));
                 if let Some(update) = os_update::check_public(&server) {
                     let version = update.version.clone();
                     let tx_progress = tx.clone();
@@ -249,17 +257,40 @@ fn activate(app: &Application) {
 
         let key = if server::is_paired() {
             info!("already paired");
-            let _ = tx.send(WorkerMsg::StartupStatus(
-                "Loading device identity".into(),
-            ));
-            server::load_key()
+            let _ = tx.send(WorkerMsg::StartupStatus("Loading device identity".into()));
+            loop {
+                match server::load_key() {
+                    Ok(key) => break key,
+                    Err(error) => {
+                        warn!("identity: {error}");
+                        let _ = tx.send(WorkerMsg::StartupStatus(
+                            "Unable to read saved identity — retrying".into(),
+                        ));
+                        std::thread::sleep(Duration::from_secs(10));
+                    }
+                }
+            }
         } else {
             loop {
-                let (code, expires) = server::initiate_pairing(&server);
-                info!("pairing code: {code} (expires {expires})");
-                let _ = tx.send(WorkerMsg::ShowPairingCode(code.clone()));
-
-                if let Some((name, key)) = server::poll_claim_until_expiry(&server, &code, &expires)
+                let session = match server::initiate_pairing(&server) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        warn!("{error}");
+                        let _ = tx.send(WorkerMsg::StartupStatus(
+                            "Pairing unavailable — checking connection and storage".into(),
+                        ));
+                        std::thread::sleep(Duration::from_secs(10));
+                        continue;
+                    }
+                };
+                let _ = tx.send(WorkerMsg::ShowPairingCode(session.code.clone()));
+                if let Some((name, key)) =
+                    server::poll_claim_until_expiry(&server, &session, |status| {
+                        let _ = tx.send(WorkerMsg::PairingStatus(
+                            session.code.clone(),
+                            status.to_string(),
+                        ));
+                    })
                 {
                     info!("paired as: {name}");
                     let _ = tx.send(WorkerMsg::ShowPairingProgress);
@@ -270,9 +301,7 @@ fn activate(app: &Application) {
 
         // Render cached content before any network request so a paired kiosk
         // starts immediately while its server is unavailable or rebooting.
-        let _ = tx.send(WorkerMsg::StartupStatus(
-            "Loading cached content".into(),
-        ));
+        let _ = tx.send(WorkerMsg::StartupStatus("Loading cached content".into()));
         let cached = server::load_cached_bundle();
         if let Some(bundle) = &cached {
             info!("boot: rendering cached bundle");
@@ -308,11 +337,9 @@ fn activate(app: &Application) {
                     warn!("offline mode: keeping cached bundle");
                 } else {
                     warn!("no bundle available (server unreachable, no cache)");
-                    if server::is_paired() {
-                        server::reset_pairing_and_restart(
-                            "paired kiosk has no live bundle and no cached bundle",
-                        );
-                    }
+                    let _ = tx.send(WorkerMsg::StartupStatus(
+                        "Paired — waiting for configuration".into(),
+                    ));
                 }
             }
         }
@@ -346,15 +373,12 @@ fn activate(app: &Application) {
         });
 
         // Background retry thread: if we couldn't fetch a live bundle on boot,
-        // retry with exponential backoff. After 30 minutes of failures, reboot
-        // the host to recover from potential stuck state.
+        // retry with capped exponential backoff while keeping the saved identity.
         let retry_tx = tx.clone();
         let retry_server = server.clone();
         let retry_key = key.clone();
         std::thread::spawn(move || {
             let mut backoff_secs: u64 = 10;
-            let start = std::time::Instant::now();
-            let max_wait = Duration::from_secs(30 * 60);
             loop {
                 std::thread::sleep(Duration::from_secs(backoff_secs));
                 if let Some(b) = server::fetch_bundle(&retry_server, &retry_key) {
@@ -366,14 +390,6 @@ fn activate(app: &Application) {
                         retry_key.clone(),
                     ));
                     return;
-                }
-                if start.elapsed() > max_wait {
-                    warn!("offline-retry: 30 minutes without bundle, rebooting");
-                    let _ = std::process::Command::new("systemctl")
-                        .arg("reboot")
-                        .status();
-                    std::thread::sleep(Duration::from_secs(30));
-                    std::process::exit(1);
                 }
                 backoff_secs = (backoff_secs * 2).min(300);
             }
@@ -527,6 +543,17 @@ fn activate(app: &Application) {
         }
     });
 
+    // Supervise the startup/heartbeat worker even while other threads retain
+    // channel senders. A panic must not leave GTK showing a frozen pairing code.
+    std::thread::spawn(move || {
+        let result = worker.join();
+        tracing::error!(
+            "kiosk worker stopped (panicked={}); restarting service",
+            result.is_err()
+        );
+        std::process::exit(1);
+    });
+
     // Poll channel from UI thread via timeout
     let app_clone = app.clone();
     let pairing_window_clone = pairing_window.clone();
@@ -536,7 +563,14 @@ fn activate(app: &Application) {
                 WorkerMsg::StartupStatus(action) => {
                     show_startup_status(&pairing_window_clone, &action)
                 }
-                WorkerMsg::ShowPairingCode(code) => show_pairing_code(&pairing_window_clone, &code),
+                WorkerMsg::ShowPairingCode(code) => show_pairing_code(
+                    &pairing_window_clone,
+                    &code,
+                    "Enter this code in BetterFrame admin to pair",
+                ),
+                WorkerMsg::PairingStatus(code, status) => {
+                    show_pairing_code(&pairing_window_clone, &code, &status)
+                }
                 WorkerMsg::ShowPairingProgress => show_pairing_progress(&pairing_window_clone),
                 WorkerMsg::RenderBundle(bundle, server, key) => {
                     render_bundle(&app_clone, &pairing_window_clone, bundle, &server, &key);
@@ -575,6 +609,7 @@ fn activate(app: &Application) {
 pub enum WorkerMsg {
     StartupStatus(String),
     ShowPairingCode(String),
+    PairingStatus(String, String),
     ShowPairingProgress,
     RenderBundle(KioskBundle, String, String),
     SwitchLayout {
@@ -1234,7 +1269,7 @@ fn parse_drm_mode(mode: &str) -> Option<(u32, u32)> {
     (dimensions.0 > 0 && dimensions.1 > 0).then_some(dimensions)
 }
 
-fn show_pairing_code(window: &ApplicationWindow, code: &str) {
+fn show_pairing_code(window: &ApplicationWindow, code: &str, status: &str) {
     let vbox = GtkBox::new(Orientation::Vertical, 20);
     vbox.set_valign(gtk::Align::Center);
     vbox.set_halign(gtk::Align::Center);
@@ -1249,7 +1284,7 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str) {
     );
     code_label.add_css_class("code");
 
-    let hint = Label::new(Some("Enter this code in BetterFrame admin to pair"));
+    let hint = Label::new(Some(status));
     add_css(&hint, ".hint { font-size: 14px; color: #666; }");
     hint.add_css_class("hint");
 
@@ -1966,9 +2001,11 @@ fn operator_focus(request: OperatorFocusRequest) -> Result<serde_json::Value, St
     let bundle = CURRENT_BUNDLE
         .with(|current| current.borrow().clone())
         .ok_or_else(|| "no bundle cached yet".to_string())?;
-    if !bundle.cameras.iter().any(|camera| {
-        camera.id == request.camera_id && camera.enabled && camera.simple_vms_managed
-    }) {
+    if !bundle
+        .cameras
+        .iter()
+        .any(|camera| camera.id == request.camera_id && camera.enabled && camera.simple_vms_managed)
+    {
         return Err("camera is not available to this kiosk".to_string());
     }
     let displays = bundle.normalized_displays();
@@ -1982,7 +2019,8 @@ fn operator_focus(request: OperatorFocusRequest) -> Result<serde_json::Value, St
             .get(&request.display_id)
             .and_then(|state| state.current_layout_id.clone())
     });
-    let active_layout_id = active_layout_id.ok_or_else(|| "display has no active layout".to_string())?;
+    let active_layout_id =
+        active_layout_id.ok_or_else(|| "display has no active layout".to_string())?;
     let layout = display
         .layouts
         .iter()
@@ -2813,12 +2851,13 @@ fn ensure_warm(
         return Some((paintable, desired_badge, status));
     }
 
-    let (pipe, sink, last_buffer, status, pipeline_stats) = pipeline::create_camera_pipeline(
-        &cam.name,
-        &uri,
-        cam.playback_username.as_deref(),
-        playback_password.as_deref(),
-    )?;
+    let (pipe, sink, last_buffer, status, pipeline_stats, bus_watch) =
+        pipeline::create_camera_pipeline(
+            &cam.name,
+            &uri,
+            cam.playback_username.as_deref(),
+            playback_password.as_deref(),
+        )?;
     let paintable = sink.property::<gtk::gdk::Paintable>("paintable");
     pipeline::play(&pipe);
     let status_clone = status.clone();
@@ -2826,6 +2865,7 @@ fn ensure_warm(
         w.borrow_mut().insert(
             key,
             PipelineEntry {
+                _bus_watch: bus_watch,
                 pipeline: pipe,
                 paintable: paintable.clone(),
                 state: WarmthState::Warm,
@@ -3052,14 +3092,23 @@ mod display_tests {
                 {"view_id":"empty","entity_id":null,"row":0,"col":2,"row_span":1,"col_span":1,"content_type":"none","camera_id":null,"stream_selector":null,"web_url":null,"html_content":null,"cooling_timeout_seconds":null}
             ]
         })).unwrap();
-        let overrides = HashMap::from([("used".to_string(), FocusOverride {
-            camera_id: "camera".to_string(),
-            stream: "main".to_string(),
-            generation: 1,
-        })]);
+        let overrides = HashMap::from([(
+            "used".to_string(),
+            FocusOverride {
+                camera_id: "camera".to_string(),
+                stream: "main".to_string(),
+                generation: 1,
+            },
+        )]);
 
-        assert_eq!(operator_target_cell(&layout, None, &overrides).as_deref(), Some("empty"));
-        assert_eq!(operator_target_cell(&layout, Some("web"), &overrides).as_deref(), Some("web"));
+        assert_eq!(
+            operator_target_cell(&layout, None, &overrides).as_deref(),
+            Some("empty")
+        );
+        assert_eq!(
+            operator_target_cell(&layout, Some("web"), &overrides).as_deref(),
+            Some("web")
+        );
     }
 }
 

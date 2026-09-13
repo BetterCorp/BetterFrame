@@ -1,3 +1,4 @@
+const { subscribeEvent } = require("./_event-dispatch.js");
 /**
  * bf-trigger-display-power — fires when a display's power state changes.
  *
@@ -51,27 +52,10 @@ module.exports = function (RED) {
       res.status(200).end();
     }
 
-    RED.httpNode.post(ROUTE, handler);
+    const unsubscribe = [subscribeEvent(RED, ROUTE, handler)];
 
     node.on("close", function (done) {
-      // Remove this node's specific route layer from the Express router.
-      // `app.post(path, handler)` creates a route layer whose inner stack
-      // holds the actual handler. Match by handler ref so other instances
-      // of the same node type aren't disturbed.
-      const stack = RED.httpNode && RED.httpNode._router && RED.httpNode._router.stack;
-      if (stack) {
-        for (let i = stack.length - 1; i >= 0; i--) {
-          const layer = stack[i];
-          if (!layer || !layer.route || layer.route.path !== ROUTE) continue;
-          const inner = layer.route.stack;
-          if (Array.isArray(inner)) {
-            for (let j = inner.length - 1; j >= 0; j--) {
-              if (inner[j] && inner[j].handle === handler) inner.splice(j, 1);
-            }
-            if (inner.length === 0) stack.splice(i, 1);
-          }
-        }
-      }
+      for (const off of unsubscribe) off();
       done();
     });
   }

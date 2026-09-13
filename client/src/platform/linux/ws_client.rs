@@ -78,7 +78,17 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
     rt.block_on(async {
         let mut backoff = 1u64;
         loop {
-            match connect_async(&ws_url).await {
+            let connection = tokio::time::timeout(Duration::from_secs(15), connect_async(&ws_url)).await;
+            let connection = match connection {
+                Ok(connection) => connection,
+                Err(_) => {
+                    warn!("ws: connection timed out");
+                    tokio::time::sleep(Duration::from_secs(backoff)).await;
+                    backoff = (backoff * 2).min(60);
+                    continue;
+                }
+            };
+            match connection {
                 Ok((ws_stream, _resp)) => {
                     info!("ws: connected");
                     backoff = 1;
@@ -96,9 +106,15 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
                         Arc::new(Mutex::new(None));
                     let pending_code: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
+                    let mut last_received = tokio::time::Instant::now();
                     loop {
                         tokio::select! {
+                            _ = tokio::time::sleep_until(last_received + Duration::from_secs(90)) => {
+                                warn!("ws: coordinator read deadline expired");
+                                break;
+                            }
                             ws_msg = reader.next() => {
+                                last_received = tokio::time::Instant::now();
                                 let Some(ws_msg) = ws_msg else { break };
                                 match ws_msg {
                                     Ok(Message::Text(text)) => {
@@ -112,6 +128,9 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
                                             &pending_code,
                                         ).await;
                                     }
+                                    Ok(Message::Ping(payload)) => {
+                                        if !matches!(tokio::time::timeout(Duration::from_secs(10), writer.send(Message::Pong(payload))).await, Ok(Ok(()))) { break; }
+                                    }
                                     Ok(Message::Close(_)) => {
                                         info!("ws: server closed connection");
                                         break;
@@ -124,7 +143,7 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
                                 }
                             }
                             Some(out_msg) = outbound_rx.recv() => {
-                                if writer.send(Message::Text(out_msg)).await.is_err() {
+                                if !matches!(tokio::time::timeout(Duration::from_secs(10), writer.send(Message::Text(out_msg))).await, Ok(Ok(()))) {
                                     break;
                                 }
                             }
@@ -157,7 +176,11 @@ type WsWriter = futures_util::stream::SplitSink<
 >;
 
 async fn ws_send(writer: &mut WsWriter, msg: serde_json::Value) {
-    let _ = writer.send(Message::Text(msg.to_string())).await;
+    let _ = tokio::time::timeout(
+        Duration::from_secs(10),
+        writer.send(Message::Text(msg.to_string())),
+    )
+    .await;
 }
 
 async fn handle_message(
@@ -174,13 +197,21 @@ async fn handle_message(
         return;
     }
     if text.contains("\"type\":\"ping\"") {
-        let _ = writer
-            .send(Message::Text(r#"{"type":"pong"}"#.to_string()))
-            .await;
+        let _ = tokio::time::timeout(
+            Duration::from_secs(10),
+            writer.send(Message::Text(r#"{"type":"pong"}"#.to_string())),
+        )
+        .await;
     } else if text.contains("\"type\":\"operator-enrollment-create\"") {
         let msg = serde_json::from_str::<serde_json::Value>(text).unwrap_or_default();
-        let request_id = msg.get("request_id").and_then(|value| value.as_str()).unwrap_or("");
-        let name = msg.get("name").and_then(|value| value.as_str()).unwrap_or("Operator station");
+        let request_id = msg
+            .get("request_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let name = msg
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Operator station");
         let response = match crate::operator_console::shared_auth().create_enrollment(name) {
             Ok(enrollment) => serde_json::json!({
                 "type": "operator-enrollment-response",
@@ -199,23 +230,37 @@ async fn handle_message(
         ws_send(writer, response).await;
     } else if text.contains("\"type\":\"operator-stations-list\"") {
         let msg = serde_json::from_str::<serde_json::Value>(text).unwrap_or_default();
-        ws_send(writer, serde_json::json!({
-            "type": "operator-stations-response",
-            "request_id": msg.get("request_id").and_then(|value| value.as_str()).unwrap_or(""),
-            "ok": true,
-            "stations": crate::operator_console::shared_auth().list(),
-        })).await;
+        ws_send(
+            writer,
+            serde_json::json!({
+                "type": "operator-stations-response",
+                "request_id": msg.get("request_id").and_then(|value| value.as_str()).unwrap_or(""),
+                "ok": true,
+                "stations": crate::operator_console::shared_auth().list(),
+            }),
+        )
+        .await;
     } else if text.contains("\"type\":\"operator-station-revoke\"") {
         let msg = serde_json::from_str::<serde_json::Value>(text).unwrap_or_default();
-        let request_id = msg.get("request_id").and_then(|value| value.as_str()).unwrap_or("");
-        let id = msg.get("station_id").and_then(|value| value.as_str()).unwrap_or("");
+        let request_id = msg
+            .get("request_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let id = msg
+            .get("station_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
         let result = crate::operator_console::shared_auth().revoke(id);
-        ws_send(writer, serde_json::json!({
-            "type": "operator-station-revoke-response",
-            "request_id": request_id,
-            "ok": result.is_ok(),
-            "error": result.err(),
-        })).await;
+        ws_send(
+            writer,
+            serde_json::json!({
+                "type": "operator-station-revoke-response",
+                "request_id": request_id,
+                "ok": result.is_ok(),
+                "error": result.err(),
+            }),
+        )
+        .await;
     } else if text.contains("\"type\":\"onvif-action-request\"") {
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
             warn!("ws: onvif action request was not valid JSON");

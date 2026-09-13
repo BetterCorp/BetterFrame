@@ -1,13 +1,13 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use crate::core::protocol::{DeviceIdentity, PairClaimResponse, PairInitiateResponse};
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tracing::info;
 
 use crate::bundle::KioskBundle;
@@ -146,6 +146,20 @@ pub fn startup_network_summary() -> (String, String) {
     format_startup_network_summary(&read_network_interfaces())
 }
 
+#[cfg(test)]
+fn state_dir() -> PathBuf {
+    static DIRECTORY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIRECTORY
+        .get_or_init(|| {
+            let path = std::env::temp_dir()
+                .join(format!("betterframe-client-test-{}", rand::random::<u64>()));
+            fs::create_dir_all(&path).unwrap();
+            path
+        })
+        .clone()
+}
+
+#[cfg(not(test))]
 fn state_dir() -> PathBuf {
     let persistent = PathBuf::from("/var/lib/betterframe/kiosk");
     if fs::create_dir_all(&persistent).is_ok() {
@@ -174,6 +188,8 @@ fn migrate_legacy_state(persistent: &PathBuf) {
     }
 
     for name in [
+        "identity.json",
+        "pairing.json",
         "kiosk.key",
         "server.url",
         "bundle.json",
@@ -270,13 +286,20 @@ pub fn load_cached_bundle() -> Option<KioskBundle> {
 }
 
 pub fn load_kiosk_id() -> Option<String> {
-    load_cached_bundle().map(|b| b.kiosk_id)
+    load_identity()
+        .ok()
+        .map(|identity| identity.kiosk_id)
+        .or_else(|| load_cached_bundle().map(|b| b.kiosk_id))
 }
 
 /// Discover the BetterFrame server.
-pub fn discover_server(override_url: Option<&str>) -> String {
+pub fn discover_server(override_url: Option<&str>) -> Result<String, String> {
     if let Some(url) = override_url {
-        return url.to_string();
+        return Ok(url.to_string());
+    }
+
+    if identity_file().exists() {
+        return Ok(load_identity()?.server_url);
     }
 
     // A paired kiosk must boot from cache without waiting for its server.
@@ -285,11 +308,11 @@ pub fn discover_server(override_url: Option<&str>) -> String {
         let saved = saved.trim().to_string();
         if !saved.is_empty() {
             if is_paired() {
-                return saved;
+                return Ok(saved);
             }
             if let Some(resolved) = healthy_server_origin(&saved) {
                 fs::write(server_file(), &resolved).ok();
-                return resolved;
+                return Ok(resolved);
             }
         }
     }
@@ -302,11 +325,11 @@ pub fn discover_server(override_url: Option<&str>) -> String {
         info!("trying {url}...");
         if let Some(resolved) = healthy_server_origin(url) {
             fs::write(server_file(), &resolved).ok();
-            return resolved;
+            return Ok(resolved);
         }
     }
 
-    panic!("Could not find BetterFrame server");
+    Err("Could not find BetterFrame server".into())
 }
 
 fn healthy_server_origin(url: &str) -> Option<String> {
@@ -323,7 +346,7 @@ fn healthy_server_origin(url: &str) -> Option<String> {
 
 /// Check if already paired (key file exists).
 pub fn is_paired() -> bool {
-    key_file().exists()
+    identity_file().exists() || key_file().exists()
 }
 
 /// Confirm with the server that our key is truly rejected before wiping.
@@ -343,6 +366,8 @@ fn confirm_deletion(server: &str, key: &str) -> bool {
 
 fn remove_pairing_state_files(dir: &PathBuf) {
     for name in [
+        "identity.json",
+        "pairing.json",
         "kiosk.key",
         "server.url",
         "bundle.json",
@@ -373,133 +398,236 @@ fn wipe_and_restart() -> ! {
     reset_pairing_and_restart("server confirmed kiosk key is invalid")
 }
 
-/// Load cluster key (if stored from pairing). Used for ONVIF password decrypt.
+fn identity_file() -> PathBuf {
+    state_dir().join("identity.json")
+}
+
+fn load_identity() -> Result<DeviceIdentity, String> {
+    let bytes = crate::at_rest::read_maybe_encrypted(&identity_file())
+        .ok_or("Unable to read saved device identity")?;
+    let identity: DeviceIdentity =
+        serde_json::from_slice(&bytes).map_err(|_| "Invalid saved device identity")?;
+    identity.validate()?;
+    Ok(identity)
+}
+
 pub fn load_cluster_key() -> Option<String> {
+    if identity_file().exists() {
+        return load_identity().ok()?.cluster_key;
+    }
     crate::at_rest::read_text_maybe_encrypted(&cluster_key_file())
 }
 
-/// Read stored kiosk key. Detects legacy plaintext (kiosks upgraded from
-/// a pre-at_rest build) and re-stores it ciphertext in place so subsequent
-/// SD-card extractions don't see the bearer token.
-pub fn load_key() -> String {
-    let path = key_file();
-    let raw = fs::read(&path).expect("failed to read kiosk key");
-    let was_encrypted = crate::at_rest::decrypt_from_disk(&raw).is_ok();
-    let key = crate::at_rest::read_text_maybe_encrypted(&path).expect("failed to decode kiosk key");
-    if !was_encrypted {
-        // Best-effort migrate. If write fails (e.g. RO mount during a
-        // recovery boot) we still hand back the key so the kiosk works.
-        let _ = crate::at_rest::write_encrypted(&path, key.as_bytes());
+/// Keep legacy readers for existing deployments; a damaged new identity must
+/// never silently fall back to an older bearer token or start a new enrollment.
+pub fn load_key() -> Result<String, String> {
+    if identity_file().exists() {
+        return Ok(load_identity()?.kiosk_key);
     }
-    key
+    crate::at_rest::read_text_maybe_encrypted(&key_file())
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| "Unable to read saved kiosk key".into())
 }
 
-/// Initiate pairing — returns (code, expires_at).
-pub fn initiate_pairing(server: &str) -> (String, String) {
+fn pairing_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+/// Persist the polling secret before displaying the code so a reboot can
+/// retrieve an already confirmed claim instead of creating an orphan kiosk.
+pub fn initiate_pairing(server: &str) -> Result<PairInitiateResponse, String> {
+    let pending_path = state_dir().join("pairing.json");
+    if pending_path.exists() {
+        let bytes = crate::at_rest::read_maybe_encrypted(&pending_path)
+            .ok_or("Unable to read saved pairing session; restore storage or reset locally")?;
+        let (origin, session) = serde_json::from_slice::<(String, PairInitiateResponse)>(&bytes)
+            .map_err(|_| "Invalid saved pairing session; restore storage or reset locally")?;
+        if origin != server || session.code.trim().is_empty() {
+            return Err("Saved pairing session does not match this server; reset locally to change enrollment".into());
+        }
+        return Ok(session);
+    }
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "kiosk".into());
-
     let hw_model = fs::read_to_string("/proc/device-tree/model")
         .unwrap_or_else(|_| "unknown".into())
         .replace('\0', "");
-
-    let client = reqwest::blocking::Client::new();
-    let resp: crate::core::protocol::PairInitiateResponse = client
+    let resp: PairInitiateResponse = pairing_client()?
         .post(format!("{server}/api/pair/initiate"))
         .json(&serde_json::json!({
             "proposed_name": hostname,
             "hardware_model": hw_model,
             "firmware_target": crate::firmware::FIRMWARE_TARGET,
-            "capabilities": ["rtsp", "gstreamer", "gtk4"]
+            "capabilities": ["rtsp", "gstreamer", "gtk4"],
+            "managed_image": std::path::Path::new("/etc/betterframe/managed-image").is_file(),
+            "secure_claim": true
         }))
         .send()
-        .expect("pairing initiate failed")
+        .and_then(|response| response.error_for_status())
+        .map_err(|error| format!("Pairing connection failed: {error}"))?
         .json()
-        .expect("bad initiate response");
-
-    (resp.code, resp.expires_at)
+        .map_err(|error| format!("Invalid pairing response: {error}"))?;
+    if resp.code.trim().is_empty() {
+        return Err("Server returned an empty pairing code".into());
+    }
+    let bytes = serde_json::to_vec(&(server, &resp)).map_err(|error| error.to_string())?;
+    crate::at_rest::write_encrypted(&pending_path, &bytes)
+        .map_err(|error| format!("Unable to save pairing session: {error}"))?;
+    Ok(resp)
 }
 
 fn encrypt_key_file() -> PathBuf {
     state_dir().join("encrypt.key")
 }
 
-/// Load the per-kiosk encryption key. Preferred over cluster_key for
-/// decrypting camera passwords in the bundle.
 pub fn load_encrypt_key() -> Option<String> {
+    if identity_file().exists() {
+        return load_identity().ok()?.encrypt_key;
+    }
     crate::at_rest::read_text_maybe_encrypted(&encrypt_key_file())
 }
 
-/// Poll for pairing claim. Returns (name, key) when admin confirms.
-pub fn poll_claim(server: &str, code: &str) -> (String, String) {
-    loop {
-        if let Some(claim) = poll_claim_once(server, code) {
-            return claim;
+/// Retry delivery acknowledgments on startup and bundle retrieval. Unsupported
+/// legacy servers simply retain their normal delivery window.
+pub fn acknowledge_identity(server: &str) {
+    let Ok(mut identity) = load_identity() else {
+        return;
+    };
+    if identity.server_url != server || identity.pairing_code.is_empty() {
+        return;
+    }
+    let Ok(client) = pairing_client() else {
+        return;
+    };
+    if let Ok(response) = client
+        .post(format!("{server}/api/pair/ack"))
+        .bearer_auth(&identity.kiosk_key)
+        .json(&crate::core::protocol::claim_body(
+            &identity.pairing_code,
+            identity.polling_secret.as_deref(),
+        ))
+        .send()
+    {
+        if response.status().is_success() {
+            identity.pairing_code.clear();
+            identity.polling_secret = None;
+            if let Ok(bytes) = serde_json::to_vec(&identity) {
+                let _ = crate::at_rest::write_encrypted(&identity_file(), &bytes);
+            }
         }
-        std::thread::sleep(Duration::from_secs(2));
     }
 }
 
-/// Poll for pairing claim until the server-provided expiry passes.
-/// Returns None when the kiosk should request and show a fresh code.
 pub fn poll_claim_until_expiry(
     server: &str,
-    code: &str,
-    expires_at: &str,
+    session: &PairInitiateResponse,
+    status: impl Fn(&str),
 ) -> Option<(String, String)> {
-    let expires_at = OffsetDateTime::parse(expires_at, &Rfc3339).ok();
+    let mut deadline = Instant::now() + session.lifetime();
+    let mut delay = session.poll_delay();
     loop {
-        if let Some(claim) = poll_claim_once(server, code) {
-            return Some(claim);
+        let response = pairing_client().and_then(|client| {
+            client
+                .post(format!("{server}/api/pair/claim"))
+                .json(&crate::core::protocol::claim_body(
+                    &session.code,
+                    session.polling_secret.as_deref(),
+                ))
+                .send()
+                .map_err(|error| error.to_string())
+        });
+        let claim = match response {
+            Ok(response) if response.status().is_success() || response.status().as_u16() == 503 => {
+                response
+                    .json::<PairClaimResponse>()
+                    .map_err(|error| format!("Invalid pairing response: {error}"))
+            }
+            Ok(response) => {
+                if let Some(seconds) = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                {
+                    delay = Duration::from_secs(seconds.clamp(1, 60));
+                }
+                Err(format!("Pairing server returned {}", response.status()))
+            }
+            Err(error) => Err(format!("Pairing connection failed: {error}")),
+        };
+        match claim {
+            Ok(claim) if claim.status == "expired" => break,
+            Ok(claim) if claim.status == "revoked" || claim.status == "acknowledged" => {
+                if claim.status == "acknowledged" {
+                    if let Ok(identity) = load_identity() {
+                        return Some((identity.kiosk_name, identity.kiosk_key));
+                    }
+                    status(
+                        "Pairing acknowledged but saved identity is missing — contact administrator",
+                    );
+                } else {
+                    status("Pairing revoked — contact administrator or reset the device locally");
+                }
+                deadline = Instant::now() + Duration::from_secs(900);
+                delay = Duration::from_secs(60);
+            }
+            Ok(claim) if claim.status == "claimed" => {
+                match DeviceIdentity::from_claim(server, session, claim).and_then(|identity| {
+                    let bytes = serde_json::to_vec(&identity).map_err(|error| error.to_string())?;
+                    crate::at_rest::write_encrypted(&identity_file(), &bytes)
+                        .map_err(|error| format!("Unable to save device identity: {error}"))?;
+                    Ok(identity)
+                }) {
+                    Ok(identity) => {
+                        crate::axiom::set_kiosk_id(identity.kiosk_id);
+                        let _ = fs::remove_file(state_dir().join("pairing.json"));
+                        acknowledge_identity(server);
+                        crate::remote_debug::reset_all_lockouts();
+                        return Some((identity.kiosk_name, identity.kiosk_key));
+                    }
+                    Err(error) => {
+                        tracing::warn!("{error}");
+                        status("Pairing confirmed — unable to save identity; retrying");
+                        // Never abandon a confirmed claim because storage is temporarily unavailable.
+                        deadline = Instant::now() + Duration::from_secs(900);
+                    }
+                }
+            }
+            Ok(claim) => {
+                if let Some(remaining) = claim.expires_in_seconds {
+                    deadline = Instant::now() + Duration::from_secs(remaining.clamp(1, 1800));
+                }
+                delay = crate::core::protocol::poll_delay(claim.poll_after_ms);
+                if claim.status == "failed" {
+                    status("Pairing server configuration error — retrying");
+                } else {
+                    status("Enter this code in BetterFrame admin to pair");
+                }
+            }
+            Err(error) => {
+                tracing::warn!("{error}");
+                status("Pairing connection interrupted — retrying");
+                delay = (delay * 2).min(Duration::from_secs(60));
+            }
         }
-        if expires_at
-            .map(|expires_at| OffsetDateTime::now_utc() >= expires_at)
-            .unwrap_or(false)
-        {
-            tracing::info!("pairing code {code} expired, requesting a fresh code");
-            return None;
+        // A secure session may have been confirmed during an outage. Only
+        // the server can expire it; retain its polling secret across reboots.
+        if session.polling_secret.is_none() && Instant::now() >= deadline {
+            break;
         }
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(if session.polling_secret.is_some() {
+            delay
+        } else {
+            delay.min(deadline.saturating_duration_since(Instant::now()))
+        });
     }
-}
-
-fn poll_claim_once(server: &str, code: &str) -> Option<(String, String)> {
-    let client = reqwest::blocking::Client::new();
-    let resp = client
-        .post(format!("{server}/api/pair/claim"))
-        .json(&serde_json::json!({ "code": code }))
-        .send()
-        .expect("claim request failed");
-
-    if resp.status().as_u16() == 200 {
-        let claim: crate::core::protocol::PairClaimResponse =
-            resp.json().expect("bad claim response");
-        if claim.status == "claimed" {
-            let key = claim.kiosk_key.expect("missing kiosk_key");
-            let name = claim.kiosk_name.unwrap_or_else(|| "kiosk".into());
-            if let Some(ref id) = claim.kiosk_id {
-                let id_str = match id {
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Number(n) => n.to_string(),
-                    other => other.to_string(),
-                };
-                crate::axiom::set_kiosk_id(id_str);
-            }
-            crate::at_rest::write_encrypted(&key_file(), key.as_bytes())
-                .expect("failed to save kiosk key");
-            // Store cluster key for backward compat ONVIF password decryption.
-            if let Some(ref ck) = claim.cluster_key {
-                let _ = crate::at_rest::write_encrypted(&cluster_key_file(), ck.as_bytes());
-            }
-            // Store per-kiosk encryption key (preferred over cluster_key).
-            if let Some(ref ek) = claim.encrypt_key {
-                let _ = crate::at_rest::write_encrypted(&encrypt_key_file(), ek.as_bytes());
-            }
-            crate::remote_debug::reset_all_lockouts();
-            return Some((name, key));
-        }
-    }
+    tracing::info!("pairing session expired; requesting a fresh code");
+    let _ = fs::remove_file(state_dir().join("pairing.json"));
     None
 }
 
@@ -510,6 +638,7 @@ fn poll_claim_once(server: &str, code: &str) -> Option<(String, String)> {
 static BUNDLE_ETAG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
+    acknowledge_identity(server);
     let client = reqwest::blocking::Client::new();
     let mut req = client
         .get(format!("{server}/api/kiosk/bundle"))
@@ -532,7 +661,8 @@ pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
     }
 
     if resp.status().as_u16() == 401 {
-        reset_pairing_and_restart("server rejected kiosk key during bundle fetch");
+        tracing::warn!("server rejected kiosk key during bundle fetch; retaining identity");
+        return None;
     }
 
     if !resp.status().is_success() {
@@ -540,10 +670,13 @@ pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
         return None;
     }
 
-    // Cache the ETag for next request.
-    if let Some(etag) = resp.headers().get("etag").and_then(|v| v.to_str().ok()) {
-        *BUNDLE_ETAG.lock().unwrap() = Some(etag.to_string());
-    }
+    // Commit the validator only after decoding a usable bundle. Otherwise
+    // one malformed body can trap subsequent requests on 304 with no cache.
+    let etag = resp
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
 
     let text = match resp.text() {
         Ok(t) => t,
@@ -567,6 +700,7 @@ pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
     match serde_json::from_str::<KioskBundle>(&text) {
         Ok(b) => {
             save_bundle(&b);
+            *BUNDLE_ETAG.lock().unwrap() = etag;
             Some(b)
         }
         Err(e) => {
@@ -748,7 +882,8 @@ pub fn heartbeat(
         .send()
         .and_then(|r| {
             if r.status().as_u16() == 401 {
-                reset_pairing_and_restart("server rejected kiosk key during heartbeat");
+                tracing::warn!("server rejected kiosk key during heartbeat; retaining identity");
+                return Ok(false);
             }
 
             if !r.status().is_success() {
@@ -936,18 +1071,10 @@ fn apply_timezone(timezone: &str) -> Result<(), String> {
             return Ok(());
         }
     }
-    let helper = std::path::Path::new("/usr/local/sbin/betterframe-apply-managed-config.sh");
-    let out = if helper.is_file() {
-        let helper_path = helper.to_string_lossy().to_string();
-        Command::new("sudo")
-            .args(["-n", helper_path.as_str(), "timezone", timezone])
-            .output()
-    } else {
-        Command::new("timedatectl")
-            .args(["set-timezone", timezone])
-            .output()
-    }
-    .map_err(|e| format!("set timezone: {e}"))?;
+    let out = Command::new("timedatectl")
+        .args(["--no-ask-password", "set-timezone", timezone])
+        .output()
+        .map_err(|e| format!("set timezone: {e}"))?;
     if out.status.success() {
         Ok(())
     } else {
@@ -976,7 +1103,83 @@ fn validate_timezone(timezone: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::format_startup_network_summary;
+    use super::*;
+
+    #[test]
+    fn pairing_recovers_bad_response_and_preserves_identity_after_bundle_rejection() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let peer = std::thread::spawn(move || {
+            for (status, body) in [
+                (500, "{}"),
+                (
+                    200,
+                    r#"{"code":"ABCDEFGH","expires_at":"invalid-clock","expires_in_seconds":1,"polling_secret":"test-session-secret"}"#,
+                ),
+                (200, "invalid JSON"),
+                (
+                    200,
+                    r#"{"status":"claimed","kiosk_id":"42","kiosk_name":"Recovered","kiosk_key":"bearer","encrypt_key":"encrypt"}"#,
+                ),
+                (200, r#"{"status":"acknowledged"}"#),
+                (401, "{}"),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0; 4096];
+                    let count = stream.read(&mut chunk).unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&chunk[..count]);
+                    if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                line.strip_prefix("content-length:")
+                                    .and_then(|value| value.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                let response = format!(
+                    "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        assert!(initiate_pairing(&server).is_err());
+        let session = initiate_pairing(&server).unwrap();
+        let resumed = initiate_pairing(&server).unwrap();
+        assert_eq!(resumed.code, session.code);
+        let mut_statuses = std::sync::Mutex::new(Vec::new());
+        let (name, key) = poll_claim_until_expiry(&server, &session, |status| {
+            mut_statuses.lock().unwrap().push(status.to_string())
+        })
+        .unwrap();
+        assert_eq!(name, "Recovered");
+        assert!(!mut_statuses.lock().unwrap().is_empty());
+        assert_eq!(load_key().unwrap(), key);
+        assert_eq!(load_encrypt_key().as_deref(), Some("encrypt"));
+        assert!(fetch_bundle(&server, &key).is_none());
+        assert_eq!(load_key().unwrap(), key);
+        peer.join().unwrap();
+        crate::at_rest::write_encrypted(
+            &state_dir().join("pairing.json"),
+            b"broken pending session",
+        )
+        .unwrap();
+        assert!(initiate_pairing(&server).is_err());
+        fs::remove_dir_all(state_dir()).unwrap();
+    }
 
     #[test]
     fn startup_network_summary_keeps_mac_while_waiting_for_ip() {

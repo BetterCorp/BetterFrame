@@ -22,7 +22,7 @@ for grp in video render input audio systemd-journal; do
 done
 
 # --- Deps for first-boot partition expansion ---
-apt-get -y install cloud-guest-utils e2fsprogs 2>/dev/null || true
+apt-get -y install polkitd cloud-guest-utils e2fsprogs
 
 # --- Tailscale VPN ---
 curl -fsSL https://tailscale.com/install.sh | sh
@@ -68,11 +68,19 @@ install -m 755 /tmp/bf-files/betterframe-apply-managed-config.sh \
   /usr/local/sbin/betterframe-apply-managed-config.sh
 install -m 755 /tmp/bf-files/randomize-image-users.sh \
   /usr/local/sbin/randomize-image-users.sh
-install -d -m 755 /etc/sudoers.d
-cat > /etc/sudoers.d/betterframe-managed-config <<'SUDOERS'
-bfkiosk ALL=(root) NOPASSWD: /usr/local/sbin/betterframe-apply-managed-config.sh *
-SUDOERS
-chmod 440 /etc/sudoers.d/betterframe-managed-config
+
+# Only timezone changes are authorized; the kiosk retains NoNewPrivileges.
+install -d -m 755 /etc/polkit-1/rules.d /etc/betterframe
+cat > /etc/polkit-1/rules.d/49-betterframe-timezone.rules <<'POLKIT'
+polkit.addRule(function(action, subject) {
+  if (subject.user === "bfkiosk" && action.id === "org.freedesktop.timedate1.set-timezone") {
+    return polkit.Result.YES;
+  }
+});
+POLKIT
+chmod 644 /etc/polkit-1/rules.d/49-betterframe-timezone.rules
+install -m 644 /dev/null /etc/betterframe/managed-image
+
 install -d -m 755 /etc/tmpfiles.d
 install -m 644 /tmp/bf-files/betterframe-kiosk.conf /etc/tmpfiles.d/betterframe-kiosk.conf
 install -d -m 755 /etc/udev/rules.d

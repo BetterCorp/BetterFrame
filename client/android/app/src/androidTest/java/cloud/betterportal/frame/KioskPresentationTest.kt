@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.Bundle
+import android.os.ParcelFileDescriptor
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
@@ -175,8 +176,21 @@ class KioskPresentationTest {
                     MainActivity::class.java.getDeclaredField("session").apply { isAccessible = true }.set(activity, session)
                     session.start()
                 }
-                awaitUi(scenario, "Offline source server was not initialized") { session.serverUrl == "http://127.0.0.1:9" }
-                instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_MENU)
+                awaitUi(scenario, "Offline kiosk did not become ready for Settings") { activity ->
+                    session.serverUrl == "http://127.0.0.1:9" && activity.hasWindowFocus() &&
+                        descendants(activity.window.decorView).any {
+                            it.contentDescription == "Kiosk menu" && it.isShown && it.isEnabled && it.width > 0 && it.height > 0
+                        }
+                }
+                // The remote entry point has its own test. Exercise the overlay
+                // button here after the replacement session and window are ready.
+                scenario.onActivity { activity ->
+                    val menu = descendants(activity.window.decorView).single { it.contentDescription == "Kiosk menu" }
+                    assertTrue("Kiosk menu overlay must open its actions", menu.performClick())
+                }
+                awaitAccessibility("Kiosk menu overlay did not expose Settings") { root ->
+                    accessibilityDescendants(root).any { it.isVisibleToUser && it.text?.toString() == "Settings" }
+                }
                 clickAccessibleText("Settings")
                 awaitAccessibility("Settings server field did not appear") { root ->
                     accessibilityDescendants(root).any { it.isEditable }
@@ -293,9 +307,17 @@ class KioskPresentationTest {
         val screenshot = requireNotNull(instrumentation.uiAutomation.takeScreenshot()) { "Could not capture kiosk screenshot" }
         try {
             val directory = File(requireNotNull(context.getExternalFilesDir(null)), "screenshots").apply { mkdirs() }
-            File(directory, "$name.png").outputStream().use { output ->
+            val saved = File(directory, "$name.png")
+            saved.outputStream().use { output ->
                 assertTrue(screenshot.compress(Bitmap.CompressFormat.PNG, 100, output))
             }
+            // Keep evidence outside app storage so test-runner app cleanup cannot
+            // delete it before the workflow collects the screenshots.
+            val shared = "/sdcard/Download/betterframe-kiosk-screenshots"
+            val command = "mkdir -p '$shared' && cp '${saved.absolutePath}' '$shared/$name.png' && echo saved"
+            val result = ParcelFileDescriptor.AutoCloseInputStream(
+                instrumentation.uiAutomation.executeShellCommand(command)).bufferedReader().use { it.readText() }
+            assertEquals("Screenshot must survive test-app removal", "saved", result.trim())
         } finally { screenshot.recycle() }
     }
 

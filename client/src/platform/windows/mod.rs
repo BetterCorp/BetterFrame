@@ -295,13 +295,19 @@ async fn discover_server(
     override_url: Option<&str>,
     state: &ClientState,
 ) -> Result<String, String> {
-    // Saved state is already bound to its regional origin, even while waiting
-    // for enrollment approval. Never rediscover through geo DNS on a restart.
-    if !state.server_url.trim().is_empty() {
-        return Ok(state.server_url.trim().trim_end_matches('/').to_string());
+    let saved = state.server_url.trim().trim_end_matches('/');
+    // Pending or paired credentials bind the origin. A bare discovery result
+    // still allows an operator to correct an explicit server selection.
+    if state.kiosk_key.is_some() || state.pairing_code.is_some() || state.pairing_secret.is_some() {
+        return if saved.is_empty() {
+            Err("Saved enrollment has no server origin; restore storage or reset locally".into())
+        } else { Ok(saved.to_string()) };
     }
     if let Some(url) = override_url.map(str::trim).filter(|url| !url.is_empty()) {
         return crate::network::discover(url, true).await;
+    }
+    if !saved.is_empty() {
+        return Ok(saved.to_string());
     }
     for candidate in crate::core::protocol::SERVER_CANDIDATES {
         info!("trying {candidate}...");
@@ -917,8 +923,37 @@ mod tests {
         state.pairing_secret = Some("test-polling-secret".into());
         let reloaded: ClientState = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
         assert_eq!(discover_server(Some("https://frame.betterportal.net"), &reloaded).await.unwrap(), state.server_url);
+        state.pairing_code = None;
+        assert_eq!(discover_server(Some("https://changed.example"), &state).await.unwrap(), state.server_url);
         state.kiosk_key = Some("test-device-key".into());
+        state.pairing_secret = None;
+        assert_eq!(discover_server(Some("https://changed.example"), &state).await.unwrap(), state.server_url);
+    }
+
+    #[tokio::test]
+    async fn explicit_server_can_correct_a_saved_discovery_result_before_enrollment() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let peer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                let mut chunk = [0; 4096];
+                let read = stream.read(&mut chunk).unwrap();
+                assert!(read > 0);
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let request = String::from_utf8(request).unwrap().to_lowercase();
+            assert!(request.starts_with("get /healthz "));
+            assert!(!request.contains("authorization:"));
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let state = ClientState::unpaired("https://mistyped.example");
         assert_eq!(discover_server(None, &state).await.unwrap(), state.server_url);
+        assert_eq!(discover_server(Some(&origin), &state).await.unwrap(), origin);
+        peer.join().unwrap();
     }
 
     #[test]

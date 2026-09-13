@@ -307,14 +307,10 @@ pub fn discover_server(override_url: Option<&str>) -> Result<String, String> {
             .map_err(|_| "Invalid saved pairing session; restore storage or reset locally")?;
         return Ok(origin);
     }
-    if let Ok(saved) = fs::read_to_string(server_file()) {
-        let saved = saved.trim();
-        if !saved.is_empty() {
-            return Ok(saved.to_string());
-        }
-    }
+    let saved = fs::read_to_string(server_file()).ok()
+        .map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     if is_paired() {
-        return Err("Saved kiosk key has no server origin; restore storage or reset locally".into());
+        return saved.ok_or_else(|| "Saved kiosk key has no server origin; restore storage or reset locally".into());
     }
 
     let save = |origin: String| -> Result<String, String> {
@@ -327,6 +323,9 @@ pub fn discover_server(override_url: Option<&str>) -> Result<String, String> {
     };
     if let Some(url) = override_url.map(str::trim).filter(|url| !url.is_empty()) {
         return save(crate::network::discover(url, true)?);
+    }
+    if let Some(saved) = saved {
+        return Ok(saved);
     }
     for url in crate::core::protocol::SERVER_CANDIDATES {
         info!("trying {url}...");
@@ -1275,14 +1274,16 @@ mod tests {
                 stream.write_all(response.as_bytes()).unwrap();
             }
         });
+        // A saved discovery result alone is not enrollment: an operator may
+        // correct --server before a pairing code or device key exists.
+        fs::write(server_file(), "https://mistyped.example").unwrap();
         assert_eq!(discover_server(Some(&server)).unwrap(), server);
         assert_eq!(fs::read_to_string(server_file()).unwrap(), server);
-        // Simulated restarts use the saved origin even if geo DNS or a launch
-        // argument now points elsewhere; no second discovery request is sent.
-        assert_eq!(discover_server(Some("https://changed.example")).unwrap(), server);
+        assert_eq!(discover_server(None).unwrap(), server);
         assert!(initiate_pairing(&server).is_err());
         let session = initiate_pairing(&server).unwrap();
         assert_eq!(discover_server(None).unwrap(), server);
+        assert_eq!(discover_server(Some("https://changed.example")).unwrap(), server);
         let resumed = initiate_pairing(&server).unwrap();
         assert_eq!(resumed.code, session.code);
         let mut_statuses = std::sync::Mutex::new(Vec::new());
@@ -1294,6 +1295,7 @@ mod tests {
         assert!(!mut_statuses.lock().unwrap().is_empty());
         assert_eq!(load_key().unwrap(), key);
         assert_eq!(discover_server(None).unwrap(), server);
+        assert_eq!(discover_server(Some("https://changed.example")).unwrap(), server);
         assert_eq!(load_encrypt_key().as_deref(), Some("encrypt"));
         assert!(fetch_bundle(&server, &key).is_none());
         assert_eq!(load_key().unwrap(), key);

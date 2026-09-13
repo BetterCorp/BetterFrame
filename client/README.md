@@ -32,7 +32,9 @@ discovery redirects and save the terminal origin before sending pairing data.
 Explicit local HTTP servers remain supported, including direct API ports
 without `/healthz` (HTTP 404).
 
-Saved origins take precedence on restart, including pending pairing sessions.
+Saved origins are reused on restart. Before enrollment starts, an explicit server
+option can correct a saved discovery result. Once a pairing code, polling secret
+or device identity exists, its saved origin takes precedence over launch options.
 Subsequent pairing, device API and WebSocket requests use the regional origin;
 authenticated HTTP requests never follow redirects. Changing launch arguments
 does not move existing credentials to another server: reset enrollment first

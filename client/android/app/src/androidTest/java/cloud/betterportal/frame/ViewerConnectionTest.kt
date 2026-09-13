@@ -41,11 +41,121 @@ class ViewerConnectionTest {
         enrollmentCleanupAcrossLifecycle(stopAgain = true)
     }
 
+    @Test fun destroyedSessionCannotCancelCleanupOrRestoreItsOldEnrollment() {
+        enrollmentCleanupAcrossRecreation(restoredMarker = false)
+    }
+
+    @Test fun persistedCleanupMarkerBlocksEnrollmentAfterProcessLoss() {
+        enrollmentCleanupAcrossRecreation(restoredMarker = true)
+    }
+
+    @Test fun failedBrowserCleanupRetainsItsMarkerAndBlocksEnrollmentUntilRetried() {
+        enrollmentCleanupAcrossRecreation(restoredMarker = true, cleanupFailsOnce = true)
+    }
+
+    private fun enrollmentCleanupAcrossRecreation(restoredMarker: Boolean, cleanupFailsOnce: Boolean = false) {
+        val (context, directory) = isolatedContext()
+        val cleanupStarted = CountDownLatch(1)
+        val cleanupRetried = CountDownLatch(1)
+        val cleanupFailed = CountDownLatch(1)
+        val completeCleanup = AtomicReference<(Boolean) -> Unit>()
+        val cleanupCalls = AtomicInteger()
+        val oldCallbacks = AtomicInteger()
+        val pairing = CountDownLatch(1)
+        val requests = ConcurrentLinkedQueue<RecordedRequest>()
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requests.add(request)
+                return MockResponse().setHeader("Content-Type", "application/json").setBody(when (request.requestUrl!!.encodedPath) {
+                    "/api/pair/initiate" -> """{"code":"NEW123","polling_secret":"new-secret","poll_after_ms":1000}"""
+                    "/api/pair/claim" -> """{"status":"pending"}"""
+                    else -> "{}"
+                })
+            }
+        }
+        server.start()
+        val target = server.url("/").toString().trimEnd('/')
+        val store = ProtectedStore(context)
+        store.write(JSONObject().put("server", "http://127.0.0.1:9")
+            .put("identity", JSONObject().put("kiosk_key", "old-device-key")))
+        val cleanup: (Context, (Boolean) -> Unit) -> Unit = { _, done ->
+            val attempt = cleanupCalls.incrementAndGet()
+            completeCleanup.set(done)
+            cleanupStarted.countDown()
+            if (attempt == 2) cleanupRetried.countDown()
+        }
+        val old = ViewerSession(context, object : ViewerSession.Listener {
+            override fun onStatus(message: String) { oldCallbacks.incrementAndGet() }
+            override fun onPairing(code: String) { oldCallbacks.incrementAndGet() }
+            override fun onPlan(plan: JSONObject) {}
+        }, clearBrowserSessions = cleanup)
+        val replacement = ViewerSession(context, object : ViewerSession.Listener {
+            override fun onStatus(message: String) {
+                if (message == "Unable to clear saved enrollment") cleanupFailed.countDown()
+            }
+            override fun onPairing(code: String) { if (code == "NEW123") pairing.countDown() }
+            override fun onPlan(plan: JSONObject) {}
+        }, clearBrowserSessions = cleanup)
+        try {
+            instrumentation.runOnMainSync {
+                if (restoredMarker) {
+                    // No coordinator job exists: this models a fresh process
+                    // recovering the marker left by an interrupted reset.
+                    store.write(JSONObject().put("server", target)
+                        .put("enrollment_cleanup", "restored-${System.nanoTime()}"))
+                } else {
+                    old.unpair(target)
+                    // Hold the UI thread until persistence, then destroy the
+                    // original session before its cleanup runnable can execute.
+                    val persisted = CountDownLatch(1)
+                    val oldWorker = ViewerSession::class.java.getDeclaredField("worker").apply { isAccessible = true }
+                        .get(old) as java.util.concurrent.Executor
+                    oldWorker.execute { persisted.countDown() }
+                    assertTrue("Reset persistence did not finish", persisted.await(5, TimeUnit.SECONDS))
+                    assertTrue("Reset marker was not persisted", store.read().has("enrollment_cleanup"))
+                }
+                old.close()
+                replacement.start()
+            }
+            assertTrue("Recreation lost browser cleanup", cleanupStarted.await(5, TimeUnit.SECONDS))
+            assertEquals("Recreated session must wait for browser cleanup", 0, server.requestCount)
+            assertTrue("Cleanup marker must survive until browser completion", store.read().has("enrollment_cleanup"))
+            assertFalse(store.read().has("identity"))
+            if (cleanupFailsOnce) {
+                instrumentation.runOnMainSync { completeCleanup.getAndSet(null).invoke(false) }
+                assertTrue("Cleanup failure must be reported", cleanupFailed.await(5, TimeUnit.SECONDS))
+                assertTrue("Failed cleanup must retain its recovery marker", store.read().has("enrollment_cleanup"))
+                assertEquals("Failed cleanup must never start enrollment", 0, server.requestCount)
+                instrumentation.runOnMainSync { replacement.start() }
+                assertTrue("Connect must retry the unfinished cleanup", cleanupRetried.await(5, TimeUnit.SECONDS))
+                assertEquals(0, server.requestCount)
+            }
+            instrumentation.runOnMainSync { completeCleanup.getAndSet(null).invoke(true) }
+            assertTrue("Recreated display did not resume enrollment", pairing.await(10, TimeUnit.SECONDS))
+            assertEquals("Old and recreated instances must share each cleanup attempt", if (cleanupFailsOnce) 2 else 1, cleanupCalls.get())
+            assertEquals("Destroyed session must not issue completion callbacks", 0, oldCallbacks.get())
+            assertEquals(target, store.read().getString("server"))
+            assertFalse("Old cleanup must not overwrite newly saved pairing", store.read().has("enrollment_cleanup"))
+            assertEquals("NEW123", store.read().getJSONObject("pending").getString("code"))
+            assertFalse(store.read().has("identity"))
+            assertTrue(requests.all { it.getHeader("Authorization") == null })
+        } finally {
+            instrumentation.runOnMainSync {
+                old.close()
+                replacement.close()
+                completeCleanup.getAndSet(null)?.invoke(true)
+            }
+            server.shutdown()
+            directory.deleteRecursively()
+        }
+    }
+
     private fun enrollmentCleanupAcrossLifecycle(stopAgain: Boolean) {
         val (context, directory) = isolatedContext()
         val cleanupStarted = CountDownLatch(1)
         val cleanupFinished = CountDownLatch(1)
-        val completeCleanup = AtomicReference<() -> Unit>()
+        val completeCleanup = AtomicReference<(Boolean) -> Unit>()
         val pairing = CountDownLatch(1)
         val requests = ConcurrentLinkedQueue<RecordedRequest>()
         val server = MockWebServer()
@@ -88,7 +198,7 @@ class ViewerConnectionTest {
             assertEquals(selectedOrigin, ProtectedStore(context).read().getString("server"))
             assertFalse("Old identity must already be removed", ProtectedStore(context).read().has("identity"))
             if (stopAgain) instrumentation.runOnMainSync { session.stop() }
-            instrumentation.runOnMainSync { completeCleanup.get().invoke() }
+            instrumentation.runOnMainSync { completeCleanup.getAndSet(null).invoke(true) }
             assertTrue("Reset completion must survive lifecycle changes", cleanupFinished.await(5, TimeUnit.SECONDS))
             if (stopAgain) {
                 assertNull("Stopped display must not restart on cleanup completion", server.takeRequest(500, TimeUnit.MILLISECONDS))
@@ -100,7 +210,7 @@ class ViewerConnectionTest {
             assertEquals(selectedOrigin, ProtectedStore(context).read().getString("server"))
             assertFalse(ProtectedStore(context).read().has("identity"))
         } finally {
-            instrumentation.runOnMainSync { session.close() }
+            instrumentation.runOnMainSync { session.close(); completeCleanup.getAndSet(null)?.invoke(true) }
             server.shutdown()
             directory.deleteRecursively()
         }

@@ -7,7 +7,9 @@ import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
@@ -33,6 +35,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ConcurrentLinkedQueue
 
 @RunWith(AndroidJUnit4::class)
@@ -89,7 +92,7 @@ class KioskPresentationTest {
                     assertTrue(menu.isShown && menu.isFocusable)
                     assertTrue("Menu should be a small overlay", menu.width <= 72 * activity.resources.displayMetrics.density)
                 }
-                saveScreenshot("pairing-$name")
+                saveScreenshot(scenario, "pairing-$name")
                 scenario.onActivity { activity ->
                     activity.onStatus("Connection interrupted — retrying")
                     val views = descendants(activity.window.decorView)
@@ -247,7 +250,7 @@ class KioskPresentationTest {
                 })
                 assertTrue(views.any { it.contentDescription == "Kiosk menu" && it.isShown })
             }
-            saveScreenshot("display-fullscreen")
+            saveScreenshot(scenario, "display-fullscreen")
         }
     }
 
@@ -280,6 +283,8 @@ class KioskPresentationTest {
     }
 
     private fun clickAccessibleText(value: String) {
+        // Let dialog layout reach the screen before hit-testing its visible text.
+        instrumentation.uiAutomation.waitForIdle(250, 3000)
         awaitAccessibility("$value must be selectable") {
             // Dialog transitions can invalidate a previously obtained node.
             // Resolve both label and row afresh after the UI has become idle.
@@ -288,10 +293,18 @@ class KioskPresentationTest {
             val selected = accessibilityDescendants(root).firstOrNull {
                 it.isVisibleToUser && it.isEnabled && it.text?.toString()?.equals(value, ignoreCase = true) == true
             } ?: return@awaitAccessibility false
-            var action = selected
-            // The label can be separate from its clickable list row.
-            while (!action.isClickable) action = action.parent ?: return@awaitAccessibility false
-            action.isVisibleToUser && action.isEnabled && action.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            // Tap the rendered row/button as a user would. ListView accessibility
+            // ACTION_CLICK can reject a node even when the visible row is usable.
+            val bounds = Rect()
+            selected.getBoundsInScreen(bounds)
+            if (bounds.isEmpty) return@awaitAccessibility false
+            val downTime = SystemClock.uptimeMillis()
+            for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+                val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action,
+                    bounds.exactCenterX(), bounds.exactCenterY(), 0)
+                try { instrumentation.sendPointerSync(event) } finally { event.recycle() }
+            }
+            true
         }
     }
 
@@ -302,10 +315,46 @@ class KioskPresentationTest {
         assertEquals("View must not be clipped vertically", view.height, visible.height())
     }
 
-    private fun saveScreenshot(name: String) {
+    private fun saveScreenshot(scenario: ActivityScenario<MainActivity>, name: String) {
+        // An idle main looper can precede drawing and the rotation compositor.
+        // Wait for submitted frames, then require the captured display to settle.
+        val frames = CountDownLatch(3)
+        scenario.onActivity { activity ->
+            val view = activity.window.decorView
+            view.postOnAnimation(object : Runnable {
+                override fun run() {
+                    frames.countDown()
+                    if (frames.count > 0) view.postOnAnimation(this)
+                }
+            })
+        }
+        assertTrue("Kiosk did not render three frames", frames.await(3, TimeUnit.SECONDS))
         instrumentation.waitForIdleSync()
-        val screenshot = requireNotNull(instrumentation.uiAutomation.takeScreenshot()) { "Could not capture kiosk screenshot" }
+        instrumentation.uiAutomation.waitForIdle(250, 3_000)
+        fun assertCaptureState() = scenario.onActivity { activity ->
+            val views = descendants(activity.window.decorView)
+            if (name.startsWith("pairing-")) {
+                val code = views.filterIsInstance<TextView>().single { it.tag == "pairing-code" }
+                assertEquals("ABC123", code.text.toString())
+                assertFullyVisible(code)
+                assertEquals("Waiting for pairing approval", views.filterIsInstance<TextView>()
+                    .single { it.tag == "connection-status" }.text.toString())
+                val expected = if (name.endsWith("portrait")) Configuration.ORIENTATION_PORTRAIT
+                    else Configuration.ORIENTATION_LANDSCAPE
+                assertEquals(expected, activity.resources.configuration.orientation)
+            } else {
+                val grid = views.single { it.tag == "display-grid" }
+                assertTrue("Capture must show the display grid", grid.isShown)
+                assertFullyVisible(grid)
+                assertEquals((grid.parent as View).height, grid.height)
+            }
+        }
+        assertCaptureState()
+        val screenshot = stableScreenshot()
         try {
+            assertCaptureState()
+            if (name.startsWith("pairing-")) assertEquals("Screenshot rotation must match the view",
+                name.endsWith("portrait"), screenshot.height > screenshot.width)
             val directory = File(requireNotNull(context.getExternalFilesDir(null)), "screenshots").apply { mkdirs() }
             val saved = File(directory, "$name.png")
             saved.outputStream().use { output ->
@@ -322,6 +371,26 @@ class KioskPresentationTest {
             execute("cp ${saved.absolutePath} $shared/$name.png")
             assertEquals("Screenshot must survive test-app removal", "$shared/$name.png", execute("ls $shared/$name.png").trim())
         } finally { screenshot.recycle() }
+    }
+
+    private fun stableScreenshot(): Bitmap {
+        val deadline = SystemClock.uptimeMillis() + 3_000
+        var stableSince = SystemClock.uptimeMillis()
+        var previous: Bitmap? = null
+        try {
+            while (SystemClock.uptimeMillis() < deadline) {
+                val current = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
+                if (previous?.sameAs(current) != true) stableSince = SystemClock.uptimeMillis()
+                previous?.recycle()
+                previous = current
+                if (SystemClock.uptimeMillis() - stableSince >= 250) {
+                    previous = null
+                    return current
+                }
+                Thread.sleep(50)
+            }
+            error("Kiosk screenshot did not settle after drawing and rotation")
+        } finally { previous?.recycle() }
     }
 
     private fun descendants(view: View): List<View> = buildList {

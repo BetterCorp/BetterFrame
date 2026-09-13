@@ -16,11 +16,88 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CompletableFuture
+import java.util.UUID
+
+/** Reset survives Activity destruction; the protected marker also survives process loss. */
+private object EnrollmentCleanup {
+    const val MARKER = "enrollment_cleanup"
+    private class Job(val token: String, val persisted: CompletableFuture<Unit>) {
+        val listeners = mutableListOf<(Boolean) -> Unit>()
+        var started = false
+    }
+    private val jobs = mutableMapOf<String, Job>()
+    private val worker = Executors.newSingleThreadExecutor()
+    private val main = Handler(Looper.getMainLooper())
+    private fun key(context: Context) = context.noBackupFilesDir.absolutePath
+
+    @Synchronized fun pending(context: Context): String? = jobs[key(context)]?.token
+
+    @Synchronized fun begin(context: Context, token: String): Boolean {
+        if (jobs.containsKey(key(context))) return false
+        jobs[key(context)] = Job(token, CompletableFuture())
+        return true
+    }
+
+    // Share this lock with registration so an older session cannot write across reset.
+    @Synchronized fun writeIfIdle(context: Context, write: () -> Unit): Boolean {
+        if (jobs.containsKey(key(context))) return false
+        write()
+        return true
+    }
+
+    @Synchronized fun persisted(context: Context, token: String, error: Throwable? = null) {
+        jobs[key(context)]?.takeIf { it.token == token }?.let {
+            if (error == null) it.persisted.complete(Unit) else it.persisted.completeExceptionally(error)
+        }
+    }
+
+    @Synchronized fun request(context: Context, token: String, clear: (Context, (Boolean) -> Unit) -> Unit, done: (Boolean) -> Unit) {
+        val path = key(context)
+        val job = jobs.getOrPut(path) { Job(token, CompletableFuture.completedFuture(Unit)) }
+        job.listeners.add(done)
+        if (job.started) return
+        job.started = true
+        val store = ProtectedStore(context)
+        fun finish(success: Boolean) {
+            val listeners = synchronized(this) {
+                if (jobs[path] !== job) return
+                jobs.remove(path)
+                job.listeners.toList()
+            }
+            main.post { listeners.forEach { it(success) } }
+        }
+        worker.execute {
+            try {
+                job.persisted.get()
+                // A stale reader may join just after another instance completed.
+                if (store.read().optString(MARKER) != job.token) { finish(true); return@execute }
+                main.post {
+                    try {
+                        clear(context) { cleared ->
+                            if (!cleared) finish(false)
+                            else worker.execute {
+                                try {
+                                    val latest = store.read()
+                                    if (latest.optString(MARKER) == job.token) {
+                                        latest.remove(MARKER)
+                                        if (latest.length() == 0) store.clear() else store.write(latest)
+                                    }
+                                    finish(true)
+                                } catch (_: Exception) { finish(false) }
+                            }
+                        }
+                    } catch (_: Exception) { finish(false) }
+                }
+            } catch (_: Exception) { finish(false) }
+        }
+    }
+}
 
 /** Outbound display client only. All network/storage work is serialized away from the UI. */
 class ViewerSession internal constructor(context: Context, private val listener: Listener,
                                         private val http: OkHttpClient = defaultHttp(),
-                                        private val clearBrowserSessions: (Context, () -> Unit) -> Unit = { app, done -> WebTile.clearSessions(app, done) }) {
+                                        private val clearBrowserSessions: (Context, (Boolean) -> Unit) -> Unit = { app, done -> WebTile.clearSessions(app, done) }) {
     private companion object {
         const val VIEWER_PROFILE = "android-viewer-v1"
         const val AUTH_REJECTED = "Display authorization rejected. Check this device in BF."
@@ -78,7 +155,10 @@ class ViewerSession internal constructor(context: Context, private val listener:
     private fun status(message: String) = ui(activeEpoch) { listener.onStatus(message) }
     private fun active() = running && generation == activeEpoch && !closed
     private fun ensureActive() { check(active()) { "Session stopped" } }
-    private fun persist() { ensureActive(); store.write(state) }
+    private fun persist() {
+        ensureActive()
+        check(EnrollmentCleanup.writeIfIdle(app) { store.write(state) }) { "Enrollment cleanup pending" }
+    }
     private fun JSONObject.textValue(name: String): String? = optString(name).takeUnless { it.isBlank() || it == "null" }
     // OkHttp can deliver a final callback after Activity destruction.
     private fun enqueue(action: () -> Unit) {
@@ -121,6 +201,17 @@ class ViewerSession internal constructor(context: Context, private val listener:
             awaitingAssignment = false
             try {
                 state = store.read()
+                val cleanup = EnrollmentCleanup.pending(app) ?: state.textValue(EnrollmentCleanup.MARKER)
+                if (cleanup != null) {
+                    clearingEnrollment = true
+                    running = false
+                    // Keep the resume request only if no subsequent stop cancelled it.
+                    main.post {
+                        if (!closed && generation == epoch) pendingStart = PendingStart(serverUrl)
+                        continueEnrollmentCleanup(cleanup)
+                    }
+                    return@enqueue
+                }
                 // Older app versions could cache an unrestricted legacy bundle.
                 if (state.optString("bundle_profile") != VIEWER_PROFILE) clearCachedBundle()
                 // A resumed unassigned cache may keep receiving 304 responses.
@@ -152,7 +243,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
 
     fun stop() {
         pendingStart = null
-        val saveSelection = running
+        val saveSelection = running && !clearingEnrollment
         val selected = layoutId
         running = false
         generation++
@@ -163,7 +254,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
             socket?.cancel(); socket = null; socketConnecting = false
             if (saveSelection && state.has("identity")) {
                 if (selected == null) state.remove("layout_id") else state.put("layout_id", selected)
-                runCatching { store.write(state) }
+                runCatching { EnrollmentCleanup.writeIfIdle(app) { store.write(state) } }
             }
         }
     }
@@ -201,34 +292,40 @@ class ViewerSession internal constructor(context: Context, private val listener:
         // Validate before changing enrollment; retain the choice through activity recreation.
         val target = try { nextServer?.let { ServerAddress.parse(it).toString().trimEnd('/') } }
         catch (_: Exception) { status("Enter a valid BF server origin."); return }
+        val token = UUID.randomUUID().toString()
+        if (!EnrollmentCleanup.begin(app, token)) {
+            clearingEnrollment = true
+            stop()
+            EnrollmentCleanup.pending(app)?.let(::continueEnrollmentCleanup)
+            return
+        }
         clearingEnrollment = true
         stop()
+        // Register cleanup outside this Activity's Handler before queueing storage.
+        continueEnrollmentCleanup(token)
         enqueue {
             try {
-                val cleared = JSONObject().apply { if (target != null) put("server", target) }
-                if (target == null) store.clear() else store.write(cleared)
+                val cleared = JSONObject().put(EnrollmentCleanup.MARKER, token).apply { if (target != null) put("server", target) }
+                store.write(cleared)
                 state = cleared; kioskKey = ""; serverUrl = target.orEmpty(); layoutId = null; expandedId = null
-                main.post {
-                    if (closed) { clearingEnrollment = false; return@post }
-                    // Allow another enrollment only after asynchronous browser cleanup completes.
-                    // Cleanup belongs to enrollment, not an Activity start/stop generation.
-                    clearBrowserSessions(app) {
-                        clearingEnrollment = false
-                        val restart = pendingStart
-                        pendingStart = null
-                        if (!closed) {
-                            listener.onPairing("")
-                            listener.onStatus("Enrollment cleared. Ready to pair.")
-                            if (restart != null) start(restart.server)
-                        }
-                    }
-                }
-            } catch (_: Exception) {
-                main.post {
-                    clearingEnrollment = false
-                    pendingStart = null
-                    if (!closed) listener.onStatus("Unable to clear saved enrollment")
-                }
+                EnrollmentCleanup.persisted(app, token)
+            } catch (error: Exception) {
+                EnrollmentCleanup.persisted(app, token, error)
+            }
+        }
+    }
+
+    private fun continueEnrollmentCleanup(token: String) {
+        EnrollmentCleanup.request(app, token, clearBrowserSessions) { success ->
+            clearingEnrollment = false
+            val restart = pendingStart
+            pendingStart = null
+            if (!closed) {
+                if (success) {
+                    listener.onPairing("")
+                    listener.onStatus("Enrollment cleared. Ready to pair.")
+                    if (restart != null) start(restart.server)
+                } else listener.onStatus("Unable to clear saved enrollment")
             }
         }
     }

@@ -12,6 +12,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  deployment:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: python3 scripts/test-release-versions.py
+      - run: python3 scripts/test-easy1-deploy.py
+
   server:
     runs-on: ubuntu-24.04
     services:

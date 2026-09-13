@@ -12,6 +12,7 @@ const MANAGER_TOKEN = process.env.BF_NODERED_MANAGER_SECRET
 const MAX_TENANTS = Number(process.env.BF_NODERED_MAX_TENANTS || 50);
 const MEMORY_MB = Number(process.env.BF_NODERED_TENANT_MEMORY_MB || 256);
 const PORT = Number(process.env.PORT || 1880);
+const EASY1_READINESS_CONTRACT = 1;
 const NODE_RED = process.env.BF_NODE_RED_SCRIPT || "/usr/src/node-red/node_modules/node-red/red.js";
 const runtimes = new Map();
 let state = { nextUid: 20000, tenants: {} };
@@ -211,15 +212,50 @@ async function deleteTenant(tenantId) {
 
 async function waitForRuntime(tenant) {
   for (let attempt = 0; attempt < 60; attempt++) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${tenant.port}/nrdp/flows`, {
-        headers: { "x-betterframe-runtime-token": tenant.adminToken },
-      });
-      if (response.ok) return;
-    } catch {}
+    if (await probeRuntime(tenant)) return;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   throw new Error("Node-RED health timeout");
+}
+
+async function probeRuntime(tenant, timeoutMs = 1500) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${tenant.port}/nrdp/flows`, {
+      headers: { "x-betterframe-runtime-token": tenant.adminToken },
+      redirect: "error",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    await response.body?.cancel();
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function runningChild(runtime) {
+  const child = runtime?.child;
+  return !runtime?.stopping && child?.pid > 0 && child.exitCode === null
+    && child.signalCode === null && !child.killed;
+}
+
+async function runtimeReady(tenant, timeoutMs) {
+  const runtime = runtimes.get(tenant.tenant_id);
+  if (!runningChild(runtime)) return false;
+  const child = runtime.child;
+  if (!(await probeRuntime(tenant, timeoutMs))) return false;
+  // An old process answering just before it exits must not qualify its replacement.
+  return runtimes.get(tenant.tenant_id) === runtime && runtime.child === child && runningChild(runtime);
+}
+
+async function readiness(timeoutMs) {
+  const expected = Object.values(state.tenants).filter((tenant) => tenant.active);
+  const checks = await Promise.all(expected.map((tenant) => runtimeReady(tenant, timeoutMs)));
+  const ready = checks.filter(Boolean).length;
+  const current = Object.values(state.tenants).filter((tenant) => tenant.active);
+  const unchanged = current.length === expected.length
+    && current.every((tenant) => expected.includes(tenant));
+  return { contract: EASY1_READINESS_CONTRACT,
+    status: unchanged && ready === expected.length ? "ready" : "not_ready", expected: current.length, ready };
 }
 
 async function syncConfig(tenant) {
@@ -333,6 +369,56 @@ if (process.env.BF_NODERED_MANAGER_SELF_TEST === "1") {
   if (publicHeaders["x-betterframe-runtime-token"] || publicHeaders.authorization) throw new Error("credential exposed to public flow");
   const eventHeaders = runtimeHeaders({ url: "/api/internal/onvif.motion", headers: {} }, headerTenant);
   if (eventHeaders["x-betterframe-runtime-token"] !== headerTenant.adminToken) throw new Error("internal route lacks runtime credential");
+  // Exercise the same HTTP probe used by /readyz against a real listener.
+  if ((await readiness()).status !== "ready") throw new Error("empty manager is not ready");
+  let fixtureStatus = 503;
+  let fixtureDelay = 0;
+  let exitDuringProbe = false;
+  const child = { pid: process.pid, exitCode: null, signalCode: null, killed: false };
+  const readinessServer = createServer((req, res) => {
+    if (req.url !== "/nrdp/flows" || req.headers["x-betterframe-runtime-token"] !== "readiness-test-token") {
+      res.writeHead(403); res.end(); return;
+    }
+    if (exitDuringProbe) child.exitCode = 1;
+    setTimeout(() => { res.writeHead(fixtureStatus); res.end("[]"); }, fixtureDelay);
+  });
+  await new Promise((resolve, reject) => {
+    readinessServer.once("error", reject);
+    readinessServer.listen(0, "127.0.0.1", resolve);
+  });
+  const readyTenant = { tenant_id: testId, active: true, port: readinessServer.address().port, adminToken: "readiness-test-token" };
+  state.tenants[testId] = readyTenant;
+  async function expectReadiness(expected, description, timeoutMs = 1500) {
+    if ((await readiness(timeoutMs)).status !== expected) throw new Error(`readiness failed: ${description}`);
+  }
+  try {
+    await expectReadiness("not_ready", "configured tenant without a child");
+    runtimes.set(testId, { child: { ...child, pid: undefined }, stopping: false });
+    await expectReadiness("not_ready", "child failed to spawn");
+    runtimes.set(testId, { child, stopping: false });
+    await expectReadiness("not_ready", "listener still starting");
+    fixtureStatus = 200;
+    await expectReadiness("ready", "running child and authenticated listener ready");
+    state.tenants.second = { tenant_id: "second", active: true };
+    await expectReadiness("not_ready", "one ready tenant cannot hide another failed tenant");
+    delete state.tenants.second;
+    child.exitCode = 1;
+    await expectReadiness("not_ready", "exited child with listener still accepting");
+    child.exitCode = null;
+    runtimes.get(testId).stopping = true;
+    await expectReadiness("not_ready", "stopping child");
+    runtimes.get(testId).stopping = false;
+    fixtureDelay = 100;
+    await expectReadiness("not_ready", "unresponsive listener", 25);
+    fixtureDelay = 0;
+    exitDuringProbe = true;
+    await expectReadiness("not_ready", "child exited during HTTP probe");
+    readyTenant.active = false;
+    await expectReadiness("ready", "disabled tenant does not block readiness");
+  } finally {
+    readinessServer.closeAllConnections();
+    await new Promise((resolve) => readinessServer.close(resolve));
+  }
   console.log("Node-RED manager self-test passed");
   process.exit(0);
 }
@@ -370,6 +456,12 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/healthz") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ status: "ok", active: [...runtimes.values()].filter((runtime) => runtime.child?.exitCode === null).length }));
+      return;
+    }
+    if (url.pathname === "/readyz") {
+      const result = await readiness();
+      res.writeHead(result.status === "ready" ? 200 : 503, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify(result));
       return;
     }
     proxy(req, res, tenantForRequest(req));

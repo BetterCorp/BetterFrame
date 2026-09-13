@@ -1,0 +1,66 @@
+name: deploy easy1
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing published version tag (including alpha/beta/dev)"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      commit:
+        required: true
+        type: string
+    secrets:
+      EASY1_API_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+# Serialize all entrypoints; never interrupt a deployment between services.
+concurrency:
+  group: betterframe-easy1-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      # Deployment tooling comes from the maintained default branch. The script
+      # independently verifies the release tag and downloads its exact commit.
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve released commit
+        id: release
+        env:
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          EXPECTED_COMMIT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          identifier='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+          version_pattern="^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|dev)\.${identifier}(\.${identifier})*)?$"
+          [[ "$TAG" =~ $version_pattern ]] \
+            || { echo 'A versioned release tag is required' >&2; exit 1; }
+          commit=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
+          [[ -z "$EXPECTED_COMMIT" || "$commit" == "$EXPECTED_COMMIT" ]] \
+            || { echo 'Release tag no longer matches the validated commit' >&2; exit 1; }
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - name: Deploy and verify BetterFrame
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EASY1_API_URL: ${{ vars.EASY1_API_URL || 'https://easy1.eu2.betterweb.co.za/api' }}
+          EASY1_API_TOKEN: ${{ secrets.EASY1_API_TOKEN }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          COMMIT: ${{ steps.release.outputs.commit }}
+        run: python3 deploy/easy1/deploy.py --tag "$TAG" --commit "$COMMIT"

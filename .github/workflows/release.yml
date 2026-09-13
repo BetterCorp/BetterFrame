@@ -26,7 +26,8 @@ on:
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  # A newer master push must not interrupt an active multi-service deployment.
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -40,6 +41,10 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Release deployment checks
+        run: |
+          python3 scripts/test-release-versions.py
+          python3 scripts/test-easy1-deploy.py
       - run: npm ci
       - run: npm test
       - run: npm run build
@@ -88,15 +93,17 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             requested_tag="${GITHUB_REF#refs/tags/}"
             requested_version="${requested_tag#v}"
-            [[ "$requested_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(beta|dev)\.[0-9A-Za-z.-]+)?$ ]] \
+            identifier='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+            version_pattern="^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|dev)\.${identifier}(\.${identifier})*)?$"
+            [[ "$requested_version" =~ $version_pattern ]] \
               || { echo "Invalid release tag: $requested_tag" >&2; exit 1; }
-            if [[ "$requested_version" == *"-beta"* ]]; then
-              channel=beta
-            elif [[ "$requested_version" == *"-dev"* ]]; then
-              channel=dev
-            else
-              channel=stable
-            fi
+            # Alpha is a prerelease on the existing dev channel. Read the
+            # first identifier so e.g. dev.build-beta stays on that channel.
+            case "${requested_version#*-}" in
+              beta.*) channel=beta ;;
+              alpha.*|dev.*) channel=dev ;;
+              *) channel=stable ;;
+            esac
             version="$requested_version"
             tag="$requested_tag"
           else
@@ -107,7 +114,9 @@ jobs:
             base="${latest#v}"
             base="${base%%-*}"
             IFS=. read -r MAJ MIN PAT <<< "$base"
-            version="${MAJ}.${MIN}.$((PAT + 1))-dev.${short}"
+            # The prefix keeps even a zero-leading, digit-only SHA identifier
+            # non-numeric, as required by SemVer prerelease rules.
+            version="${MAJ}.${MIN}.$((PAT + 1))-dev.g${short}"
             tag="v${version}"
           fi
           build_image=true
@@ -146,6 +155,19 @@ jobs:
           fi
 
   # ---- Build assets ---------------------------------------------------------
+  # GITHUB_TOKEN-created releases do not fire another workflow's release event.
+  # Deploy explicitly after validation and publishing the versioned release.
+  deploy-easy1:
+    needs: meta
+    permissions:
+      contents: read
+    uses: ./.github/workflows/easy1-deploy.yml
+    with:
+      tag: ${{ needs.meta.outputs.tag }}
+      commit: ${{ needs.meta.outputs.ref }}
+    secrets:
+      EASY1_API_TOKEN: ${{ secrets.EASY1_API_TOKEN }}
+
   build:
     needs: meta
     permissions:

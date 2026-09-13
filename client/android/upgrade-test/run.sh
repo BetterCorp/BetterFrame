@@ -25,7 +25,7 @@ adb install "$upgrade_dir/base.apk"
 adb install "$probe_dir/probe.apk"
 probe() {
   local phase=$1 version=$2 output
-  output=$(adb shell am instrument -w -e phase "$phase" -e version "$version" \
+  output=$(adb shell am instrument -w -r -e phase "$phase" -e version "$version" \
     cloud.betterportal.frame.upgradetest/cloud.betterportal.frame.upgradetest.UpgradeProbe)
   printf '%s\n' "$output"
   [[ "$output" == *"BF_UPGRADE_OK:$phase:$version"* && "$output" == *"INSTRUMENTATION_CODE: -1"* ]]

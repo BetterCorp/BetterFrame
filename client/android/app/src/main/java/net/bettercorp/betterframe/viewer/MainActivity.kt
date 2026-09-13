@@ -60,9 +60,30 @@ class MainActivity : Activity(), ViewerSession.Listener {
     private fun resumeDisplay() {
         if (active || !(getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive) return
         active = true
+        enterFullscreen()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         plan?.let { render(it) }
         session.start()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun enterFullscreen() {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            window.insetsController?.apply {
+                systemBarsBehavior = android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                hide(android.view.WindowInsets.Type.systemBars())
+            }
+        } else {
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && started) enterFullscreen()
     }
 
     private fun suspendDisplay() {

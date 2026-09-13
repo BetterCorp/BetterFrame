@@ -4,14 +4,18 @@ import android.content.Context
 import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
 import android.widget.TextView
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -30,8 +34,10 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
     private var released = false
     private var retries = 0
     private var firstFrame = false
-    private var lastPosition = -1L
-    private var stagnantChecks = 0
+    private var connectionStartedAt = 0L
+    @Volatile private var lastVideoFrameAt = 0L
+    @Volatile private var lastPresentationTimeUs = Long.MIN_VALUE
+    @Volatile private var frameGeneration = 0
     private val playerView = PlayerView(context).apply {
         useController = false
         isFocusable = false
@@ -47,11 +53,20 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
     private val watchdog = object : Runnable {
         override fun run() {
             if (released) return
-            val current = player ?: return
-            val position = current.currentPosition
-            stagnantChecks = if (!firstFrame || position == lastPosition) stagnantChecks + 1 else 0
-            lastPosition = position
-            if (stagnantChecks >= 4) recover() else handler.postDelayed(this, 5_000)
+            if (player == null) return
+            // RTSP playback time may advance while video is frozen; only rendered-frame
+            // metadata refreshes this clock. Allow the initial keyframe/decoder more time.
+            val lastFrame = lastVideoFrameAt
+            val quietFor = SystemClock.elapsedRealtime() - if (lastFrame > 0L) lastFrame else connectionStartedAt
+            if (quietFor >= if (firstFrame) 15_000L else 20_000L) {
+                recover()
+                return
+            }
+            if (firstFrame) {
+                status.text = "Camera stalled · reconnecting"
+                status.visibility = if (quietFor >= 5_000L) View.VISIBLE else View.GONE
+            }
+            handler.postDelayed(this, 5_000)
         }
     }
 
@@ -81,26 +96,46 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
         status.visibility = View.VISIBLE
         status.text = if (retries == 0) "Connecting camera…" else "Camera unavailable · reconnecting"
         firstFrame = false
-        lastPosition = -1
-        stagnantChecks = 0
+        connectionStartedAt = SystemClock.elapsedRealtime()
+        lastVideoFrameAt = 0L
+        lastPresentationTimeUs = Long.MIN_VALUE
+        val frameEpoch = ++frameGeneration
         if (!uri.startsWith("rtsp://", ignoreCase = true)) {
             status.text = "Camera requires a supported RTSP stream"
             return
         }
         try {
-            val next = ExoPlayer.Builder(context)
+            val renderers = DefaultRenderersFactory(context)
+                .setEnableDecoderFallback(false)
+                .setMediaCodecSelector(MediaCodecSelector { mimeType, secure, tunneling ->
+                    MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling)
+                        .filter { !mimeType.startsWith("video/") || it.hardwareAccelerated }
+                })
+            val next = ExoPlayer.Builder(context, renderers)
                 .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(500, 2_000, 250, 500).build())
                 .build()
             player = next
             next.volume = 0f
+            next.trackSelectionParameters = next.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true).build()
+            next.setVideoFrameMetadataListener { presentationTimeUs, _, _, _ ->
+                // Callback runs on the playback thread. Ignore retired players without
+                // posting a main-thread message for every decoded frame.
+                if (frameGeneration == frameEpoch && presentationTimeUs != lastPresentationTimeUs) {
+                    lastPresentationTimeUs = presentationTimeUs
+                    lastVideoFrameAt = SystemClock.elapsedRealtime()
+                }
+            }
             playerView.player = next
             next.addListener(object : Player.Listener {
                 override fun onRenderedFirstFrame() {
+                    if (player !== next) return
                     firstFrame = true
                     status.visibility = View.GONE
                     retries = 0
                 }
                 override fun onPlaybackStateChanged(state: Int) {
+                    if (player !== next) return
                     if (state == Player.STATE_BUFFERING && firstFrame) {
                         status.text = "Camera interrupted · reconnecting"
                         status.visibility = View.VISIBLE
@@ -108,7 +143,7 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
                         status.visibility = View.GONE
                     } else if (state == Player.STATE_ENDED) recover()
                 }
-                override fun onPlayerError(error: PlaybackException) { recover() }
+                override fun onPlayerError(error: PlaybackException) { if (player === next) recover() }
             })
             val source = RtspMediaSource.Factory().setForceUseRtpTcp(true).setTimeoutMs(10_000)
                 .createMediaSource(MediaItem.fromUri(uri))
@@ -122,9 +157,11 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
     private fun recover() {
         if (released) return
         handler.removeCallbacksAndMessages(null)
+        frameGeneration++
         playerView.player = null
-        player?.release()
+        val previous = player
         player = null
+        previous?.release()
         status.text = "Camera unavailable · reconnecting"
         status.visibility = View.VISIBLE
         if (fallbackUri != null && uri != fallbackUri) uri = fallbackUri
@@ -136,8 +173,10 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
     override fun release() {
         released = true
         handler.removeCallbacksAndMessages(null)
+        frameGeneration++
         playerView.player = null
-        player?.release()
+        val previous = player
         player = null
+        previous?.release()
     }
 }

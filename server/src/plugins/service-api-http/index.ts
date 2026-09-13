@@ -933,7 +933,7 @@ async function proxyIoBoxEventToKiosk(
 // Event deduplication cache: key → last-seen timestamp (ms).
 const eventDedupCache = new Map<string, number>();
 
-function registerKioskRoutes(
+export function registerKioskRoutes(
   app: H3,
   repo: Repository,
   auth: AuthApi,
@@ -965,7 +965,13 @@ function registerKioskRoutes(
         });
       });
     if (bundle instanceof Response) return bundle;
-    if (!bundle) throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
+    if (!bundle) {
+      if (isAndroidViewer((event.context as any).kioskProfile)) return new Response(JSON.stringify({ error: "display_unassigned" }), { status: 409, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+      throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
+    }
+    if (isAndroidViewer((event.context as any).kioskProfile) && !bundle.displays[0]?.layouts.length) {
+      return new Response(JSON.stringify({ error: "display_unassigned" }), { status: 409, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+    }
     bundle.tenant_slug = kiosk.tenant_slug;
 
     // Stable bundle ETag: the payload contains randomized encrypted fields,
@@ -974,7 +980,7 @@ function registerKioskRoutes(
     const etag = `"${bundle.version}"`;
     const ifNoneMatch = getRequestHeader(event, "if-none-match");
     if (ifNoneMatch === etag) {
-      return new Response(null, { status: 304 });
+      return new Response(null, { status: 304, headers: { "cache-control": "private, no-store", "etag": etag, "vary": "Authorization, Cookie" } });
     }
 
     return new Response(json, {
@@ -983,6 +989,8 @@ function registerKioskRoutes(
         "content-type": "application/json",
         "etag": etag,
         "x-bf-bundle-version": bundle.version,
+        "cache-control": "private, no-store",
+        "vary": "Authorization, Cookie",
       },
     });
   });
@@ -1144,7 +1152,7 @@ function registerKioskRoutes(
             || match.index !== reportedIndex
             || match.width_px !== reported.width_px
             || match.height_px !== reported.height_px
-            || !match.is_enabled
+            || (!viewer && !match.is_enabled)
             || (powerState != null && match.actual_power_state !== powerState)
           ) {
             await repo.updateDisplay(match.id, {
@@ -1152,7 +1160,7 @@ function registerKioskRoutes(
               index: reportedIndex,
               width_px: reported.width_px,
               height_px: reported.height_px,
-              is_enabled: true,
+              is_enabled: viewer ? match.is_enabled : true,
               ...(powerState != null ? {
                 actual_power_state: powerState,
                 actual_power_state_at: new Date().toISOString(),

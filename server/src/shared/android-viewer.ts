@@ -29,8 +29,10 @@ export async function viewerAssignment(repo: Repository, kiosk: Kiosk) {
     for (const cell of await repo.layoutCells(layout.id)) {
       const entity = cell.entity_id ? await repo.getEntityById(cell.entity_id) : null;
       if (entity) layoutIds.add(entity.id); // assigned fullscreen virtual layout
-      const url = entity?.type === "dashboard" && entity.dashboard_id
-        ? `/dash/${entity.dashboard_id}` : entity?.type === "web" ? entity.web_url : cell.web_url;
+      const url = entity
+        ? entity.type === "dashboard" && entity.dashboard_id ? `/dash/${entity.dashboard_id}`
+          : entity.type === "web" || entity.type === "ablesign" ? entity.web_url : null
+        : cell.content_type === "web" ? cell.web_url : null;
       if (url?.startsWith("/dash/") && !url.includes("?") && !url.includes("#")) dashboardPaths.add(url.replace(/\/$/, ""));
     }
   }

@@ -31,7 +31,8 @@ cargo test --manifest-path client/Cargo.toml -p betterframe-client-core -p bette
 ```
 
 The Android workflow builds debug/release APKs and runs host policy tests,
-Android unit tests and lint. APK artifacts are available on the workflow run.
+Android unit tests, lint, and emulator smoke tests for JNI, enrollment UI,
+Keystore storage and offline HTML rendering. APK artifacts are available on the workflow run.
 Compilation does not qualify a device or signage provider for unattended use.
 
 ## Setup and operation

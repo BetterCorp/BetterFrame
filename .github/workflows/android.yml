@@ -3,9 +3,6 @@ name: Android viewer
 on:
   pull_request:
     paths: ['client/**', '.github/workflows/android.yml']
-  push:
-    branches: ['feat/android-display-viewer']
-    paths: ['client/**', '.github/workflows/android.yml']
   workflow_dispatch:
 
 permissions:

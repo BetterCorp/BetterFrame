@@ -115,4 +115,4 @@ A normal Android/TV installation should launch from its icon and obey system nav
 - Required mixed layouts and concurrent web/video workload; whether four live feeds is sufficient for camera-only layouts.
 - Ordinary launch versus a requirement for unattended restart after power loss.
 
-No application code was changed or performance claims measured as part of this planning task.
+Implementation is tracked in the Android viewer PR. Performance targets above remain unmeasured until real-device qualification; `client/android/README.md` records the implemented subset and current limits.

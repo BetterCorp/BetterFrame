@@ -170,6 +170,19 @@ mod tests {
         );
     }
     #[test]
+    fn decrypts_independent_node_server_wire_vector() {
+        // Node createCipheriv("aes-256-gcm", Buffer.alloc(32,7), Buffer.alloc(12,3)).
+        let uri = camera_uri(
+            "rtsp://camera/live",
+            Some("u@ser"),
+            Some("v1.AwMDAwMDAwMDAwMD.b9EyWq8YCt_X35ZVpALLig.Vb7QcGAHfjUVMic"),
+            Some("BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"),
+        )
+        .unwrap();
+        assert_eq!(uri, "rtsp://u%40ser:p%40ss%3A%2F%20word@camera/live");
+    }
+
+    #[test]
     fn camera_credentials_are_authenticated_and_url_encoded() {
         use aes_gcm::{
             Aes256Gcm, Nonce,

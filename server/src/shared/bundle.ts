@@ -241,6 +241,10 @@ export async function generateBundle(
     return null;
   }
 
+  if (viewer && !kioskEncryptKey) {
+    throw new Error("Android viewer requires a readable per-device encryption key; pair again");
+  }
+
   phase = "load-scope";
   // Collect camera IDs across ALL displays' layouts (de-duped).
   const allLayoutIds = new Set<string>();
@@ -356,7 +360,7 @@ export async function generateBundle(
           fit: c.fit,
           // Smart URL: encrypted credentials use per-kiosk key so each
           // kiosk's bundle has uniquely encrypted values.
-          smart_url: !viewer && c.options?.["smart_url"] ? (() => {
+          smart_url: viewer && c.options?.["smart_url"] ? { steps: [] } : c.options?.["smart_url"] ? (() => {
             const raw = c.options["smart_url"] as any;
             const steps = Array.isArray(raw.steps) ? raw.steps.map((s: any) => {
               const step = { ...s };

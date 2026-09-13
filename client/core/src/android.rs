@@ -148,10 +148,10 @@ pub fn render_plan(
             col: cell.col,
             row_span: cell.row_span,
             col_span: cell.col_span,
-            fit: if cell.fit == "contain" {
-                "contain"
-            } else {
-                "cover"
+            fit: match cell.fit.as_str() {
+                "contain" => "contain",
+                "fill" => "fill",
+                _ => "cover",
             }
             .into(),
             kind: "placeholder",
@@ -173,8 +173,11 @@ pub fn render_plan(
                     if camera_count >= camera_budget {
                         output.message =
                             Some("Camera limit reached; expand this tile to view".into());
-                    } else if let Some(uri) = pick_stream(camera, expanded.is_some()) {
-                        let fallback = pick_stream(camera, false).filter(|sub| *sub != uri);
+                    } else if let Some(uri) =
+                        pick_stream(camera, expanded.is_some(), cell.stream_selector.as_deref())
+                    {
+                        let fallback =
+                            pick_stream(camera, false, Some("sub")).filter(|sub| *sub != uri);
                         output.kind = "camera";
                         output.camera = Some(CameraSource {
                             id: camera.id.clone(),
@@ -249,7 +252,7 @@ pub fn render_plan(
                     web_count += 1;
                 }
             }
-            "empty" | "placeholder" => {
+            "none" | "empty" | "placeholder" => {
                 output.message = Some("No content assigned".into());
             }
             _ => {
@@ -386,7 +389,7 @@ pub fn resolve_web_url(value: &str, server_url: &str) -> Option<String> {
     let url = layout::resolve_web_url(value, server_url)?;
     valid_web_reference(&url).then_some(url)
 }
-fn pick_stream(camera: &BundleCamera, expanded: bool) -> Option<String> {
+fn pick_stream(camera: &BundleCamera, expanded: bool, selector: Option<&str>) -> Option<String> {
     let compatible: Vec<_> = camera
         .streams
         .iter()
@@ -399,7 +402,14 @@ fn pick_stream(camera: &BundleCamera, expanded: bool) -> Option<String> {
             }) && valid_rtsp(&s.rtsp_uri)
         })
         .collect();
-    let preferred = if expanded { "main" } else { "sub" };
+    let preferred = if expanded {
+        "main"
+    } else {
+        match selector {
+            Some("main") => "main",
+            _ => "sub",
+        }
+    };
     compatible
         .iter()
         .find(|s| s.role == preferred)
@@ -567,6 +577,23 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn explicit_main_selector_fill_and_empty_cells_preserve_assigned_intent() {
+        let mut f = fixture();
+        let cells = &mut f["displays"][0]["layouts"][0]["cells"];
+        cells[0]["stream_selector"] = json!("main");
+        cells[0]["fit"] = json!("fill");
+        cells[2]["content_type"] = json!("none");
+        let p = plan(f, None, None);
+        assert_eq!(
+            p.cells[0].camera.as_ref().unwrap().uri,
+            "rtsp://camera/main"
+        );
+        assert_eq!(p.cells[0].fit, "fill");
+        assert_eq!(p.cells[2].kind, "placeholder");
+        assert_eq!(p.cells[2].message.as_deref(), Some("No content assigned"));
+    }
+
     #[test]
     fn resolves_bf_relative_urls_but_rejects_privileged_schemes() {
         assert_eq!(

@@ -18,6 +18,11 @@ import java.util.concurrent.TimeUnit
 
 /** Outbound display client only. All network/storage work is serialized away from the UI. */
 class ViewerSession(context: Context, private val listener: Listener) {
+    private companion object {
+        const val VIEWER_PROFILE = "android-viewer-v1"
+        const val AUTH_REJECTED = "Display authorization rejected. Check this device in BF."
+        const val PROFILE_REQUIRED = "This BF server must support android-viewer-v1. Update the server to use this display."
+    }
     interface Listener {
         fun onStatus(message: String)
         fun onPairing(code: String)
@@ -45,6 +50,7 @@ class ViewerSession(context: Context, private val listener: Listener) {
     private var failures = 0
     private var activeEpoch = 0
     private var dashboardSessionReady = false
+    private var profileVerified = false
     @Volatile private var closed = false
     @Volatile private var clearingEnrollment = false
     @Volatile private var layoutId: String? = null
@@ -97,11 +103,14 @@ class ViewerSession(context: Context, private val listener: Listener) {
             if (generation != epoch || !running) return@enqueue
             activeEpoch = epoch
             dashboardSessionReady = false
+            profileVerified = false
             nextCookie = 0L
             nextSocketAttempt = 0L
             failures = 0
             try {
                 state = store.read()
+                // Older app versions could cache an unrestricted legacy bundle.
+                if (state.optString("bundle_profile") != VIEWER_PROFILE) clearCachedBundle()
                 val saved = state.optString("server")
                 val chosen = serverUrl?.takeIf { it.isNotBlank() } ?: saved
                 if (chosen.isBlank()) {
@@ -116,7 +125,7 @@ class ViewerSession(context: Context, private val listener: Listener) {
                 layoutId = state.optString("layout_id").takeIf { it.isNotBlank() }
                 persist()
                 if (!state.optBoolean("blocked")) emitPlan()
-                else status("Display authorization rejected. Check this device in BF.")
+                else status(state.optString("block_reason", AUTH_REJECTED))
                 nextSync = 0L
                 nextPairPoll = 0L
                 loop?.cancel(false)
@@ -214,7 +223,7 @@ class ViewerSession(context: Context, private val listener: Listener) {
                     nextSync = System.currentTimeMillis() + 30_000
                     failures = 0
                 }
-                if (!state.optBoolean("blocked") && socket == null && !socketConnecting && now >= nextSocketAttempt) connectSocket()
+                if (profileVerified && !state.optBoolean("blocked") && socket == null && !socketConnecting && now >= nextSocketAttempt) connectSocket()
             }
         } catch (_: Exception) {
             if (!active()) return
@@ -222,7 +231,7 @@ class ViewerSession(context: Context, private val listener: Listener) {
             val delay = (2_000L shl failures).coerceAtMost(60_000) + (0..1000).random()
             nextSync = System.currentTimeMillis() + delay
             nextPairPoll = System.currentTimeMillis() + delay
-            status(if (state.optBoolean("blocked")) "Display authorization rejected. Check this device in BF."
+            status(if (state.optBoolean("blocked")) state.optString("block_reason", AUTH_REJECTED)
                 else "BF connection unavailable — retaining saved display configuration")
         }
     }
@@ -299,18 +308,28 @@ class ViewerSession(context: Context, private val listener: Listener) {
     private fun authorized(response: Response): Boolean {
         ensureActive()
         if (response.code == 401 || response.code == 403) {
-            state.put("blocked", true); persist()
-            socket?.cancel(); socket = null; socketConnecting = false
-            expandedId = null; renderSnapshot = null; dashboardSessionReady = false; nextCookie = 0L
-            ui(activeEpoch) {
-                listener.onPlan(JSONObject().put("error", "Display authorization rejected"))
-                WebTile.clearSessions(app)
-                listener.onStatus("Display authorization rejected. Check this device in BF.")
-            }
+            blockDisplay(AUTH_REJECTED)
             return false
         }
         check(response.isSuccessful)
         return true
+    }
+
+    private fun clearCachedBundle() {
+        for (key in listOf("bundle", "etag", "bundle_version", "layout_id", "bundle_profile")) state.remove(key)
+        layoutId = null; expandedId = null; renderSnapshot = null
+    }
+
+    private fun blockDisplay(reason: String) {
+        state.put("blocked", true).put("block_reason", reason); persist()
+        profileVerified = false
+        socket?.cancel(); socket = null; socketConnecting = false
+        expandedId = null; renderSnapshot = null; dashboardSessionReady = false; nextCookie = 0L
+        ui(activeEpoch) {
+            listener.onPlan(JSONObject().put("error", reason))
+            WebTile.clearSessions(app)
+            listener.onStatus(reason)
+        }
     }
 
     private fun heartbeat(): Boolean {
@@ -319,10 +338,24 @@ class ViewerSession(context: Context, private val listener: Listener) {
             .put("width_px", metrics.widthPixels).put("height_px", metrics.heightPixels).put("power_state", "awake"))
         return request("/api/kiosk/heartbeat", JSONObject().put("displays", displays).put("capabilities", capabilities())
             .put("kiosk_app_version", BuildConfig.VERSION_NAME).put("os_version", "Android ${Build.VERSION.RELEASE}")
-            .put("bundle_version", state.optString("bundle_version"))).use { authorized(it) }
+            .put("bundle_version", state.optString("bundle_version"))).use {
+                profileVerified = false
+                if (!authorized(it)) return@use false
+                val profile = runCatching { json(it).optString("viewer_profile") }.getOrNull()
+                ensureActive()
+                if (profile != VIEWER_PROFILE) {
+                    clearCachedBundle()
+                    blockDisplay(PROFILE_REQUIRED)
+                    false
+                } else {
+                    profileVerified = true
+                    true
+                }
+            }
     }
 
     private fun bundle() {
+        check(profileVerified) { "Server viewer profile has not been verified" }
         val builder = Request.Builder().url(serverUrl + "/api/kiosk/bundle").header("Authorization", "Bearer $kioskKey")
         state.optString("etag").takeIf { it.isNotBlank() && state.has("bundle") && !state.optBoolean("blocked") }
             ?.let { builder.header("If-None-Match", it) }
@@ -333,8 +366,7 @@ class ViewerSession(context: Context, private val listener: Listener) {
             if (it.code == 409) {
                 val problem = json(it)
                 if (problem.optString("error") == "display_unassigned") {
-                    state.remove("bundle"); state.remove("etag"); state.remove("bundle_version"); state.remove("layout_id")
-                    layoutId = null; expandedId = null; renderSnapshot = null
+                    clearCachedBundle()
                     persist()
                     ui(activeEpoch) { listener.onPlan(JSONObject().put("error", "Assign a display to this device in BF")) }
                     status("Assign a display to this device in BF")
@@ -347,7 +379,8 @@ class ViewerSession(context: Context, private val listener: Listener) {
             val plan = JSONObject(NativeCore.renderPlan(raw, null, null))
             if (plan.has("error")) {
                 state.put("bundle", raw).put("bundle_version", bundle.optString("version"))
-                    .put("etag", it.header("ETag") ?: "").put("blocked", false)
+                    .put("etag", it.header("ETag") ?: "").put("blocked", false).put("bundle_profile", VIEWER_PROFILE)
+                state.remove("block_reason")
                 persist()
                 emitPlan()
                 status("Assign one supported display layout to this device in BF")
@@ -355,7 +388,8 @@ class ViewerSession(context: Context, private val listener: Listener) {
             }
             val changed = raw != state.optString("bundle") || state.optBoolean("blocked")
             state.put("bundle", raw).put("bundle_version", bundle.optString("version"))
-                .put("etag", it.header("ETag") ?: "").put("blocked", false)
+                .put("etag", it.header("ETag") ?: "").put("blocked", false).put("bundle_profile", VIEWER_PROFILE)
+            state.remove("block_reason")
             persist()
             if (changed) emitPlan()
             status("Connected")
@@ -404,7 +438,7 @@ class ViewerSession(context: Context, private val listener: Listener) {
     }
 
     private fun emitPlan() {
-        if (!active() || state.optBoolean("blocked")) return
+        if (!active() || state.optBoolean("blocked") || state.optString("bundle_profile") != VIEWER_PROFILE) return
         val raw = state.optString("bundle").takeIf { it.isNotBlank() } ?: return
         val identity = state.optJSONObject("identity") ?: JSONObject()
         val encryptKey = identity.textValue("encrypt_key") ?: identity.textValue("cluster_key")

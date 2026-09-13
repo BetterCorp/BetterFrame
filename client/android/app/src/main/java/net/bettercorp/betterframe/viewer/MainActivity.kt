@@ -273,7 +273,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
                 PlaceholderTile(this, cell.optString("label"), "Layout exceeds this device's playback budget")
             } else when (kind) {
                 "camera" -> CameraTile(this, cell) { activate(cell) }
-                "web" -> WebTile(this, cell) { focusedCellId = id; session.expand(if (plan?.optString("expandedCellId") == id) null else id) }
+                "web" -> WebTile(this, cell) { activate(cell) }
                 else -> PlaceholderTile(this, cell.optString("label"), cell.optString("message", "No content assigned")) { activate(cell) }
             }
             if (existing == null) {

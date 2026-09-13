@@ -43,12 +43,16 @@ Compilation does not qualify a device or signage provider for unattended use.
 3. Approve the displayed pairing code in BF and assign one enabled display.
 4. Assign normal BF camera/web/HTML/AbleSign content. The server recognizes
    `android-viewer` and filters the bundle to the first enabled assigned display.
+   Its heartbeat must confirm `android-viewer-v1` before the app fetches a bundle
+   or opens its command socket. Upgrade older BF servers before using the app.
 5. Tap/select a camera to expand it. Restore or Back returns to the layout.
-   Web cells have separate Interact/Expand controls so page clicks remain usable.
+   Web cells have separate page-interaction and assigned-action controls
+   (Expand, Restore, or Switch layout) so page clicks remain usable.
 
 Pairing identity and cached bundles are stored together atomically, encrypted
 with an Android Keystore key, outside Android backup. Offline startup restores
-cached layout/HTML; live cameras and remote websites still require their own
+previously profile-verified layout/HTML; older unverified caches are discarded.
+Live cameras and remote websites still require their own
 network paths. Failed authorization blanks content while preserving identity
 for administrator recovery. Unpair clears local enrollment and browser sessions.
 

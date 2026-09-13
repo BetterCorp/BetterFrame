@@ -26,7 +26,7 @@ import org.json.JSONObject
 import kotlin.math.min
 
 /** Assigned browser content never receives a native bridge or the device API key. */
-class WebTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : ViewerTile(context) {
+class WebTile(context: Context, cell: JSONObject, onActivate: () -> Unit) : ViewerTile(context) {
     private val handler = Handler(Looper.getMainLooper())
     private val content = cell.getJSONObject("web")
     private val html = content.optString("html").takeUnless { it.isBlank() || it == "null" }
@@ -73,7 +73,15 @@ class WebTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Viewer
             maxLines = 1
         }, LinearLayout.LayoutParams(0, -2, 1f))
         toolbar.addView(interactButton)
-        toolbar.addView(Button(context).apply { text = "Expand"; setOnClickListener { onExpand() } })
+        toolbar.addView(Button(context).apply {
+            text = when (cell.optJSONObject("action")?.optString("type")) {
+                "restore" -> "Restore"
+                "layout.switch" -> "Switch layout"
+                "unsupported" -> "Unavailable"
+                else -> "Expand"
+            }
+            setOnClickListener { onActivate() }
+        })
         toolbar.addView(Button(context).apply {
             text = "Reload"
             setOnClickListener { rendererFailures = 0; networkRetries = 0; createBrowser() }

@@ -15,6 +15,7 @@ import org.junit.runner.RunWith
 import java.io.File
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -30,6 +31,8 @@ class ViewerSessionTest {
             override fun getApplicationContext(): Context = this
         }
         val unassigned = AtomicBoolean(false)
+        val profile = AtomicReference<String?>(null)
+        val profileRejected = LinkedBlockingQueue<JSONObject>()
         val failures = ConcurrentLinkedQueue<String>()
         val statuses = ConcurrentLinkedQueue<String>()
         val requests = ConcurrentLinkedQueue<String>()
@@ -74,7 +77,7 @@ class ViewerSessionTest {
                             val displays = JSONObject(request.body.readUtf8()).getJSONArray("displays")
                             check(displays.length() == 1) { "Single display heartbeat missing" }
                             check(displays.getJSONObject(0).getString("power_state") == "awake") { "Active display must report BF's awake power state" }
-                            json("{}")
+                            json(JSONObject().apply { profile.get()?.let { put("viewer_profile", it) } }.toString())
                         }
                         "/api/kiosk/bundle" -> if (unassigned.get()) json("""{"error":"display_unassigned"}""", 409)
                             else json(htmlBundle).setHeader("ETag", "\"fixture-v1\"")
@@ -94,6 +97,9 @@ class ViewerSessionTest {
         // MockWebServer resolves its canonical hostname; do that off Android's UI thread.
         val serverOrigin = server.url("/").toString()
         try {
+            // A cache written before profile verification was introduced must not render.
+            ProtectedStore(isolated).write(JSONObject().put("server", serverOrigin.trimEnd('/'))
+                .put("bundle", htmlBundle).put("etag", "legacy-cache").put("bundle_version", "1"))
             instrumentation.runOnMainSync {
                 session.set(ViewerSession(isolated, object : ViewerSession.Listener {
                     override fun onStatus(message: String) { statuses.add(message) }
@@ -101,7 +107,8 @@ class ViewerSessionTest {
                         if (code.isBlank() && clearing.get()) enrollmentCleared.countDown()
                     }
                     override fun onPlan(plan: JSONObject) {
-                        if (plan.has("error")) removedPlan.countDown()
+                        if (plan.optString("error").contains("android-viewer-v1")) profileRejected.add(plan)
+                        else if (plan.optString("error") == "Assign a display to this device in BF") removedPlan.countDown()
                         else if (plan.optJSONArray("cells")?.optJSONObject(0)?.optJSONObject("web")?.optString("html")?.contains("Offline lobby") == true) {
                             actualPlan.set(plan)
                             htmlPlan.countDown()
@@ -110,12 +117,34 @@ class ViewerSessionTest {
                 }))
                 session.get().start(serverOrigin)
             }
+            for (advertised in listOf(null, "android-viewer-v2")) {
+                if (advertised != null) {
+                    profile.set(advertised)
+                    instrumentation.runOnMainSync { session.get().refresh() }
+                }
+                assertNotNull("Missing/wrong viewer profile was not rejected; status=$statuses", profileRejected.poll(15, TimeUnit.SECONDS))
+                assertFalse("Legacy bundle must never be fetched", requests.contains("/api/kiosk/bundle"))
+                assertFalse("Legacy server must not receive a browser session request", requests.contains("/api/kiosk/display-session"))
+                assertFalse("Legacy server must not receive a command socket", requests.contains("/ws/kiosk"))
+                assertNull("Unverified cache must not render", actualPlan.get())
+                assertFalse("Unverified cache must be removed", ProtectedStore(isolated).read().has("bundle"))
+            }
+            profile.set("android-viewer-v1")
+            instrumentation.runOnMainSync { session.get().refresh() }
             assertTrue("HTML plan did not arrive; status=$statuses; failures=$failures", htmlPlan.await(15, TimeUnit.SECONDS))
             assertTrue("Display session was not requested", cookieInstalled.await(5, TimeUnit.SECONDS))
             assertTrue("Protocol assertions: $failures", failures.isEmpty())
             assertEquals("web", actualPlan.get().getJSONArray("cells").getJSONObject(0).getString("kind"))
             assertTrue(ProtectedStore(isolated).read().has("bundle"))
+            assertEquals("android-viewer-v1", ProtectedStore(isolated).read().getString("bundle_profile"))
             assertTrue(requests.contains("/api/pair/ack"))
+            val fetchedBeforeDowngrade = requests.count { it == "/api/kiosk/bundle" }
+            profile.set(null)
+            instrumentation.runOnMainSync { session.get().refresh() }
+            assertNotNull("Server downgrade must clear a previously verified display", profileRejected.poll(15, TimeUnit.SECONDS))
+            assertEquals(fetchedBeforeDowngrade, requests.count { it == "/api/kiosk/bundle" })
+            assertFalse("Downgraded server cache must be removed", ProtectedStore(isolated).read().has("bundle"))
+            profile.set("android-viewer-v1")
             unassigned.set(true)
             instrumentation.runOnMainSync { session.get().refresh() }
             assertTrue("Unassignment did not clear the display; status=$statuses", removedPlan.await(15, TimeUnit.SECONDS))

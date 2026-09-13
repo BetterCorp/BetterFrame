@@ -59,7 +59,8 @@ jobs:
           require(os.environ['RELEASE_REF'] == os.environ['GITHUB_SHA'], 'Release ref must match triggering commit')
           require(subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == os.environ['GITHUB_SHA'], 'Checkout does not match release commit')
           version = os.environ['RELEASE_VERSION']
-          require(re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|dev)\.[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?', version), 'Invalid release version')
+          identifier = r'(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+          require(re.fullmatch(rf'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|dev)\.{identifier}(\.{identifier})*)?', version), 'Invalid release version')
           require(os.environ['RELEASE_TAG'] == 'v' + version, 'Release tag/version mismatch')
           require(re.fullmatch(r'[0-9A-Fa-f]{64}', os.environ['CERTIFICATE_SHA256']), 'Configure BF_ANDROID_CERT_SHA256 with the permanent certificate fingerprint')
           run, offset = os.environ['RELEASE_RUN'], os.environ['VERSION_OFFSET']

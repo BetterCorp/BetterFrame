@@ -57,13 +57,27 @@ the BetterFrame application files. Node-RED's application dependencies are
 installed with `npm ci` from the released root lockfile. Its previous application
 tree is removed, and the new workspace keeps its hoisted and nested dependencies
 behind the existing manager's `nodesDir` path.
-They build on the service's current local
-`easypanel/betterframe/<service>:latest` image. The **application source and
-reported version**, including the Node-RED application dependency tree, are
-pinned to the release; the inherited runtime is local to
-this installation. These templates are therefore for this existing deployment,
-not a fresh-server bootstrap. Repeated updates retain underlying image layers;
-runtime upgrades or rebuilding the base need a separate migration.
+Both build stages use fixed local runtime snapshots:
+`easypanel/betterframe/runtime-server-5b29a29:latest` and
+`easypanel/betterframe/runtime-nodered-5b29a29:latest`. The easy1 services
+`runtime-server-5b29a29` and `runtime-nodered-5b29a29` each keep one inert
+`/bin/sleep infinity` container running to retain the images through easy1's
+daily Docker cleanup. These retention containers have no application environment,
+mounts, domains, or published ports, and their healthchecks are disabled. The
+snapshots are built once and never rebuilt by release automation. Application
+Dockerfiles explicitly restore the BF server or Node-RED manager entrypoint,
+clear inherited command arguments, and install application readiness checks.
+Application releases always start from these snapshots, so each
+release does not inherit the preceding release's application layers and deleted
+dependencies.
+
+The **application source and reported version**, including the Node-RED
+application dependency tree, are pinned to the release. These runtime snapshots
+are local to this existing installation, so the templates are not a fresh-server
+bootstrap. Keep the inert runtime retention services and their images. A future
+runtime upgrade requires an explicitly provisioned new snapshot and a reviewed
+update to these Dockerfile base references; do not repoint the existing snapshots
+at a newer application image.
 
 ## Rehearsal and retry
 

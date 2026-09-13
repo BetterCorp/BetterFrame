@@ -75,6 +75,21 @@ class FakeApi:
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_release_images_use_fixed_runtime_snapshots_in_every_stage(self):
+        for service in ("server", "nodered"):
+            with self.subTest(service=service):
+                template = (Path(__file__).parents[1] / f"deploy/easy1/{service}.Dockerfile").read_text()
+                bases = [line.split()[1] for line in template.splitlines() if line.startswith("FROM ")]
+                self.assertEqual(bases, [f"easypanel/betterframe/runtime-{service}-5b29a29:latest"] * 2)
+                self.assertNotIn(f"easypanel/betterframe/{service}:latest", bases,
+                                 "Release images must not accumulate previous application layers")
+                entrypoint = ('ENTRYPOINT ["/usr/local/bin/bf-entrypoint.sh"]' if service == "server"
+                              else 'ENTRYPOINT ["node", "/usr/src/betterframe-manager/manager.mjs"]')
+                self.assertIn(entrypoint, template)
+                self.assertIn("CMD []", template)
+                self.assertNotIn('ENTRYPOINT ["/bin/sleep"', template,
+                                 "Application images must replace the inert snapshot command")
+
     def test_nodered_release_installs_lockfile_and_replaces_the_previous_application_tree(self):
         template = (Path(__file__).parents[1] / "deploy/easy1/nodered.Dockerfile").read_text()
         self.assertIn("WORKDIR /tmp/betterframe-source", template)
@@ -85,7 +100,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn("/tmp/betterframe-source/node_modules/ /usr/src/betterframe-release/node_modules/", template)
         self.assertIn("ln -s /usr/src/betterframe-release/nodered /usr/src/betterframe-nodes", template)
         self.assertIn("http://127.0.0.1:1880/readyz", template)
-        self.assertNotIn("ENTRYPOINT", template)  # Preserve the existing tenant manager runtime.
+        self.assertIn('ENTRYPOINT ["node", "/usr/src/betterframe-manager/manager.mjs"]', template)
 
     def test_nodered_locked_workspace_dependencies_resolve_after_runtime_relocation(self):
         # Exercise actual npm installation using local tarballs: no registry or
@@ -162,7 +177,7 @@ class DeploymentTests(unittest.TestCase):
             self.assertIn(f"/tar.gz/{SHA}", dockerfile)
             self.assertIn(f'org.opencontainers.image.revision="{SHA}"', dockerfile)
             self.assertIn(f'org.opencontainers.image.version="{VERSION}"', dockerfile)
-            self.assertIn(f"FROM easypanel/betterframe/{service}:latest", dockerfile)
+            self.assertIn(f"FROM easypanel/betterframe/runtime-{service}-5b29a29:latest", dockerfile)
             self.assertNotIn("@COMMIT@", dockerfile)
         self.assertIn("betterframe_server:18080", rendered["proxy"])
         self.assertIn("betterframe_nodered:1880", rendered["proxy"])

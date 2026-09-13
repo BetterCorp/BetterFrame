@@ -25,7 +25,8 @@ PROJECT = "betterframe"
 API_URL = "https://easy1.eu2.betterweb.co.za/api"
 PUBLIC_URL = "https://frame-eu.betterportal.net"
 PROXY_PATH = "/etc/nginx/conf.d/default.conf"
-VERSION = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:alpha|beta|dev)\.[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?")
+PRERELEASE_IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+VERSION = re.compile(rf"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:alpha|beta|dev)\.{PRERELEASE_IDENTIFIER}(?:\.{PRERELEASE_IDENTIFIER})*)?")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 TIMEOUT = 1200
 

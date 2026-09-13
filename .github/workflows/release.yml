@@ -93,7 +93,9 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             requested_tag="${GITHUB_REF#refs/tags/}"
             requested_version="${requested_tag#v}"
-            [[ "$requested_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|dev)\.[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] \
+            identifier='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+            version_pattern="^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|dev)\.${identifier}(\.${identifier})*)?$"
+            [[ "$requested_version" =~ $version_pattern ]] \
               || { echo "Invalid release tag: $requested_tag" >&2; exit 1; }
             # Alpha is a prerelease on the existing dev channel. Read the
             # first identifier so e.g. dev.build-beta stays on that channel.
@@ -112,7 +114,9 @@ jobs:
             base="${latest#v}"
             base="${base%%-*}"
             IFS=. read -r MAJ MIN PAT <<< "$base"
-            version="${MAJ}.${MIN}.$((PAT + 1))-dev.${short}"
+            # The prefix keeps even a zero-leading, digit-only SHA identifier
+            # non-numeric, as required by SemVer prerelease rules.
+            version="${MAJ}.${MIN}.$((PAT + 1))-dev.g${short}"
             tag="v${version}"
           fi
           build_image=true

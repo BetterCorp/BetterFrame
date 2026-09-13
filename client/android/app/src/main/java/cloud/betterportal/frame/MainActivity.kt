@@ -20,6 +20,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
     private lateinit var session: ViewerSession
     private lateinit var root: LinearLayout
     private lateinit var status: TextView
+    private var serverAddress: EditText? = null
     private lateinit var grid: CellGrid
     private lateinit var restore: Button
     private lateinit var layouts: Button
@@ -129,17 +130,18 @@ class MainActivity : Activity(), ViewerSession.Listener {
         }
         root.addView(text("BetterFrame Viewer", 28f))
         root.addView(text("Cameras, webpages and signage for your display"))
-        status = text(pairing ?: "Enter your BF server, then approve this display in BF.")
+        status = text(pairing ?: "Connecting to BF…")
         root.addView(status)
         val address = EditText(this).apply {
-            hint = "https://bf.example.com"
+            hint = ServerAddress.DEFAULT
             setTextColor(Color.WHITE)
             setHintTextColor(Color.GRAY)
             setSingleLine(true)
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
-            setText(session.serverUrl ?: "")
+            setText(session.serverUrl.ifBlank { ServerAddress.DEFAULT })
             contentDescription = "BetterFrame server address"
         }
+        serverAddress = address
         root.addView(address, LinearLayout.LayoutParams(-1, -2))
         root.addView(button("Connect display") {
             val entered = address.text.toString().trim().trimEnd('/')
@@ -173,6 +175,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
     }
 
     private fun showDisplay() {
+        serverAddress = null
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
@@ -207,6 +210,8 @@ class MainActivity : Activity(), ViewerSession.Listener {
     }
 
     override fun onStatus(message: String) = runOnUiThread { status.text = message }
+
+    override fun onServerAddress(address: String) = runOnUiThread { serverAddress?.setText(address) }
 
     override fun onPairing(code: String) = runOnUiThread {
         plan = null

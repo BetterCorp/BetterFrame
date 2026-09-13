@@ -31,6 +31,8 @@ class ViewerActionsTest {
             .put("identity", JSONObject().put("kiosk_key", "test-device-key"))
             .put("bundle_profile", "android-viewer-v1")
             .put("bundle", bundle))
+        // Prevent the initial Activity session contacting the hosted default before replacement below.
+        ProtectedStore(context).write(JSONObject().put("server", "http://127.0.0.1:9"))
         val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
         lateinit var session: ViewerSession
@@ -75,6 +77,7 @@ class ViewerActionsTest {
         } finally {
             instrumentation.runOnMainSync { activity.finish() }
             instrumentation.waitForIdleSync()
+            ProtectedStore(context).clear()
             directory.deleteRecursively()
         }
     }

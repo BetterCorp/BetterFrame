@@ -5,6 +5,11 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 object ServerAddress {
+    const val DEFAULT = "https://frame.betterportal.net"
+
+    fun enrollmentOrigin(requested: String?, saved: String): String =
+        parse(requested?.takeIf { it.isNotBlank() } ?: saved.ifBlank { DEFAULT }).toString().trimEnd('/')
+
     fun parse(value: String): HttpUrl {
         val url = value.trim().toHttpUrl()
         require(url.username.isEmpty() && url.password.isEmpty()) { "Server URL must not contain credentials" }

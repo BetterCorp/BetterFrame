@@ -113,8 +113,10 @@ and real-device qualification remains necessary.
 ## Setup and operation
 
 1. Open BetterFrame from the Android launcher or TV launcher.
-2. Enter the BF server origin. Remote servers require HTTPS; explicit local
-   HTTP servers are supported for existing LAN deployments.
+2. The app automatically connects to `https://frame.betterportal.net` on first
+   launch. A saved custom server takes precedence on later launches. To change
+   servers, reset enrollment and enter the other BF server origin. Remote
+   servers require HTTPS; explicit local HTTP servers are supported for LAN deployments.
 3. Approve the displayed pairing code in BF and assign one enabled display.
 4. Assign normal BF camera/web/HTML/AbleSign content. The server recognizes
    `android-viewer` and filters the bundle to the first enabled assigned display.
@@ -130,6 +132,17 @@ previously profile-verified layout/HTML; older unverified caches are discarded.
 Live cameras and remote websites still require their own
 network paths. Failed authorization blanks content while preserving identity
 for administrator recovery. Unpair clears local enrollment and browser sessions.
+
+Connection failures before pairing now report that pairing could not start;
+paired devices without a downloaded display report that no configuration is
+saved yet. Only devices with a verified cached bundle report that they are
+retaining saved display configuration. Retries happen automatically.
+
+The server origin must serve `/api/**` and `/ws/**` directly. Configure a reverse
+proxy to route these requests to the regional BF service instead of returning
+an HTTP redirect. Android deliberately refuses redirects for pairing and device
+requests so polling secrets and device credentials cannot move to another
+origin. A redirect now reports an API routing error without changing enrollment.
 
 ## Initial limits
 

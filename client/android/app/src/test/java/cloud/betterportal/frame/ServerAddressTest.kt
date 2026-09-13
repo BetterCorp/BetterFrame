@@ -4,6 +4,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ServerAddressTest {
+    @Test fun automaticEnrollmentUsesHostedDefaultAndPreservesSavedCustomOrigin() {
+        assertEquals("https://frame.betterportal.net", ServerAddress.enrollmentOrigin(null, ""))
+        assertEquals("http://192.168.1.5:18081", ServerAddress.enrollmentOrigin(null, "http://192.168.1.5:18081"))
+        assertEquals("https://custom.example", ServerAddress.enrollmentOrigin("", "https://custom.example/"))
+        assertEquals("https://entered.example", ServerAddress.enrollmentOrigin("https://entered.example/", ""))
+    }
+
     @Test fun acceptsHttpsAndExplicitLocalHttp() {
         assertEquals("https://bf.example/", ServerAddress.parse("https://bf.example").toString())
         assertEquals("http://192.168.1.5:18081/", ServerAddress.parse("http://192.168.1.5:18081").toString())

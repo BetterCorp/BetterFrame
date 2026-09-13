@@ -4,7 +4,7 @@ import { H3 } from "h3";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { registerKioskRoutes } from "../src/plugins/service-api-http/index.js";
 import { generateBundle } from "../src/shared/bundle.js";
-import { androidViewerCommandAllowed, androidViewerRouteAllowed } from "../src/shared/android-viewer.js";
+import { androidViewerCommandAllowed, androidViewerRouteAllowed, viewerAssignment } from "../src/shared/android-viewer.js";
 import { registerViewerDeviceAuth } from "../src/shared/display-session.js";
 
 function fixture() {
@@ -75,7 +75,10 @@ test("Android commands and device APIs default closed for privileged and future 
 
 test("display cookie authenticates assigned dashboards but never device APIs, other pages, or cross-origin requests", async () => {
   const { repo, secrets, kiosk, cells } = fixture();
+  cells[1]!.web_url = "/dash/assigned?theme=dark#overview";
   cells[0]!.web_url = "/dash/stale-camera-url";
+  const bundle = await generateBundle(repo as never, secrets as never, "viewer", "cluster");
+  assert.equal(bundle?.layouts[0]?.cells[1]?.web_url, cells[1]!.web_url);
   const app = new H3();
   registerViewerDeviceAuth(app, repo as never, { verifyKioskKey: async (key: string) => key === "device-key" ? { id: "viewer", schema_name: "public", tenant_slug: "default" } : null } as never, secrets as never);
   for (const path of ["/api/kiosk/_check", "/api/kiosk/bundle", "/api/kiosk/cameras/private/stream", "/api/kiosk/firmware/check"]) app.get(path, () => ({ ok: true }));
@@ -87,8 +90,11 @@ test("display cookie authenticates assigned dashboards but never device APIs, ot
   const cookie = setCookie.split(";")[0]!;
   const check = (uri: string, extra = {}) => app.request("https://bf.test/api/kiosk/_check", { headers: { cookie, "x-original-uri": uri, ...extra } });
   assert.equal((await check("/dash/assigned")).status, 200);
+  assert.equal((await check("/dash/assigned?theme=dark")).status, 200);
+  assert.equal((await check("/dash/assigned/details?view=compact")).status, 200);
   assert.equal((await check("/dash/assets/app.js")).status, 200);
   assert.equal((await check("/dash/other")).status, 403);
+  assert.equal((await check("/dash/assigned-other?theme=dark")).status, 403);
   assert.equal((await check("/dash/stale-camera-url")).status, 403);
   assert.equal((await check("/dash/socket.io/?transport=polling")).status, 403);
   assert.equal((await check("/in/kiosk/control")).status, 403);
@@ -100,6 +106,27 @@ test("display cookie authenticates assigned dashboards but never device APIs, ot
   assert.equal((await check("/dash/assigned")).status, 403);
   kiosk.key_hash = "rotated";
   assert.equal((await check("/dash/reassigned")).status, 401);
+});
+
+test("dashboard assignments normalize web cells and entities without granting the dashboard root", async () => {
+  const { repo, kiosk } = fixture();
+  for (const entityType of [null, "web", "ablesign"]) {
+    for (const [url, expected] of [
+      ["/dash/assigned?theme=dark#overview", ["/dash/assigned"]],
+      ["/dash/assigned/#overview", ["/dash/assigned"]],
+      ["/dash/temporary/../assigned?theme=dark", ["/dash/assigned"]],
+      ["/dash/assigned/..?theme=dark", []],
+      ["/dash/../../admin?theme=dark", []],
+      ["https://other.test/dash/assigned?theme=dark", []],
+    ] as const) {
+      const assigned = await viewerAssignment({
+        ...repo,
+        layoutCells: async () => [{ content_type: "web", web_url: url, entity_id: entityType ? "web-entity" : null }],
+        getEntityById: async () => ({ id: "web-entity", type: entityType, web_url: url }),
+      } as never, kiosk as never);
+      assert.deepEqual([...assigned.dashboardPaths], expected, `${entityType ?? "cell"}: ${url}`);
+    }
+  }
 });
 
 test("viewer cannot use raw kiosk cookies while desktop cookie authentication remains compatible", async () => {

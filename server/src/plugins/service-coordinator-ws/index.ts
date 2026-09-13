@@ -86,7 +86,6 @@ export const EventSchemas = createEventSchemas({
 
 // ---- Connected kiosks -------------------------------------------------------
 
-const viewerLayouts = new Map<string, (layoutId: string) => Promise<boolean>>();
 const connectedKiosks = new KioskConnections<WebSocket>();
 const pendingRequests = new Map<string, {
   kioskId: string;
@@ -137,7 +136,7 @@ const offlineQueues = new Map<string, string[]>();
 
 function sendToKiosk(kioskId: string, message: object, queueWhenOffline = true): boolean {
   const k = connectedKiosks.get(kioskId);
-  const validateLayout = viewerLayouts.get(kioskId);
+  const validateLayout = k?.validateViewerLayout;
   if (validateLayout) {
     const msg = message as Record<string, unknown>;
     const layoutId = typeof msg["layout_id"] === "string" ? msg["layout_id"] : "";
@@ -384,14 +383,17 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           return;
         }
         const viewer = isAndroidViewer(kioskData);
-        if (viewer) viewerLayouts.set(kiosk.id, (layoutId) => repo.adapter.withSearchPath(kiosk.schema_name, async () => {
-          const current = await repo.getKioskById(kiosk.id);
-          return Boolean(current?.enabled && isAndroidViewer(current) && (await viewerAssignment(repo, current)).layoutIds.has(layoutId));
-        }));
-        else viewerLayouts.delete(kiosk.id);
         wss.handleUpgrade(req, socket, head, (ws) => {
           const previous = connectedKiosks.get(kiosk.id);
-          connectedKiosks.set(kiosk.id, { id: kiosk.id, name: kioskData.name, ws, lastPong: Date.now() });
+          connectedKiosks.set(kiosk.id, {
+            id: kiosk.id, name: kioskData.name, ws, lastPong: Date.now(),
+            // Keep the assignment closure owned by its authenticated socket so
+            // disconnect, replacement and disposal release it together.
+            ...(viewer ? { validateViewerLayout: (layoutId: string) => repo.adapter.withSearchPath(kiosk.schema_name, async () => {
+              const current = await repo.getKioskById(kiosk.id);
+              return Boolean(current?.enabled && isAndroidViewer(current) && (await viewerAssignment(repo, current)).layoutIds.has(layoutId));
+            }) } : {}),
+          });
           if (previous && previous.ws !== ws) {
             for (const [requestId, pending] of pendingRequests) {
               if (pending.socket !== previous.ws) continue;

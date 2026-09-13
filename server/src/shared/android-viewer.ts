@@ -33,7 +33,12 @@ export async function viewerAssignment(repo: Repository, kiosk: Kiosk) {
         ? entity.type === "dashboard" && entity.dashboard_id ? `/dash/${entity.dashboard_id}`
           : entity.type === "web" || entity.type === "ablesign" ? entity.web_url : null
         : cell.content_type === "web" ? cell.web_url : null;
-      if (url?.startsWith("/dash/") && !url.includes("?") && !url.includes("#")) dashboardPaths.add(url.replace(/\/$/, ""));
+      if (url?.startsWith("/dash/")) {
+        // Match the pathname used by display-session authorization while
+        // retaining query/fragment options in the rendered bundle URL.
+        const path = new URL(url, "https://display.invalid").pathname;
+        if (path.startsWith("/dash/") && path !== "/dash/") dashboardPaths.add(path.replace(/\/$/, ""));
+      }
     }
   }
   return { display, layoutIds, dashboardPaths };

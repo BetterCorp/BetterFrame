@@ -18,11 +18,15 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 /** Outbound display client only. All network/storage work is serialized away from the UI. */
-class ViewerSession(context: Context, private val listener: Listener) {
+class ViewerSession internal constructor(context: Context, private val listener: Listener,
+                                        private val http: OkHttpClient = defaultHttp()) {
     private companion object {
         const val VIEWER_PROFILE = "android-viewer-v1"
         const val AUTH_REJECTED = "Display authorization rejected. Check this device in BF."
         const val PROFILE_REQUIRED = "This BF server must support android-viewer-v1. Update the server to use this display."
+        fun defaultHttp() = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
+            .connectTimeout(8, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS)
+            .callTimeout(20, TimeUnit.SECONDS).pingInterval(25, TimeUnit.SECONDS).build()
     }
     interface Listener {
         fun onServerAddress(address: String) {}
@@ -38,9 +42,7 @@ class ViewerSession(context: Context, private val listener: Listener) {
     private val renderer = Executors.newSingleThreadExecutor()
     private data class RenderSnapshot(val raw: String, val server: String, val encryptKey: String?, val cookieReady: Boolean, val epoch: Int)
     @Volatile private var renderSnapshot: RenderSnapshot? = null
-    private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
-        .connectTimeout(8, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS)
-        .callTimeout(20, TimeUnit.SECONDS).pingInterval(25, TimeUnit.SECONDS).build()
+    private var serverResolved = false
     private var state = JSONObject()
     private var loop: ScheduledFuture<*>? = null
     private var socket: WebSocket? = null
@@ -117,6 +119,7 @@ class ViewerSession(context: Context, private val listener: Listener) {
                 val origin = ServerAddress.enrollmentOrigin(serverUrl, saved)
                 require(saved.isBlank() || saved == origin) { "Unpair before changing the BF server" }
                 this.serverUrl = origin
+                serverResolved = state.optString("resolved_server") == origin
                 ui(epoch) { listener.onServerAddress(origin) }
                 state.put("server", origin)
                 kioskKey = state.optJSONObject("identity")?.textValue("kiosk_key") ?: ""
@@ -208,6 +211,16 @@ class ViewerSession(context: Context, private val listener: Listener) {
     private fun tick() {
         try {
             ensureActive()
+            if (!serverResolved) {
+                if (System.currentTimeMillis() < nextSync) return
+                val resolved = ServerDiscovery.resolve(serverUrl, http, ::ensureActive)
+                state.put("server", resolved).put("resolved_server", resolved)
+                persist() // Pin the discovered origin before sending any enrollment credentials.
+                serverUrl = resolved
+                serverResolved = true
+                ui(activeEpoch) { listener.onServerAddress(resolved) }
+                if (!state.optBoolean("blocked")) emitPlan()
+            }
             if (kioskKey.isBlank()) {
                 if (System.currentTimeMillis() >= nextPairPoll) { pair(); failures = 0 }
             } else {

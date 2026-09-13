@@ -141,6 +141,7 @@ async fn run_input_binding(
     );
 
     let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(5))
         .build()
         .expect("reqwest client build");

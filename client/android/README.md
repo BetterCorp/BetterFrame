@@ -114,7 +114,8 @@ and real-device qualification remains necessary.
 
 1. Open BetterFrame from the Android launcher or TV launcher.
 2. The app automatically connects to `https://frame.betterportal.net` on first
-   launch. A saved custom server takes precedence on later launches. To change
+   launch, discovers its regional server, and saves that origin for subsequent
+   requests and launches. A saved custom server takes precedence. To change
    servers, reset enrollment and enter the other BF server origin. Remote
    servers require HTTPS; explicit local HTTP servers are supported for LAN deployments.
 3. Approve the displayed pairing code in BF and assign one enabled display.
@@ -138,11 +139,19 @@ paired devices without a downloaded display report that no configuration is
 saved yet. Only devices with a verified cached bundle report that they are
 retaining saved display configuration. Retries happen automatically.
 
-The server origin must serve `/api/**` and `/ws/**` directly. Configure a reverse
-proxy to route these requests to the regional BF service instead of returning
-an HTTP redirect. Android deliberately refuses redirects for pairing and device
-requests so polling secrets and device credentials cannot move to another
-origin. A redirect now reports an API routing error without changing enrollment.
+The public entrypoint can redirect to a regional BF origin, such as
+`https://frame-eu.betterportal.net`. Before pairing, Android follows up to five
+redirects using anonymous `GET /healthz` requests. Redirect destinations must
+use HTTPS, have no credentials/query/fragment, and keep `/healthz` or `/` as the
+path. Loops and cleartext redirects are rejected. The final origin is saved in
+encrypted enrollment before any pairing requests; subsequent traffic and
+restarts use it directly. Existing saved enrollments discover their origin once
+when upgrading to this behavior. Direct local HTTP servers remain supported,
+including older API listeners that return 404 for `/healthz`.
+
+The resolved regional origin must serve `/api/**` and `/ws/**` directly. Android
+continues refusing redirects for pairing and device requests, so those requests
+cannot forward polling secrets or device credentials to another origin.
 
 ## Initial limits
 

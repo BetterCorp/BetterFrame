@@ -679,7 +679,7 @@ pub(super) fn report_interaction_event(
         }
     });
     std::thread::spawn(move || {
-        let _ = reqwest::blocking::Client::new()
+        let _ = crate::network::blocking_client()
             .post(format!("{server}/api/kiosk/event"))
             .bearer_auth(key)
             .json(&payload)

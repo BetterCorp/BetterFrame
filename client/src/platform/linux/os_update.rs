@@ -135,7 +135,7 @@ fn check_at(server: &str, key: Option<&str>, path: &str) -> Option<UpdateInfo> {
         compat = urlencoding::encode(&compat),
         cur = urlencoding::encode(&cur),
     );
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     let mut request = client.get(&url);
     if let Some(key) = key {
         request = request.header("Authorization", format!("Bearer {key}"));
@@ -218,7 +218,7 @@ fn apply_inner(
             info.size_bytes
         );
 
-        let client = reqwest::blocking::Client::new();
+        let client = crate::network::blocking_client();
         let mut req = client.get(&url);
         if let Some(key) = key {
             req = req.header("Authorization", format!("Bearer {key}"));
@@ -506,7 +506,7 @@ fn report_applied(
     } else {
         serde_json::json!({ "version": version, "state": "pending_reboot" })
     };
-    reqwest::blocking::Client::new()
+    crate::network::blocking_client()
         .post(format!("{server}/api/kiosk/os/status"))
         .header("Authorization", format!("Bearer {key}"))
         .json(&payload)
@@ -519,7 +519,7 @@ fn report_applied(
 pub fn report_confirmed(server: &str, key: &str) -> bool {
     let version =
         fs::read_to_string("/etc/betterframe/os-version").unwrap_or_else(|_| "unknown".to_string());
-    reqwest::blocking::Client::new()
+    crate::network::blocking_client()
         .post(format!("{server}/api/kiosk/os/status"))
         .header("Authorization", format!("Bearer {key}"))
         .json(&serde_json::json!({ "version": version.trim(), "state": "confirmed" }))

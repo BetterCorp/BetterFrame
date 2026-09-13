@@ -1,5 +1,6 @@
 pub use betterframe_client_core as core;
 pub use core::bundle;
+mod network;
 
 #[cfg(target_os = "linux")]
 #[path = "platform/linux/at_rest.rs"]

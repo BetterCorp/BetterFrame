@@ -1091,7 +1091,7 @@ fn run_firmware_update_worker(
                 "blocked": failures >= 3,
             }),
         );
-        let _ = reqwest::blocking::Client::new()
+        let _ = crate::network::blocking_client()
             .post(format!("{server_url}/api/kiosk/firmware/applied"))
             .header("Authorization", format!("Bearer {kiosk_key}"))
             .json(&serde_json::json!({ "version": info.version, "error": err }))

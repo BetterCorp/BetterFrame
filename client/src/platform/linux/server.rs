@@ -292,56 +292,49 @@ pub fn load_kiosk_id() -> Option<String> {
         .or_else(|| load_cached_bundle().map(|b| b.kiosk_id))
 }
 
-/// Discover the BetterFrame server.
+/// Discover anonymously once, then use the saved regional origin on every restart.
 pub fn discover_server(override_url: Option<&str>) -> Result<String, String> {
-    if let Some(url) = override_url {
-        return Ok(url.to_string());
-    }
-
     if identity_file().exists() {
+        // Existing credentials stay bound to their origin and paired offline boot
+        // must never depend on contacting the global discovery service.
         return Ok(load_identity()?.server_url);
     }
-
-    // A paired kiosk must boot from cache without waiting for its server.
-    // The WS and bundle retry loops reconnect to this saved endpoint later.
+    let pending_path = state_dir().join("pairing.json");
+    if pending_path.exists() {
+        let bytes = crate::at_rest::read_maybe_encrypted(&pending_path)
+            .ok_or("Unable to read saved pairing session; restore storage or reset locally")?;
+        let (origin, _session): (String, PairInitiateResponse) = serde_json::from_slice(&bytes)
+            .map_err(|_| "Invalid saved pairing session; restore storage or reset locally")?;
+        return Ok(origin);
+    }
     if let Ok(saved) = fs::read_to_string(server_file()) {
-        let saved = saved.trim().to_string();
+        let saved = saved.trim();
         if !saved.is_empty() {
-            if is_paired() {
-                return Ok(saved);
-            }
-            if let Some(resolved) = healthy_server_origin(&saved) {
-                fs::write(server_file(), &resolved).ok();
-                return Ok(resolved);
-            }
+            return Ok(saved.to_string());
         }
     }
+    if is_paired() {
+        return Err("Saved kiosk key has no server origin; restore storage or reset locally".into());
+    }
 
-    // Probe order: on-device → LAN mDNS → BetterCorp managed cloud.
-    // Single image works for aio (server beside kiosk on same Pi), on-prem
-    // (server on the LAN, discoverable by mDNS), and client-only (no local
-    // server — falls through to the cloud).
+    let save = |origin: String| -> Result<String, String> {
+        // Do not initiate enrollment unless its selected origin survives a restart.
+        let path = server_file();
+        let temporary = path.with_extension("url.tmp");
+        fs::write(&temporary, &origin).and_then(|()| fs::rename(&temporary, &path))
+            .map_err(|error| format!("Unable to save discovered server: {error}"))?;
+        Ok(origin)
+    };
+    if let Some(url) = override_url.map(str::trim).filter(|url| !url.is_empty()) {
+        return save(crate::network::discover(url, true)?);
+    }
     for url in crate::core::protocol::SERVER_CANDIDATES {
         info!("trying {url}...");
-        if let Some(resolved) = healthy_server_origin(url) {
-            fs::write(server_file(), &resolved).ok();
-            return Ok(resolved);
+        if let Ok(resolved) = crate::network::discover(url, false) {
+            return save(resolved);
         }
     }
-
     Err("Could not find BetterFrame server".into())
-}
-
-fn healthy_server_origin(url: &str) -> Option<String> {
-    let response = reqwest::blocking::Client::new()
-        .get(format!("{url}/healthz"))
-        .timeout(Duration::from_secs(3))
-        .send()
-        .ok()?;
-    response
-        .status()
-        .is_success()
-        .then(|| crate::core::protocol::server_origin(response.url()))
 }
 
 /// Check if already paired (key file exists).
@@ -352,7 +345,7 @@ pub fn is_paired() -> bool {
 /// Confirm with the server that our key is truly rejected before wiping.
 /// Calls /api/kiosk/_check — if 200 the key is still valid (false alarm).
 fn confirm_deletion(server: &str, key: &str) -> bool {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     match client
         .get(format!("{server}/api/kiosk/_check"))
         .header("Authorization", format!("Bearer {key}"))
@@ -431,6 +424,7 @@ pub fn load_key() -> Result<String, String> {
 
 fn pairing_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
         .build()
@@ -639,7 +633,7 @@ static BUNDLE_ETAG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(Non
 
 pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
     acknowledge_identity(server);
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     let mut req = client
         .get(format!("{server}/api/kiosk/bundle"))
         .header("Authorization", format!("Bearer {key}"))
@@ -722,7 +716,7 @@ pub fn report_layout_change(
     layout_id: &str,
     layout_name: &str,
 ) {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     let _ = client
         .post(format!("{server}/api/kiosk/event"))
         .header("Authorization", format!("Bearer {key}"))
@@ -749,7 +743,7 @@ pub fn report_web_change(
     entity_id: Option<&str>,
     url: &str,
 ) {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     let _ = client
         .post(format!("{server}/api/kiosk/event"))
         .header("Authorization", format!("Bearer {key}"))
@@ -771,7 +765,7 @@ pub fn report_web_change(
 }
 
 pub fn report_kiosk_log(server: &str, key: &str, level: &str, message: &str, payload: Value) {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     let _ = client
         .post(format!("{server}/api/kiosk/event"))
         .header("Authorization", format!("Bearer {key}"))
@@ -809,7 +803,7 @@ pub fn heartbeat(
     displays: &[DisplayReport],
     hw: &crate::hwmon::HwInfo,
 ) -> bool {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::network::blocking_client();
     let display_info: Vec<_> = displays
         .iter()
         .map(|d| {
@@ -1236,6 +1230,7 @@ mod tests {
         let server = format!("http://{}", listener.local_addr().unwrap());
         let peer = std::thread::spawn(move || {
             for (status, body) in [
+                (200, "{}"), // Anonymous discovery before any enrollment request.
                 (500, "{}"),
                 (
                     200,
@@ -1280,8 +1275,14 @@ mod tests {
                 stream.write_all(response.as_bytes()).unwrap();
             }
         });
+        assert_eq!(discover_server(Some(&server)).unwrap(), server);
+        assert_eq!(fs::read_to_string(server_file()).unwrap(), server);
+        // Simulated restarts use the saved origin even if geo DNS or a launch
+        // argument now points elsewhere; no second discovery request is sent.
+        assert_eq!(discover_server(Some("https://changed.example")).unwrap(), server);
         assert!(initiate_pairing(&server).is_err());
         let session = initiate_pairing(&server).unwrap();
+        assert_eq!(discover_server(None).unwrap(), server);
         let resumed = initiate_pairing(&server).unwrap();
         assert_eq!(resumed.code, session.code);
         let mut_statuses = std::sync::Mutex::new(Vec::new());
@@ -1292,6 +1293,7 @@ mod tests {
         assert_eq!(name, "Recovered");
         assert!(!mut_statuses.lock().unwrap().is_empty());
         assert_eq!(load_key().unwrap(), key);
+        assert_eq!(discover_server(None).unwrap(), server);
         assert_eq!(load_encrypt_key().as_deref(), Some("encrypt"));
         assert!(fetch_bundle(&server, &key).is_none());
         assert_eq!(load_key().unwrap(), key);

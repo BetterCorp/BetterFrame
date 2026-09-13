@@ -279,7 +279,7 @@ fn run_agent_cli(args: &[String]) -> Result<(), String> {
     let override_url = arg_value(args, "--server");
     rt.block_on(async {
         let server = loop {
-            match discover_server(override_url.as_deref(), &load_state()).await {
+            match discover_server(override_url.as_deref(), &load_agent_state()?).await {
                 Ok(server) => break server,
                 Err(error) => {
                     warn!("server discovery: {error}; retrying");
@@ -295,23 +295,18 @@ async fn discover_server(
     override_url: Option<&str>,
     state: &ClientState,
 ) -> Result<String, String> {
-    if let Some(url) = override_url.map(str::trim).filter(|url| !url.is_empty()) {
-        return Ok(url.trim_end_matches('/').to_string());
-    }
-    if state.kiosk_key.is_some() && !state.server_url.trim().is_empty() {
+    // Saved state is already bound to its regional origin, even while waiting
+    // for enrollment approval. Never rediscover through geo DNS on a restart.
+    if !state.server_url.trim().is_empty() {
         return Ok(state.server_url.trim().trim_end_matches('/').to_string());
     }
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .map_err(|error| format!("build server discovery client: {error}"))?;
+    if let Some(url) = override_url.map(str::trim).filter(|url| !url.is_empty()) {
+        return crate::network::discover(url, true).await;
+    }
     for candidate in crate::core::protocol::SERVER_CANDIDATES {
         info!("trying {candidate}...");
-        if let Ok(response) = client.get(format!("{candidate}/healthz")).send().await {
-            if response.status().is_success() {
-                return Ok(crate::core::protocol::server_origin(response.url()));
-            }
+        if let Ok(origin) = crate::network::discover(candidate, false).await {
+            return Ok(origin);
         }
     }
     Err("could not find BetterFrame server".to_string())
@@ -325,7 +320,7 @@ async fn run_agent(server_url: String) -> Result<(), String> {
     state.server_url = server_url;
     save_state(&state)?;
     if state.kiosk_key.is_some() {
-        acknowledge_pairing(&reqwest::Client::new(), &mut state).await;
+        acknowledge_pairing(&crate::network::client(), &mut state).await;
     }
 
     if state.kiosk_key.is_none() {
@@ -444,6 +439,7 @@ async fn run_agent(server_url: String) -> Result<(), String> {
 
 async fn pair(server_url: &str) -> Result<ClientState, String> {
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
         .build()
@@ -758,7 +754,7 @@ async fn handle_agent_command(
 }
 
 async fn fetch_bundle(server_url: &str, key: &str) -> Result<KioskBundle, String> {
-    let response = reqwest::Client::new()
+    let response = crate::network::client()
         .get(format!("{server_url}/api/kiosk/bundle"))
         .bearer_auth(key)
         .timeout(Duration::from_secs(15))
@@ -802,7 +798,7 @@ async fn heartbeat(
             .collect::<Vec<_>>()
             .join(", ")
     );
-    let resp = reqwest::Client::new()
+    let resp = crate::network::client()
         .post(format!("{server_url}/api/kiosk/heartbeat"))
         .bearer_auth(key)
         .json(&serde_json::json!({
@@ -856,7 +852,7 @@ async fn report_layout_change(
     layout_id: &str,
 ) {
     let Some(key) = key else { return };
-    let _ = reqwest::Client::new()
+    let _ = crate::network::client()
         .post(format!("{server_url}/api/kiosk/event"))
         .bearer_auth(key)
         .json(&serde_json::json!({
@@ -913,6 +909,17 @@ fn restart_app(slot: &Arc<Mutex<Option<Child>>>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pending_and_paired_restarts_stay_on_saved_regional_origin_without_discovery() {
+        let mut state = ClientState::unpaired("https://frame-eu.betterportal.net");
+        state.pairing_code = Some("ABC123".into());
+        state.pairing_secret = Some("test-polling-secret".into());
+        let reloaded: ClientState = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(discover_server(Some("https://frame.betterportal.net"), &reloaded).await.unwrap(), state.server_url);
+        state.kiosk_key = Some("test-device-key".into());
+        assert_eq!(discover_server(None, &state).await.unwrap(), state.server_url);
+    }
 
     #[test]
     fn reset_and_display_reconciliation_keep_only_valid_identity() {

@@ -33,25 +33,29 @@ const TPM_MAGIC: &[u8; 4] = b"BFE2";
 const HKDF_SALT: &[u8] = b"betterframe-at-rest-v1";
 const HKDF_INFO: &[u8] = b"file-encryption";
 
-fn active_key() -> &'static ([u8; 4], [u8; 32]) {
+fn active_key() -> Result<&'static ([u8; 4], [u8; 32]), String> {
     static ACTIVE: OnceLock<([u8; 4], [u8; 32])> = OnceLock::new();
-    ACTIVE.get_or_init(|| {
-        let sealed = std::path::Path::new("/var/lib/betterframe/at-rest.cred");
-        if sealed.is_file() {
-            let output = Command::new("systemd-creds")
-                .args(["--name=betterframe-at-rest", "decrypt"])
-                .arg(sealed)
-                .arg("-")
-                .output()
-                .expect("TPM-sealed at-rest key could not be decrypted");
-            if !output.status.success() || output.stdout.is_empty() {
-                panic!("TPM-sealed at-rest key could not be decrypted");
-            }
-            (*TPM_MAGIC, derive_key(&output.stdout))
-        } else {
-            (*LEGACY_MAGIC, *legacy_key())
+    if let Some(key) = ACTIVE.get() {
+        return Ok(key);
+    }
+    let sealed = std::path::Path::new("/var/lib/betterframe/at-rest.cred");
+    let key = if sealed.is_file() {
+        let output = Command::new("systemd-creds")
+            .args(["--name=betterframe-at-rest", "decrypt"])
+            .arg(sealed)
+            .arg("-")
+            .output()
+            .map_err(|error| format!("TPM credential unavailable: {error}"))?;
+        if !output.status.success() || output.stdout.is_empty() {
+            return Err("TPM-sealed at-rest key could not be decrypted".into());
         }
-    })
+        (*TPM_MAGIC, derive_key(&output.stdout))
+    } else {
+        (*LEGACY_MAGIC, *legacy_key())
+    };
+    // Cache only success; a temporary TPM/storage error remains retryable.
+    let _ = ACTIVE.set(key);
+    ACTIVE.get().ok_or_else(|| "at-rest key unavailable".into())
 }
 
 fn legacy_key() -> &'static [u8; 32] {
@@ -99,20 +103,20 @@ fn derive_key(material: &[u8]) -> [u8; 32] {
 
 /// Encrypt plaintext for on-disk storage. Each call uses a fresh random
 /// nonce (AES-GCM is unsafe to reuse a nonce under the same key).
-pub fn encrypt_for_disk(plaintext: &[u8]) -> Vec<u8> {
-    let (magic, key_bytes) = active_key();
+pub fn encrypt_for_disk(plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    let (magic, key_bytes) = active_key()?;
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key_bytes));
     let mut nonce_bytes = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, plaintext)
-        .expect("AES-GCM encrypt: only fails on >2^36 byte input");
+        .map_err(|_| "Unable to encrypt device state")?;
     let mut out = Vec::with_capacity(magic.len() + nonce_bytes.len() + ciphertext.len());
     out.extend_from_slice(magic);
     out.extend_from_slice(&nonce_bytes);
     out.extend_from_slice(&ciphertext);
-    out
+    Ok(out)
 }
 
 /// Decrypt an on-disk blob. Returns Err for both "not our format" and
@@ -124,7 +128,7 @@ pub fn decrypt_from_disk(blob: &[u8]) -> Result<Vec<u8>, String> {
     }
     let key_bytes = match &blob[..LEGACY_MAGIC.len()] {
         magic if magic == LEGACY_MAGIC => legacy_key(),
-        magic if magic == TPM_MAGIC && active_key().0 == *TPM_MAGIC => &active_key().1,
+        magic if magic == TPM_MAGIC && active_key()?.0 == *TPM_MAGIC => &active_key()?.1,
         magic if magic == TPM_MAGIC => return Err("TPM credential missing".to_string()),
         _ => return Err("missing BetterFrame encryption magic".to_string()),
     };
@@ -145,7 +149,8 @@ pub fn read_maybe_encrypted(path: &std::path::Path) -> Option<Vec<u8>> {
     let bytes = fs::read(path).ok()?;
     match decrypt_from_disk(&bytes) {
         Ok(pt) => {
-            if bytes.starts_with(LEGACY_MAGIC) && active_key().0 == *TPM_MAGIC {
+            if bytes.starts_with(LEGACY_MAGIC) && active_key().is_ok_and(|key| key.0 == *TPM_MAGIC)
+            {
                 let _ = write_encrypted(path, &pt);
             }
             Some(pt)
@@ -165,11 +170,32 @@ pub fn read_text_maybe_encrypted(path: &std::path::Path) -> Option<String> {
 /// Write plaintext encrypted-on-disk. Atomic via tempfile + rename so a
 /// crash mid-write can't leave a half-encrypted file.
 pub fn write_encrypted(path: &std::path::Path, plaintext: &[u8]) -> std::io::Result<()> {
-    let blob = encrypt_for_disk(plaintext);
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, &blob)?;
-    fs::rename(&tmp, path)?;
-    Ok(())
+    let blob = encrypt_for_disk(plaintext).map_err(std::io::Error::other)?;
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let tmp = path.with_extension(format!(
+        "{}.{}.tmp",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        file.write_all(&blob)?;
+        file.sync_all()?;
+        fs::rename(&tmp, path)?;
+        if let Some(parent) = path.parent() {
+            fs::File::open(parent)?.sync_all()?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -177,11 +203,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn encrypted_identity_replaces_atomically_and_rejects_corruption() {
+        let dir = std::env::temp_dir().join(format!("bf-identity-{}", rand::random::<u64>()));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("identity.json");
+        write_encrypted(&path, b"original identity").unwrap();
+        write_encrypted(&path, b"complete replacement identity").unwrap();
+        assert_eq!(
+            read_maybe_encrypted(&path).unwrap(),
+            b"complete replacement identity"
+        );
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        let mut bytes = fs::read(&path).unwrap();
+        *bytes.last_mut().unwrap() ^= 1;
+        fs::write(&path, bytes).unwrap();
+        assert!(read_maybe_encrypted(&path).is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn round_trip_short() {
         let pt = b"hello world";
-        let ct = encrypt_for_disk(pt);
+        let ct = encrypt_for_disk(pt).unwrap();
         assert_ne!(&ct[..LEGACY_MAGIC.len() + 12], pt);
-        assert_eq!(&ct[..LEGACY_MAGIC.len()], &active_key().0);
+        assert_eq!(&ct[..LEGACY_MAGIC.len()], &active_key().unwrap().0);
         let back = decrypt_from_disk(&ct).expect("decrypt");
         assert_eq!(back, pt);
     }
@@ -193,7 +238,7 @@ mod tests {
             "cameras": [{"id": 1, "rtsp": "rtsp://u:p@host/path"}],
         }))
         .unwrap();
-        let ct = encrypt_for_disk(&pt);
+        let ct = encrypt_for_disk(&pt).unwrap();
         let back = decrypt_from_disk(&ct).expect("decrypt");
         assert_eq!(back, pt);
     }

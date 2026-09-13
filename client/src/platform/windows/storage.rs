@@ -106,6 +106,15 @@ pub(super) fn ensure_secure_state_dir() -> Result<(), String> {
     Ok(())
 }
 
+pub(super) fn load_agent_state() -> Result<ClientState, String> {
+    ensure_secure_state_dir()?;
+    if state_path().exists() {
+        load_state_file(&state_path())
+    } else {
+        Ok(ClientState::default())
+    }
+}
+
 pub(super) fn load_state() -> ClientState {
     ensure_secure_state_dir()
         .and_then(|()| load_state_file(&state_path()))
@@ -245,8 +254,24 @@ pub(super) fn read_protected(path: &std::path::Path) -> Result<Vec<u8>, String> 
 pub(super) fn write_protected(path: &std::path::Path, plaintext: &[u8]) -> Result<(), String> {
     ensure_secure_state_dir()?;
     let bytes = protect_machine(plaintext)?;
-    let temporary = path.with_extension("tmp");
-    fs::write(&temporary, bytes).map_err(|error| format!("write protected state: {error}"))?;
+    use std::io::Write;
+    static NEXT_WRITE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let temporary = path.with_extension(format!(
+        "{}.{}.tmp",
+        std::process::id(),
+        NEXT_WRITE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| format!("create protected state: {error}"))?;
+    let written = file.write_all(&bytes).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("write protected state: {error}"));
+    }
     let from = wide_path(temporary.as_os_str());
     let to = wide_path(path.as_os_str());
     if unsafe {

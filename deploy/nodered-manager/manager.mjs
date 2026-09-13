@@ -76,11 +76,16 @@ function validTenantId(value) {
 function publicRuntimePath(path) {
   let decoded;
   try { decoded = decodeURIComponent(path); } catch { return null; }
-  return /^\/nrdp(?:\/|$)/i.test(decoded) || /^\/_betterframe(?:\/|$)/i.test(decoded) ? null : path;
+  // Reject ambiguous encodings and normalize before checking reserved paths.
+  if (/[\\%\x00-\x1f]/.test(decoded) || decoded.startsWith("//")) return null;
+  const canonical = new URL(decoded, "http://localhost").pathname.replace(/\/+/g, "/");
+  return /^\/(?:nrdp|_betterframe)(?:\/|$)/i.test(canonical)
+    || /^\/api\/internal(?:\/|$)/i.test(canonical) ? null : canonical;
 }
 
 function runtimeEnvironment(tenant) {
-  const env = { ...process.env, HOME: tenant.userDir, USER: `bf-nodered-${tenant.uid}`, PORT: String(tenant.port) };
+  const env = { ...process.env, HOME: tenant.userDir, USER: `bf-nodered-${tenant.uid}`, PORT: String(tenant.port),
+    BF_NODERED_INTERNAL_TOKEN: tenant.adminToken };
   delete env.BF_NODERED_MANAGER_SECRET;
   delete env.BF_NODERED_MANAGER_SECRET_FILE;
   return env;
@@ -265,12 +270,29 @@ function tenantForRequest(req) {
   return Object.values(state.tenants).find((item) => item.slug === "default");
 }
 
+function runtimeHeaders(req, tenant) {
+  const headers = { ...req.headers, host: `127.0.0.1:${tenant.port}` };
+  delete headers["x-betterframe-tenant"];
+  delete headers["x-betterframe-runtime-token"];
+  const path = decodeURIComponent(new URL(req.url || "/", "http://localhost").pathname);
+  // Public HTTP nodes can echo request headers. Never give them the credential
+  // that also authorizes the editor and internal event dispatcher.
+  if (/^\/(?:nrdp(?:\/|$)|api\/internal(?:\/|$))/i.test(path)) {
+    headers["x-betterframe-runtime-token"] = tenant.adminToken;
+  }
+  if (authorized(req)) delete headers.authorization;
+  return headers;
+}
+
 function proxy(req, res, tenant) {
+  const path = new URL(req.url || "/", "http://localhost").pathname;
+  if (/^\/api\/internal(?:\/|$)/i.test(decodeURIComponent(path)) && !authorized(req)) {
+    res.writeHead(403); res.end("forbidden"); return;
+  }
   if (!tenant?.active || !runtimes.get(tenant.tenant_id)?.child) {
     res.writeHead(503); res.end("tenant runtime unavailable"); return;
   }
-  const headers = { ...req.headers, host: `127.0.0.1:${tenant.port}`, "x-betterframe-runtime-token": tenant.adminToken };
-  delete headers["x-betterframe-tenant"];
+  const headers = runtimeHeaders(req, tenant);
   const upstream = httpRequest({ hostname: "127.0.0.1", port: tenant.port, method: req.method, path: req.url, headers }, (response) => {
     res.writeHead(response.statusCode || 502, response.headers);
     response.pipe(res);
@@ -295,12 +317,22 @@ if (process.env.BF_NODERED_MANAGER_SELF_TEST === "1") {
   if (validTenantId("../../escape")) throw new Error("path traversal accepted");
   if (publicRuntimePath("/nrdp/flows") !== null) throw new Error("public admin path accepted");
   if (publicRuntimePath("/%6erdp/flows") !== null) throw new Error("encoded public admin path accepted");
+  for (const path of ["/api/internal/onvif.motion", "/api%2finternal/onvif.motion", "/x/../api/internal/onvif.motion", "/%2561pi/internal/onvif.motion"]) {
+    if (publicRuntimePath(path) !== null) throw new Error("public internal event path accepted");
+  }
   if (publicRuntimePath("/camera/event") !== "/camera/event") throw new Error("public node path rejected");
   const testId = "2f1c0b2d-9ad7-4e74-8c2c-4bdcb9f365b0";
   state.tenants[testId] = { tenant_id: testId, slug: "test" };
   if (tenantForRequest({ url: "/", headers: { "x-betterframe-tenant": testId } })?.slug !== "test") throw new Error("tenant UUID route failed");
   if (tenantForRequest({ url: "/", headers: { "x-betterframe-tenant": "test" } })?.tenant_id !== testId) throw new Error("tenant slug route failed");
   if (runtimeEnvironment({ userDir: "/tmp/test", uid: 1, port: 1 }).BF_NODERED_MANAGER_SECRET) throw new Error("manager secret leaked to tenant runtime");
+  const headerTenant = { port: 19000, adminToken: "test-admin-token" };
+  const publicHeaders = runtimeHeaders({ url: "/echo", headers: {
+    "x-betterframe-runtime-token": "caller-forged", authorization: `Bearer ${MANAGER_TOKEN}`,
+  } }, headerTenant);
+  if (publicHeaders["x-betterframe-runtime-token"] || publicHeaders.authorization) throw new Error("credential exposed to public flow");
+  const eventHeaders = runtimeHeaders({ url: "/api/internal/onvif.motion", headers: {} }, headerTenant);
+  if (eventHeaders["x-betterframe-runtime-token"] !== headerTenant.adminToken) throw new Error("internal route lacks runtime credential");
   console.log("Node-RED manager self-test passed");
   process.exit(0);
 }
@@ -349,10 +381,15 @@ const server = createServer(async (req, res) => {
 });
 
 server.on("upgrade", (req, socket, head) => {
-  const tenant = tenantForRequest(req);
+  let tenant;
+  try {
+    tenant = tenantForRequest(req);
+    if (/^\/api\/internal(?:\/|$)/i.test(decodeURIComponent(new URL(req.url || "/", "http://localhost").pathname))) {
+      socket.destroy(); return;
+    }
+  } catch { socket.destroy(); return; }
   if (!tenant?.active) { socket.destroy(); return; }
-  const headers = { ...req.headers, host: `127.0.0.1:${tenant.port}`, "x-betterframe-runtime-token": tenant.adminToken };
-  delete headers["x-betterframe-tenant"];
+  const headers = runtimeHeaders(req, tenant);
   const upstream = httpRequest({ hostname: "127.0.0.1", port: tenant.port, method: "GET", path: req.url, headers });
   upstream.on("upgrade", (response, upstreamSocket, upstreamHead) => {
     socket.write(`HTTP/1.1 101 Switching Protocols\r\n${Object.entries(response.headers).map(([key, value]) => `${key}: ${value}`).join("\r\n")}\r\n\r\n`);

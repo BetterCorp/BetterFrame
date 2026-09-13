@@ -9,6 +9,7 @@
  * cross workers with the same handle.
  */
 import { randomBytes } from "node:crypto";
+import { tenantSchemaName } from "./tenant-schema.js";
 import { uuidv7 } from "uuidv7";
 import type { Observable } from "@bsb/base";
 import type { DbAdapter, RunResult, Row } from "./db-adapter.js";
@@ -135,7 +136,11 @@ export class Repository {
 
   constructor(adapter: DbAdapter, notify: NotifyFn) {
     this.adapter = adapter;
-    this.notify = notify;
+    this.notify = async (table, op, id) => {
+      const deliver = () => { void Promise.resolve(notify(table, op, id)).catch(() => {}); };
+      if (adapter.afterCommit) adapter.afterCommit(deliver);
+      else deliver();
+    };
   }
 
   /** Set a per-request observable for DB call tracing. */
@@ -234,7 +239,7 @@ export class Repository {
     max_cameras?: number | null;
     max_users?: number | null;
   }): Promise<Tenant> {
-    const schemaName = input.slug === "default" ? "public" : `tenant_${input.slug}`;
+    const schemaName = tenantSchemaName(input.slug);
     await this._run(
       `INSERT INTO public.tenants (name, slug, schema_name, is_active, max_kiosks, max_cameras, max_users)
        VALUES (?, ?, ?, true, ?, ?, ?)`,
@@ -2489,8 +2494,8 @@ export class Repository {
     return rowToPairingCode(r as Record<string, unknown>);
   }
 
-  async getPairingCode(code: string): Promise<PairingCode | null> {
-    const r = await this._get(`SELECT * FROM ${this._pairingT} WHERE code = ?`, [code]);
+  async getPairingCode(code: string, lock = false): Promise<PairingCode | null> {
+    const r = await this._get(`SELECT * FROM ${this._pairingT} WHERE code = ?${lock ? " FOR UPDATE" : ""}`, [code]);
     return r ? rowToPairingCode(r as Record<string, unknown>) : null;
   }
 
@@ -2509,14 +2514,15 @@ export class Repository {
     kioskId: string,
     extras: Record<string, unknown>,
   ): Promise<void> {
-    await this._run(
+    const result = await this._run(
       `UPDATE ${this._pairingT}
           SET consumed_at = ?,
               consumed_by_kiosk_id = ?,
               extras = ?
-        WHERE code = ?`,
+        WHERE code = ? AND consumed_at IS NULL`,
       [isoNow(), kioskId, J(extras), code],
     );
+    if (result.changes !== 1) throw new Error("pairing code already used");
   }
 
   async updatePairingCodeExtras(code: string, extras: Record<string, unknown>): Promise<void> {

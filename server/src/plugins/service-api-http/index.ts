@@ -20,7 +20,8 @@ import { initDb } from "../../shared/db/init.js";
 import type { Repository } from "../../shared/db/repository.js";
 import { CLUSTER_SECRET_CONTEXT, initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
-import { initiatePairing, claimPairing } from "../../shared/pairing.js";
+import { acknowledgeIoBox, bindIoBoxProvisioning, claimIoBox } from "../../shared/iobox-pairing.js";
+import { initiatePairing, claimPairing, acknowledgePairing, PAIR_POLL_AFTER_MS, secretHash } from "../../shared/pairing.js";
 import { BundleGenerationError, generateBundle } from "../../shared/bundle.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
@@ -281,7 +282,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       : "");
     registerPairingRoutes(app, repo, auth, secrets, codeTtl, firmware, osUpdates, clientFirmwarePublicKey);
     registerKioskRoutes(app, repo, auth, secrets, nodered, firmware, osUpdates, mqtt, clientFirmwarePublicKey);
-    registerIoBoxRoutes(app, repo, auth, nodered, mqtt, firmware);
+    registerIoBoxRoutes(app, repo, auth, nodered, mqtt, firmware, secrets);
 
     this.server = serve(app, {
       port: this.config.port,
@@ -433,6 +434,7 @@ function registerPairingRoutes(
   // module statically) doesn't see a top-level createRateLimiter call.
   const pairingGuard = createRateLimiter({ windowMs: 60_000, max: 20 });
   const claimGuard = createRateLimiter({ windowMs: 60_000, max: 60 });
+  const claimIpGuard = createRateLimiter({ windowMs: 60_000, max: 6_000 });
   // Kiosk initiates pairing — no auth required
   app.post("/api/pair/initiate", async (event) => {
     const ip = getRequestHeader(event, "x-real-ip")
@@ -451,9 +453,10 @@ function registerPairingRoutes(
       capabilities: body.capabilities,
       managedImage: body.managed_image,
       codeTtlSeconds: codeTtl,
+      secureClaim: body.secure_claim,
     });
 
-    return { code: result.code, expires_at: result.expiresAt };
+    return { code: result.code, expires_at: result.expiresAt, expires_in_seconds: result.expiresInSeconds, poll_after_ms: PAIR_POLL_AFTER_MS, polling_secret: result.pollingSecret };
   });
 
   // Kiosk polls for claim result — no auth required
@@ -461,28 +464,23 @@ function registerPairingRoutes(
     const ip = getRequestHeader(event, "x-real-ip")
       ?? getRequestHeader(event, "x-forwarded-for")?.split(",")[0]?.trim()
       ?? "anon";
-    if (!claimGuard.take(`claim:${ip}`)) {
-      throw createError({ statusCode: 429, statusMessage: "rate limited" });
-    }
-
     const body = validateBody(PairClaimBody, await readBody(event));
     const code = body.code.trim().toUpperCase();
-
-    const reqObs = event.context.obs!;
-    const result = await claimPairing(repo, code, secrets, reqObs);
-    if (result.status === "pending") {
-      return new Response(JSON.stringify({ status: "pending" }), {
-        status: 202,
-        headers: { "content-type": "application/json" },
+    if (!claimIpGuard.take(`claim:${ip}`) || !claimGuard.take(`session:${secretHash(body.polling_secret ?? code)}`)) {
+      return new Response(JSON.stringify({ status: "pending", poll_after_ms: 5_000 }), {
+        status: 429, headers: { "content-type": "application/json", "retry-after": "5" },
       });
     }
-
-    reqObs.log.info("pair/claim success for code {code} kiosk {kioskId}", {
-      code,
-      kioskId: String(result.kioskId),
-    });
+    const result = await claimPairing(repo, code, secrets, event.context.obs, body.polling_secret);
+    if (result.status !== "claimed") {
+      return new Response(JSON.stringify({ status: result.status, poll_after_ms: PAIR_POLL_AFTER_MS, expires_in_seconds: result.expiresInSeconds }), {
+        status: result.status === "pending" ? 202 : result.status === "failed" ? 503 : 200,
+        headers: { "content-type": "application/json", "cache-control": "no-store" },
+      });
+    }
     return {
       status: "claimed",
+      expires_in_seconds: result.expiresInSeconds,
       kiosk_id: result.kioskId,
       kiosk_name: result.kioskName,
       kiosk_key: result.kioskKey,
@@ -490,6 +488,17 @@ function registerPairingRoutes(
       encrypt_key: result.encryptKey,
       bundle_url: result.bundleUrl,
     };
+  });
+
+  app.post("/api/pair/ack", async (event) => {
+    const token = extractBearerToken(event);
+    const kiosk = token ? await auth.verifyKioskKey(token) : null;
+    if (!kiosk) throw createError({ statusCode: 401, statusMessage: "Invalid kiosk key" });
+    const body = validateBody(PairClaimBody, await readBody(event));
+    try {
+      await acknowledgePairing(repo, body.code.trim().toUpperCase(), kiosk.id, kiosk.schema_name, body.polling_secret);
+    } catch { throw createError({ statusCode: 409, statusMessage: "Invalid pairing acknowledgement" }); }
+    return { status: "acknowledged" };
   });
 
   // Public firmware check — no auth. Used by kiosks on first boot before
@@ -646,12 +655,17 @@ function registerIoBoxRoutes(
   nodered: NoderedBridge,
   mqtt: MqttBridge,
   firmware: FirmwareApi,
+  secrets: SecretsApi,
 ): void {
+  const enrollGuard = createRateLimiter({ windowMs: 60_000, max: 60 });
   app.post("/api/iobox/announce", async (event) => {
     const body = validateBody(IoBoxAnnounceBody, await readBody(event));
     const serial = body.serial.trim();
     const registered = await repo.getIoBoxSerial(serial);
     if (!registered) return { status: "unknown_serial" };
+    if (!enrollGuard.take(`announce:${serial}`)) throw createError({ statusCode: 429, statusMessage: "rate limited" });
+    try { await bindIoBoxProvisioning(repo, serial, body.provisioning_secret); }
+    catch { throw createError({ statusCode: 409, statusMessage: "Provisioning conflict; operator reset may be required" }); }
     await repo.touchIoBoxSerial(serial);
     const model = await repo.getIoBoxModel(registered.model_id);
     return {
@@ -666,32 +680,18 @@ function registerIoBoxRoutes(
   app.post("/api/iobox/pair/claim", async (event) => {
     const body = validateBody(IoBoxPairClaimBody, await readBody(event));
     const serial = body.serial.trim();
-    const registered = await repo.getIoBoxSerial(serial);
-    if (!registered) throw createError({ statusCode: 404, statusMessage: "unknown serial" });
-    if (registered.paired_iobox_id) throw createError({ statusCode: 409, statusMessage: "serial already paired" });
-    const model = await repo.getIoBoxModel(registered.model_id);
-    if (!model) throw createError({ statusCode: 400, statusMessage: "serial model missing" });
-
+    if (!enrollGuard.take(`claim:${serial}`)) throw createError({ statusCode: 429, statusMessage: "rate limited" });
     const tenant = await resolveTenantForIoBoxClaim(repo, event);
-    await repo.adapter.setSearchPath(tenant.schema_name);
-    const plaintext = `bfio-${randomBytes(24).toString("base64url")}`;
-    const box = await repo.createIoBox({
-      serial,
-      model_id: model.id,
-      name: body.name?.trim() || `${model.name} ${serial}`,
-      key_hash: await auth.hashPassword(plaintext),
-      key_prefix: plaintext.slice(0, 8),
-      assigned_display_id: body.assigned_display_id ?? null,
-    });
-    await repo.markIoBoxSerialPaired(serial, tenant.id, box.id);
-    return {
-      status: "claimed",
-      tenant_slug: tenant.slug,
-      iobox_id: box.id,
-      iobox_key: plaintext,
-      config_url: "/api/iobox/config",
-      heartbeat_url: "/api/iobox/heartbeat",
-    };
+    try { return await claimIoBox(repo, auth, secrets, { ...body, serial }, tenant); }
+    catch { throw createError({ statusCode: 409, statusMessage: "Pairing unavailable; retry or contact operator" }); }
+  });
+
+  app.post("/api/iobox/pair/ack", async (event) => {
+    const verified = await requireIoBox(event, repo, auth);
+    const body = validateBody(IoBoxPairClaimBody, await readBody(event));
+    try { await acknowledgeIoBox(repo, body.serial.trim(), verified.id, verified.tenant_id, body.provisioning_secret); }
+    catch { throw createError({ statusCode: 409, statusMessage: "Invalid pairing acknowledgement" }); }
+    return { status: "acknowledged" };
   });
 
   app.post("/api/iobox/heartbeat", async (event) => {

@@ -6,10 +6,20 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <WiFiUdp.h>
+#include <esp_random.h>
+#include <bootloader_random.h>
+#include <mbedtls/base64.h>
+#include "ota_signature.h"
+#include <sys/time.h>
+#include "trust_config.h"
+#include "http_policy.h"
 #include <mbedtls/sha256.h>
 
 #if BF_ETHERNET_VARIANT
 #include <Ethernet.h>
+#include <EthernetUdp.h>
+#include <ESP_SSLClient.h>
 #include <SPI.h>
 #endif
 
@@ -52,6 +62,10 @@ String serialNumber;
 String serverUrl;
 String ioboxKey;
 String ioboxId;
+String provisioningSecret;
+bool claimAckPending = false;
+bool identityBlocked = false;
+String diagnostic;
 String assignedDisplayId;
 String assignedKioskLocalKey;
 String assignedKioskIp;
@@ -74,6 +88,7 @@ String rs485Line;
 
 #if BF_ETHERNET_VARIANT
 EthernetClient ethClient;
+ESP_SSLClient ethSecureClient;
 #endif
 WiFiClient wifiClient;
 WiFiClientSecure wifiSecureClient;
@@ -89,8 +104,37 @@ String prefString(const char *key, const char *fallback = "") {
   return prefs.getString(key, fallback);
 }
 
-void saveString(const char *key, const String &value) {
-  prefs.putString(key, value);
+bool saveString(const char *key, const String &value) {
+  return prefs.putString(key, value) == value.length() && prefs.getString(key) == value;
+}
+
+void report(const String &message) {
+  if (diagnostic != message) {
+    diagnostic = message;
+    Serial.println("[ioBOX] " + message);
+  }
+}
+
+bool saveIdentity(const String &id, const String &key, bool ackPending) {
+  if (id.isEmpty() || key.isEmpty()) return false;
+  JsonDocument identity;
+  identity["version"] = 1;
+  identity["id"] = id;
+  identity["key"] = key;
+  identity["server"] = serverUrl;
+  identity["ack_pending"] = ackPending;
+  String encoded;
+  serializeJson(identity, encoded);
+  // NVS commits a single value atomically. Verify before ACK or using it.
+  if (!saveString("identity", encoded)) {
+    report("Pairing storage failed; retaining server claim for retry");
+    return false;
+  }
+  ioboxId = id;
+  ioboxKey = key;
+  claimAckPending = ackPending;
+  paired = true;
+  return true;
 }
 
 String macSerial() {
@@ -135,22 +179,20 @@ String joinUrl(const String &base, const char *path) {
 }
 
 bool parseUrl(const String &url, ParsedUrl &out) {
-  out.https = url.startsWith("https://");
-  int schemeEnd = url.indexOf("://");
-  if (schemeEnd < 0) return false;
-  int hostStart = schemeEnd + 3;
-  int pathStart = url.indexOf('/', hostStart);
-  String hostPort = pathStart >= 0 ? url.substring(hostStart, pathStart) : url.substring(hostStart);
-  out.path = pathStart >= 0 ? url.substring(pathStart) : "/";
-  int colon = hostPort.lastIndexOf(':');
-  out.port = out.https ? 443 : 80;
-  if (colon > 0) {
-    out.host = hostPort.substring(0, colon);
-    out.port = static_cast<uint16_t>(hostPort.substring(colon + 1).toInt());
-  } else {
-    out.host = hostPort;
-  }
-  return out.host.length() > 0;
+  bf::HttpUrl parsed;
+  if (!bf::parseHttpUrl(std::string(url.c_str(), url.length()), parsed)) return false;
+  out.host = parsed.host.c_str();
+  out.path = parsed.path.c_str();
+  out.port = parsed.port;
+  out.https = parsed.https;
+  return true;
+}
+
+bool allowRequest(const String &url, bf::HttpTarget target = bf::HttpTarget::Server) {
+  // Preserve lengths so embedded NUL bytes cannot make validation inspect a
+  // different authority than Arduino HTTPClient later parses from String.
+  return bf::allowHttpRequest(std::string(serverUrl.c_str(), serverUrl.length()),
+                             std::string(url.c_str(), url.length()), target);
 }
 
 String sha256Hex(const uint8_t digest[32]) {
@@ -164,7 +206,86 @@ String sha256Hex(const uint8_t digest[32]) {
   return out;
 }
 
-bool streamUpdateWithSha(Client &client, int contentLength, const String &expectedSha, String &error) {
+bool tlsReady() {
+  if (strlen(BF_TLS_CA_PEM) == 0) {
+    report("TLS trust root missing; provision trust_config_local.h before deployment");
+    return false;
+  }
+  if (time(nullptr) < 1704067200) {
+    report("Waiting for network time before certificate verification");
+    return false;
+  }
+  return true;
+}
+
+bool syncNetworkTime() {
+  if (time(nullptr) >= 1704067200) return true;
+  WiFiUDP wifiUdp;
+#if BF_ETHERNET_VARIANT
+  EthernetUDP ethernetUdp;
+  UDP &udp = mode == NetMode::Ethernet ? static_cast<UDP &>(ethernetUdp) : static_cast<UDP &>(wifiUdp);
+#else
+  UDP &udp = wifiUdp;
+#endif
+  if (!udp.begin(49152 + (esp_random() % 16000))) return false;
+  uint8_t packet[48] = {};
+  packet[0] = 0x23; // NTP v4 client
+  esp_fill_random(packet + 40, 8);
+  uint8_t nonce[8];
+  memcpy(nonce, packet + 40, 8);
+  if (!udp.beginPacket(BF_NTP_SERVER, 123)) { udp.stop(); return false; }
+  udp.write(packet, sizeof(packet));
+  if (!udp.endPacket()) { udp.stop(); return false; }
+  uint32_t start = millis();
+  while (millis() - start < 3000) {
+    if (udp.parsePacket() >= 48 && udp.remotePort() == 123 && udp.read(packet, 48) == 48 &&
+        (packet[0] & 7) == 4 && (packet[0] >> 6) != 3 && packet[1] > 0 && packet[1] <= 15 &&
+        memcmp(packet + 24, nonce, 8) == 0) {
+      uint32_t seconds = (uint32_t(packet[40]) << 24) | (uint32_t(packet[41]) << 16) |
+                         (uint32_t(packet[42]) << 8) | packet[43];
+      if (seconds >= 3913056000UL) {
+        timeval value = {static_cast<time_t>(seconds - 2208988800UL), 0};
+        settimeofday(&value, nullptr);
+        udp.stop();
+        return true;
+      }
+    }
+    delay(10);
+  }
+  udp.stop();
+  report("Network time unavailable; TLS will retry (check NTP/DNS)");
+  return false;
+}
+
+bool verifyFirmwareSignature(const uint8_t digest[32], const String &signature, String &error) {
+  const String publicHex = BF_OTA_PUBLIC_KEY_HEX;
+  if (publicHex.length() != 64) { error = "OTA signing public key not provisioned"; return false; }
+  uint8_t publicKey[32];
+  for (size_t i = 0; i < 32; ++i) {
+    char pair[3] = {publicHex[i * 2], publicHex[i * 2 + 1], 0};
+    char *end = nullptr;
+    publicKey[i] = static_cast<uint8_t>(strtoul(pair, &end, 16));
+    if (end != pair + 2) { error = "invalid OTA signing public key"; return false; }
+  }
+  String base64 = signature;
+  base64.replace('-', '+');
+  base64.replace('_', '/');
+  while (base64.length() % 4) base64 += '=';
+  uint8_t decoded[64];
+  size_t decodedLength = 0;
+  if (signature.length() != 86 ||
+      mbedtls_base64_decode(decoded, sizeof(decoded), &decodedLength,
+        reinterpret_cast<const uint8_t *>(base64.c_str()), base64.length()) != 0 || decodedLength != 64) {
+    error = "missing or invalid firmware signature";
+    return false;
+  }
+  // Match server/shared/firmware.ts: Ed25519 over lowercase SHA256 hex text.
+  bool valid = verifyOtaDigest(digest, decoded, publicKey);
+  if (!valid) error = "firmware signature verification failed";
+  return valid;
+}
+
+bool streamUpdateWithSha(Client &client, int contentLength, const String &expectedSha, const String &signature, String &error) {
   if (expectedSha.length() != 64) {
     error = "missing sha256";
     return false;
@@ -184,7 +305,14 @@ bool streamUpdateWithSha(Client &client, int contentLength, const String &expect
   uint8_t buffer[1024];
   size_t total = 0;
   uint32_t lastDataMs = millis();
+  const uint32_t downloadStartMs = millis();
   while ((knownSize && total < static_cast<size_t>(contentLength)) || (!knownSize && (client.connected() || client.available()))) {
+    if (millis() - downloadStartMs > 180000) {
+      error = "download deadline exceeded";
+      mbedtls_sha256_free(&sha);
+      Update.abort();
+      return false;
+    }
     int available = client.available();
     if (available <= 0) {
       if (millis() - lastDataMs > 15000) break;
@@ -219,7 +347,11 @@ bool streamUpdateWithSha(Client &client, int contentLength, const String &expect
     Update.abort();
     return false;
   }
-  if (!Update.end()) {
+  if (!verifyFirmwareSignature(digest, signature, error)) {
+    Update.abort();
+    return false;
+  }
+  if (!Update.end(!knownSize)) {
     error = Update.errorString();
     return false;
   }
@@ -229,53 +361,73 @@ bool streamUpdateWithSha(Client &client, int contentLength, const String &expect
 #if BF_ETHERNET_VARIANT
 bool ethernetHttpBody(const char *method, const String &url, const String &payload, String &body, bool auth = true) {
   ParsedUrl parsed;
-  if (!parseUrl(url, parsed) || parsed.https) return false;
-  if (!ethClient.connect(parsed.host.c_str(), parsed.port)) return false;
-
-  ethClient.print(method);
-  ethClient.print(" ");
-  ethClient.print(parsed.path);
-  ethClient.println(" HTTP/1.1");
-  ethClient.print("Host: ");
-  ethClient.println(parsed.host);
-  ethClient.println("Connection: close");
-  ethClient.println("Accept: application/json");
-  if (auth && ioboxKey.length() > 0) {
-    ethClient.print("Authorization: Bearer ");
-    ethClient.println(ioboxKey);
-  }
-  if (strcmp(method, "POST") == 0) {
-    ethClient.println("Content-Type: application/json");
-    ethClient.print("Content-Length: ");
-    ethClient.println(payload.length());
-  }
-  ethClient.println();
-  if (payload.length() > 0) ethClient.print(payload);
-
-  uint32_t start = millis();
-  while (!ethClient.available() && ethClient.connected() && millis() - start < 8000) delay(5);
-  String status = ethClient.readStringUntil('\n');
-  if (!status.startsWith("HTTP/1.1 2") && !status.startsWith("HTTP/1.0 2")) {
-    ethClient.stop();
+  if (!parseUrl(url, parsed)) return false;
+  if (parsed.https && !tlsReady()) return false;
+  Client &client = parsed.https ? static_cast<Client &>(ethSecureClient) : static_cast<Client &>(ethClient);
+  client.setTimeout(8000);
+  if (!client.connect(parsed.host.c_str(), parsed.port)) {
+    report("Ethernet connection/TLS verification failed");
     return false;
   }
-  while (ethClient.connected()) {
-    String line = ethClient.readStringUntil('\n');
+
+  client.print(method);
+  client.print(" ");
+  client.print(parsed.path);
+  client.println(" HTTP/1.0");
+  client.print("Host: ");
+  client.println(parsed.host);
+  client.println("Connection: close");
+  client.println("Accept: application/json");
+  if (auth && ioboxKey.length() > 0) {
+    client.print("Authorization: Bearer ");
+    client.println(ioboxKey);
+  }
+  if (strcmp(method, "POST") == 0) {
+    client.println("Content-Type: application/json");
+    client.print("Content-Length: ");
+    client.println(payload.length());
+  }
+  client.println();
+  if (payload.length() > 0) client.print(payload);
+
+  uint32_t start = millis();
+  while (!client.available() && client.connected() && millis() - start < 8000) delay(5);
+  String status = client.readStringUntil('\n');
+  if (!status.startsWith("HTTP/1.1 2") && !status.startsWith("HTTP/1.0 2")) {
+    report("Server HTTP error: " + status.substring(0, 12));
+    client.stop();
+    return false;
+  }
+  start = millis();
+  while (client.connected()) {
+    if (millis() - start > 10000) { client.stop(); report("Response headers timed out"); return false; }
+    String line = client.readStringUntil('\n');
     if (line == "\r" || line.length() == 0) break;
   }
   body = "";
   start = millis();
-  while (ethClient.connected() || ethClient.available()) {
-    while (ethClient.available()) body += static_cast<char>(ethClient.read());
-    if (millis() - start > 10000) break;
+  while (client.connected() || client.available()) {
+    while (client.available()) {
+      if (body.length() >= 16384) { client.stop(); report("Response too large"); return false; }
+      body += static_cast<char>(client.read());
+    }
+    if (millis() - start > 10000) { client.stop(); report("Response timed out"); return false; }
     delay(1);
   }
-  ethClient.stop();
+  client.stop();
   return true;
 }
 #endif
 
-bool httpJson(const char *method, const String &url, const JsonDocument *body, JsonDocument &out, bool auth = true) {
+bool httpJson(const char *method, const String &url, const JsonDocument *body, JsonDocument &out,
+              bf::HttpTarget target = bf::HttpTarget::Server) {
+  // Scope is explicit: enrollment JSON is secret-bearing even without a bearer
+  // header. Enforce parsed HTTPS origins before serialization or either transport.
+  if (!allowRequest(url, target)) {
+    report("Request blocked: server credentials require the configured HTTPS origin (identity retained)");
+    return false;
+  }
+  const bool auth = target == bf::HttpTarget::Server;
   String payload;
   if (body) serializeJson(*body, payload);
 
@@ -288,8 +440,10 @@ bool httpJson(const char *method, const String &url, const JsonDocument *body, J
   }
 #endif
 
+  if (url.startsWith("https://") && !tlsReady()) return false;
   HTTPClient http;
   http.setTimeout(8000);
+  http.setConnectTimeout(8000);
   bool began = url.startsWith("https://") ? http.begin(wifiSecureClient, url) : http.begin(wifiClient, url);
   if (!began) return false;
   http.addHeader("Content-Type", "application/json");
@@ -306,6 +460,7 @@ bool httpJson(const char *method, const String &url, const JsonDocument *body, J
   }
 
   if (code < 200 || code >= 300) {
+    report("Server request failed (HTTP " + String(code) + "); retrying with saved identity");
     http.end();
     return false;
   }
@@ -447,43 +602,59 @@ void maintainSelectedNetwork() {
 #endif
 }
 
-void announceOrClaim() {
-  StaticJsonDocument<512> body;
+void acknowledgeClaim() {
+  if (!claimAckPending || ioboxKey.isEmpty()) return;
+  JsonDocument body, response;
   body["serial"] = serialNumber;
+  body["provisioning_secret"] = provisioningSecret;
+  if (httpJson("POST", joinUrl(serverUrl, "/api/iobox/pair/ack"), &body, response)) {
+    saveIdentity(ioboxId, ioboxKey, false);
+  }
+}
+
+void announceOrClaim() {
+  if (identityBlocked) return;
+  if (!ioboxKey.isEmpty()) { paired = true; acknowledgeClaim(); return; }
+  if (provisioningSecret.isEmpty()) {
+    uint8_t random[32];
+    // Ethernet disables Wi-Fi; explicitly enable the hardware entropy source.
+    if (mode == NetMode::Ethernet) bootloader_random_enable();
+    esp_fill_random(random, sizeof(random));
+    if (mode == NetMode::Ethernet) bootloader_random_disable();
+    String nextSecret = sha256Hex(random);
+    if (!saveString("claim_secret", nextSecret)) {
+      report("Cannot persist pairing secret; check NVS storage");
+      return;
+    }
+    provisioningSecret = nextSecret;
+  }
+  JsonDocument body, response;
+  body["serial"] = serialNumber;
+  body["provisioning_secret"] = provisioningSecret;
   body["model_hint"] = modelId;
   body["firmware_version"] = BF_IOBOX_FW_VERSION;
   body["firmware_arch"] = "esp32s3";
   body["network_mode"] = modeName(mode);
-
-  StaticJsonDocument<1024> response;
-  if (!httpJson("POST", joinUrl(serverUrl, "/api/iobox/announce"), &body, response, false)) return;
-
+  if (!httpJson("POST", joinUrl(serverUrl, "/api/iobox/announce"), &body, response, bf::HttpTarget::Enrollment)) return;
   const char *status = response["status"] | "";
-  if (strcmp(status, "unknown_serial") == 0) return;
+  if (strcmp(status, "unknown_serial") == 0) { report("Serial not registered; waiting for administrator"); return; }
   if (response["model_id"].is<const char *>()) modelId = String(response["model_id"].as<const char *>());
-
-  if (ioboxKey.length() > 0) {
-    paired = true;
-    return;
-  }
-
-  StaticJsonDocument<512> claim;
+  JsonDocument claim, claimResponse;
   claim["serial"] = serialNumber;
+  claim["provisioning_secret"] = provisioningSecret;
   claim["firmware_version"] = BF_IOBOX_FW_VERSION;
   claim["network_mode"] = modeName(mode);
-  StaticJsonDocument<1024> claimResponse;
-  if (httpJson("POST", joinUrl(serverUrl, "/api/iobox/pair/claim"), &claim, claimResponse, false)) {
-    ioboxId = String(claimResponse["iobox_id"] | "");
-    ioboxKey = String(claimResponse["iobox_key"] | "");
-    if (ioboxKey.length() > 0) {
-      saveString("iobox_id", ioboxId);
-      saveString("iobox_key", ioboxKey);
-      paired = true;
-    }
+  if (!httpJson("POST", joinUrl(serverUrl, "/api/iobox/pair/claim"), &claim, claimResponse, bf::HttpTarget::Enrollment)) return;
+  String id = String(claimResponse["iobox_id"] | "");
+  String key = String(claimResponse["iobox_key"] | "");
+  if (saveIdentity(id, key, true)) {
+    report("Paired; identity stored, waiting for configuration");
+    acknowledgeClaim();
   }
 }
 
 void heartbeat() {
+  acknowledgeClaim();
   StaticJsonDocument<512> body;
   body["firmware_version"] = BF_IOBOX_FW_VERSION;
   body["network_mode"] = modeName(mode);
@@ -522,14 +693,14 @@ bool checkLocalKiosk() {
   if (assignedKioskIp.length() == 0 || assignedKioskLocalKey.length() == 0) return false;
   StaticJsonDocument<256> response;
   String url = "http://" + assignedKioskIp + ":" + String(assignedKioskPort) + "/local/iobox/check?key=" + assignedKioskLocalKey;
-  return httpJson("GET", url, nullptr, response, false);
+  return httpJson("GET", url, nullptr, response, bf::HttpTarget::LocalKiosk);
 }
 
 bool postEventToLocalKiosk(JsonDocument &event) {
   if (!localKioskReachable) return false;
   String url = "http://" + assignedKioskIp + ":" + String(assignedKioskPort) + "/local/iobox/event?key=" + assignedKioskLocalKey;
   StaticJsonDocument<256> response;
-  return httpJson("POST", url, &event, response, false);
+  return httpJson("POST", url, &event, response, bf::HttpTarget::LocalKiosk);
 }
 
 void postEventToServer(JsonDocument &event, const char *route) {
@@ -568,7 +739,7 @@ bool runLocalMapping(JsonObject mapping) {
     if (assignedKioskIp.length() == 0 || assignedKioskLocalKey.length() == 0 || strlen(layoutId) == 0) return false;
     String url = "http://" + assignedKioskIp + ":" + String(assignedKioskPort) + "/local/layout/" + String(layoutId) + "?key=" + assignedKioskLocalKey;
     StaticJsonDocument<256> response;
-    return httpJson("GET", url, nullptr, response, false);
+    return httpJson("GET", url, nullptr, response, bf::HttpTarget::LocalKiosk);
   }
   return false;
 }
@@ -664,48 +835,61 @@ void otaCheck() {
   String downloadUrl = String(response["download_url"] | "");
   String version = String(response["version"] | "");
   String expectedSha = String(response["sha256"] | "");
+  String signature = String(response["signature"] | "");
+  if (signature.isEmpty() || strlen(BF_OTA_PUBLIC_KEY_HEX) == 0) {
+    report("OTA deferred: firmware signature or embedded signing key missing");
+    return;
+  }
   String absolute = downloadUrl.startsWith("http") ? downloadUrl : joinUrl(serverUrl, downloadUrl.c_str());
-  if (absolute.length() == 0) return;
+  if (!allowRequest(absolute) || !tlsReady()) {
+    report("OTA rejected: download must use the configured HTTPS origin");
+    return;
+  }
 
   bool ok = false;
   String otaError;
 #if BF_ETHERNET_VARIANT
   if (mode == NetMode::Ethernet) {
     ParsedUrl parsed;
-    if (parseUrl(absolute, parsed) && !parsed.https && ethClient.connect(parsed.host.c_str(), parsed.port)) {
-      ethClient.print("GET ");
-      ethClient.print(parsed.path);
-      ethClient.println(" HTTP/1.1");
-      ethClient.print("Host: ");
-      ethClient.println(parsed.host);
-      ethClient.println("Connection: close");
+    if (parseUrl(absolute, parsed) && ethSecureClient.connect(parsed.host.c_str(), parsed.port)) {
+      ethSecureClient.print("GET ");
+      ethSecureClient.print(parsed.path);
+      ethSecureClient.println(" HTTP/1.0");
+      ethSecureClient.print("Host: ");
+      ethSecureClient.println(parsed.host);
+      ethSecureClient.println("Connection: close");
       if (ioboxKey.length() > 0) {
-        ethClient.print("Authorization: Bearer ");
-        ethClient.println(ioboxKey);
+        ethSecureClient.print("Authorization: Bearer ");
+        ethSecureClient.println(ioboxKey);
       }
-      ethClient.println();
+      ethSecureClient.println("");
 
       uint32_t start = millis();
-      while (!ethClient.available() && ethClient.connected() && millis() - start < 8000) delay(5);
-      String status = ethClient.readStringUntil('\n');
+      while (!ethSecureClient.available() && ethSecureClient.connected() && millis() - start < 8000) delay(5);
+      String status = ethSecureClient.readStringUntil('\n');
       int contentLength = UPDATE_SIZE_UNKNOWN;
       bool statusOk = status.startsWith("HTTP/1.1 2") || status.startsWith("HTTP/1.0 2");
-      while (ethClient.connected()) {
-        String line = ethClient.readStringUntil('\n');
-        if (line.startsWith("Content-Length:")) contentLength = line.substring(15).toInt();
+      start = millis();
+      while (ethSecureClient.connected()) {
+        if (millis() - start > 10000) { statusOk = false; break; }
+        String line = ethSecureClient.readStringUntil('\n');
+        String headerName = line.substring(0, line.indexOf(':'));
+        if (headerName.equalsIgnoreCase("Content-Length")) contentLength = line.substring(15).toInt();
         if (line == "\r" || line.length() == 0) break;
       }
       if (statusOk) {
-        ok = streamUpdateWithSha(ethClient, contentLength, expectedSha, otaError);
+        ok = streamUpdateWithSha(ethSecureClient, contentLength, expectedSha, signature, otaError);
       } else {
         otaError = "download http error";
       }
-      ethClient.stop();
+      ethSecureClient.stop();
     }
   } else
 #endif
   {
   HTTPClient http;
+  http.setTimeout(15000);
+  http.setConnectTimeout(8000);
   bool began = absolute.startsWith("https://") ? http.begin(wifiSecureClient, absolute) : http.begin(wifiClient, absolute);
   if (!began) return;
   if (ioboxKey.length() > 0) http.addHeader("Authorization", "Bearer " + ioboxKey);
@@ -717,7 +901,7 @@ void otaCheck() {
 
   int len = http.getSize();
   WiFiClient *stream = http.getStreamPtr();
-  ok = streamUpdateWithSha(*stream, len, expectedSha, otaError);
+  ok = streamUpdateWithSha(*stream, len, expectedSha, signature, otaError);
   http.end();
   }
 
@@ -753,19 +937,50 @@ void setup() {
 #endif
 
   prefs.begin("bf-iobox", false);
-  wifiSecureClient.setInsecure();
+  wifiSecureClient.setCACert(BF_TLS_CA_PEM);
+  wifiSecureClient.setHandshakeTimeout(15);
+#if BF_ETHERNET_VARIANT
+  ethSecureClient.setClient(&ethClient);
+  ethSecureClient.setCACert(BF_TLS_CA_PEM);
+  ethSecureClient.setTimeout(8); // ESP_SSLClient takes seconds, unlike Stream.
+  ethSecureClient.setHandshakeTimeout(15);
+#endif
   serialNumber = prefString("serial");
   if (serialNumber.length() == 0) {
     serialNumber = macSerial();
     saveString("serial", serialNumber);
   }
   serverUrl = prefString("server", BF_DEFAULT_SERVER_URL);
-  ioboxId = prefString("iobox_id");
-  ioboxKey = prefString("iobox_key");
+  provisioningSecret = prefString("claim_secret");
+  String storedIdentity = prefString("identity");
+  if (!storedIdentity.isEmpty()) {
+    JsonDocument identity;
+    if (deserializeJson(identity, storedIdentity) == DeserializationError::Ok && identity["version"] == 1 &&
+        identity["server"].as<String>() == serverUrl && !identity["id"].as<String>().isEmpty() &&
+        !identity["key"].as<String>().isEmpty()) {
+      ioboxId = identity["id"].as<String>();
+      ioboxKey = identity["key"].as<String>();
+      claimAckPending = identity["ack_pending"] | false;
+      paired = true;
+    } else {
+      report("Saved identity invalid or server changed; local service required (identity retained)");
+      identityBlocked = true;
+    }
+  } else {
+    String legacyId = prefString("iobox_id");
+    String legacyKey = prefString("iobox_key");
+    if (!legacyId.isEmpty() && !legacyKey.isEmpty()) {
+      if (!saveIdentity(legacyId, legacyKey, false)) identityBlocked = true;
+    } else if (!legacyId.isEmpty() || !legacyKey.isEmpty()) {
+      identityBlocked = true;
+      report("Incomplete legacy identity; administrator must recover enrollment (identity retained)");
+    }
+  }
   modelId = prefString("model_id", BF_MODEL_HINT);
 
   chooseNetworkAtBoot();
   if (networkUp) {
+    syncNetworkTime();
     announceOrClaim();
     if (paired) {
       heartbeat();
@@ -777,9 +992,14 @@ void setup() {
 
 void loop() {
   maintainSelectedNetwork();
-  setLed(networkUp);
+  static uint32_t lastTimeAttempt = 0;
+  if (networkUp && time(nullptr) < 1704067200 && millis() - lastTimeAttempt > 30000) {
+    lastTimeAttempt = millis();
+    syncNetworkTime();
+  }
+  setLed(networkUp && paired ? true : (millis() / 500) % 2);
   if (!networkUp || !paired) {
-    delay(1000);
+    delay(3000);
     if (networkUp && !paired) announceOrClaim();
     return;
   }

@@ -13,7 +13,12 @@ function readJsonBody(req) {
     if (req.body && typeof req.body === "object") return resolve(req.body);
     let data = "";
     req.setEncoding("utf8");
-    req.on("data", (c) => { data += c; });
+    req.on("data", (c) => {
+      data += c;
+      if (Buffer.byteLength(data) > 1024 * 1024) {
+        req.destroy(new Error("event body too large"));
+      }
+    });
     req.on("end", () => {
       if (!data) return resolve({});
       try { resolve(JSON.parse(data)); } catch { resolve({}); }

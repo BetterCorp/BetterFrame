@@ -21,13 +21,15 @@ import {
 } from "@bsb/base";
 import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { WebSocketServer, WebSocket } from "ws";
+import { WebSocket, type WebSocketServer } from "ws";
 
 import type { DbConfig } from "../../shared/db/config.js";
 import { initDb } from "../../shared/db/init.js";
 import { initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
 import { setCoordinator } from "../../shared/coordinator-registry.js";
+import { KioskConnections } from "../../shared/kiosk-connections.js";
+import { createCoordinatorWebSocketServer } from "../../shared/coordinator-websocket.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 
 // ---- Config -----------------------------------------------------------------
@@ -83,15 +85,10 @@ export const EventSchemas = createEventSchemas({
 
 // ---- Connected kiosks -------------------------------------------------------
 
-interface ConnectedKiosk {
-  id: string;
-  name: string;
-  ws: WebSocket;
-}
-
-const connectedKiosks = new Map<string, ConnectedKiosk>();
+const connectedKiosks = new KioskConnections<WebSocket>();
 const pendingRequests = new Map<string, {
   kioskId: string;
+  socket: WebSocket;
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -148,8 +145,12 @@ function sendToKiosk(kioskId: string, message: object, queueWhenOffline = true):
     if (q.length > MESSAGE_QUEUE_CAP) q.shift(); // FIFO eviction
     return false;
   }
-  k.ws.send(payload);
-  return true;
+  try {
+    k.ws.send(payload);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function drainOfflineQueue(kioskId: string): void {
@@ -166,17 +167,23 @@ function drainOfflineQueue(kioskId: string): void {
 function requestKiosk<T = unknown>(kioskId: string, message: object, timeoutMs = 10000): Promise<T> {
   const requestId = randomUUID();
   return new Promise<T>((resolve, reject) => {
+    const connection = connectedKiosks.get(kioskId);
+    if (!connection || connection.ws.readyState !== WebSocket.OPEN) {
+      reject(new Error("kiosk is not connected"));
+      return;
+    }
     const timer = setTimeout(() => {
       pendingRequests.delete(requestId);
       reject(new Error("kiosk request timed out"));
     }, timeoutMs);
     pendingRequests.set(requestId, {
       kioskId,
+      socket: connection.ws,
       resolve: (value) => resolve(value as T),
       reject,
       timer,
     });
-    const sent = sendToKiosk(kioskId, { ...message, request_id: requestId });
+    const sent = sendToKiosk(kioskId, { ...message, request_id: requestId }, false);
     if (!sent) {
       clearTimeout(timer);
       pendingRequests.delete(requestId);
@@ -261,7 +268,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       res.end();
     });
 
-    const wss = new WebSocketServer({ noServer: true });
+    const wss = createCoordinatorWebSocketServer();
 
     httpServer.on("upgrade", async (req: IncomingMessage, socket, head) => {
       const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
@@ -359,8 +366,19 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           return;
         }
         wss.handleUpgrade(req, socket, head, (ws) => {
-          connectedKiosks.set(kiosk.id, { id: kiosk.id, name: kioskData.name, ws });
+          const previous = connectedKiosks.get(kiosk.id);
+          connectedKiosks.set(kiosk.id, { id: kiosk.id, name: kioskData.name, ws, lastPong: Date.now() });
+          if (previous && previous.ws !== ws) {
+            for (const [requestId, pending] of pendingRequests) {
+              if (pending.socket !== previous.ws) continue;
+              pendingRequests.delete(requestId);
+              clearTimeout(pending.timer);
+              pending.reject(new Error("kiosk connection replaced"));
+            }
+            previous.ws.terminate();
+          }
           obs.log.info("kiosk connected: {name}", { name: kioskData.name });
+          ws.on("error", () => ws.terminate());
           ws.send(JSON.stringify({ type: "connected", kiosk_id: kiosk.id }));
           drainOfflineQueue(kiosk.id);
           nodered.forward(
@@ -375,9 +393,10 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           );
 
           ws.on("message", (data) => {
+            if (connectedKiosks.get(kiosk.id)?.ws !== ws) return;
             try {
               const msg = JSON.parse(data.toString()) as Record<string, unknown>;
-              if (msg["type"] === "pong") return;
+              if (msg["type"] === "pong") { connectedKiosks.pong(kiosk.id, ws); return; }
               if (
                 msg["type"] === "onvif-soap-response"
                 || msg["type"] === "camera-proxy-response"
@@ -390,7 +409,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
               ) {
                 const requestId = typeof msg["request_id"] === "string" ? msg["request_id"] : "";
                 const pending = pendingRequests.get(requestId);
-                if (!pending || pending.kioskId !== kiosk.id) return;
+                if (!pending || pending.kioskId !== kiosk.id || pending.socket !== ws) return;
                 pendingRequests.delete(requestId);
                 clearTimeout(pending.timer);
                 const error = typeof msg["error"] === "string" ? msg["error"] : "";
@@ -451,9 +470,9 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           });
 
           ws.on("close", () => {
-            connectedKiosks.delete(kiosk.id);
+            if (!connectedKiosks.removeSocket(kiosk.id, ws)) return;
             for (const [requestId, pending] of pendingRequests) {
-              if (pending.kioskId !== kiosk.id) continue;
+              if (pending.socket !== ws) continue;
               pendingRequests.delete(requestId);
               clearTimeout(pending.timer);
               pending.reject(new Error("kiosk disconnected"));
@@ -499,6 +518,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
     // Ping connected kiosks every 30s
     this.pingInterval = setInterval(() => {
+      connectedKiosks.terminateStale();
       const payload = JSON.stringify({ type: "ping", t: Date.now() });
       for (const k of connectedKiosks.values()) {
         try {

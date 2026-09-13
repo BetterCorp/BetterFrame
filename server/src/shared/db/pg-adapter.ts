@@ -16,7 +16,7 @@ export class PgAdapter implements DbAdapter {
   private readonly pool: Pool;
   private readonly context = new AsyncLocalStorage<{
     searchPath: string;
-    transaction?: { client: PoolClient; depth: number };
+    transaction?: { client: PoolClient; depth: number; callbacks: Array<() => void> };
   }>();
 
   constructor(connectionString: string, poolMax: number = 10) {
@@ -71,11 +71,14 @@ export class PgAdapter implements DbAdapter {
 
   private async runner<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
     const current = this.context.getStore();
-    if (current?.transaction) return fn(current.transaction.client);
+    if (current?.transaction) {
+      await current.transaction.client.query(`SET LOCAL search_path TO "${current.searchPath}", public`);
+      return fn(current.transaction.client);
+    }
     const client = await this.pool.connect();
     try {
       const searchPath = current?.searchPath ?? "public";
-      await client.query(`SET search_path TO ${searchPath}, public`);
+      await client.query(`SET search_path TO "${searchPath}", public`);
       return await fn(client);
     } finally {
       client.release();
@@ -123,6 +126,7 @@ export class PgAdapter implements DbAdapter {
     const current = this.context.getStore() ?? { searchPath: "public" };
     if (current.transaction) {
       // Already in a transaction — use a savepoint.
+      const callbackCount = current.transaction.callbacks.length;
       current.transaction.depth += 1;
       const name = `sp_${current.transaction.depth}`;
       await current.transaction.client.query(`SAVEPOINT ${name}`);
@@ -132,20 +136,25 @@ export class PgAdapter implements DbAdapter {
         current.transaction.depth -= 1;
         return result;
       } catch (err) {
+        current.transaction.callbacks.length = callbackCount;
         try { await current.transaction.client.query(`ROLLBACK TO SAVEPOINT ${name}`); } catch { /* ignore */ }
         current.transaction.depth -= 1;
         throw err;
       }
     }
     const client = await this.pool.connect();
+    const callbacks: Array<() => void> = [];
     try {
       await client.query("BEGIN");
-      await client.query(`SET LOCAL search_path TO ${current.searchPath}, public`);
+      await client.query(`SET LOCAL search_path TO "${current.searchPath}", public`);
       const result = await this.context.run(
-        { ...current, transaction: { client, depth: 1 } },
+        { ...current, transaction: { client, depth: 1, callbacks } },
         fn,
       );
       await client.query("COMMIT");
+      // Notifications are best-effort and must never turn a committed write into
+      // an apparent transaction failure.
+      for (const callback of callbacks) { try { callback(); } catch { /* best effort */ } }
       return result;
     } catch (err) {
       try { await client.query("ROLLBACK"); } catch { /* ignore */ }
@@ -153,6 +162,12 @@ export class PgAdapter implements DbAdapter {
     } finally {
       client.release();
     }
+  }
+
+  afterCommit(fn: () => void): void {
+    const transaction = this.context.getStore()?.transaction;
+    if (transaction) transaction.callbacks.push(fn);
+    else fn();
   }
 
   dialect(): "postgres" { return "postgres"; }

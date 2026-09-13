@@ -16,7 +16,7 @@
     "clean": "bsb-plugin-cli clean",
     "start": "bsb-plugin-cli start",
     "dev": "cross-env NODE_OPTIONS=\"--import tsx\" bsb-plugin-cli dev",
-    "test": "cross-env TSX_TSCONFIG_PATH=tsconfig.test.json node --import tsx --test tests/*.test.ts",
+    "test": "cross-env TSX_TSCONFIG_PATH=tsconfig.test.json node --import tsx tests/run-tests.ts",
     "schemas:export": "node --enable-source-maps lib/scripts/export-schemas.js"
   },
   "bsb": {},

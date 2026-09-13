@@ -33,8 +33,9 @@ BF_MQTT_URL=                     # optional MQTT telemetry export
 
 In Coolify: create a Docker compose stack pointing at the repo's
 `docker-compose.coolify.yml` (repo root), inject the env vars, set a domain on the
-`angie` service. Backups via the admin UI (`/admin/backup`) — Coolify's S3
-hook can pull these on a schedule.
+`angie` service. Use `deploy/scripts/backup-stack.sh` for coordinated encrypted PostgreSQL,
+server-key, and Node-RED backups. See [backup recovery](../docs/backup-recovery.md);
+legacy browser SQLite archives cannot restore this stack.
 
 ### bf-client (kiosk Pi)
 

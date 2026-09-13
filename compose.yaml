@@ -62,7 +62,7 @@ services:
       POSTGRES_PASSWORD: ${BF_PG_PASSWORD:?set BF_PG_PASSWORD}
       POSTGRES_DB: ${BF_PG_DB:-betterframe}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${BF_PG_USER:-betterframe}"]
       interval: 10s

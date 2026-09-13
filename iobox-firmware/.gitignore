@@ -1,0 +1,3 @@
+.pio/
+include/trust_config_local.h
+__pycache__/

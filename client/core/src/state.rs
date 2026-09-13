@@ -20,6 +20,8 @@ pub struct ClientState {
     #[serde(default)]
     pub pairing_expires_at: Option<String>,
     #[serde(default)]
+    pub pairing_secret: Option<String>,
+    #[serde(default)]
     pub active_layouts: HashMap<String, String>,
 }
 

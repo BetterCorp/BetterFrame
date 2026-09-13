@@ -1,3 +1,4 @@
+const { subscribeEvent } = require("./_event-dispatch.js");
 /**
  * bf-trigger-motion — fires on ONVIF motion detection events.
  *
@@ -71,28 +72,14 @@ module.exports = function (RED) {
       res.status(200).end();
     }
 
-    RED.httpNode.post(ROUTE, handler);
+    const unsubscribe = [subscribeEvent(RED, ROUTE, handler)];
 
     // Also listen on the generic onvif event route as fallback.
     const GENERIC_ROUTE = "/api/internal/onvif.event";
-    RED.httpNode.post(GENERIC_ROUTE, handler);
+    unsubscribe.push(subscribeEvent(RED, GENERIC_ROUTE, handler));
 
     node.on("close", function (done) {
-      const stack = RED.httpNode?._router?.stack;
-      if (stack) {
-        for (let i = stack.length - 1; i >= 0; i--) {
-          const layer = stack[i];
-          if (!layer?.route) continue;
-          if (layer.route.path !== ROUTE && layer.route.path !== GENERIC_ROUTE) continue;
-          const inner = layer.route.stack;
-          if (Array.isArray(inner)) {
-            for (let j = inner.length - 1; j >= 0; j--) {
-              if (inner[j]?.handle === handler) inner.splice(j, 1);
-            }
-            if (inner.length === 0) stack.splice(i, 1);
-          }
-        }
-      }
+      for (const off of unsubscribe) off();
       done();
     });
   }

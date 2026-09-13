@@ -96,6 +96,12 @@ export const PUBLIC_MIGRATIONS: readonly string[] = [
   `UPDATE iobox_serials SET model_id = 'ioBOX-WIFI' WHERE model_id = 'ioBOX-KB'`,
   `UPDATE iobox_serials SET model_id = 'ioBOX-ETHERNET' WHERE model_id = 'ioBOX-KB-E'`,
   `DELETE FROM iobox_models WHERE id IN ('ioBOX-KB', 'ioBOX-KB-E')`,
+  `CREATE TABLE IF NOT EXISTS public.iobox_pairing_claims (
+    serial TEXT PRIMARY KEY REFERENCES public.iobox_serials(serial) ON DELETE CASCADE,
+    provisioning_secret_hash TEXT NOT NULL,
+    claim_encrypted TEXT,
+    acknowledged_at TIMESTAMPTZ
+  )`,
 ];
 
 /**

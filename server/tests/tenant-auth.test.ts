@@ -145,6 +145,8 @@ test("tenant schema bootstrap mirrors platform admins", async () => {
   const writes: string[] = [];
   const adapter = {
     exec: async () => {},
+    transaction: async (fn: () => unknown) => fn(),
+    withSearchPath: async (_schema: string, fn: () => unknown) => fn(),
     setSearchPath: async () => {},
     get: async () => ({ version: Number.MAX_SAFE_INTEGER }),
     run: async (sql: string) => {
@@ -237,7 +239,7 @@ test("audit inserts provide the required entry id", async () => {
     resource_id: null,
     ip: null,
     metadata: {},
-    result: "success",
+    result: "ok",
   });
 
   assert.match(insert!.sql, /\(id, actor_type/);

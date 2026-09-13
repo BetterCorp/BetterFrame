@@ -40,7 +40,7 @@ export function registerTenantRoutes(app: H3, deps: AdminDeps): void {
     const maxCameras = body?.["max_cameras"] ? parseInt(body["max_cameras"], 10) : null;
     const maxUsers = body?.["max_users"] ? parseInt(body["max_users"], 10) : null;
 
-    if (!name || !slug || !/^[a-z0-9][a-z0-9_-]*$/.test(slug)) {
+    if (!name || !slug || !/^[a-z0-9][a-z0-9_-]{0,127}$/.test(slug)) {
       const tenants = await deps.repo.listTenants();
       return htmlPage(TenantsPage({
         user: event.context.user!.username,
@@ -62,24 +62,26 @@ export function registerTenantRoutes(app: H3, deps: AdminDeps): void {
       }));
     }
 
-    // Create tenant record.
-    await deps.repo.createTenant({
-      name,
-      slug,
-      max_kiosks: maxKiosks,
-      max_cameras: maxCameras,
-      max_users: maxUsers,
-    });
+    // Registration and provisioning succeed or roll back together.
+    await deps.repo.transact(async () => {
+      await deps.repo.createTenant({
+        name,
+        slug,
+        max_kiosks: maxKiosks,
+        max_cameras: maxCameras,
+        max_users: maxUsers,
+      });
 
-    // Create PG schema and run tenant migrations.
-    await createTenantSchema(
-      deps.repo.adapter,
-      slug,
-      {
-        info: (m) => { /* swallow */ },
-        warn: (m) => { /* swallow */ },
-      },
-    );
+      // Create PG schema and run tenant migrations.
+      await createTenantSchema(
+        deps.repo.adapter,
+        slug,
+        {
+          info: (m) => { /* swallow */ },
+          warn: (m) => { /* swallow */ },
+        },
+      );
+    });
     deps.scheduleNoderedReconcile();
 
     return new Response(null, { status: 302, headers: { location: "/admin/tenants" } });

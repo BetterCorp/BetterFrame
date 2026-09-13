@@ -7,6 +7,8 @@
 import { Repository } from "./repository.js";
 import type { DbAdapter } from "./db-adapter.js";
 import type { DbConfig } from "./config.js";
+import { tenantSchemaName, legacyTenantSchemaName, storedPostgresIdentifier } from "./tenant-schema.js";
+import { quotedSchema } from "./platform-admin.js";
 import { mirrorPlatformAdmins } from "./platform-admin.js";
 
 interface DbLog {
@@ -32,75 +34,58 @@ export async function initDb(
   const { PgAdapter } = await import("./pg-adapter.js");
   const adapter = new PgAdapter(pgUrl, config.poolMax);
 
-  await adapter.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
-    schema_name TEXT NOT NULL, version INTEGER NOT NULL,
-    applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (schema_name, version)
-  )`);
-
-  const { PUBLIC_MIGRATIONS, TENANT_MIGRATIONS } = await import("./migrations-pg.js");
-  const pubVersionRow = await adapter.get<{ version: number }>(
-    `SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations WHERE schema_name = 'public_global'`,
-  ).catch(() => undefined);
-  const pubCurrentVersion = pubVersionRow?.version ?? 0;
-  if (pubCurrentVersion < PUBLIC_MIGRATIONS.length) {
-    log.info(`running PUBLIC migrations from ${pubCurrentVersion} to ${PUBLIC_MIGRATIONS.length}`);
-    for (let i = pubCurrentVersion; i < PUBLIC_MIGRATIONS.length; i++) {
-      try {
-        await adapter.exec(PUBLIC_MIGRATIONS[i]!);
-      } catch (err) {
-        log.warn(`PUBLIC migration ${i} failed: ${(err as Error).message}`);
-        log.warn(`SQL: ${PUBLIC_MIGRATIONS[i]!.slice(0, 200)}`);
-        throw err;
-      }
-      await adapter.run(
-        `INSERT INTO schema_migrations (schema_name, version) VALUES ('public_global', ?)`,
-        [i + 1],
+  try {
+    await adapter.transaction(async () => {
+      // One transaction-scoped lock is shared by startup and tenant creation.
+      await adapter.get("SELECT pg_advisory_xact_lock(734192081)");
+      await adapter.exec(`CREATE TABLE IF NOT EXISTS public.schema_migrations (
+        schema_name TEXT NOT NULL, version INTEGER NOT NULL,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (schema_name, version)
+      )`);
+      const { PUBLIC_MIGRATIONS, TENANT_MIGRATIONS } = await import("./migrations-pg.js");
+      await applyMigrations(adapter, "public_global", PUBLIC_MIGRATIONS, log);
+      await applyMigrations(adapter, "public", TENANT_MIGRATIONS, log);
+      await adapter.run(`INSERT INTO public.tenants (name, slug, schema_name, is_active)
+        VALUES ('Default', 'default', 'public', true) ON CONFLICT (slug) DO NOTHING`);
+      const tenants = await adapter.all<{ slug: string; schema_name: string }>(
+        "SELECT slug, schema_name FROM public.tenants WHERE slug <> 'default' ORDER BY created_at",
       );
-    }
-  } else {
-    log.info(`PUBLIC schema up to date (version ${pubCurrentVersion})`);
-  }
-
-  const versionRow = await adapter.get<{ version: number }>(
-    `SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations WHERE schema_name = 'public'`,
-  ).catch(() => undefined);
-  const currentVersion = versionRow?.version ?? 0;
-  if (currentVersion < TENANT_MIGRATIONS.length) {
-    log.info(`running PG tenant migrations from ${currentVersion} to ${TENANT_MIGRATIONS.length}`);
-    for (let i = currentVersion; i < TENANT_MIGRATIONS.length; i++) {
-      try {
-        await adapter.exec(TENANT_MIGRATIONS[i]!);
-      } catch (err) {
-        log.warn(`PG migration ${i} failed: ${(err as Error).message}`);
-        log.warn(`SQL: ${TENANT_MIGRATIONS[i]!.slice(0, 200)}`);
-        throw err;
+      // Old registration names were unbounded, but PostgreSQL identifiers are
+      // not. Refuse ambiguous ownership before renaming any tenant schema.
+      const schemaOwners = new Map<string, string>();
+      for (const tenant of tenants) {
+        const storedName = storedPostgresIdentifier(tenant.schema_name);
+        const previousOwner = schemaOwners.get(storedName);
+        if (previousOwner) throw new Error(`ambiguous legacy tenant schema ${storedName}: registered by ${previousOwner} and ${tenant.slug}`);
+        schemaOwners.set(storedName, tenant.slug);
       }
-      await adapter.run(
-        `INSERT INTO schema_migrations (schema_name, version) VALUES ('public', ?)`,
-        [i + 1],
-      );
-    }
-  } else {
-    log.info(`PG schema up to date (version ${currentVersion})`);
-  }
-
-  const defaultTenant = await adapter.get(
-    `SELECT id FROM public.tenants WHERE slug = 'default'`,
-  );
-  if (!defaultTenant) {
-    log.info("creating default tenant");
-    await adapter.run(
-      `INSERT INTO public.tenants (name, slug, schema_name, is_active)
-       VALUES ('Default', 'default', 'public', true)`,
-    );
-  }
-
-  const tenants = await adapter.all<{ slug: string }>(
-    `SELECT slug FROM public.tenants WHERE slug <> 'default' ORDER BY created_at`,
-  );
-  for (const tenant of tenants) {
-    await createTenantSchema(adapter, tenant.slug, log);
+      for (const tenant of tenants) {
+        let schemaName = tenant.schema_name;
+        // Repair registrations made by older builds with invalid/overlong names.
+        if (!/^[a-z_][a-z0-9_]{0,62}$/.test(schemaName)) {
+          const repaired = legacyTenantSchemaName(tenant.slug);
+          const storedName = storedPostgresIdentifier(schemaName);
+          // Cast to text: comparing pg_namespace.name to a name-typed parameter
+          // can silently truncate the lookup argument too.
+          const exists = await adapter.get("SELECT 1 FROM pg_namespace WHERE nspname::text = ?", [storedName]);
+          if (exists) {
+            const oldQuoted = `"${storedName.replaceAll('"', '""')}"`;
+            await adapter.exec(`ALTER SCHEMA ${oldQuoted} RENAME TO ${quotedSchema(repaired)}`);
+            await adapter.run(`INSERT INTO public.schema_migrations (schema_name, version, applied_at)
+              SELECT ?, version, applied_at FROM public.schema_migrations WHERE schema_name IN (?, ?)
+              ON CONFLICT (schema_name, version) DO NOTHING`, [repaired, schemaName, storedName]);
+            await adapter.run("DELETE FROM public.schema_migrations WHERE schema_name IN (?, ?)", [schemaName, storedName]);
+          }
+          await adapter.run("UPDATE public.tenants SET schema_name = ? WHERE slug = ?", [repaired, tenant.slug]);
+          schemaName = repaired;
+        }
+        await createTenantSchema(adapter, tenant.slug, log, schemaName);
+      }
+    });
+  } catch (error) {
+    await adapter.close();
+    throw error;
   }
 
   const repo = new Repository(adapter, async (table, op, id) => {
@@ -113,46 +98,31 @@ export async function initDb(
 /**
  * Create a new tenant schema and run all TENANT_MIGRATIONS inside it.
  */
+async function applyMigrations(adapter: DbAdapter, name: string, migrations: readonly string[], log: DbLog): Promise<void> {
+  const version = await adapter.get<{ version: number }>(
+    "SELECT COALESCE(MAX(version), 0) AS version FROM public.schema_migrations WHERE schema_name = ?", [name],
+  );
+  for (let i = version?.version ?? 0; i < migrations.length; i++) {
+    await adapter.transaction(async () => {
+      await adapter.exec(migrations[i]!);
+      await adapter.run("INSERT INTO public.schema_migrations (schema_name, version) VALUES (?, ?)", [name, i + 1]);
+    });
+  }
+  log.info(`schema ${name} at migration ${migrations.length}`);
+}
+
 export async function createTenantSchema(
-  adapter: DbAdapter,
-  slug: string,
-  log: DbLog,
+  adapter: DbAdapter, slug: string, log: DbLog, existingSchemaName?: string,
 ): Promise<void> {
-  if (!/^[a-z0-9][a-z0-9_-]*$/.test(slug)) {
-    throw new Error(`invalid tenant slug: ${slug}`);
-  }
-  const schemaName = `tenant_${slug}`;
-  log.info(`creating tenant schema: ${schemaName}`);
-
-  await adapter.exec(`CREATE SCHEMA IF NOT EXISTS ${schemaName}`);
-  await adapter.setSearchPath(schemaName);
-
-  try {
-    const { TENANT_MIGRATIONS } = await import("./migrations-pg.js");
-
-    const versionRow = await adapter.get<{ version: number }>(
-      `SELECT COALESCE(MAX(version), 0) AS version FROM public.schema_migrations WHERE schema_name = ?`,
-      [schemaName],
-    );
-    const currentVersion = versionRow?.version ?? 0;
-
-    if (currentVersion < TENANT_MIGRATIONS.length) {
-      log.info(`running tenant migrations for ${schemaName} from ${currentVersion} to ${TENANT_MIGRATIONS.length}`);
-      for (let i = currentVersion; i < TENANT_MIGRATIONS.length; i++) {
-        try {
-          await adapter.exec(TENANT_MIGRATIONS[i]!);
-        } catch (err) {
-          log.warn(`tenant migration ${i} failed for ${schemaName}: ${(err as Error).message}`);
-          throw err;
-        }
-        await adapter.run(
-          `INSERT INTO public.schema_migrations (schema_name, version) VALUES (?, ?)`,
-          [schemaName, i + 1],
-        );
-      }
-    }
-    await mirrorPlatformAdmins(adapter, [schemaName]);
-  } finally {
-    await adapter.setSearchPath("public");
-  }
+  const schemaName = existingSchemaName ?? tenantSchemaName(slug);
+  const quoted = quotedSchema(schemaName);
+  await adapter.transaction(async () => {
+    await adapter.get("SELECT pg_advisory_xact_lock(734192081)");
+    await adapter.exec(`CREATE SCHEMA IF NOT EXISTS ${quoted}`);
+    await adapter.withSearchPath(schemaName, async () => {
+      const { TENANT_MIGRATIONS } = await import("./migrations-pg.js");
+      await applyMigrations(adapter, schemaName, TENANT_MIGRATIONS, log);
+      await mirrorPlatformAdmins(adapter, [schemaName]);
+    });
+  });
 }

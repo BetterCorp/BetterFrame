@@ -83,10 +83,12 @@ class KioskPresentationTest {
                     assertEquals("ABC123", code.text.toString())
                     assertEquals("Pairing code: A B C 1 2 3", code.contentDescription.toString())
                     assertEquals("Pairing code must fit on one line", 1, code.lineCount)
+                    assertPairingGlyphsFit(code)
                     @Suppress("DEPRECATION")
                     val sizeSp = code.textSize / activity.resources.displayMetrics.scaledDensity
                     assertTrue("Pairing code must be readable at a distance ($sizeSp sp)", sizeSp >= 40f)
                     assertFullyVisible(code)
+                    assertFullyVisible(views.single { it.tag == "kiosk-details" })
                     assertFalse("Do not put a server form on the kiosk screen", views.any { it is EditText && it.isShown })
                     val menu = views.single { it.contentDescription == "Kiosk menu" }
                     assertTrue(menu.isShown && menu.isFocusable)
@@ -148,13 +150,17 @@ class KioskPresentationTest {
         ProtectedStore(context).write(JSONObject().put("server", "http://127.0.0.1:9")
             .put("identity", JSONObject().put("kiosk_key", "existing-test-key")))
         val server = MockWebServer()
+        val requestPaths = ConcurrentLinkedQueue<String>()
         server.dispatcher = object : Dispatcher() {
-            override fun dispatch(request: RecordedRequest): MockResponse = MockResponse().setBody(when (request.path) {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requestPaths.add(request.requestUrl!!.encodedPath)
+                return MockResponse().setBody(when (request.path) {
                 "/healthz" -> "{}"
                 "/api/pair/initiate" -> """{"code":"ABC123","polling_secret":"test-secret","poll_after_ms":1000}"""
                 "/api/pair/claim" -> """{"status":"pending"}"""
                 else -> "{}"
-            })
+                })
+            }
         }
         server.start()
         // Resolve localhost outside the UI thread (MockWebServer.url does DNS).
@@ -210,10 +216,17 @@ class KioskPresentationTest {
                 assertTrue(correctedAddress.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,
                     Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, target) }))
                 clickAccessibleText("Connect")
-                clickAccessibleText("Reset and connect")
-                awaitUi(scenario, "Reset did not begin pairing with the selected custom server") { activity ->
-                    descendants(activity.window.decorView).filterIsInstance<TextView>()
-                        .any { it.tag == "pairing-code" && it.isShown && it.text.toString() == "ABC123" }
+                try {
+                    clickAccessibleText("Reset and connect")
+                    awaitAccessibility("Reset confirmation was not accepted") { root ->
+                        accessibilityDescendants(root).none { it.isVisibleToUser && it.text?.toString() == "Reset this display?" }
+                    }
+                    awaitUi(scenario, "Reset did not begin pairing with the selected custom server") { activity ->
+                        descendants(activity.window.decorView).filterIsInstance<TextView>()
+                            .any { it.tag == "pairing-code" && it.isShown && it.text.toString() == "ABC123" }
+                    }
+                } catch (failure: AssertionError) {
+                    throw AssertionError("${failure.message}; ${settingsResetDiagnostics(scenario, session, requestPaths)}", failure)
                 }
                 assertEquals(target, session.serverUrl)
                 assertEquals(target, ProtectedStore(context).read().getString("server"))
@@ -222,6 +235,39 @@ class KioskPresentationTest {
                 assertEquals("/api/pair/initiate", server.takeRequest(2, TimeUnit.SECONDS)?.path)
             }
         } finally { server.shutdown() }
+    }
+
+    private fun settingsResetDiagnostics(scenario: ActivityScenario<MainActivity>, session: ViewerSession,
+                                         requestPaths: Collection<String>): String {
+        var status = ""
+        var active = false
+        var resetRequested = false
+        scenario.onActivity { activity ->
+            status = descendants(activity.window.decorView).filterIsInstance<TextView>()
+                .firstOrNull { it.tag == "connection-status" }?.text?.toString().orEmpty()
+            active = MainActivity::class.java.getDeclaredField("active").apply { isAccessible = true }.getBoolean(activity)
+            resetRequested = MainActivity::class.java.getDeclaredField("resetRequested").apply { isAccessible = true }.getBoolean(activity)
+        }
+        val running = ViewerSession::class.java.getDeclaredField("running").apply { isAccessible = true }.getBoolean(session)
+        val clearing = ViewerSession::class.java.getDeclaredField("clearingEnrollment").apply { isAccessible = true }.getBoolean(session)
+        val saved = ProtectedStore(context).read()
+        // Capture this deterministic fixture before ActivityScenario closes it.
+        val captured = runCatching {
+            val screenshot = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
+            try {
+                val local = File(requireNotNull(context.getExternalFilesDir(null)), "settings-reset-failure.png")
+                local.outputStream().use { screenshot.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                val shared = "/sdcard/Download/betterframe-kiosk-screenshots"
+                for (command in listOf("mkdir -p $shared", "cp ${local.absolutePath} $shared/settings-reset-failure.png")) {
+                    ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(command))
+                        .bufferedReader().use { it.readText() }
+                }
+            } finally { screenshot.recycle() }
+        }.isSuccess
+        // Only public UI status, fixed request paths, and state-presence flags.
+        return "status=$status active=$active resetting=$resetRequested running=$running clearing=$clearing " +
+            "cleanupMarker=${saved.has("enrollment_cleanup")} identity=${saved.has("identity")} pending=${saved.has("pending")} " +
+            "requests=$requestPaths screenshot=$captured"
     }
 
     @Test fun displayGridUsesTheWholeWindowWithoutPersistentToolbarRows() {
@@ -337,6 +383,8 @@ class KioskPresentationTest {
                 val code = views.filterIsInstance<TextView>().single { it.tag == "pairing-code" }
                 assertEquals("ABC123", code.text.toString())
                 assertFullyVisible(code)
+                assertPairingGlyphsFit(code)
+                assertFullyVisible(views.single { it.tag == "kiosk-details" })
                 assertEquals("Waiting for pairing approval", views.filterIsInstance<TextView>()
                     .single { it.tag == "connection-status" }.text.toString())
                 val expected = if (name.endsWith("portrait")) Configuration.ORIENTATION_PORTRAIT
@@ -391,6 +439,16 @@ class KioskPresentationTest {
             }
             error("Kiosk screenshot did not settle after drawing and rotation")
         } finally { previous?.recycle() }
+    }
+
+    private fun assertPairingGlyphsFit(code: TextView) {
+        val layout = requireNotNull(code.layout)
+        val available = code.width - code.compoundPaddingLeft - code.compoundPaddingRight
+        assertEquals("Pairing code must remain a single line", 1, layout.lineCount)
+        assertEquals("Pairing code must include every character", code.text.length, layout.getLineEnd(0))
+        assertEquals("Pairing code must never be ellipsized", 0, layout.getEllipsisCount(0))
+        assertTrue("Pairing glyphs (${layout.getLineWidth(0)}px) must fit the viewport (${available}px)",
+            layout.getLineWidth(0) <= available + 1f)
     }
 
     private fun descendants(view: View): List<View> = buildList {

@@ -29,6 +29,8 @@ internal class KioskSetupView(context: Context) : LinearLayout(context) {
         typeface = Typeface.create("monospace", Typeface.BOLD)
         letterSpacing = 0.12f
         setSingleLine()
+        // Single-line mode enables scrolling, which makes autosizing ignore width.
+        setHorizontallyScrolling(false)
         setAutoSizeTextTypeUniformWithConfiguration(28, if (compact) 64 else 88, 1,
             android.util.TypedValue.COMPLEX_UNIT_SP)
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES

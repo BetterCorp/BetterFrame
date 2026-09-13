@@ -25,7 +25,6 @@ class MainActivity : Activity(), ViewerSession.Listener {
     private var pairingCode = ""
     private var lastStatus = "Connecting to BetterFrame…"
     private var resetRequested = false
-    private var resetServer = ServerAddress.DEFAULT
     private lateinit var grid: CellGrid
     private var plan: JSONObject? = null
     private var active = false
@@ -223,12 +222,13 @@ class MainActivity : Activity(), ViewerSession.Listener {
 
     private fun resetEnrollment(server: String) {
         plan = null
-        resetServer = server
         resetRequested = true
         showSetup("")
         status.text = "Clearing enrollment…"
-        // Session sends onPairing("") only after storage and browser sessions are cleared.
+        // Queue the restart in the session, which waits for durable/browser cleanup.
+        // Connection-status callbacks must not decide whether this reset reconnects.
         session.unpair(server)
+        if (active) session.start(server)
     }
 
     private fun showDisplay() {
@@ -263,13 +263,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
         if (displayVisible || setupView == null) showSetup(code)
         else setupView?.showPairing(code)
         pairingCode = code
-        if (code.isBlank() && resetRequested) {
-            resetRequested = false
-            showSetup(code)
-            // Reset callback arrives only after encrypted storage and browser sessions are cleared.
-            val target = resetServer
-            root.post { if (active) session.start(target) }
-        }
+        if (code.isBlank()) resetRequested = false
     }
 
     override fun onPlan(value: JSONObject) = runOnUiThread {

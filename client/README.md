@@ -21,3 +21,8 @@ cargo build --release
 Windows source builds require the GStreamer MSVC SDK. After installation, run
 `betterframe-windows-client.exe self-test` to verify DPAPI, protected state,
 GStreamer/D3D11, WebView2, and display enumeration.
+
+## Application identity
+
+BetterFrame uses `cloud.betterportal.frame` as its canonical application ID for
+Android/Android TV and Linux GTK. See [application identity and domain conventions](../docs/application-identity.md).

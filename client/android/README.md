@@ -5,6 +5,10 @@ web signage layouts. Uses the canonical Rust client core through JNI, native
 Media3 camera players, and Android System WebView. Administration remains in BF;
 the app hosts no local API or device-management service.
 
+Application ID and Kotlin namespace: `cloud.betterportal.frame`.
+See [application identity](../../docs/application-identity.md) for domain
+conventions and migration from the initial experimental Android package.
+
 ## Build
 
 Requires JDK 17, Android SDK 35, NDK 27.2.12479018, and stable Rust. Linux and

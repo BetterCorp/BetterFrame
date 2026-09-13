@@ -1,4 +1,4 @@
-package net.bettercorp.betterframe.viewer
+package cloud.betterportal.frame
 
 import android.app.Activity
 import android.app.AlertDialog

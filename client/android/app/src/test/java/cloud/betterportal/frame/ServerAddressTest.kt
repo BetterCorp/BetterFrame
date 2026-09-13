@@ -1,4 +1,4 @@
-package net.bettercorp.betterframe.viewer
+package cloud.betterportal.frame
 
 import org.junit.Assert.*
 import org.junit.Test

@@ -35,11 +35,12 @@ val buildRust by tasks.registering(Exec::class) {
     workingDir(rootProject.projectDir)
     commandLine("bash", "scripts/build-rust.sh", layout.buildDirectory.dir("rustJniLibs").get().asFile.absolutePath)
     environment("ANDROID_NDK_HOME", android.sdkDirectory.resolve("ndk/${android.ndkVersion}").absolutePath)
-    inputs.dir("../core/src")
-    inputs.dir("../android-bridge/src")
-    inputs.file("../android-bridge/Cargo.toml")
-    inputs.file("../core/Cargo.toml")
-    inputs.file("../Cargo.lock")
+    inputs.dir(rootProject.file("../core/src"))
+    inputs.dir(rootProject.file("../android-bridge/src"))
+    inputs.file(rootProject.file("../android-bridge/Cargo.toml"))
+    inputs.file(rootProject.file("../core/Cargo.toml"))
+    inputs.file(rootProject.file("../Cargo.lock"))
+    inputs.file(rootProject.file("scripts/build-rust.sh"))
     outputs.dir(layout.buildDirectory.dir("rustJniLibs"))
 }
 tasks.named("preBuild") { dependsOn(buildRust) }

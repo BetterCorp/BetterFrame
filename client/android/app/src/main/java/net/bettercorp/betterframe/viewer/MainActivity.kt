@@ -25,6 +25,15 @@ class MainActivity : Activity(), ViewerSession.Listener {
     private lateinit var layouts: Button
     private var plan: JSONObject? = null
     private var active = false
+    private var started = false
+    private val screenReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
+            when (intent.action) {
+                android.content.Intent.ACTION_SCREEN_OFF -> suspendDisplay()
+                android.content.Intent.ACTION_SCREEN_ON -> if (started) resumeDisplay()
+            }
+        }
+    }
     private var displayVisible = false
     private var focusedCellId: String? = null
     private val tiles = linkedMapOf<String, Pair<String, ViewerTile>>()
@@ -34,25 +43,43 @@ class MainActivity : Activity(), ViewerSession.Listener {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         session = ViewerSession(this, this)
         showSetup()
+        val filter = android.content.IntentFilter().apply {
+            addAction(android.content.Intent.ACTION_SCREEN_OFF)
+            addAction(android.content.Intent.ACTION_SCREEN_ON)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(screenReceiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
+        else registerReceiver(screenReceiver, filter)
     }
 
     override fun onStart() {
         super.onStart()
+        started = true
+        resumeDisplay()
+    }
+
+    private fun resumeDisplay() {
+        if (active || !(getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive) return
         active = true
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         plan?.let { render(it) }
         session.start()
     }
 
-    override fun onStop() {
+    private fun suspendDisplay() {
         active = false
         releaseTiles()
         session.stop()
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    override fun onStop() {
+        started = false
+        suspendDisplay()
         super.onStop()
     }
 
     override fun onDestroy() {
+        unregisterReceiver(screenReceiver)
         releaseTiles()
         session.close()
         super.onDestroy()
@@ -102,7 +129,26 @@ class MainActivity : Activity(), ViewerSession.Listener {
                 session.start(entered)
             }
         })
+        root.addView(button("Reset enrollment") {
+            AlertDialog.Builder(this).setTitle("Reset this display?")
+                .setMessage("Remove this display's saved enrollment, cached configuration and web sessions. Pair again to reconnect.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Reset") { _, _ -> resetEnrollment() }.show()
+        })
         setContentView(root)
+    }
+
+    private fun resetEnrollment() {
+        releaseTiles()
+        plan = null
+        status.text = "Clearing enrollment…"
+        fun disable(view: View) {
+            view.isEnabled = false
+            if (view is ViewGroup) for (i in 0 until view.childCount) disable(view.getChildAt(i))
+        }
+        disable(root)
+        // Session sends onPairing("") only after storage and browser sessions are cleared.
+        session.unpair()
     }
 
     private fun showDisplay() {
@@ -129,11 +175,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
                 .setMessage("Server: ${session.serverUrl.orEmpty()}\nUnpair to connect this display to another server.")
                 .setNegativeButton("Close", null)
                 .setPositiveButton("Unpair") { _, _ ->
-                    releaseTiles()
-                    plan = null
-                    session.unpair()
-                    WebTile.clearSessions(this)
-                    showSetup()
+                    resetEnrollment()
                 }.show()
         })
         root.addView(toolbar, LinearLayout.LayoutParams(-1, -2))

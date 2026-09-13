@@ -36,6 +36,19 @@ jobs:
       - name: Build both ABIs, unit tests and lint
         working-directory: client/android
         run: ./gradlew --no-daemon assembleDebug assembleRelease testDebugUnitTest lintDebug
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Android lifecycle, JNI and WebView smoke tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          target: default
+          disable-animations: true
+          script: cd client/android && ./gradlew --no-daemon connectedDebugAndroidTest
       - uses: actions/upload-artifact@v4
         if: always()
         with:

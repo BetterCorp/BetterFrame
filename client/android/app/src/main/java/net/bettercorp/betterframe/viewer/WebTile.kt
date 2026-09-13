@@ -109,7 +109,7 @@ class WebTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Viewer
                 mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                 javaScriptCanOpenWindowsAutomatically = false
                 setSupportMultipleWindows(false)
-                // Muted video can autoplay; audible media still requires a user gesture.
+                // Enabled below only when a document-start mute script is available.
                 mediaPlaybackRequiresUserGesture = true
                 cacheMode = WebSettings.LOAD_DEFAULT
             }
@@ -118,6 +118,9 @@ class WebTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Viewer
             web.isFocusableInTouchMode = false
             if (!interactive) web.setOnTouchListener { _, _ -> true }
             val documentStart = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+            // Assigned signage must start without a gesture. The script mutes HTML media;
+            // arbitrary third-party WebAudio is not a platform-enforced mute boundary.
+            web.settings.mediaPlaybackRequiresUserGesture = !documentStart
             if (!documentStart && storage.length() > 0) {
                 destroyBrowser()
                 status.text = "Update Android System WebView to use this signage player"
@@ -230,17 +233,21 @@ class WebTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Viewer
             if (scheme != "http" && scheme != "https") return null
             if (uri.userInfo != null) return null
             val defaultPort = if (scheme == "https") 443 else 80
-            "$scheme://$host" + if (uri.port != -1 && uri.port != defaultPort) ":${uri.port}" else ""
+            val authorityHost = if (':' in host && !host.startsWith("[")) "[$host]" else host
+            "$scheme://$authorityHost" + if (uri.port != -1 && uri.port != defaultPort) ":${uri.port}" else ""
         }.getOrNull()
 
-        fun clearSessions(context: Context) {
-            // Call on the UI thread after disposing live WebViews.
-            runCatching {
-                CookieManager.getInstance().removeAllCookies(null)
-                CookieManager.getInstance().flush()
+        fun clearSessions(context: Context, onComplete: () -> Unit = {}) {
+            // Call on the UI thread after disposing live WebViews. Wait for cookie removal
+            // before allowing enrollment again, so it cannot erase a new display session.
+            try {
                 WebStorage.getInstance().deleteAllData()
                 WebView(context).apply { clearCache(true); clearHistory(); destroy() }
-            }
+                CookieManager.getInstance().removeAllCookies {
+                    CookieManager.getInstance().flush()
+                    onComplete()
+                }
+            } catch (_: Exception) { onComplete() }
         }
     }
 }

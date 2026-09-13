@@ -37,7 +37,11 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
         isFocusable = false
         isClickable = false
         setShutterBackgroundColor(Color.BLACK)
-        resizeMode = if (cell.optString("fit") == "contain") AspectRatioFrameLayout.RESIZE_MODE_FIT else AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+        resizeMode = when (cell.optString("fit")) {
+            "contain" -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+            "fill" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+            else -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+        }
     }
     private val status = message("Connecting camera…")
     private val watchdog = object : Runnable {

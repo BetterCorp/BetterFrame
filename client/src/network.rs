@@ -39,6 +39,7 @@ pub fn discover(origin: &str, explicit: bool) -> Result<String, String> {
     let response = reqwest::blocking::Client::builder()
         .redirect(discovery_policy())
         .referer(false)
+        .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(8))
         .build()
         .map_err(|error| error.to_string())?
@@ -65,6 +66,7 @@ pub async fn discover(origin: &str, explicit: bool) -> Result<String, String> {
     let response = reqwest::Client::builder()
         .redirect(discovery_policy())
         .referer(false)
+        .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(8))
         .build()
         .map_err(|error| error.to_string())?

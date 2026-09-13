@@ -16,14 +16,111 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CompletableFuture
+import java.util.UUID
+
+/** Reset survives Activity destruction; the protected marker also survives process loss. */
+internal object EnrollmentCleanup {
+    const val MARKER = "enrollment_cleanup"
+    data class Claim(val token: String, val created: Boolean)
+    private class Job(val token: String, val persisted: CompletableFuture<Unit>) {
+        val listeners = mutableListOf<(Boolean) -> Unit>()
+        var started = false
+    }
+    private val jobs = mutableMapOf<String, Job>()
+    private data class ResetVersion(val generation: Long, val token: String)
+    // Keep the tombstone after cleanup so delayed writes stay invalidated.
+    private val versions = mutableMapOf<String, ResetVersion>()
+    private val worker = Executors.newSingleThreadExecutor()
+    private val main = Handler(Looper.getMainLooper())
+    private fun key(context: Context) = context.noBackupFilesDir.absolutePath
+
+    @Synchronized fun pending(context: Context): String? = jobs[key(context)]?.token
+
+    @Synchronized fun begin(context: Context, token: String): Claim {
+        val path = key(context)
+        jobs[path]?.let { return Claim(it.token, false) }
+        versions[path] = ResetVersion((versions[path]?.generation ?: 0L) + 1, token)
+        jobs[path] = Job(token, CompletableFuture())
+        return Claim(token, true)
+    }
+
+    @Synchronized fun read(context: Context, read: () -> JSONObject): Pair<Long, JSONObject> {
+        val path = key(context)
+        val state = read()
+        val marker = state.optString(MARKER)
+        // Adopt a marker restored from disk once, before any session can write.
+        if (marker.isNotBlank() && !jobs.containsKey(path) && versions[path]?.token != marker) {
+            versions[path] = ResetVersion((versions[path]?.generation ?: 0L) + 1, marker)
+        }
+        return (versions[path]?.generation ?: 0L) to state
+    }
+
+    // Share this lock with registration so an older session cannot write across reset.
+    @Synchronized fun writeIfIdle(context: Context, generation: Long, write: () -> Unit): Boolean {
+        val path = key(context)
+        if (jobs.containsKey(path) || generation != (versions[path]?.generation ?: 0L)) return false
+        write()
+        return true
+    }
+
+    @Synchronized fun persisted(context: Context, token: String, error: Throwable? = null) {
+        jobs[key(context)]?.takeIf { it.token == token }?.let {
+            if (error == null) it.persisted.complete(Unit) else it.persisted.completeExceptionally(error)
+        }
+    }
+
+    @Synchronized fun request(context: Context, token: String, clear: (Context, (Boolean) -> Unit) -> Unit, done: (Boolean) -> Unit) {
+        val path = key(context)
+        val job = jobs.getOrPut(path) { Job(token, CompletableFuture.completedFuture(Unit)) }
+        job.listeners.add(done)
+        if (job.started) return
+        job.started = true
+        val store = ProtectedStore(context)
+        fun finish(success: Boolean) {
+            val listeners = synchronized(this) {
+                if (jobs[path] !== job) return
+                jobs.remove(path)
+                job.listeners.toList()
+            }
+            main.post { listeners.forEach { it(success) } }
+        }
+        worker.execute {
+            try {
+                job.persisted.get()
+                // A stale reader may join just after another instance completed.
+                if (store.read().optString(MARKER) != job.token) { finish(true); return@execute }
+                main.post {
+                    try {
+                        clear(context) { cleared ->
+                            if (!cleared) finish(false)
+                            else worker.execute {
+                                try {
+                                    val latest = store.read()
+                                    if (latest.optString(MARKER) == job.token) {
+                                        latest.remove(MARKER)
+                                        if (latest.length() == 0) store.clear() else store.write(latest)
+                                    }
+                                    finish(true)
+                                } catch (_: Exception) { finish(false) }
+                            }
+                        }
+                    } catch (_: Exception) { finish(false) }
+                }
+            } catch (_: Exception) { finish(false) }
+        }
+    }
+}
 
 /** Outbound display client only. All network/storage work is serialized away from the UI. */
 class ViewerSession internal constructor(context: Context, private val listener: Listener,
-                                        private val http: OkHttpClient = defaultHttp()) {
+                                        private val http: OkHttpClient = defaultHttp(),
+                                        private val clearBrowserSessions: (Context, (Boolean) -> Unit) -> Unit = { app, done -> WebTile.clearSessions(app, done) }) {
     private companion object {
         const val VIEWER_PROFILE = "android-viewer-v1"
         const val AUTH_REJECTED = "Display authorization rejected. Check this device in BF."
         const val PROFILE_REQUIRED = "This BF server must support android-viewer-v1. Update the server to use this display."
+        const val NO_LAYOUTS_ASSIGNED = "go into BetterFrame and assign layouts to this display"
         fun defaultHttp() = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
             .connectTimeout(8, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS)
             .callTimeout(20, TimeUnit.SECONDS).pingInterval(25, TimeUnit.SECONDS).build()
@@ -44,6 +141,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
     @Volatile private var renderSnapshot: RenderSnapshot? = null
     private var serverResolved = false
     private var state = JSONObject()
+    @Volatile private var storageGeneration = -1L
     private var loop: ScheduledFuture<*>? = null
     private var socket: WebSocket? = null
     private var socketConnecting = false
@@ -52,11 +150,15 @@ class ViewerSession internal constructor(context: Context, private val listener:
     private var nextCookie = 0L
     private var nextPairPoll = 0L
     private var failures = 0
+    private var awaitingAssignment = false
+    private var operation = "server discovery"
     private var activeEpoch = 0
     private var dashboardSessionReady = false
     private var profileVerified = false
     @Volatile private var closed = false
     @Volatile private var clearingEnrollment = false
+    private data class PendingStart(val server: String?)
+    private var pendingStart: PendingStart? = null
     @Volatile private var layoutId: String? = null
     @Volatile private var expandedId: String? = null
     @Volatile private var generation = 0
@@ -72,7 +174,10 @@ class ViewerSession internal constructor(context: Context, private val listener:
     private fun status(message: String) = ui(activeEpoch) { listener.onStatus(message) }
     private fun active() = running && generation == activeEpoch && !closed
     private fun ensureActive() { check(active()) { "Session stopped" } }
-    private fun persist() { ensureActive(); store.write(state) }
+    private fun persist() {
+        ensureActive()
+        check(EnrollmentCleanup.writeIfIdle(app, storageGeneration) { store.write(state) }) { "Enrollment reset invalidated this session" }
+    }
     private fun JSONObject.textValue(name: String): String? = optString(name).takeUnless { it.isBlank() || it == "null" }
     // OkHttp can deliver a final callback after Activity destruction.
     private fun enqueue(action: () -> Unit) {
@@ -99,7 +204,8 @@ class ViewerSession internal constructor(context: Context, private val listener:
     }
 
     fun start(serverUrl: String? = null) {
-        if (closed || clearingEnrollment) return
+        if (closed) return
+        if (clearingEnrollment) { pendingStart = PendingStart(serverUrl); return }
         if (running) { if (serverUrl != null && serverUrl.trimEnd('/') != this.serverUrl) status("Unpair before changing the BF server"); return }
         running = true
         val epoch = ++generation
@@ -111,10 +217,29 @@ class ViewerSession internal constructor(context: Context, private val listener:
             nextCookie = 0L
             nextSocketAttempt = 0L
             failures = 0
+            awaitingAssignment = false
             try {
-                state = store.read()
+                val loaded = EnrollmentCleanup.read(app) { store.read() }
+                storageGeneration = loaded.first
+                state = loaded.second
+                val cleanup = EnrollmentCleanup.pending(app) ?: state.textValue(EnrollmentCleanup.MARKER)
+                if (cleanup != null) {
+                    clearingEnrollment = true
+                    running = false
+                    // Keep the resume request only if no subsequent stop cancelled it.
+                    main.post {
+                        if (!closed && generation == epoch) pendingStart = PendingStart(serverUrl)
+                        continueEnrollmentCleanup(cleanup)
+                    }
+                    return@enqueue
+                }
                 // Older app versions could cache an unrestricted legacy bundle.
                 if (state.optString("bundle_profile") != VIEWER_PROFILE) clearCachedBundle()
+                // A resumed unassigned cache may keep receiving 304 responses.
+                // Restore its setup polling cadence before the first heartbeat.
+                awaitingAssignment = state.optString("bundle").takeIf { it.isNotBlank() }?.let {
+                    JSONObject(NativeCore.renderPlan(it, null, null)).optString("error") == NO_LAYOUTS_ASSIGNED
+                } ?: false
                 val saved = state.optString("server")
                 val origin = ServerAddress.enrollmentOrigin(serverUrl, saved)
                 require(saved.isBlank() || saved == origin) { "Unpair before changing the BF server" }
@@ -138,7 +263,9 @@ class ViewerSession internal constructor(context: Context, private val listener:
     }
 
     fun stop() {
-        val saveSelection = running
+        pendingStart = null
+        val saveSelection = running && !clearingEnrollment
+        val savedStorageGeneration = storageGeneration
         val selected = layoutId
         running = false
         generation++
@@ -149,7 +276,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
             socket?.cancel(); socket = null; socketConnecting = false
             if (saveSelection && state.has("identity")) {
                 if (selected == null) state.remove("layout_id") else state.put("layout_id", selected)
-                runCatching { store.write(state) }
+                runCatching { EnrollmentCleanup.writeIfIdle(app, savedStorageGeneration) { store.write(state) } }
             }
         }
     }
@@ -182,28 +309,42 @@ class ViewerSession internal constructor(context: Context, private val listener:
         renderAndEmit(snapshot)
     }
 
-    fun unpair() {
+    fun unpair(nextServer: String? = null) {
         if (closed || clearingEnrollment) return
+        // Validate before changing enrollment; retain the choice through activity recreation.
+        val target = try { nextServer?.let { ServerAddress.parse(it).toString().trimEnd('/') } }
+        catch (_: Exception) { status("Enter a valid BF server origin."); return }
+        val claim = EnrollmentCleanup.begin(app, UUID.randomUUID().toString())
+        val token = claim.token
         clearingEnrollment = true
         stop()
-        val epoch = generation
+        // Register cleanup outside this Activity's Handler before queueing storage.
+        // A joined job may finish now; its claimed token still receives completion.
+        continueEnrollmentCleanup(token)
+        if (!claim.created) return
         enqueue {
             try {
-                store.clear(); state = JSONObject(); kioskKey = ""; serverUrl = ""; layoutId = null; expandedId = null
-                main.post {
-                    if (closed || generation != epoch) { clearingEnrollment = false; return@post }
-                    // Allow another enrollment only after asynchronous browser cleanup completes.
-                    WebTile.clearSessions(app) {
-                        clearingEnrollment = false
-                        if (!closed && generation == epoch) {
-                            listener.onPairing("")
-                            listener.onStatus("Enrollment cleared. Enter the BF server address.")
-                        }
-                    }
-                }
-            } catch (_: Exception) {
-                clearingEnrollment = false
-                main.post { if (!closed && generation == epoch) listener.onStatus("Unable to clear saved enrollment") }
+                val cleared = JSONObject().put(EnrollmentCleanup.MARKER, token).apply { if (target != null) put("server", target) }
+                store.write(cleared)
+                state = cleared; kioskKey = ""; serverUrl = target.orEmpty(); layoutId = null; expandedId = null
+                EnrollmentCleanup.persisted(app, token)
+            } catch (error: Exception) {
+                EnrollmentCleanup.persisted(app, token, error)
+            }
+        }
+    }
+
+    private fun continueEnrollmentCleanup(token: String) {
+        EnrollmentCleanup.request(app, token, clearBrowserSessions) { success ->
+            clearingEnrollment = false
+            val restart = pendingStart
+            pendingStart = null
+            if (!closed) {
+                if (success) {
+                    listener.onPairing("")
+                    listener.onStatus("Enrollment cleared. Ready to pair.")
+                    if (restart != null) start(restart.server)
+                } else listener.onStatus("Unable to clear saved enrollment")
             }
         }
     }
@@ -213,6 +354,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
             ensureActive()
             if (!serverResolved) {
                 if (System.currentTimeMillis() < nextSync) return
+                operation = "server discovery"
                 val resolved = ServerDiscovery.resolve(serverUrl, http, ::ensureActive)
                 state.put("server", resolved).put("resolved_server", resolved)
                 persist() // Pin the discovered origin before sending any enrollment credentials.
@@ -231,7 +373,9 @@ class ViewerSession internal constructor(context: Context, private val listener:
                         bundle()
                         if (!state.optBoolean("blocked") && state.has("bundle")) displayCookieIfDue(now)
                     }
-                    nextSync = System.currentTimeMillis() + 30_000
+                    // An administrator commonly assigns layouts just after
+                    // pairing. Keep that setup responsive even without a socket.
+                    nextSync = System.currentTimeMillis() + if (awaitingAssignment) 5_000 else 30_000
                     failures = 0
                 }
                 if (profileVerified && !state.optBoolean("blocked") && socket == null && !socketConnecting && now >= nextSocketAttempt) connectSocket()
@@ -239,12 +383,16 @@ class ViewerSession internal constructor(context: Context, private val listener:
         } catch (error: Exception) {
             if (!active()) return
             failures = (failures + 1).coerceAtMost(6)
-            val delay = (2_000L shl failures).coerceAtMost(60_000) + (0..1000).random()
+            val initialConfiguration = kioskKey.isNotBlank() && (!state.has("bundle") || awaitingAssignment)
+            val delay = ((2_000L shl failures) + (0..1000).random())
+                .coerceAtMost(if (initialConfiguration) 10_000 else 60_000)
             nextSync = System.currentTimeMillis() + delay
             nextPairPoll = System.currentTimeMillis() + delay
             status(when {
                 state.optBoolean("blocked") -> state.optString("block_reason", AUTH_REJECTED)
                 error is ServerRedirectException -> "BF server returned a redirect. Ask your administrator to fix API routing or use the direct server address."
+                error is HttpFailure -> "BF ${error.operation} returned HTTP ${error.code}. Retrying in ${(delay + 999) / 1000}s."
+                error is JSONException -> "BF returned invalid data for $operation. Retrying in ${(delay + 999) / 1000}s."
                 state.has("bundle") && state.optString("bundle_profile") == VIEWER_PROFILE ->
                     "BF connection unavailable — retaining saved display configuration"
                 kioskKey.isNotBlank() -> "BF connection unavailable — no display configuration saved yet. Retrying."
@@ -255,6 +403,20 @@ class ViewerSession internal constructor(context: Context, private val listener:
     }
 
     private class ServerRedirectException : java.io.IOException()
+    private class HttpFailure(val operation: String, val code: Int) : java.io.IOException()
+
+    private fun requestOperation(path: String) = when (path) {
+        "/api/pair/initiate", "/api/pair/claim" -> "pairing"
+        "/api/pair/ack" -> "pairing acknowledgement"
+        "/api/kiosk/heartbeat" -> "heartbeat"
+        "/api/kiosk/bundle" -> "display configuration"
+        "/api/kiosk/display-session" -> "display session"
+        else -> "request"
+    }
+
+    private fun requireSuccessful(response: Response) {
+        if (!response.isSuccessful) throw HttpFailure(requestOperation(response.request.url.encodedPath), response.code)
+    }
 
     private fun rejectRedirect(response: Response) {
         if (response.code in listOf(301, 302, 303, 307, 308)) {
@@ -265,6 +427,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
 
     private fun request(path: String, body: JSONObject? = null, authenticated: Boolean = true): Response {
         ensureActive()
+        operation = requestOperation(path)
         val builder = Request.Builder().url(serverUrl + path)
         if (authenticated) builder.header("Authorization", "Bearer $kioskKey")
         if (body != null) builder.post(body.toString().toRequestBody("application/json".toMediaType()))
@@ -293,7 +456,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
             request("/api/pair/initiate", JSONObject().put("proposed_name", "Android ${Build.MODEL}".take(128))
                 .put("hardware_model", "${Build.MANUFACTURER} ${Build.MODEL}".take(128))
                 .put("capabilities", capabilities()).put("secure_claim", true).put("managed_image", false), false).use {
-                check(it.isSuccessful)
+                requireSuccessful(it)
                 pending = json(it)
                 require(pending!!.textValue("code") != null && pending!!.textValue("polling_secret") != null)
                 state.put("pending", pending); persist()
@@ -304,7 +467,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
         nextPairPoll = now + session.optLong("poll_after_ms", 2000).coerceIn(1000, 60_000)
         request("/api/pair/claim", claimBody(session), false).use {
             if (it.code == 429) { nextPairPoll = now + 60_000; return }
-            check(it.isSuccessful || it.code == 503)
+            if (it.code != 503) requireSuccessful(it)
             val claim = json(it)
             when (claim.optString("status")) {
                 "claimed" -> {
@@ -339,7 +502,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
             blockDisplay(AUTH_REJECTED)
             return false
         }
-        check(response.isSuccessful)
+        requireSuccessful(response)
         return true
     }
 
@@ -386,6 +549,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
 
     private fun bundle() {
         check(profileVerified) { "Server viewer profile has not been verified" }
+        operation = "display configuration"
         val builder = Request.Builder().url(serverUrl + "/api/kiosk/bundle").header("Authorization", "Bearer $kioskKey")
         state.optString("etag").takeIf { it.isNotBlank() && state.has("bundle") && !state.optBoolean("blocked") }
             ?.let { builder.header("If-None-Match", it) }
@@ -393,14 +557,19 @@ class ViewerSession internal constructor(context: Context, private val listener:
         http.newCall(builder.build()).execute().use {
             ensureActive()
             rejectRedirect(it)
-            if (it.code == 304) { status("Connected"); return }
+            if (it.code == 304) {
+                status(if (awaitingAssignment) "Connected — waiting for assigned layouts" else "Connected")
+                return
+            }
             if (it.code == 409) {
                 val problem = json(it)
                 if (problem.optString("error") == "display_unassigned") {
                     clearCachedBundle()
+                    awaitingAssignment = true
+                    state.put("blocked", false).remove("block_reason")
                     persist()
-                    ui(activeEpoch) { listener.onPlan(JSONObject().put("error", "Assign a display to this device in BF")) }
-                    status("Assign a display to this device in BF")
+                    ui(activeEpoch) { listener.onPlan(JSONObject().put("error", NO_LAYOUTS_ASSIGNED)) }
+                    status("Connected — waiting for assigned layouts")
                     return
                 }
             }
@@ -408,13 +577,14 @@ class ViewerSession internal constructor(context: Context, private val listener:
             val bundle = json(it)
             val raw = bundle.toString()
             val plan = JSONObject(NativeCore.renderPlan(raw, null, null))
+            awaitingAssignment = plan.optString("error") == NO_LAYOUTS_ASSIGNED
             if (plan.has("error")) {
                 state.put("bundle", raw).put("bundle_version", bundle.optString("version"))
                     .put("etag", it.header("ETag") ?: "").put("blocked", false).put("bundle_profile", VIEWER_PROFILE)
                 state.remove("block_reason")
                 persist()
                 emitPlan()
-                status("Assign one supported display layout to this device in BF")
+                status(if (awaitingAssignment) "Connected — waiting for assigned layouts" else "Connected — display configuration needs attention")
                 return
             }
             val changed = raw != state.optString("bundle") || state.optBoolean("blocked")

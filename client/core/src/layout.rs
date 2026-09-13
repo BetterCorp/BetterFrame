@@ -4,10 +4,15 @@ use url::Url;
 
 use super::bundle::{BundleCell, BundleDisplayWithLayouts, BundleLayout, KioskBundle};
 
+pub const NO_LAYOUTS_ASSIGNED_MESSAGE: &str =
+    "go into BetterFrame and assign layouts to this display";
+
 pub fn initial_layout_id(display: &BundleDisplayWithLayouts) -> Option<String> {
     display
         .default_layout_id
-        .clone()
+        .as_ref()
+        .filter(|id| display.layouts.iter().any(|layout| &layout.id == *id))
+        .cloned()
         .or_else(|| {
             display
                 .layouts
@@ -106,7 +111,17 @@ mod tests {
         .unwrap();
         assert_eq!(initial_layout_id(&display).as_deref(), Some("7"));
         display.default_layout_id = Some("missing".into());
+        assert_eq!(initial_layout_id(&display).as_deref(), Some("7"));
         assert_eq!(active_layout(&display, &HashMap::new()).unwrap().id, "7");
+        display.layouts[0].is_default = false;
+        assert_eq!(initial_layout_id(&display).as_deref(), Some("7"));
+        // An assigned layout can intentionally have no cells. Only removing
+        // the assignment should transition to the configuration instruction.
+        assert!(active_layout(&display, &HashMap::new()).unwrap().cells.is_empty());
+        display.layouts.clear();
+        let stale_selection = HashMap::from([(display.id.clone(), "7".into())]);
+        assert_eq!(initial_layout_id(&display), None);
+        assert!(active_layout(&display, &stale_selection).is_none());
     }
 
     #[test]

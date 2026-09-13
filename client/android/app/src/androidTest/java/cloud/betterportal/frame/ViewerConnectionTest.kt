@@ -14,7 +14,11 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(AndroidJUnit4::class)
 class ViewerConnectionTest {
@@ -29,7 +33,308 @@ class ViewerConnectionTest {
         } to directory
     }
 
-    @Test fun savedCustomServerIsRetainedAndFailuresDescribeActualEnrollmentState() {
+    @Test fun resumeDuringEnrollmentCleanupRestartsAfterCleanupWithoutAnotherConnect() {
+        enrollmentCleanupAcrossLifecycle(stopAgain = false)
+    }
+
+    @Test fun stoppingAgainDuringEnrollmentCleanupCancelsTheDeferredRestart() {
+        enrollmentCleanupAcrossLifecycle(stopAgain = true)
+    }
+
+    @Test fun destroyedSessionCannotCancelCleanupOrRestoreItsOldEnrollment() {
+        enrollmentCleanupAcrossRecreation(restoredMarker = false)
+    }
+
+    @Test fun persistedCleanupMarkerBlocksEnrollmentAfterProcessLoss() {
+        enrollmentCleanupAcrossRecreation(restoredMarker = true)
+    }
+
+    @Test fun failedBrowserCleanupRetainsItsMarkerAndBlocksEnrollmentUntilRetried() {
+        enrollmentCleanupAcrossRecreation(restoredMarker = true, cleanupFailsOnce = true)
+    }
+
+    @Test fun cleanupCompletingBetweenClaimAndJoinStillNotifiesTheJoiningSession() {
+        val (context, directory) = isolatedContext()
+        val store = ProtectedStore(context)
+        val completeCleanup = AtomicReference<(Boolean) -> Unit>()
+        val cleanupStarted = CountDownLatch(1)
+        val firstFinished = CountDownLatch(1)
+        val joinedFinished = CountDownLatch(1)
+        val joinedSuccess = AtomicReference<Boolean>()
+        val cleanupCalls = AtomicInteger()
+        val first = EnrollmentCleanup.begin(context, "first-${System.nanoTime()}")
+        assertTrue(first.created)
+        store.write(JSONObject().put(EnrollmentCleanup.MARKER, first.token))
+        EnrollmentCleanup.persisted(context, first.token)
+        val cleanup: (Context, (Boolean) -> Unit) -> Unit = { _, done ->
+            cleanupCalls.incrementAndGet()
+            completeCleanup.set(done)
+            cleanupStarted.countDown()
+        }
+        try {
+            EnrollmentCleanup.request(context, first.token, cleanup) { firstFinished.countDown() }
+            assertTrue(cleanupStarted.await(5, TimeUnit.SECONDS))
+            val joining = EnrollmentCleanup.begin(context, "second-${System.nanoTime()}")
+            assertFalse(joining.created)
+            assertEquals("Joining must atomically retain the existing token", first.token, joining.token)
+            instrumentation.runOnMainSync { completeCleanup.getAndSet(null).invoke(true) }
+            assertTrue(firstFinished.await(5, TimeUnit.SECONDS))
+            assertNull("Force completion before the joining request", EnrollmentCleanup.pending(context))
+            EnrollmentCleanup.request(context, joining.token, cleanup) {
+                joinedSuccess.set(it)
+                joinedFinished.countDown()
+            }
+            assertTrue("A completed claimed token must still notify its joining session", joinedFinished.await(5, TimeUnit.SECONDS))
+            assertEquals(true, joinedSuccess.get())
+            assertEquals("Late joining must not repeat browser cleanup", 1, cleanupCalls.get())
+            assertEquals(0, store.read().length())
+        } finally {
+            instrumentation.runOnMainSync { completeCleanup.getAndSet(null)?.invoke(true) }
+            firstFinished.await(5, TimeUnit.SECONDS)
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test fun delayedOldStopSaveCannotOverwriteEnrollmentAfterReplacementResetFinishes() {
+        val (context, directory) = isolatedContext()
+        val oldBlocked = CountDownLatch(1)
+        val releaseOld = CountDownLatch(1)
+        val paired = CountDownLatch(1)
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val response = MockResponse().setHeader("Content-Type", "application/json")
+                return when (request.requestUrl!!.encodedPath) {
+                    "/api/pair/initiate" -> response.setBody("""{"code":"NEW123","polling_secret":"new-secret","poll_after_ms":1000}""")
+                    "/api/pair/claim" -> response.setBody("""{"status":"claimed","kiosk_id":"2","kiosk_key":"new-device-key","encrypt_key":"0000000000000000000000000000000000000000000000000000000000000000"}""")
+                    "/api/kiosk/heartbeat" -> response.setBody("""{"viewer_profile":"android-viewer-v1"}""")
+                    "/api/kiosk/bundle" -> response.setResponseCode(409).setBody("""{"error":"display_unassigned"}""")
+                    else -> response.setBody("{}")
+                }
+            }
+        }
+        server.start()
+        val target = server.url("/").toString().trimEnd('/')
+        val store = ProtectedStore(context)
+        store.write(JSONObject().put("server", target).put("resolved_server", target)
+            .put("identity", JSONObject().put("kiosk_key", "old-device-key"))
+            .put("bundle_profile", "android-viewer-v1")
+            .put("bundle", """{"kiosk_id":1,"kiosk_name":"Old display","version":"1","cameras":[],"displays":[]}"""))
+        val old = ViewerSession(context, object : ViewerSession.Listener {
+            override fun onStatus(message: String) {}
+            override fun onPairing(code: String) {}
+            override fun onPlan(plan: JSONObject) {}
+        })
+        val replacement = ViewerSession(context, object : ViewerSession.Listener {
+            override fun onStatus(message: String) { if (message.startsWith("Paired")) paired.countDown() }
+            override fun onPairing(code: String) {}
+            override fun onPlan(plan: JSONObject) {}
+        }, clearBrowserSessions = { _, done -> done(true) })
+        val workerField = ViewerSession::class.java.getDeclaredField("worker").apply { isAccessible = true }
+        val oldWorker = workerField.get(old) as java.util.concurrent.ScheduledExecutorService
+        try {
+            instrumentation.runOnMainSync {
+                old.start()
+                // Queue behind initial state loading, ahead of the eventual stop
+                // save, modelling an old worker stuck in slow asynchronous work.
+                oldWorker.execute {
+                    oldBlocked.countDown()
+                    releaseOld.await(30, TimeUnit.SECONDS)
+                }
+            }
+            assertTrue("Old session did not load and block", oldBlocked.await(5, TimeUnit.SECONDS))
+            assertEquals("old-device-key", old.kioskKey)
+            instrumentation.runOnMainSync {
+                old.close() // Its selection/state save remains queued behind the blocker.
+                replacement.unpair(target)
+                replacement.start()
+            }
+            assertTrue("Replacement did not complete reset and enrollment", paired.await(15, TimeUnit.SECONDS))
+            val replacementStopped = CountDownLatch(1)
+            instrumentation.runOnMainSync {
+                replacement.stop()
+                (workerField.get(replacement) as java.util.concurrent.Executor).execute { replacementStopped.countDown() }
+            }
+            assertTrue(replacementStopped.await(5, TimeUnit.SECONDS))
+            val beforeOldSave = store.read().toString()
+            assertEquals("new-device-key", store.read().getJSONObject("identity").getString("kiosk_key"))
+            assertFalse("Cleanup must have finished before releasing the stale save", store.read().has("enrollment_cleanup"))
+            releaseOld.countDown()
+            assertTrue("Old queued stop save did not drain", oldWorker.awaitTermination(5, TimeUnit.SECONDS))
+            assertEquals("A stale worker must not restore old identity/cache over new enrollment", beforeOldSave, store.read().toString())
+        } finally {
+            releaseOld.countDown()
+            instrumentation.runOnMainSync { old.close(); replacement.close() }
+            oldWorker.awaitTermination(5, TimeUnit.SECONDS)
+            server.shutdown()
+            directory.deleteRecursively()
+        }
+    }
+
+    private fun enrollmentCleanupAcrossRecreation(restoredMarker: Boolean, cleanupFailsOnce: Boolean = false) {
+        val (context, directory) = isolatedContext()
+        val cleanupStarted = CountDownLatch(1)
+        val cleanupRetried = CountDownLatch(1)
+        val cleanupFailed = CountDownLatch(1)
+        val completeCleanup = AtomicReference<(Boolean) -> Unit>()
+        val cleanupCalls = AtomicInteger()
+        val oldCallbacks = AtomicInteger()
+        val pairing = CountDownLatch(1)
+        val requests = ConcurrentLinkedQueue<RecordedRequest>()
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requests.add(request)
+                return MockResponse().setHeader("Content-Type", "application/json").setBody(when (request.requestUrl!!.encodedPath) {
+                    "/api/pair/initiate" -> """{"code":"NEW123","polling_secret":"new-secret","poll_after_ms":1000}"""
+                    "/api/pair/claim" -> """{"status":"pending"}"""
+                    else -> "{}"
+                })
+            }
+        }
+        server.start()
+        val target = server.url("/").toString().trimEnd('/')
+        val store = ProtectedStore(context)
+        store.write(JSONObject().put("server", "http://127.0.0.1:9")
+            .put("identity", JSONObject().put("kiosk_key", "old-device-key")))
+        val cleanup: (Context, (Boolean) -> Unit) -> Unit = { _, done ->
+            val attempt = cleanupCalls.incrementAndGet()
+            completeCleanup.set(done)
+            cleanupStarted.countDown()
+            if (attempt == 2) cleanupRetried.countDown()
+        }
+        val old = ViewerSession(context, object : ViewerSession.Listener {
+            override fun onStatus(message: String) { oldCallbacks.incrementAndGet() }
+            override fun onPairing(code: String) { oldCallbacks.incrementAndGet() }
+            override fun onPlan(plan: JSONObject) {}
+        }, clearBrowserSessions = cleanup)
+        val replacement = ViewerSession(context, object : ViewerSession.Listener {
+            override fun onStatus(message: String) {
+                if (message == "Unable to clear saved enrollment") cleanupFailed.countDown()
+            }
+            override fun onPairing(code: String) { if (code == "NEW123") pairing.countDown() }
+            override fun onPlan(plan: JSONObject) {}
+        }, clearBrowserSessions = cleanup)
+        try {
+            instrumentation.runOnMainSync {
+                if (restoredMarker) {
+                    // No coordinator job exists: this models a fresh process
+                    // recovering the marker left by an interrupted reset.
+                    store.write(JSONObject().put("server", target)
+                        .put("enrollment_cleanup", "restored-${System.nanoTime()}"))
+                } else {
+                    old.unpair(target)
+                    // Hold the UI thread until persistence, then destroy the
+                    // original session before its cleanup runnable can execute.
+                    val persisted = CountDownLatch(1)
+                    val oldWorker = ViewerSession::class.java.getDeclaredField("worker").apply { isAccessible = true }
+                        .get(old) as java.util.concurrent.Executor
+                    oldWorker.execute { persisted.countDown() }
+                    assertTrue("Reset persistence did not finish", persisted.await(5, TimeUnit.SECONDS))
+                    assertTrue("Reset marker was not persisted", store.read().has("enrollment_cleanup"))
+                }
+                old.close()
+                replacement.start()
+            }
+            assertTrue("Recreation lost browser cleanup", cleanupStarted.await(5, TimeUnit.SECONDS))
+            assertEquals("Recreated session must wait for browser cleanup", 0, server.requestCount)
+            assertTrue("Cleanup marker must survive until browser completion", store.read().has("enrollment_cleanup"))
+            assertFalse(store.read().has("identity"))
+            if (cleanupFailsOnce) {
+                instrumentation.runOnMainSync { completeCleanup.getAndSet(null).invoke(false) }
+                assertTrue("Cleanup failure must be reported", cleanupFailed.await(5, TimeUnit.SECONDS))
+                assertTrue("Failed cleanup must retain its recovery marker", store.read().has("enrollment_cleanup"))
+                assertEquals("Failed cleanup must never start enrollment", 0, server.requestCount)
+                instrumentation.runOnMainSync { replacement.start() }
+                assertTrue("Connect must retry the unfinished cleanup", cleanupRetried.await(5, TimeUnit.SECONDS))
+                assertEquals(0, server.requestCount)
+            }
+            instrumentation.runOnMainSync { completeCleanup.getAndSet(null).invoke(true) }
+            assertTrue("Recreated display did not resume enrollment", pairing.await(10, TimeUnit.SECONDS))
+            assertEquals("Old and recreated instances must share each cleanup attempt", if (cleanupFailsOnce) 2 else 1, cleanupCalls.get())
+            assertEquals("Destroyed session must not issue completion callbacks", 0, oldCallbacks.get())
+            assertEquals(target, store.read().getString("server"))
+            assertFalse("Old cleanup must not overwrite newly saved pairing", store.read().has("enrollment_cleanup"))
+            assertEquals("NEW123", store.read().getJSONObject("pending").getString("code"))
+            assertFalse(store.read().has("identity"))
+            assertTrue(requests.all { it.getHeader("Authorization") == null })
+        } finally {
+            instrumentation.runOnMainSync {
+                old.close()
+                replacement.close()
+                completeCleanup.getAndSet(null)?.invoke(true)
+            }
+            server.shutdown()
+            directory.deleteRecursively()
+        }
+    }
+
+    private fun enrollmentCleanupAcrossLifecycle(stopAgain: Boolean) {
+        val (context, directory) = isolatedContext()
+        val cleanupStarted = CountDownLatch(1)
+        val cleanupFinished = CountDownLatch(1)
+        val completeCleanup = AtomicReference<(Boolean) -> Unit>()
+        val pairing = CountDownLatch(1)
+        val requests = ConcurrentLinkedQueue<RecordedRequest>()
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requests.add(request)
+                val response = MockResponse().setHeader("Content-Type", "application/json")
+                return when (request.requestUrl!!.encodedPath) {
+                    "/healthz" -> response.setBody("{}")
+                    "/api/pair/initiate" -> response.setBody("""{"code":"NEW123","polling_secret":"new-secret","poll_after_ms":1000}""")
+                    "/api/pair/claim" -> response.setBody("""{"status":"pending"}""")
+                    else -> response.setResponseCode(404)
+                }
+            }
+        }
+        server.start()
+        val selectedOrigin = server.url("/").toString().trimEnd('/')
+        ProtectedStore(context).write(JSONObject().put("server", "http://127.0.0.1:9")
+            .put("identity", JSONObject().put("kiosk_key", "old-device-key")))
+        val session = ViewerSession(context, object : ViewerSession.Listener {
+            override fun onStatus(message: String) {}
+            override fun onPairing(code: String) {
+                if (code.isBlank()) cleanupFinished.countDown()
+                if (code == "NEW123") pairing.countDown()
+            }
+            override fun onPlan(plan: JSONObject) {}
+        }, clearBrowserSessions = { _, done ->
+            completeCleanup.set(done)
+            cleanupStarted.countDown()
+        })
+        try {
+            instrumentation.runOnMainSync {
+                session.unpair(selectedOrigin)
+                // Change generation before the main-thread cleanup even starts.
+                session.stop()
+                session.start()
+            }
+            assertTrue("Lifecycle change discarded browser cleanup", cleanupStarted.await(5, TimeUnit.SECONDS))
+            assertEquals("Enrollment must wait for browser cleanup", 0, server.requestCount)
+            assertEquals(selectedOrigin, ProtectedStore(context).read().getString("server"))
+            assertFalse("Old identity must already be removed", ProtectedStore(context).read().has("identity"))
+            if (stopAgain) instrumentation.runOnMainSync { session.stop() }
+            instrumentation.runOnMainSync { completeCleanup.getAndSet(null).invoke(true) }
+            assertTrue("Reset completion must survive lifecycle changes", cleanupFinished.await(5, TimeUnit.SECONDS))
+            if (stopAgain) {
+                assertNull("Stopped display must not restart on cleanup completion", server.takeRequest(500, TimeUnit.MILLISECONDS))
+                instrumentation.runOnMainSync { session.start() }
+            }
+            assertTrue("Resume was lost while cleanup was pending", pairing.await(10, TimeUnit.SECONDS))
+            assertTrue(requests.any { it.requestUrl!!.encodedPath == "/api/pair/initiate" })
+            assertTrue("Old enrollment credentials must never be reused", requests.all { it.getHeader("Authorization") == null })
+            assertEquals(selectedOrigin, ProtectedStore(context).read().getString("server"))
+            assertFalse(ProtectedStore(context).read().has("identity"))
+        } finally {
+            instrumentation.runOnMainSync { session.close(); completeCleanup.getAndSet(null)?.invoke(true) }
+            server.shutdown()
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test fun savedCustomServerIsRetainedAndHttpFailuresIdentifyTheFailedRequest() {
         for (stage in listOf("fresh", "pending", "paired")) {
             val (context, directory) = isolatedContext()
             val server = MockWebServer()
@@ -53,11 +358,9 @@ class ViewerConnectionTest {
                 instrumentation.runOnMainSync { session.start() }
                 val failure = statuses.poll(10, TimeUnit.SECONDS) ?: error("No status for $stage")
                 assertFalse("No cached display exists at stage $stage: $failure", failure.contains("retaining saved"))
-                assertTrue("Incorrect status at stage $stage: $failure", failure.contains(when (stage) {
-                    "fresh" -> "Unable to start pairing"
-                    "pending" -> "retrying pairing"
-                    else -> "no display configuration saved yet"
-                }))
+                assertTrue("HTTP failures must not be misreported as lost connectivity: $failure", failure.contains("HTTP 404"))
+                assertTrue("Incorrect request at stage $stage: $failure", failure.contains(if (stage == "paired") "heartbeat" else "pairing"))
+                assertFalse(failure.contains("connection unavailable"))
                 assertEquals(origin, session.serverUrl)
                 assertEquals(origin, ProtectedStore(context).read().getString("server"))
                 val request = server.takeRequest(2, TimeUnit.SECONDS) ?: error("Saved custom server was not contacted")
@@ -67,6 +370,131 @@ class ViewerConnectionTest {
                 server.shutdown()
                 directory.deleteRecursively()
             }
+        }
+    }
+
+    @Test fun freshPairingRecoversFromHeartbeatFailureAndLaterLayoutAssignmentWithoutManualReconnect() {
+        val (context, directory) = isolatedContext()
+        val requests = ConcurrentLinkedQueue<String>()
+        val statuses = ConcurrentLinkedQueue<String>()
+        val heartbeatCalls = AtomicInteger()
+        val bundleCalls = AtomicInteger()
+        val noAssignment = CountDownLatch(1)
+        val displayed = CountDownLatch(1)
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.requestUrl!!.encodedPath
+                requests.add(path)
+                val response = MockResponse().setHeader("Content-Type", "application/json")
+                return when (path) {
+                    "/healthz" -> response.setBody("{}")
+                    "/api/pair/initiate" -> response.setBody("""{"code":"ABC123","polling_secret":"fixture-secret","poll_after_ms":1000}""")
+                    "/api/pair/claim" -> response.setBody("""{"status":"claimed","kiosk_id":"1","kiosk_key":"fixture-device-key","encrypt_key":"0000000000000000000000000000000000000000000000000000000000000000"}""")
+                    "/api/pair/ack" -> response.setBody("{}")
+                    "/api/kiosk/heartbeat" -> if (heartbeatCalls.incrementAndGet() == 1)
+                        response.setResponseCode(500).setBody("""{"error":"private diagnostic must not be displayed"}""")
+                        else response.setBody("""{"viewer_profile":"android-viewer-v1"}""")
+                    "/api/kiosk/bundle" -> if (bundleCalls.incrementAndGet() == 1)
+                        response.setResponseCode(409).setBody("""{"error":"display_unassigned"}""")
+                        else response.setBody("""{"kiosk_id":1,"kiosk_name":"Lobby","version":"2","cameras":[],"displays":[{
+                          "id":2,"name":"TV","width_px":1920,"height_px":1080,"idle_timeout_seconds":0,"sleep_timeout_seconds":0,"default_layout_id":3,
+                          "layouts":[{"id":3,"name":"Lobby signage","grid_cols":1,"grid_rows":1,"priority":"normal","is_default":true,"resets_idle_timer":true,
+                            "cells":[{"view_id":10,"row":0,"col":0,"row_span":1,"col_span":1,"content_type":"html","html_content":"<p>Assigned later</p>"}]}]}]}""")
+                    "/api/kiosk/display-session" -> response.setBody("{}")
+                    else -> response.setResponseCode(404)
+                }
+            }
+        }
+        server.start()
+        val origin = server.url("/").toString().trimEnd('/')
+        ProtectedStore(context).write(JSONObject().put("server", origin))
+        val session = ViewerSession(context, object : ViewerSession.Listener {
+            override fun onStatus(message: String) { statuses.add(message) }
+            override fun onPairing(code: String) {}
+            override fun onPlan(plan: JSONObject) {
+                if (plan.optString("error") == "go into BetterFrame and assign layouts to this display") noAssignment.countDown()
+                if (plan.optString("layoutId") == "3" && plan.optJSONArray("cells")?.length() == 1) displayed.countDown()
+            }
+        })
+        try {
+            // Exactly one start: no refresh, reconnect, lifecycle restart, or
+            // WebSocket notification may be needed to pick up the assignment.
+            instrumentation.runOnMainSync { session.start() }
+            assertTrue("Initial server failure did not recover to assignment guidance: $statuses", noAssignment.await(20, TimeUnit.SECONDS))
+            assertTrue("A later layout assignment was not fetched automatically: $statuses", displayed.await(15, TimeUnit.SECONDS))
+            assertTrue(statuses.any { it.contains("heartbeat") && it.contains("HTTP 500") && it.contains("Retrying") })
+            assertFalse("Do not expose server response bodies", statuses.any { it.contains("private diagnostic") })
+            assertFalse("An HTTP server error is not a connectivity failure", statuses.any { it.contains("connection unavailable") })
+            assertEquals(1, requests.count { it == "/api/pair/initiate" })
+            assertEquals(1, requests.count { it == "/api/pair/claim" })
+            assertEquals(1, requests.count { it == "/api/pair/ack" })
+            assertTrue(heartbeatCalls.get() >= 3)
+            assertTrue(bundleCalls.get() >= 2)
+            val saved = ProtectedStore(context).read()
+            assertEquals("fixture-device-key", saved.getJSONObject("identity").getString("kiosk_key"))
+            assertTrue(saved.has("bundle"))
+        } finally {
+            instrumentation.runOnMainSync { session.close() }
+            server.shutdown()
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test fun cachedUnassignedDisplayKeepsFastPollingAfterRestartAndNotModifiedResponse() {
+        val (context, directory) = isolatedContext()
+        val requests = ConcurrentLinkedQueue<RecordedRequest>()
+        val statuses = ConcurrentLinkedQueue<String>()
+        val bundleCalls = AtomicInteger()
+        val noAssignment = CountDownLatch(1)
+        val assigned = CountDownLatch(1)
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requests.add(request)
+                val response = MockResponse().setHeader("Content-Type", "application/json")
+                return when (request.requestUrl!!.encodedPath) {
+                    "/api/kiosk/heartbeat" -> response.setBody("""{"viewer_profile":"android-viewer-v1"}""")
+                    "/api/kiosk/bundle" -> if (bundleCalls.incrementAndGet() == 1)
+                        response.setResponseCode(304)
+                        else response.setBody("""{"kiosk_id":1,"kiosk_name":"Lobby","version":"2","cameras":[],"displays":[{
+                          "id":2,"name":"TV","width_px":1920,"height_px":1080,"idle_timeout_seconds":0,"sleep_timeout_seconds":0,"default_layout_id":3,
+                          "layouts":[{"id":3,"name":"New assignment","grid_cols":1,"grid_rows":1,"priority":"normal","is_default":true,"resets_idle_timer":true,"cells":[]}]}]}""")
+                    "/api/kiosk/display-session" -> response.setBody("{}")
+                    else -> response.setResponseCode(404) // No WebSocket can trigger a refresh.
+                }
+            }
+        }
+        server.start()
+        val origin = server.url("/").toString().trimEnd('/')
+        ProtectedStore(context).write(JSONObject().put("server", origin).put("resolved_server", origin)
+            .put("identity", JSONObject().put("kiosk_key", "fixture-device-key"))
+            .put("bundle_profile", "android-viewer-v1").put("etag", "\"unassigned-v1\"")
+            .put("bundle", """{"kiosk_id":1,"kiosk_name":"Lobby","version":"1","cameras":[],"displays":[]}"""))
+        val session = ViewerSession(context, object : ViewerSession.Listener {
+            override fun onStatus(message: String) { statuses.add(message) }
+            override fun onPairing(code: String) {}
+            override fun onPlan(plan: JSONObject) {
+                if (plan.optString("error") == "go into BetterFrame and assign layouts to this display") noAssignment.countDown()
+                if (plan.optString("layoutId") == "3") assigned.countDown()
+            }
+        })
+        try {
+            // Start from a previous run's protected cache; a 304 must not revert
+            // assignment polling to the normal 30-second content interval.
+            instrumentation.runOnMainSync { session.start() }
+            assertTrue("Cached assignment guidance was not restored", noAssignment.await(5, TimeUnit.SECONDS))
+            assertTrue("304 lost the fast assignment polling cadence: $statuses", assigned.await(15, TimeUnit.SECONDS))
+            assertTrue(statuses.contains("Connected — waiting for assigned layouts"))
+            val firstBundle = requests.first { it.requestUrl!!.encodedPath == "/api/kiosk/bundle" }
+            assertEquals("\"unassigned-v1\"", firstBundle.getHeader("If-None-Match"))
+            assertEquals("Bearer fixture-device-key", firstBundle.getHeader("Authorization"))
+            assertTrue(bundleCalls.get() >= 2)
+            assertFalse(requests.any { it.requestUrl!!.encodedPath.startsWith("/api/pair/") })
+        } finally {
+            instrumentation.runOnMainSync { session.close() }
+            server.shutdown()
+            directory.deleteRecursively()
         }
     }
 

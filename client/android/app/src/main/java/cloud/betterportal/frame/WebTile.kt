@@ -246,17 +246,19 @@ class WebTile(context: Context, cell: JSONObject, onActivate: () -> Unit) : View
             "$scheme://$authorityHost" + if (uri.port != -1 && uri.port != defaultPort) ":${uri.port}" else ""
         }.getOrNull()
 
-        fun clearSessions(context: Context, onComplete: () -> Unit = {}) {
+        fun clearSessions(context: Context, onComplete: (Boolean) -> Unit = {}) {
             // Call on the UI thread after disposing live WebViews. Wait for cookie removal
             // before allowing enrollment again, so it cannot erase a new display session.
             try {
                 WebStorage.getInstance().deleteAllData()
                 WebView(context).apply { clearCache(true); clearHistory(); destroy() }
                 CookieManager.getInstance().removeAllCookies {
-                    CookieManager.getInstance().flush()
-                    onComplete()
+                    // The removal callback's Boolean means cookies existed,
+                    // not success; an already empty cookie store is also clean.
+                    val success = runCatching { CookieManager.getInstance().flush() }.isSuccess
+                    onComplete(success)
                 }
-            } catch (_: Exception) { onComplete() }
+            } catch (_: Exception) { onComplete(false) }
         }
     }
 }

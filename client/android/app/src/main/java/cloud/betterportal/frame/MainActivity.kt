@@ -10,6 +10,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.media3.common.util.UnstableApi
@@ -18,12 +19,13 @@ import org.json.JSONObject
 @UnstableApi
 class MainActivity : Activity(), ViewerSession.Listener {
     private lateinit var session: ViewerSession
-    private lateinit var root: LinearLayout
+    private lateinit var root: FrameLayout
     private lateinit var status: TextView
-    private var serverAddress: EditText? = null
+    private var setupView: KioskSetupView? = null
+    private var pairingCode = ""
+    private var lastStatus = "Connecting to BetterFrame…"
+    private var resetRequested = false
     private lateinit var grid: CellGrid
-    private lateinit var restore: Button
-    private lateinit var layouts: Button
     private var plan: JSONObject? = null
     private var active = false
     private var started = false
@@ -119,103 +121,149 @@ class MainActivity : Activity(), ViewerSession.Listener {
         setOnClickListener { action() }
     }
 
-    private fun showSetup(pairing: String? = null) {
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+    private fun kioskRoot() = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+
+    private fun addMenu() {
+        val menu = button("⋮") { showKioskMenu() }.apply {
+            contentDescription = "Kiosk menu"
+            textSize = 24f
+            setTextColor(android.content.res.ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf()),
+                intArrayOf(Color.rgb(56, 189, 248), Color.rgb(148, 163, 184))))
+            background = android.graphics.drawable.StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_focused),
+                    android.graphics.drawable.GradientDrawable().apply {
+                        setColor(Color.rgb(17, 24, 39)); setStroke(dp(2), Color.rgb(56, 189, 248))
+                    })
+                addState(intArrayOf(), android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            }
+            setPadding(0, 0, 0, 0)
+        }
+        root.addView(menu, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.BOTTOM or Gravity.END).apply {
+            marginEnd = dp(8); bottomMargin = dp(8)
+        })
+    }
+
+    private fun showSetup(code: String = pairingCode) {
         releaseTiles()
         displayVisible = false
-        root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(32, 32, 32, 32)
-            setBackgroundColor(Color.rgb(11, 17, 29))
+        root = kioskRoot()
+        val setup = KioskSetupView(this)
+        setupView = setup
+        status = setup.status
+        setup.showPairing(code)
+        setup.updateDetails(session.serverUrl.ifBlank { ServerAddress.DEFAULT })
+        root.addView(setup, FrameLayout.LayoutParams(-1, -1))
+        addMenu()
+        setContentView(root)
+    }
+
+    private fun showKioskMenu() {
+        if (resetRequested) return
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
+        val expanded = plan?.optString("expandedCellId")
+        if (!expanded.isNullOrBlank() && expanded != "null") {
+            actions += "Restore layout" to { session.expand(null) }
         }
-        root.addView(text("BetterFrame Viewer", 28f))
-        root.addView(text("Cameras, webpages and signage for your display"))
-        status = text(pairing ?: "Connecting to BF…")
-        root.addView(status)
+        if ((plan?.optJSONArray("layouts")?.length() ?: 0) > 1) {
+            actions += "Assigned layouts" to { chooseLayout() }
+        }
+        actions += "Refresh" to { session.refresh() }
+        actions += "Settings" to { showSettings() }
+        AlertDialog.Builder(this).setTitle("BetterFrame")
+            .setItems(actions.map { it.first }.toTypedArray()) { _, index -> actions[index].second() }
+            .setNegativeButton("Close", null).show()
+    }
+
+    private fun showSettings() {
         val address = EditText(this).apply {
             hint = ServerAddress.DEFAULT
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.GRAY)
             setSingleLine(true)
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
             setText(session.serverUrl.ifBlank { ServerAddress.DEFAULT })
             contentDescription = "BetterFrame server address"
         }
-        serverAddress = address
-        root.addView(address, LinearLayout.LayoutParams(-1, -2))
-        root.addView(button("Connect display") {
-            val entered = address.text.toString().trim().trimEnd('/')
-            if (WebTile.origin(entered) == null) {
-                status.text = "Enter a complete HTTP or HTTPS server address."
-            } else {
-                status.text = "Connecting…"
-                session.start(entered)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(8), dp(24), dp(8))
+            addView(text(lastStatus))
+            addView(text("Server changes after enrollment require a reset."))
+            addView(address, LinearLayout.LayoutParams(-1, -2))
+        }
+        val dialog = AlertDialog.Builder(this).setTitle("Display settings").setView(content)
+            .setNegativeButton("Close", null).setPositiveButton("Connect", null)
+            .setNeutralButton("Reset enrollment") { _, _ ->
+                confirmReset(session.serverUrl.ifBlank { ServerAddress.DEFAULT })
+            }.create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val parsed = runCatching { ServerAddress.parse(address.text.toString()).toString().trimEnd('/') }
+                val entered = parsed.getOrNull()
+                if (entered == null) {
+                    address.error = parsed.exceptionOrNull()?.message ?: "Enter a valid BF server origin."
+                } else {
+                    dialog.dismiss()
+                    if (entered != session.serverUrl.trimEnd('/')) confirmReset(entered)
+                    else session.start(entered)
+                }
             }
-        })
-        root.addView(button("Reset enrollment") {
-            AlertDialog.Builder(this).setTitle("Reset this display?")
-                .setMessage("Remove this display's saved enrollment, cached configuration and web sessions. Pair again to reconnect.")
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Reset") { _, _ -> resetEnrollment() }.show()
-        })
-        setContentView(root)
+        }
+        dialog.show()
     }
 
-    private fun resetEnrollment() {
-        releaseTiles()
+    private fun confirmReset(server: String) {
+        AlertDialog.Builder(this).setTitle("Reset this display?")
+            .setMessage("Remove this display's saved enrollment, cached configuration and web sessions, then pair with $server?")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Reset and connect") { _, _ -> resetEnrollment(server) }.show()
+    }
+
+    private fun resetEnrollment(server: String) {
         plan = null
+        resetRequested = true
+        showSetup("")
         status.text = "Clearing enrollment…"
-        fun disable(view: View) {
-            view.isEnabled = false
-            if (view is ViewGroup) for (i in 0 until view.childCount) disable(view.getChildAt(i))
-        }
-        disable(root)
-        // Session sends onPairing("") only after storage and browser sessions are cleared.
-        session.unpair()
+        // Queue the restart in the session, which waits for durable/browser cleanup.
+        // Connection-status callbacks must not decide whether this reset reconnects.
+        session.unpair(server)
+        if (active) session.start(server)
     }
 
     private fun showDisplay() {
-        serverAddress = null
-        root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.BLACK)
+        root = kioskRoot()
+        grid = CellGrid(this).apply { tag = "display-grid" }
+        root.addView(grid, FrameLayout.LayoutParams(-1, -1))
+        val idle = KioskSetupView(this).apply {
+            visibility = View.GONE
+            updateDetails(session.serverUrl.ifBlank { ServerAddress.DEFAULT })
         }
-        val toolbar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(Color.rgb(17, 24, 39))
-        }
-        status = text("BetterFrame")
-        status.maxLines = 2
-        toolbar.addView(status, LinearLayout.LayoutParams(0, -2, 1f))
-        layouts = button("Layouts") { chooseLayout() }
-        toolbar.addView(layouts)
-        restore = button("Restore") { session.expand(null) }
-        toolbar.addView(restore)
-        toolbar.addView(button("Refresh") { session.refresh() })
-        toolbar.addView(button("Settings") {
-            AlertDialog.Builder(this)
-                .setTitle("BetterFrame Viewer")
-                .setMessage("Server: ${session.serverUrl.orEmpty()}\nUnpair to connect this display to another server.")
-                .setNegativeButton("Close", null)
-                .setPositiveButton("Unpair") { _, _ ->
-                    resetEnrollment()
-                }.show()
-        })
-        root.addView(toolbar, LinearLayout.LayoutParams(-1, -2))
-        grid = CellGrid(this)
-        root.addView(grid, LinearLayout.LayoutParams(-1, 0, 1f))
+        setupView = idle
+        status = idle.status
+        root.addView(idle, FrameLayout.LayoutParams(-1, -1))
+        addMenu()
         setContentView(root)
         displayVisible = true
     }
 
-    override fun onStatus(message: String) = runOnUiThread { status.text = message }
+    override fun onStatus(message: String) = runOnUiThread {
+        // A reset failure is reported here; leave Settings usable for recovery.
+        resetRequested = false
+        lastStatus = message
+        status.text = message
+        // The pairing code has its own view and survives connection/status updates.
+        setupView?.updateDetails(session.serverUrl.ifBlank { ServerAddress.DEFAULT })
+    }
 
-    override fun onServerAddress(address: String) = runOnUiThread { serverAddress?.setText(address) }
+    override fun onServerAddress(address: String) = runOnUiThread { setupView?.updateDetails(address) }
 
     override fun onPairing(code: String) = runOnUiThread {
         plan = null
-        showSetup(if (code.isBlank()) null else "Pairing code: $code\nApprove this display in BetterFrame.")
+        if (displayVisible || setupView == null) showSetup(code)
+        else setupView?.showPairing(code)
+        pairingCode = code
+        if (code.isBlank()) resetRequested = false
     }
 
     override fun onPlan(value: JSONObject) = runOnUiThread {
@@ -227,15 +275,18 @@ class MainActivity : Activity(), ViewerSession.Listener {
         if (!displayVisible) showDisplay()
         if (value.has("error")) {
             releaseTiles()
-            status.text = value.optString("error", "Display configuration unavailable")
-            restore.visibility = View.GONE
+            setupView?.showIdle(value.optString("error", "Display configuration unavailable"))
+            status.text = lastStatus
+            setupView?.visibility = View.VISIBLE
             return
         }
-        val expanded = value.optString("expandedCellId").takeUnless { it.isBlank() || it == "null" }
-        restore.visibility = if (expanded != null) View.VISIBLE else View.GONE
-        layouts.visibility = if ((value.optJSONArray("layouts")?.length() ?: 0) > 1) View.VISIBLE else View.GONE
-        status.text = value.optString("layoutName", "BetterFrame")
-        val cells = value.optJSONArray("cells") ?: return
+        val cells = value.optJSONArray("cells")
+        setupView?.visibility = if (cells == null || cells.length() == 0) View.VISIBLE else View.GONE
+        setupView?.showIdle(if (value.optString("layoutId").isBlank())
+            "go into BetterFrame and assign layouts to this display"
+            else "This layout is empty. Add content to it in BetterFrame.")
+        status.text = lastStatus
+        if (cells == null) { releaseTiles(); return }
         val desired = (0 until cells.length()).map { cells.getJSONObject(it) }
         val ids = desired.map { it.getString("id") }.toSet()
         currentFocus?.let { focus ->
@@ -318,7 +369,15 @@ class MainActivity : Activity(), ViewerSession.Listener {
         if (tiles.values.any { it.second.exitInteraction() }) return
         val expanded = plan?.optString("expandedCellId")
         if (!expanded.isNullOrBlank() && expanded != "null") { session.expand(null); return }
-        super.onBackPressed()
+        showKioskMenu()
+    }
+
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        if (keyCode == android.view.KeyEvent.KEYCODE_MENU) {
+            if (event.repeatCount == 0) showKioskMenu()
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     override fun onTrimMemory(level: Int) {

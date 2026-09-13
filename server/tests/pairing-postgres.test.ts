@@ -61,6 +61,31 @@ test("PostgreSQL migrations, tenant transactions and concurrent credential deliv
     assert.equal((await claimPairing(repo, start.code, secrets as never, undefined, start.pollingSecret)).status, "acknowledged");
     assert.equal((await repo.getPairingCode(start.code))?.extras["pairing_claim_encrypted"], undefined);
 
+    // Heartbeats update capability arrays through this repository method. pg
+    // otherwise encodes a JS array as a PostgreSQL array literal: populated
+    // arrays fail JSONB parsing, while [] can silently become a JSON object.
+    await repo.adapter.withSearchPath(tenant.schema_name, async () => {
+      const kioskId = results[0]!.kioskId;
+      const original = await repo.getKioskById(kioskId);
+      assert.ok(original);
+      assert.ok(original.key_hash);
+      for (const capabilities of [["android-viewer", "touch", "html"], []]) {
+        await repo.updateKiosk(kioskId, { capabilities });
+        const saved = await repo.getKioskById(kioskId);
+        assert.ok(saved);
+        assert.deepEqual(saved.capabilities, capabilities);
+        const stored = await repo.adapter.get<{ kind: string; capabilities: string[] }>(
+          "SELECT jsonb_typeof(capabilities) AS kind, capabilities FROM kiosks WHERE id = ?",
+          [kioskId],
+        );
+        assert.equal(stored?.kind, "array");
+        assert.deepEqual(stored?.capabilities, capabilities);
+        assert.equal(saved.key_hash, original.key_hash);
+        assert.equal(saved.encrypt_key_encrypted, original.encrypt_key_encrypted);
+        assert.equal(saved.name, original.name);
+      }
+    });
+
     // Every write before final claim consumption rolls back, including rekeys.
     for (const failure of ["display", "envelope"]) {
       notifications.length = 0;

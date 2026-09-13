@@ -4,7 +4,7 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <application android:label="BetterFrame" android:allowBackup="false"
-        android:theme="@android:style/Theme.Material.NoActionBar"
+        android:theme="@style/AppTheme"
         android:hardwareAccelerated="true" android:usesCleartextTraffic="true"
         android:icon="@drawable/bf_icon" android:banner="@drawable/bf_banner"
         android:supportsRtl="true">

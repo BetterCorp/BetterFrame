@@ -86,9 +86,7 @@ jobs:
           arch: x86_64
           target: default
           disable-animations: true
-          script: |
-            cd client/android && ./gradlew --no-daemon connectedDebugAndroidTest
-            bash "$GITHUB_WORKSPACE/client/android/upgrade-test/run.sh"
+          script: bash "$GITHUB_WORKSPACE/client/android/scripts/test-viewer.sh"
       - name: Remove disposable signing material
         if: always()
         run: rm -rf "$RUNNER_TEMP/android-ci-key" "$RUNNER_TEMP/android-upgrade"

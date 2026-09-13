@@ -8,6 +8,7 @@ import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import okhttp3.mockwebserver.SocketPolicy
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -33,6 +34,8 @@ class ViewerSessionTest {
         val unassigned = AtomicBoolean(false)
         val profile = AtomicReference<String?>(null)
         val profileRejected = LinkedBlockingQueue<JSONObject>()
+        val interruptHeartbeat = AtomicBoolean(false)
+        val offlineRetained = CountDownLatch(1)
         val failures = ConcurrentLinkedQueue<String>()
         val statuses = ConcurrentLinkedQueue<String>()
         val requests = ConcurrentLinkedQueue<String>()
@@ -77,7 +80,9 @@ class ViewerSessionTest {
                             val displays = JSONObject(request.body.readUtf8()).getJSONArray("displays")
                             check(displays.length() == 1) { "Single display heartbeat missing" }
                             check(displays.getJSONObject(0).getString("power_state") == "awake") { "Active display must report BF's awake power state" }
-                            json(JSONObject().apply { profile.get()?.let { put("viewer_profile", it) } }.toString())
+                            json(JSONObject().apply { profile.get()?.let { put("viewer_profile", it) } }.toString()).apply {
+                                if (interruptHeartbeat.getAndSet(false)) setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY)
+                            }
                         }
                         "/api/kiosk/bundle" -> if (unassigned.get()) json("""{"error":"display_unassigned"}""", 409)
                             else json(htmlBundle).setHeader("ETag", "\"fixture-v1\"")
@@ -102,7 +107,10 @@ class ViewerSessionTest {
                 .put("bundle", htmlBundle).put("etag", "legacy-cache").put("bundle_version", "1"))
             instrumentation.runOnMainSync {
                 session.set(ViewerSession(isolated, object : ViewerSession.Listener {
-                    override fun onStatus(message: String) { statuses.add(message) }
+                    override fun onStatus(message: String) {
+                        statuses.add(message)
+                        if (message.contains("connection unavailable")) offlineRetained.countDown()
+                    }
                     override fun onPairing(code: String) {
                         if (code.isBlank() && clearing.get()) enrollmentCleared.countDown()
                     }
@@ -139,6 +147,13 @@ class ViewerSessionTest {
             assertEquals("android-viewer-v1", ProtectedStore(isolated).read().getString("bundle_profile"))
             assertTrue(requests.contains("/api/pair/ack"))
             val fetchedBeforeDowngrade = requests.count { it == "/api/kiosk/bundle" }
+            interruptHeartbeat.set(true)
+            instrumentation.runOnMainSync { session.get().refresh() }
+            assertTrue("Interrupted heartbeat must use offline recovery; status=$statuses", offlineRetained.await(15, TimeUnit.SECONDS))
+            assertTrue("Transport failures must preserve a verified cache", ProtectedStore(isolated).read().has("bundle"))
+            assertFalse(ProtectedStore(isolated).read().optBoolean("blocked"))
+            assertTrue(profileRejected.isEmpty())
+            assertEquals(fetchedBeforeDowngrade, requests.count { it == "/api/kiosk/bundle" })
             profile.set(null)
             instrumentation.runOnMainSync { session.get().refresh() }
             assertNotNull("Server downgrade must clear a previously verified display", profileRejected.poll(15, TimeUnit.SECONDS))

@@ -9,6 +9,7 @@ import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.RejectedExecutionException
@@ -341,7 +342,9 @@ class ViewerSession(context: Context, private val listener: Listener) {
             .put("bundle_version", state.optString("bundle_version"))).use {
                 profileVerified = false
                 if (!authorized(it)) return@use false
-                val profile = runCatching { json(it).optString("viewer_profile") }.getOrNull()
+                // A dropped response body is a transport failure, not evidence
+                // that a previously verified server no longer supports viewers.
+                val profile = try { json(it).optString("viewer_profile") } catch (_: JSONException) { null }
                 ensureActive()
                 if (profile != VIEWER_PROFILE) {
                     clearCachedBundle()

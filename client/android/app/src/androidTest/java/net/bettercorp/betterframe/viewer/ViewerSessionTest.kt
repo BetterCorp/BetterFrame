@@ -89,6 +89,8 @@ class ViewerSessionTest {
             }
         }
         server.start()
+        // MockWebServer resolves its canonical hostname; do that off Android's UI thread.
+        val serverOrigin = server.url("/").toString()
         try {
             instrumentation.runOnMainSync {
                 session.set(ViewerSession(isolated, object : ViewerSession.Listener {
@@ -104,7 +106,7 @@ class ViewerSessionTest {
                         }
                     }
                 }))
-                session.get().start(server.url("/").toString())
+                session.get().start(serverOrigin)
             }
             assertTrue("HTML plan did not arrive; status=$statuses; failures=$failures", htmlPlan.await(15, TimeUnit.SECONDS))
             assertTrue("Display session was not requested", cookieInstalled.await(5, TimeUnit.SECONDS))

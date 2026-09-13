@@ -14,7 +14,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(AndroidJUnit4::class)
 class ViewerConnectionTest {
@@ -29,7 +32,7 @@ class ViewerConnectionTest {
         } to directory
     }
 
-    @Test fun savedCustomServerIsRetainedAndFailuresDescribeActualEnrollmentState() {
+    @Test fun savedCustomServerIsRetainedAndHttpFailuresIdentifyTheFailedRequest() {
         for (stage in listOf("fresh", "pending", "paired")) {
             val (context, directory) = isolatedContext()
             val server = MockWebServer()
@@ -53,11 +56,9 @@ class ViewerConnectionTest {
                 instrumentation.runOnMainSync { session.start() }
                 val failure = statuses.poll(10, TimeUnit.SECONDS) ?: error("No status for $stage")
                 assertFalse("No cached display exists at stage $stage: $failure", failure.contains("retaining saved"))
-                assertTrue("Incorrect status at stage $stage: $failure", failure.contains(when (stage) {
-                    "fresh" -> "Unable to start pairing"
-                    "pending" -> "retrying pairing"
-                    else -> "no display configuration saved yet"
-                }))
+                assertTrue("HTTP failures must not be misreported as lost connectivity: $failure", failure.contains("HTTP 404"))
+                assertTrue("Incorrect request at stage $stage: $failure", failure.contains(if (stage == "paired") "heartbeat" else "pairing"))
+                assertFalse(failure.contains("connection unavailable"))
                 assertEquals(origin, session.serverUrl)
                 assertEquals(origin, ProtectedStore(context).read().getString("server"))
                 val request = server.takeRequest(2, TimeUnit.SECONDS) ?: error("Saved custom server was not contacted")
@@ -67,6 +68,74 @@ class ViewerConnectionTest {
                 server.shutdown()
                 directory.deleteRecursively()
             }
+        }
+    }
+
+    @Test fun freshPairingRecoversFromHeartbeatFailureAndLaterLayoutAssignmentWithoutManualReconnect() {
+        val (context, directory) = isolatedContext()
+        val requests = ConcurrentLinkedQueue<String>()
+        val statuses = ConcurrentLinkedQueue<String>()
+        val heartbeatCalls = AtomicInteger()
+        val bundleCalls = AtomicInteger()
+        val noAssignment = CountDownLatch(1)
+        val displayed = CountDownLatch(1)
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.requestUrl!!.encodedPath
+                requests.add(path)
+                val response = MockResponse().setHeader("Content-Type", "application/json")
+                return when (path) {
+                    "/healthz" -> response.setBody("{}")
+                    "/api/pair/initiate" -> response.setBody("""{"code":"ABC123","polling_secret":"fixture-secret","poll_after_ms":1000}""")
+                    "/api/pair/claim" -> response.setBody("""{"status":"claimed","kiosk_id":"1","kiosk_key":"fixture-device-key","encrypt_key":"0000000000000000000000000000000000000000000000000000000000000000"}""")
+                    "/api/pair/ack" -> response.setBody("{}")
+                    "/api/kiosk/heartbeat" -> if (heartbeatCalls.incrementAndGet() == 1)
+                        response.setResponseCode(500).setBody("""{"error":"private diagnostic must not be displayed"}""")
+                        else response.setBody("""{"viewer_profile":"android-viewer-v1"}""")
+                    "/api/kiosk/bundle" -> if (bundleCalls.incrementAndGet() == 1)
+                        response.setResponseCode(409).setBody("""{"error":"display_unassigned"}""")
+                        else response.setBody("""{"kiosk_id":1,"kiosk_name":"Lobby","version":"2","cameras":[],"displays":[{
+                          "id":2,"name":"TV","width_px":1920,"height_px":1080,"idle_timeout_seconds":0,"sleep_timeout_seconds":0,"default_layout_id":3,
+                          "layouts":[{"id":3,"name":"Lobby signage","grid_cols":1,"grid_rows":1,"priority":"normal","is_default":true,"resets_idle_timer":true,
+                            "cells":[{"view_id":10,"row":0,"col":0,"row_span":1,"col_span":1,"content_type":"html","html_content":"<p>Assigned later</p>"}]}]}]}""")
+                    "/api/kiosk/display-session" -> response.setBody("{}")
+                    else -> response.setResponseCode(404)
+                }
+            }
+        }
+        server.start()
+        val origin = server.url("/").toString().trimEnd('/')
+        ProtectedStore(context).write(JSONObject().put("server", origin))
+        val session = ViewerSession(context, object : ViewerSession.Listener {
+            override fun onStatus(message: String) { statuses.add(message) }
+            override fun onPairing(code: String) {}
+            override fun onPlan(plan: JSONObject) {
+                if (plan.optString("error") == "go into BetterFrame and assign layouts to this display") noAssignment.countDown()
+                if (plan.optString("layoutId") == "3" && plan.optJSONArray("cells")?.length() == 1) displayed.countDown()
+            }
+        })
+        try {
+            // Exactly one start: no refresh, reconnect, lifecycle restart, or
+            // WebSocket notification may be needed to pick up the assignment.
+            instrumentation.runOnMainSync { session.start() }
+            assertTrue("Initial server failure did not recover to assignment guidance: $statuses", noAssignment.await(20, TimeUnit.SECONDS))
+            assertTrue("A later layout assignment was not fetched automatically: $statuses", displayed.await(15, TimeUnit.SECONDS))
+            assertTrue(statuses.any { it.contains("heartbeat") && it.contains("HTTP 500") && it.contains("Retrying") })
+            assertFalse("Do not expose server response bodies", statuses.any { it.contains("private diagnostic") })
+            assertFalse("An HTTP server error is not a connectivity failure", statuses.any { it.contains("connection unavailable") })
+            assertEquals(1, requests.count { it == "/api/pair/initiate" })
+            assertEquals(1, requests.count { it == "/api/pair/claim" })
+            assertEquals(1, requests.count { it == "/api/pair/ack" })
+            assertTrue(heartbeatCalls.get() >= 3)
+            assertTrue(bundleCalls.get() >= 2)
+            val saved = ProtectedStore(context).read()
+            assertEquals("fixture-device-key", saved.getJSONObject("identity").getString("kiosk_key"))
+            assertTrue(saved.has("bundle"))
+        } finally {
+            instrumentation.runOnMainSync { session.close() }
+            server.shutdown()
+            directory.deleteRecursively()
         }
     }
 

@@ -24,6 +24,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
         const val VIEWER_PROFILE = "android-viewer-v1"
         const val AUTH_REJECTED = "Display authorization rejected. Check this device in BF."
         const val PROFILE_REQUIRED = "This BF server must support android-viewer-v1. Update the server to use this display."
+        const val NO_LAYOUTS_ASSIGNED = "go into BetterFrame and assign layouts to this display"
         fun defaultHttp() = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
             .connectTimeout(8, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS)
             .callTimeout(20, TimeUnit.SECONDS).pingInterval(25, TimeUnit.SECONDS).build()
@@ -52,6 +53,8 @@ class ViewerSession internal constructor(context: Context, private val listener:
     private var nextCookie = 0L
     private var nextPairPoll = 0L
     private var failures = 0
+    private var awaitingAssignment = false
+    private var operation = "server discovery"
     private var activeEpoch = 0
     private var dashboardSessionReady = false
     private var profileVerified = false
@@ -111,6 +114,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
             nextCookie = 0L
             nextSocketAttempt = 0L
             failures = 0
+            awaitingAssignment = false
             try {
                 state = store.read()
                 // Older app versions could cache an unrestricted legacy bundle.
@@ -218,6 +222,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
             ensureActive()
             if (!serverResolved) {
                 if (System.currentTimeMillis() < nextSync) return
+                operation = "server discovery"
                 val resolved = ServerDiscovery.resolve(serverUrl, http, ::ensureActive)
                 state.put("server", resolved).put("resolved_server", resolved)
                 persist() // Pin the discovered origin before sending any enrollment credentials.
@@ -236,7 +241,9 @@ class ViewerSession internal constructor(context: Context, private val listener:
                         bundle()
                         if (!state.optBoolean("blocked") && state.has("bundle")) displayCookieIfDue(now)
                     }
-                    nextSync = System.currentTimeMillis() + 30_000
+                    // An administrator commonly assigns layouts just after
+                    // pairing. Keep that setup responsive even without a socket.
+                    nextSync = System.currentTimeMillis() + if (awaitingAssignment) 5_000 else 30_000
                     failures = 0
                 }
                 if (profileVerified && !state.optBoolean("blocked") && socket == null && !socketConnecting && now >= nextSocketAttempt) connectSocket()
@@ -244,12 +251,16 @@ class ViewerSession internal constructor(context: Context, private val listener:
         } catch (error: Exception) {
             if (!active()) return
             failures = (failures + 1).coerceAtMost(6)
-            val delay = (2_000L shl failures).coerceAtMost(60_000) + (0..1000).random()
+            val initialConfiguration = kioskKey.isNotBlank() && (!state.has("bundle") || awaitingAssignment)
+            val delay = ((2_000L shl failures) + (0..1000).random())
+                .coerceAtMost(if (initialConfiguration) 10_000 else 60_000)
             nextSync = System.currentTimeMillis() + delay
             nextPairPoll = System.currentTimeMillis() + delay
             status(when {
                 state.optBoolean("blocked") -> state.optString("block_reason", AUTH_REJECTED)
                 error is ServerRedirectException -> "BF server returned a redirect. Ask your administrator to fix API routing or use the direct server address."
+                error is HttpFailure -> "BF ${error.operation} returned HTTP ${error.code}. Retrying in ${(delay + 999) / 1000}s."
+                error is JSONException -> "BF returned invalid data for $operation. Retrying in ${(delay + 999) / 1000}s."
                 state.has("bundle") && state.optString("bundle_profile") == VIEWER_PROFILE ->
                     "BF connection unavailable — retaining saved display configuration"
                 kioskKey.isNotBlank() -> "BF connection unavailable — no display configuration saved yet. Retrying."
@@ -260,6 +271,20 @@ class ViewerSession internal constructor(context: Context, private val listener:
     }
 
     private class ServerRedirectException : java.io.IOException()
+    private class HttpFailure(val operation: String, val code: Int) : java.io.IOException()
+
+    private fun requestOperation(path: String) = when (path) {
+        "/api/pair/initiate", "/api/pair/claim" -> "pairing"
+        "/api/pair/ack" -> "pairing acknowledgement"
+        "/api/kiosk/heartbeat" -> "heartbeat"
+        "/api/kiosk/bundle" -> "display configuration"
+        "/api/kiosk/display-session" -> "display session"
+        else -> "request"
+    }
+
+    private fun requireSuccessful(response: Response) {
+        if (!response.isSuccessful) throw HttpFailure(requestOperation(response.request.url.encodedPath), response.code)
+    }
 
     private fun rejectRedirect(response: Response) {
         if (response.code in listOf(301, 302, 303, 307, 308)) {
@@ -270,6 +295,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
 
     private fun request(path: String, body: JSONObject? = null, authenticated: Boolean = true): Response {
         ensureActive()
+        operation = requestOperation(path)
         val builder = Request.Builder().url(serverUrl + path)
         if (authenticated) builder.header("Authorization", "Bearer $kioskKey")
         if (body != null) builder.post(body.toString().toRequestBody("application/json".toMediaType()))
@@ -298,7 +324,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
             request("/api/pair/initiate", JSONObject().put("proposed_name", "Android ${Build.MODEL}".take(128))
                 .put("hardware_model", "${Build.MANUFACTURER} ${Build.MODEL}".take(128))
                 .put("capabilities", capabilities()).put("secure_claim", true).put("managed_image", false), false).use {
-                check(it.isSuccessful)
+                requireSuccessful(it)
                 pending = json(it)
                 require(pending!!.textValue("code") != null && pending!!.textValue("polling_secret") != null)
                 state.put("pending", pending); persist()
@@ -309,7 +335,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
         nextPairPoll = now + session.optLong("poll_after_ms", 2000).coerceIn(1000, 60_000)
         request("/api/pair/claim", claimBody(session), false).use {
             if (it.code == 429) { nextPairPoll = now + 60_000; return }
-            check(it.isSuccessful || it.code == 503)
+            if (it.code != 503) requireSuccessful(it)
             val claim = json(it)
             when (claim.optString("status")) {
                 "claimed" -> {
@@ -344,7 +370,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
             blockDisplay(AUTH_REJECTED)
             return false
         }
-        check(response.isSuccessful)
+        requireSuccessful(response)
         return true
     }
 
@@ -391,6 +417,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
 
     private fun bundle() {
         check(profileVerified) { "Server viewer profile has not been verified" }
+        operation = "display configuration"
         val builder = Request.Builder().url(serverUrl + "/api/kiosk/bundle").header("Authorization", "Bearer $kioskKey")
         state.optString("etag").takeIf { it.isNotBlank() && state.has("bundle") && !state.optBoolean("blocked") }
             ?.let { builder.header("If-None-Match", it) }
@@ -403,9 +430,11 @@ class ViewerSession internal constructor(context: Context, private val listener:
                 val problem = json(it)
                 if (problem.optString("error") == "display_unassigned") {
                     clearCachedBundle()
+                    awaitingAssignment = true
+                    state.put("blocked", false).remove("block_reason")
                     persist()
-                    ui(activeEpoch) { listener.onPlan(JSONObject().put("error", "Assign a display to this device in BF")) }
-                    status("Assign a display to this device in BF")
+                    ui(activeEpoch) { listener.onPlan(JSONObject().put("error", NO_LAYOUTS_ASSIGNED)) }
+                    status("Connected — waiting for assigned layouts")
                     return
                 }
             }
@@ -413,13 +442,14 @@ class ViewerSession internal constructor(context: Context, private val listener:
             val bundle = json(it)
             val raw = bundle.toString()
             val plan = JSONObject(NativeCore.renderPlan(raw, null, null))
+            awaitingAssignment = plan.optString("error") == NO_LAYOUTS_ASSIGNED
             if (plan.has("error")) {
                 state.put("bundle", raw).put("bundle_version", bundle.optString("version"))
                     .put("etag", it.header("ETag") ?: "").put("blocked", false).put("bundle_profile", VIEWER_PROFILE)
                 state.remove("block_reason")
                 persist()
                 emitPlan()
-                status("Assign one supported display layout to this device in BF")
+                status(if (awaitingAssignment) "Connected — waiting for assigned layouts" else "Connected — display configuration needs attention")
                 return
             }
             val changed = raw != state.optString("bundle") || state.optBoolean("blocked")

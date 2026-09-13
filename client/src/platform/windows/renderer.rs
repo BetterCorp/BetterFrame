@@ -212,11 +212,7 @@ pub(super) fn paint_layout(hwnd: HWND, hdc: HDC, rect: RECT, display_id: &str) {
     let Some((display, layout)) = active_layout_for_display(bundle.as_ref(), &state, display_id)
     else {
         remove_webviews(hwnd);
-        let message = state
-            .pairing_code
-            .as_deref()
-            .map(|code| format!("BetterFrame pairing code: {code}"))
-            .unwrap_or_else(|| "BetterFrame Windows Kiosk - waiting for bundle".to_string());
+        let message = empty_layout_message(bundle.as_ref(), &state);
         draw_centered(hdc, rect, &message);
         return;
     };
@@ -504,6 +500,16 @@ pub(super) fn resolve_bundle_display<'a>(
     native_index: usize,
 ) -> Option<&'a BundleDisplay> {
     crate::core::layout::resolve_display(bundle?, native_name, native_index)
+}
+
+fn empty_layout_message(bundle: Option<&KioskBundle>, state: &ClientState) -> String {
+    if bundle.is_some() {
+        crate::core::layout::NO_LAYOUTS_ASSIGNED_MESSAGE.to_string()
+    } else {
+        state.pairing_code.as_deref()
+            .map(|code| format!("BetterFrame pairing code: {code}"))
+            .unwrap_or_else(|| "BetterFrame Windows Kiosk - waiting for bundle".to_string())
+    }
 }
 
 pub(super) fn active_layout_for_display<'a>(
@@ -982,6 +988,25 @@ pub(super) fn display_allowed(policy: &WindowsPolicy, display_name: &str) -> boo
 #[cfg(test)]
 mod origin_cache_tests {
     use super::*;
+
+    #[test]
+    fn empty_assignments_are_configuration_not_pending_downloads() {
+        let mut bundle: KioskBundle = serde_json::from_value(serde_json::json!({
+            "kiosk_id":"kiosk", "kiosk_name":"Lobby", "version":"1", "cameras":[],
+            "displays":[{"id":"display", "name":"Main", "width_px":1920, "height_px":1080,
+                "idle_timeout_seconds":0, "sleep_timeout_seconds":0, "default_layout_id":"removed", "layouts":[]}]
+        })).unwrap();
+        let mut state = ClientState::default();
+        state.active_layouts.insert("display".into(), "removed".into());
+        assert!(active_layout_for_display(Some(&bundle), &state, "display").is_none());
+        assert_eq!(empty_layout_message(Some(&bundle), &state), crate::core::layout::NO_LAYOUTS_ASSIGNED_MESSAGE);
+        bundle.displays.clear();
+        assert!(active_layout_for_display(Some(&bundle), &state, "display").is_none());
+        assert_eq!(empty_layout_message(Some(&bundle), &state), crate::core::layout::NO_LAYOUTS_ASSIGNED_MESSAGE);
+        assert!(empty_layout_message(None, &state).contains("waiting for bundle"));
+        state.pairing_code = Some("ABC123".into());
+        assert_eq!(empty_layout_message(None, &state), "BetterFrame pairing code: ABC123");
+    }
 
     #[test]
     fn migration_invalidates_existing_web_and_html_views_without_a_bundle_change() {

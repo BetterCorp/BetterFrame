@@ -3044,7 +3044,8 @@ export class Repository {
     for (const [k, v] of Object.entries(patch)) {
       if (k === "id" || k === "created_at" || k === "paired_at") continue;
       sets.push(`${k} = ?`);
-      vals.push(v === undefined ? null : v);
+      // pg treats JavaScript arrays as PostgreSQL arrays, not JSONB values.
+      vals.push(k === "capabilities" ? J(v) : v === undefined ? null : v);
     }
     if (sets.length === 0) return;
     vals.push(id);

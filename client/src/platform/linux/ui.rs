@@ -1414,12 +1414,6 @@ fn render_bundle(
 
     // Purge warm camera pool entries for cameras no longer in the bundle at all.
     purge_removed_cameras(&bundle.cameras);
-    if displays.is_empty() {
-        warn!("bundle has no displays");
-        show_logo(pairing_window);
-        return;
-    }
-
     // Match GDK monitors to bundle displays by index. Bundle display 0 → GDK
     // monitor 0, etc. v1 simple ordering — re-binding will land if/when the
     // admin UI exposes a mapping. Falls back to overlapping windows on a
@@ -1445,6 +1439,16 @@ fn render_bundle(
         if let Some(st) = DISPLAYS.with(|ds| ds.borrow_mut().remove(&id)) {
             st.window.close();
         }
+    }
+
+    if displays.is_empty() {
+        // A valid bundle without assignments is a settled configuration state,
+        // including when the last display was removed from an active kiosk.
+        pairing_window.set_child(Some(&build_empty_display_reference(&bundle, None)));
+        pairing_window.present();
+        recompute_global_state();
+        mark_kiosk_healthy();
+        return;
     }
 
     // Note: hot/warm/cooling pool recompute is deferred to the per-display
@@ -1529,10 +1533,10 @@ fn render_bundle(
         if let Some(layout_id) = target {
             render_layout(&bd.id, &layout_id);
         } else {
-            warn!("display {} has no default layout", bd.id);
+            info!("display {} has no assigned layouts", bd.id);
             DISPLAYS.with(|ds| {
                 if let Some(st) = ds.borrow_mut().get_mut(&bd.id) {
-                    let content = build_empty_display_reference(&bundle, bd);
+                    let content = build_empty_display_reference(&bundle, Some(bd));
                     st.content_overlay.set_child(Some(&content));
                     hide_all_webviews(&st.web_layer);
                     st.current_layout_id = None;
@@ -1540,6 +1544,9 @@ fn render_bundle(
             });
         }
     }
+
+    // Empty assignments also release content from the previous bundle.
+    recompute_global_state();
 
     // A rendered cached bundle is healthy even when the server is offline.
     // RAUC rollback protects app startup, not server reachability.
@@ -1597,13 +1604,14 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
             .as_deref()
             .and_then(|did| bd.layouts.iter().find(|l| l.id == did))
             .or_else(|| bd.layouts.iter().find(|l| l.is_default))
+            .or_else(|| bd.layouts.first())
     });
 
     let Some(base_layout) = layout else {
-        warn!("render_layout: no usable layout on display {display_id}");
+        info!("render_layout: no assigned layouts on display {display_id}");
         DISPLAYS.with(|ds| {
             if let Some(st) = ds.borrow_mut().get_mut(display_id) {
-                let content = build_empty_display_reference(&bundle, bd);
+                let content = build_empty_display_reference(&bundle, Some(bd));
                 st.content_overlay.set_child(Some(&content));
                 hide_all_webviews(&st.web_layer);
                 st.web_positions.clear();
@@ -3293,7 +3301,7 @@ fn show_startup_status(window: &ApplicationWindow, action: &str) {
 
 fn build_empty_display_reference(
     bundle: &KioskBundle,
-    display: &BundleDisplayWithLayouts,
+    display: Option<&BundleDisplayWithLayouts>,
 ) -> gtk::Widget {
     let overlay = gtk::Overlay::new();
     overlay.set_vexpand(true);
@@ -3305,12 +3313,21 @@ fn build_empty_display_reference(
     vbox.set_vexpand(true);
     vbox.set_hexpand(true);
     vbox.append(&logo_picture(BETTERFRAME_LOGO_PNG, 480, 118, "idle-logo"));
+    let instruction = Label::new(Some(crate::core::layout::NO_LAYOUTS_ASSIGNED_MESSAGE));
+    instruction.set_wrap(true);
+    instruction.set_justify(gtk::Justification::Center);
+    instruction.set_max_width_chars(64);
+    instruction.set_margin_start(24);
+    instruction.set_margin_end(24);
+    add_css(&instruction, ".assignment-instruction { color: #fff; font-size: 22px; }");
+    instruction.add_css_class("assignment-instruction");
+    vbox.append(&instruction);
     overlay.set_child(Some(&vbox));
 
     let last_sync = CURRENT_SYNC_LABEL.with(|s| s.borrow().clone());
     let info = Label::new(Some(&format!(
         "Kiosk: {}\nDisplay: {}\nLast sync: {}",
-        bundle.kiosk_name, display.name, last_sync,
+        bundle.kiosk_name, display.map(|d| d.name.as_str()).unwrap_or("This display"), last_sync,
     )));
     info.set_halign(gtk::Align::Start);
     info.set_valign(gtk::Align::End);

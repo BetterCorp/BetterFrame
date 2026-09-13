@@ -288,7 +288,9 @@ class MainActivity : Activity(), ViewerSession.Listener {
         }
         val cells = value.optJSONArray("cells")
         setupView?.visibility = if (cells == null || cells.length() == 0) View.VISIBLE else View.GONE
-        setupView?.showIdle("Waiting for content. Assign a layout to this display in BetterFrame.")
+        setupView?.showIdle(if (value.optString("layoutId").isBlank())
+            "go into BetterFrame and assign layouts to this display"
+            else "This layout is empty. Add content to it in BetterFrame.")
         status.text = lastStatus
         if (cells == null) { releaseTiles(); return }
         val desired = (0 until cells.length()).map { cells.getJSONObject(it) }

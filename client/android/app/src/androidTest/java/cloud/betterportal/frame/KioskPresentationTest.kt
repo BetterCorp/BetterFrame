@@ -127,7 +127,7 @@ class KioskPresentationTest {
             }
             awaitUi(scenario, "No-content guidance disappeared after connection status changed") { activity ->
                 descendants(activity.window.decorView).filterIsInstance<TextView>()
-                    .any { it.isShown && it.text.toString().contains("Assign a layout") }
+                    .any { it.isShown && it.text.toString().contains("go into BetterFrame and assign layouts to this display") }
             }
             scenario.onActivity { activity ->
                 activity.onPlan(JSONObject().put("error", "Display configuration unavailable"))
@@ -266,15 +266,19 @@ class KioskPresentationTest {
     }
 
     private fun clickAccessibleText(value: String) {
-        var selected: AccessibilityNodeInfo? = null
-        awaitAccessibility("Could not find $value") { root ->
-            selected = accessibilityDescendants(root).firstOrNull { it.text?.toString()?.equals(value, ignoreCase = true) == true }
-            selected != null
+        awaitAccessibility("$value must be selectable") {
+            // Dialog transitions can invalidate a previously obtained node.
+            // Resolve both label and row afresh after the UI has become idle.
+            instrumentation.waitForIdleSync()
+            val root = instrumentation.uiAutomation.rootInActiveWindow ?: return@awaitAccessibility false
+            val selected = accessibilityDescendants(root).firstOrNull {
+                it.isVisibleToUser && it.isEnabled && it.text?.toString()?.equals(value, ignoreCase = true) == true
+            } ?: return@awaitAccessibility false
+            var action = selected
+            // The label can be separate from its clickable list row.
+            while (!action.isClickable) action = action.parent ?: return@awaitAccessibility false
+            action.isVisibleToUser && action.isEnabled && action.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         }
-        var action = requireNotNull(selected)
-        // The label can be separate from its clickable list row.
-        while (!action.isClickable) action = action.parent ?: break
-        assertTrue("$value must be selectable", action.performAction(AccessibilityNodeInfo.ACTION_CLICK))
     }
 
     private fun assertFullyVisible(view: View) {

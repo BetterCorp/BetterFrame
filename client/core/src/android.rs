@@ -91,10 +91,16 @@ pub fn render_plan(
     expanded_cell_id: Option<&str>,
 ) -> Result<RenderPlan, &'static str> {
     let displays = bundle.normalized_displays();
+    if displays.is_empty() {
+        return Err(layout::NO_LAYOUTS_ASSIGNED_MESSAGE);
+    }
     if displays.len() != 1 {
         return Err("Android viewer requires exactly one assigned display");
     }
     let display = &displays[0];
+    if display.layouts.is_empty() {
+        return Err(layout::NO_LAYOUTS_ASSIGNED_MESSAGE);
+    }
     let default = layout::initial_layout_id(display);
     let selected = layout_id.filter(|s| !s.is_empty()).or(default.as_deref());
     let selected_layout = display
@@ -457,6 +463,26 @@ mod tests {
     }
     fn plan(v: Value, layout: Option<&str>, expanded: Option<&str>) -> RenderPlan {
         render_plan(&parse(v), layout, expanded).unwrap()
+    }
+    #[test]
+    fn missing_assignments_have_actionable_guidance_but_empty_assigned_layouts_are_valid() {
+        let mut no_display = fixture();
+        no_display["displays"] = json!([]);
+        assert_eq!(
+            render_plan(&parse(no_display), None, None).err(),
+            Some(layout::NO_LAYOUTS_ASSIGNED_MESSAGE)
+        );
+        let mut no_layouts = fixture();
+        no_layouts["displays"][0]["layouts"] = json!([]);
+        assert_eq!(
+            render_plan(&parse(no_layouts), None, None).err(),
+            Some(layout::NO_LAYOUTS_ASSIGNED_MESSAGE)
+        );
+        let mut empty_layout = fixture();
+        empty_layout["displays"][0]["layouts"][0]["cells"] = json!([]);
+        let rendered = plan(empty_layout, None, None);
+        assert_eq!(rendered.layout_id, "3");
+        assert!(rendered.cells.is_empty());
     }
     fn four_cameras_with_web_cells(web_cells: Vec<Value>) -> Value {
         let mut f = fixture();

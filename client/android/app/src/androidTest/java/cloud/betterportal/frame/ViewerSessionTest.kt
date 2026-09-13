@@ -116,7 +116,7 @@ class ViewerSessionTest {
                     }
                     override fun onPlan(plan: JSONObject) {
                         if (plan.optString("error").contains("android-viewer-v1")) profileRejected.add(plan)
-                        else if (plan.optString("error") == "Assign a display to this device in BF") removedPlan.countDown()
+                        else if (plan.optString("error") == "go into BetterFrame and assign layouts to this display") removedPlan.countDown()
                         else if (plan.optJSONArray("cells")?.optJSONObject(0)?.optJSONObject("web")?.optString("html")?.contains("Offline lobby") == true) {
                             actualPlan.set(plan)
                             htmlPlan.countDown()

@@ -21,7 +21,7 @@ import {
 } from "@bsb/base";
 import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { WebSocketServer, WebSocket } from "ws";
+import { WebSocket, type WebSocketServer } from "ws";
 
 import type { DbConfig } from "../../shared/db/config.js";
 import { initDb } from "../../shared/db/init.js";
@@ -29,6 +29,7 @@ import { initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
 import { setCoordinator } from "../../shared/coordinator-registry.js";
 import { KioskConnections } from "../../shared/kiosk-connections.js";
+import { createCoordinatorWebSocketServer } from "../../shared/coordinator-websocket.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
 
 // ---- Config -----------------------------------------------------------------
@@ -267,7 +268,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       res.end();
     });
 
-    const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+    const wss = createCoordinatorWebSocketServer();
 
     httpServer.on("upgrade", async (req: IncomingMessage, socket, head) => {
       const url = new URL(req.url ?? "/", `http://${req.headers.host}`);

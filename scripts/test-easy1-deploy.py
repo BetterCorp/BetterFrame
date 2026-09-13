@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -75,6 +76,37 @@ class FakeApi:
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_server_healthcheck_requires_successful_readiness_body(self):
+        template = (Path(__file__).parents[1] / "deploy/easy1/server.Dockerfile").read_text()
+        healthcheck = next(line for line in template.splitlines() if line.startswith("HEALTHCHECK "))
+        command = shlex.split(healthcheck.split(" CMD ", 1)[1])
+        self.assertEqual(command[:2], ["node", "-e"])
+        # Execute the production command with real Fetch Response parsing, but
+        # substitute the loopback transport so no live server or port is needed.
+        harness = """
+globalThis.fetch = async (url, options) => {
+  if (url !== 'http://127.0.0.1:18080/readyz' || !(options.signal instanceof AbortSignal)) {
+    throw new Error('Healthcheck target or timeout missing');
+  }
+  const fixture = JSON.parse(process.argv[1]);
+  if (fixture.reject) throw new Error('Connection refused');
+  return new Response(fixture.body, {status: fixture.code});
+};
+"""
+        for label, fixture, expected in [
+            ("ready", {"code": 200, "body": '{"status":"ready"}'}, 0),
+            ("setup or database not ready", {"code": 200, "body": '{"status":"not_ready"}'}, 1),
+            ("failed HTTP response", {"code": 503, "body": '{"status":"ready"}'}, 1),
+            ("invalid JSON", {"code": 200, "body": "not-json"}, 1),
+            ("missing status", {"code": 200, "body": "{}"}, 1),
+            ("null JSON", {"code": 200, "body": "null"}, 1),
+            ("transport failure", {"reject": True}, 1),
+        ]:
+            with self.subTest(label=label):
+                result = subprocess.run([command[0], "-e", harness + command[2], json.dumps(fixture)],
+                                        capture_output=True, text=True, timeout=10, check=False)
+                self.assertEqual(result.returncode, expected, result.stderr)
+
     def test_release_images_use_fixed_runtime_snapshots_in_every_stage(self):
         for service in ("server", "nodered"):
             with self.subTest(service=service):

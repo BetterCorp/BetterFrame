@@ -21,4 +21,4 @@ RUN chmod +x /usr/local/bin/bf-entrypoint.sh && echo '@VERSION@' > /home/bsb/.bf
 # Snapshot containers sleep only to retain the base through Docker cleanup.
 ENTRYPOINT ["/usr/local/bin/bf-entrypoint.sh"]
 CMD []
-HEALTHCHECK --interval=20s --timeout=5s --start-period=90s --retries=5 CMD node -e "fetch('http://127.0.0.1:18080/readyz',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+HEALTHCHECK --interval=20s --timeout=5s --start-period=90s --retries=5 CMD node -e "fetch('http://127.0.0.1:18080/readyz',{signal:AbortSignal.timeout(4000)}).then(async r=>process.exit(r.ok&&(await r.json()).status==='ready'?0:1)).catch(()=>process.exit(1))"

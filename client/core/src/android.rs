@@ -129,9 +129,9 @@ pub fn render_plan(
         .enumerate()
         .filter(|(i, c)| expanded.as_ref().is_none_or(|id| *id == cell_id(c, *i)))
         .collect();
-    let has_web = visible
-        .iter()
-        .any(|(_, c)| matches!(c.content_type.as_str(), "web" | "html"));
+    let has_web = visible.iter().any(|(_, c)| {
+        matches!(c.content_type.as_str(), "web" | "html") && web_content_error(c).is_none()
+    });
     let camera_budget = if has_web {
         MAX_MIXED_CAMERAS
     } else {
@@ -201,22 +201,11 @@ pub fn render_plan(
                     "Web / signage"
                 }
                 .into();
-                if cell.smart_url.is_some() {
-                    output.message = Some("Scripted login is not supported on Android".into());
+                if let Some(message) = web_content_error(cell) {
+                    output.message = Some(message.into());
                 } else if web_count >= MAX_WEB_VIEWS {
                     output.message =
                         Some("Web content limit reached; expand this tile to view".into());
-                } else if cell.content_type == "web"
-                    && !cell.web_url.as_deref().is_some_and(valid_web_reference)
-                {
-                    output.message = Some("Unsupported or missing web URL".into());
-                } else if cell.content_type == "html"
-                    && cell
-                        .html_content
-                        .as_ref()
-                        .is_none_or(|h| h.trim().is_empty())
-                {
-                    output.message = Some("No HTML content assigned".into());
                 } else {
                     let url = if cell.content_type == "web" {
                         cell.web_url.clone()
@@ -293,6 +282,27 @@ pub fn render_plan(
         max_web_views: MAX_WEB_VIEWS,
         cells,
     })
+}
+
+/// Apply the same eligibility checks to resource budgeting and rendering so
+/// placeholders never reserve a WebView or reduce the camera allowance.
+fn web_content_error(cell: &BundleCell) -> Option<&'static str> {
+    if cell.smart_url.is_some() {
+        Some("Scripted login is not supported on Android")
+    } else if cell.content_type == "web"
+        && !cell.web_url.as_deref().is_some_and(valid_web_reference)
+    {
+        Some("Unsupported or missing web URL")
+    } else if cell.content_type == "html"
+        && cell
+            .html_content
+            .as_ref()
+            .is_none_or(|h| h.trim().is_empty())
+    {
+        Some("No HTML content assigned")
+    } else {
+        None
+    }
 }
 
 fn hex_id(value: &str) -> String {
@@ -448,6 +458,100 @@ mod tests {
     fn plan(v: Value, layout: Option<&str>, expanded: Option<&str>) -> RenderPlan {
         render_plan(&parse(v), layout, expanded).unwrap()
     }
+    fn four_cameras_with_web_cells(web_cells: Vec<Value>) -> Value {
+        let mut f = fixture();
+        let mut cells: Vec<_> = (0..4)
+            .map(|index| {
+                json!({"view_id":10 + index,"row":0,"col":index,"row_span":1,"col_span":1,
+                    "content_type":"camera","camera_id":5})
+            })
+            .collect();
+        for (index, mut cell) in web_cells.into_iter().enumerate() {
+            cell["view_id"] = json!(20 + index);
+            cell["row"] = json!(1);
+            cell["col"] = json!(index);
+            cell["row_span"] = json!(1);
+            cell["col_span"] = json!(1);
+            cells.push(cell);
+        }
+        let layout = &mut f["displays"][0]["layouts"][0];
+        layout["grid_cols"] = json!(4);
+        layout["cells"] = json!(cells);
+        f
+    }
+
+    #[test]
+    fn web_placeholders_do_not_reduce_the_camera_budget() {
+        for cell in [
+            json!({"content_type":"web"}),
+            json!({"content_type":"web","web_url":""}),
+            json!({"content_type":"web","web_url":"javascript:alert(1)"}),
+            json!({"content_type":"html"}),
+            json!({"content_type":"html","html_content":""}),
+            json!({"content_type":"html","html_content":" \n\t "}),
+            json!({"content_type":"web","web_url":"https://example.com","smart_url":{"steps":[]}}),
+        ] {
+            let p = plan(four_cameras_with_web_cells(vec![cell.clone()]), None, None);
+            assert_eq!(p.max_camera_streams, 4, "{cell}");
+            assert_eq!(
+                p.cells.iter().filter(|c| c.camera.is_some()).count(),
+                4,
+                "{cell}"
+            );
+            assert!(p.cells.iter().all(|c| c.web.is_none()), "{cell}");
+            assert_eq!(p.cells[4].kind, "placeholder", "{cell}");
+            assert!(p.cells[4].message.is_some(), "{cell}");
+        }
+    }
+
+    #[test]
+    fn renderable_web_or_html_reserves_the_mixed_camera_budget() {
+        for cell in [
+            json!({"content_type":"web","web_url":"/dash/lobby"}),
+            json!({"content_type":"html","html_content":"<h1>Welcome</h1>"}),
+        ] {
+            let p = plan(four_cameras_with_web_cells(vec![cell.clone()]), None, None);
+            assert_eq!(p.max_camera_streams, 2, "{cell}");
+            assert_eq!(
+                p.cells.iter().filter(|c| c.camera.is_some()).count(),
+                2,
+                "{cell}"
+            );
+            assert_eq!(
+                p.cells.iter().filter(|c| c.web.is_some()).count(),
+                1,
+                "{cell}"
+            );
+            assert_eq!(p.cells[4].kind, "web", "{cell}");
+        }
+    }
+
+    #[test]
+    fn unsupported_web_before_valid_content_does_not_consume_the_web_view() {
+        let p = plan(
+            four_cameras_with_web_cells(vec![
+                json!({"content_type":"web","web_url":"file:///private"}),
+                json!({"content_type":"web","web_url":"/dash/lobby"}),
+                json!({"content_type":"html","html_content":"<h1>Second page</h1>"}),
+            ]),
+            None,
+            None,
+        );
+        assert_eq!(p.max_camera_streams, 2);
+        assert_eq!(p.cells.iter().filter(|c| c.camera.is_some()).count(), 2);
+        assert_eq!(p.cells.iter().filter(|c| c.web.is_some()).count(), 1);
+        assert_eq!(p.cells[4].kind, "placeholder");
+        assert_eq!(
+            p.cells[5].web.as_ref().unwrap().url.as_deref(),
+            Some("/dash/lobby")
+        );
+        assert_eq!(p.cells[6].kind, "placeholder");
+        assert_eq!(
+            p.cells[6].message.as_deref(),
+            Some("Web content limit reached; expand this tile to view")
+        );
+    }
+
     #[test]
     fn mixed_current_bundle_uses_substreams_spans_and_bounded_resources() {
         let p = plan(fixture(), None, None);

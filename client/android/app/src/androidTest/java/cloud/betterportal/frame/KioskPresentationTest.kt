@@ -314,10 +314,13 @@ class KioskPresentationTest {
             // Keep evidence outside app storage so test-runner app cleanup cannot
             // delete it before the workflow collects the screenshots.
             val shared = "/sdcard/Download/betterframe-kiosk-screenshots"
-            val command = "mkdir -p '$shared' && cp '${saved.absolutePath}' '$shared/$name.png' && echo saved"
-            val result = ParcelFileDescriptor.AutoCloseInputStream(
+            // UiAutomation executes an argv command on Android 10, not a shell.
+            // These fixture-owned paths contain no spaces or shell syntax.
+            fun execute(command: String) = ParcelFileDescriptor.AutoCloseInputStream(
                 instrumentation.uiAutomation.executeShellCommand(command)).bufferedReader().use { it.readText() }
-            assertEquals("Screenshot must survive test-app removal", "saved", result.trim())
+            execute("mkdir -p $shared")
+            execute("cp ${saved.absolutePath} $shared/$name.png")
+            assertEquals("Screenshot must survive test-app removal", "$shared/$name.png", execute("ls $shared/$name.png").trim())
         } finally { screenshot.recycle() }
     }
 

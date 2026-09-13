@@ -45,7 +45,8 @@ class ViewerDialogTest {
         // The IME may own the accessibility root after DPAD focuses the editor.
         // Assert the actual dialog window instead of searching that unrelated root.
         assertTrue("Input in a dialog renews inactivity", isShowing(settings))
-        clock.addAndGet(501)
+        // IME selection/composition callbacks can also legitimately renew activity.
+        clock.set(lastActivity(session) + 2_001)
         await("Idle dismisses Settings") { !isShowing(settings) && hasWindowFocus(activity) }
         instrumentation.uiAutomation.waitForIdle(250, 3000)
 

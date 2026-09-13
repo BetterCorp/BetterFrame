@@ -28,6 +28,7 @@ pub struct RenderPlan {
     pub cols: u32,
     pub gap: u32,
     pub max_camera_streams: usize,
+    /// Android applies this allocation limit after URL resolution/session filtering.
     pub max_web_views: usize,
     pub cells: Vec<RenderCell>,
 }
@@ -85,8 +86,12 @@ pub enum CellAction {
     Unsupported,
 }
 
-/// Invalid geometry/assignment fails closed. Excess resources become visible
+/// Invalid geometry/assignment fails closed. Excess cameras become visible
 /// placeholders; expansion still lets an operator view one of those cells.
+/// Valid web/HTML cells remain candidates within MAX_CELLS: Android resolves BF
+/// relative origins and filters incompatible sessions before allocating up to
+/// max_web_views browsers. Truncating here would let later-rejected sessions
+/// consume slots and discard otherwise usable pages.
 pub fn render_plan(
     bundle: &KioskBundle,
     layout_id: Option<&str>,
@@ -139,7 +144,6 @@ pub fn render_plan(
         .collect();
     let camera_budget = MAX_CAMERAS;
     let mut camera_count = 0;
-    let mut web_count = 0;
     let mut cells = Vec::new();
     for (index, cell) in visible {
         let mut output = RenderCell {
@@ -204,9 +208,6 @@ pub fn render_plan(
                 .into();
                 if let Some(message) = web_content_error(cell) {
                     output.message = Some(message.into());
-                } else if web_count >= MAX_WEB_VIEWS {
-                    output.message =
-                        Some("Web content limit reached; expand this tile to view".into());
                 } else {
                     let url = if cell.content_type == "web" {
                         cell.web_url.clone()
@@ -239,7 +240,6 @@ pub fn render_plan(
                         interactive: true,
                         allow_audio: false,
                     });
-                    web_count += 1;
                 }
             }
             "none" | "empty" | "placeholder" => {
@@ -758,7 +758,7 @@ mod tests {
         assert_eq!(web.local_storage["screenId"], "screen-one");
     }
     #[test]
-    fn thirty_two_web_and_html_cells_render_and_excess_can_expand() {
+    fn web_and_html_candidates_survive_projection_for_runtime_budgeting() {
         let mut f = fixture();
         let mut cells = vec![
             json!({"view_id":10,"row":0,"col":0,"row_span":1,"col_span":1,
@@ -786,7 +786,7 @@ mod tests {
                 .iter()
                 .filter(|cell| cell.web.is_some())
                 .count(),
-            32
+            33
         );
         assert_eq!(
             rendered
@@ -798,10 +798,8 @@ mod tests {
         );
         assert_eq!(rendered.cells[0].kind, "placeholder");
         assert_eq!(rendered.cells[33].kind, "web");
-        assert_eq!(
-            rendered.cells[34].message.as_deref(),
-            Some("Web content limit reached; expand this tile to view")
-        );
+        assert_eq!(rendered.cells[34].kind, "web");
+        assert!(rendered.cells[34].message.is_none());
         let expanded = plan(f, None, Some("132"));
         assert_eq!(expanded.cells.len(), 1);
         assert_eq!(expanded.cells[0].kind, "web");
@@ -810,6 +808,61 @@ mod tests {
             Some("https://example.com/signage")
         );
     }
+    #[test]
+    fn conflicting_sessions_cannot_discard_later_independent_web_candidates() {
+        let mut f = fixture();
+        let cells: Vec<_> = (0..64)
+            .map(|index| {
+                // Runtime resolution reveals that the first 32 cells share an
+                // origin but request conflicting storage identities. All later
+                // independent origins must remain available to fill free slots.
+                let web_url = if index < 32 {
+                    format!("/dash/screen-{index}")
+                } else {
+                    format!("https://screen-{index}.example/signage")
+                };
+                json!({"view_id":100 + index,"row":index / 8,"col":index % 8,
+                    "row_span":1,"col_span":1,"content_type":"web","web_url":web_url,
+                    "local_storage":{"screenId":format!("screen-{index}")}})
+            })
+            .collect();
+        let layout = &mut f["displays"][0]["layouts"][0];
+        layout["grid_cols"] = json!(8);
+        layout["grid_rows"] = json!(8);
+        layout["cells"] = json!(cells);
+        let projected = plan(f.clone(), None, None);
+        assert_eq!(projected.max_web_views, 32);
+        assert_eq!(projected.cells.len(), 64);
+        assert!(projected.cells.iter().all(|cell| cell.kind == "web"));
+        for (index, cell) in projected.cells.iter().enumerate() {
+            let web = cell.web.as_ref().unwrap();
+            assert_eq!(web.local_storage["screenId"], format!("screen-{index}"));
+            if index < 32 {
+                assert!(web.origin.is_none(), "BF origin is only known at runtime");
+            } else {
+                assert_eq!(
+                    web.url.as_deref(),
+                    Some(format!("https://screen-{index}.example/signage").as_str())
+                );
+            }
+        }
+        let expanded = plan(f.clone(), None, Some("163"));
+        assert_eq!(expanded.cells.len(), 1);
+        assert_eq!(
+            expanded.cells[0].web.as_ref().unwrap().local_storage["screenId"],
+            "screen-63"
+        );
+        // Retaining candidates must not remove the independent overall layout bound.
+        f["displays"][0]["layouts"][0]["cells"]
+            .as_array_mut()
+            .unwrap()
+            .push(
+                json!({"view_id":200,"row":0,"col":0,"row_span":1,"col_span":1,
+                "content_type":"web","web_url":"https://extra.example"}),
+            );
+        assert!(render_plan(&parse(f), None, None).is_err());
+    }
+
     #[test]
     fn only_assigned_local_actions_are_exposed() {
         for (action, params, allowed) in [

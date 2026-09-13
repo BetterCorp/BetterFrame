@@ -275,6 +275,47 @@ class ViewerSmokeTest {
         assertEquals("web", compatibleWebSessions(listOf(empty)).single().getString("kind"))
     }
 
+    @Test fun webBudgetFillsFromCompatibleCandidatesAfterNativeProjection() {
+        val bundle = fixture()
+        val layout = bundle.getJSONArray("displays").getJSONObject(0).getJSONArray("layouts").getJSONObject(0)
+        val cells = org.json.JSONArray()
+        for (index in 0 until 64) {
+            cells.put(JSONObject().put("view_id", 100 + index).put("row", index / 8).put("col", index % 8)
+                .put("row_span", 1).put("col_span", 1).put("content_type", "web")
+                .put("web_url", if (index < 32) "https://signage.example/$index" else "https://page-$index.example/")
+                .put("local_storage", JSONObject().put("screen", if (index == 0) "first" else "screen-$index")))
+        }
+        layout.put("grid_rows", 8).put("grid_cols", 8).put("cells", cells)
+        val plan = JSONObject(NativeCore.renderPlan(bundle.toString(), null, null))
+        assertFalse(plan.toString(), plan.has("error"))
+        val projected = plan.getJSONArray("cells")
+        val candidates = (0 until projected.length()).map { projected.getJSONObject(it) }
+        val allocated = compatibleWebSessions(candidates)
+        assertEquals(32, allocated.count { it.getString("kind") == "web" })
+        assertEquals(31, allocated.count { it.optString("message").startsWith("Conflicting web session") })
+        assertEquals("web", allocated[62].getString("kind"))
+        assertEquals("Web content limit reached; expand this tile to view", allocated[63].getString("message"))
+        assertEquals("expand", allocated[63].getJSONObject("action").getString("type"))
+        assertEquals("web", candidates[63].getString("kind")) // Allocation leaves the source plan intact.
+
+        // Removing an earlier eligible page promotes the unchanged last candidate on the next reconciliation.
+        val waiting = candidates.mapIndexed { index, cell ->
+            if (index == 32) JSONObject(cell.toString()).put("kind", "placeholder").put("web", JSONObject.NULL) else cell
+        }
+        val refilled = compatibleWebSessions(waiting)
+        assertEquals(32, refilled.count { it.getString("kind") == "web" })
+        assertEquals("web", refilled[63].getString("kind"))
+        val expanded = JSONObject(NativeCore.renderPlan(bundle.toString(), null, "163")).getJSONArray("cells")
+        assertEquals("web", compatibleWebSessions(listOf(expanded.getJSONObject(0))).single().getString("kind"))
+
+        // Isolated HTML origins still share the same resource budget.
+        val html = (0 until 33).map { index ->
+            JSONObject().put("id", "$index").put("kind", "web")
+                .put("web", JSONObject().put("html", "<p>$index</p>"))
+        }
+        assertEquals(32, compatibleWebSessions(html).count { it.getString("kind") == "web" })
+    }
+
     private fun launch(): Activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     private fun descendants(view: View): List<View> = buildList {
         add(view)

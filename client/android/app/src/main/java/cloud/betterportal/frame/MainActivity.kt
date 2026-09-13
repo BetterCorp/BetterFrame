@@ -483,27 +483,33 @@ private fun tileContentKey(cell: JSONObject): String = JSONObject().apply {
     }
 }.toString()
 
-/** All URLs are resolved by ViewerSession before this guard. WebViews share origin storage. */
+/** Resolve shared-origin conflicts before assigning the 32 WebViews and reconciling resources. */
 internal fun compatibleWebSessions(cells: List<JSONObject>): List<JSONObject> {
     val sessions = mutableMapOf<String, Map<String, String>>()
+    var webCount = 0
     return cells.map { cell ->
         val web = cell.optJSONObject("web")
-        val html = web?.optString("html")
-        if (cell.optString("kind") != "web" || web == null || (!html.isNullOrBlank() && html != "null")) {
-            cell // HTML has a per-cell synthetic origin.
+        if (cell.optString("kind") != "web" || web == null) return@map cell
+        val html = web.optString("html")
+        // ViewerSession resolves URLs before this guard; HTML has a per-cell synthetic origin.
+        val origin = if (!html.isNullOrBlank() && html != "null") null else WebTile.origin(web.optString("url"))
+        val storage = web.optJSONObject("localStorage") ?: JSONObject()
+        val assigned = storage.keys().asSequence().associateWith { storage.optString(it) }
+        val message = when {
+            origin != null && sessions[origin]?.let { it != assigned } == true ->
+                "Conflicting web session configuration · use a separate display or expand this tile"
+            webCount >= 32 -> "Web content limit reached; expand this tile to view"
+            else -> null
+        }
+        if (message == null) {
+            webCount++
+            if (origin != null) sessions[origin] = assigned
+            cell
         } else {
-            val origin = WebTile.origin(web.optString("url"))
-            val storage = web.optJSONObject("localStorage") ?: JSONObject()
-            val assigned = storage.keys().asSequence().associateWith { storage.optString(it) }
-            if (origin == null || sessions[origin]?.let { it == assigned } != false) {
-                if (origin != null) sessions[origin] = assigned
-                cell
-            } else {
-                // Compare before reconciliation so changed conflicts replace existing browsers.
-                JSONObject(cell.toString()).put("kind", "placeholder")
-                    .put("action", JSONObject().put("type", "expand"))
-                    .put("message", "Conflicting web session configuration · use a separate display or expand this tile")
-            }
+            // Compare before reconciliation so changing eligibility replaces the right resources.
+            JSONObject(cell.toString()).put("kind", "placeholder")
+                .put("action", JSONObject().put("type", "expand"))
+                .put("message", message)
         }
     }
 }

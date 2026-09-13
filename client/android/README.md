@@ -245,7 +245,9 @@ and [background activity restrictions](https://developer.android.com/guide/compo
 - Web cells sharing an origin must have matching assigned browser-storage
   settings. The first visible configuration wins; a conflicting cell shows a
   session-configuration message and can be expanded individually. Compatible
-  cells and independent origins can render together. Assigned storage is
+  cells and independent origins can render together. Conflicting or unavailable
+  pages do not consume the 32-view budget; later compatible cells fill those slots.
+  Assigned storage is
   initialized only on its player origin. External top-level navigation/SSO,
   scripted smart-URL login and native JavaScript bridges are unsupported.
 - Raw HTML uses a unique unprivileged synthetic origin. Self-contained markup

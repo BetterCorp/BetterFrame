@@ -99,19 +99,30 @@ class ViewerSmokeTest {
             }
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
             var ready = false
+            var diagnostic = "No JavaScript response"
             while (!ready && System.nanoTime() < deadline) {
                 val response = AtomicReference<String>()
                 val complete = CountDownLatch(1)
                 instrumentation.runOnMainSync {
-                    browser.get().evaluateJavascript("document.body !== null && document.body.dataset.ready === 'yes' && location.origin === 'https://bf-html-instrumentation.invalid' && localStorage.getItem('html-test') === 'ready' && document.getElementById('signage').muted") {
+                    browser.get().evaluateJavascript("""
+                        JSON.stringify({
+                          documentReady: document.body !== null && document.body.dataset.ready === 'yes',
+                          origin: location.origin,
+                          storageReady: (function() { try { return localStorage.getItem('html-test') === 'ready'; } catch (_) { return false; } })(),
+                          muted: !!(document.getElementById('signage') && document.getElementById('signage').muted)
+                        })
+                    """.trimIndent()) {
                         response.set(it); complete.countDown()
                     }
                 }
                 assertTrue(complete.await(2, TimeUnit.SECONDS))
-                ready = response.get() == "true"
+                diagnostic = runCatching { org.json.JSONTokener(response.get()).nextValue() as? String }.getOrNull() ?: response.get()
+                val result = runCatching { JSONObject(diagnostic) }.getOrNull()
+                ready = result != null && result.optBoolean("documentReady") && result.optBoolean("storageReady") &&
+                    result.optBoolean("muted") && result.optString("origin") == "https://bf-html-instrumentation.invalid"
                 if (!ready) Thread.sleep(100)
             }
-            assertTrue("Offline HTML, JS, isolated origin and muted media initialize", ready)
+            assertTrue("Offline HTML, JS, isolated origin and muted media initialize: $diagnostic", ready)
             instrumentation.runOnMainSync {
                 tile.get().release()
                 assertTrue(descendants(tile.get()).none { it is WebView })

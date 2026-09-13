@@ -140,7 +140,8 @@ class WebTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Viewer
                   function scan(root) { mute(root); if (root.querySelectorAll) root.querySelectorAll('video,audio').forEach(mute); }
                   document.addEventListener('volumechange', e => mute(e.target), true);
                   new MutationObserver(records => records.forEach(r => r.addedNodes.forEach(scan))).observe(document, {childList:true, subtree:true});
-                  document.addEventListener('DOMContentLoaded', () => scan(document));
+                  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => scan(document), {once:true});
+                  else scan(document);
                 })();
             """.trimIndent()
             if (documentStart) WebViewCompat.addDocumentStartJavaScript(web, script, setOf(initialOrigin))

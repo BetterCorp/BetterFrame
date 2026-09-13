@@ -40,7 +40,10 @@ only its own progress and error messages; inspect build details in easy1.
 
 The script verifies a published release and resolves its tag to the requested
 full commit before changing easy1. It downloads that exact source archive and
-embeds its SHA-256 checksum in both Dockerfiles. After deployment it requires
+embeds its SHA-256 checksum in both Dockerfiles. Released Node-RED managers must
+include readiness contract 1 and `/readyz`; older releases are rejected before
+any easy1 changes. Their tags and source are never rewritten to add the contract.
+After deployment it requires
 healthy containers carrying the expected revision/version labels and verifies
 the regional `/healthz`, `/readyz`, and `/version` endpoints.
 
@@ -50,9 +53,14 @@ names adapted to easy1's service names. The canonical
 clients discover and remember their regional server.
 
 The Dockerfiles preserve easy1's existing migrated BetterCorp runtime and replace
-the BetterFrame application files. They build on the service's current local
+the BetterFrame application files. Node-RED's application dependencies are
+installed with `npm ci` from the released root lockfile. Its previous application
+tree is removed, and the new workspace keeps its hoisted and nested dependencies
+behind the existing manager's `nodesDir` path.
+They build on the service's current local
 `easypanel/betterframe/<service>:latest` image. The **application source and
-reported version** are pinned to the release; the inherited runtime is local to
+reported version**, including the Node-RED application dependency tree, are
+pinned to the release; the inherited runtime is local to
 this installation. These templates are therefore for this existing deployment,
 not a fresh-server bootstrap. Repeated updates retain underlying image layers;
 runtime upgrades or rebuilding the base need a separate migration.
@@ -67,7 +75,8 @@ python3 deploy/easy1/deploy.py --tag v1.2.3-beta.1 --commit FULL_COMMIT_SHA --dr
 
 The dry run verifies the published release and renders the deployment plan
 without an easy1 token or mutations. Once the workflow is on `master`, use the
-Actions **deploy easy1** manual run with an existing published tag to retry a
+Actions **deploy easy1** manual run with a published tag supporting the readiness
+contract to retry a
 failed deployment. Deployment stops on failure and reports the failed stage;
 there is no automatic database rollback. A partial deployment can be retried
 with the same tag.

@@ -137,12 +137,21 @@ def source_plan(tag, commit):
     checksum = hashlib.sha256(archive).hexdigest()
     try:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as bundle:
-            member = bundle.getmember(f"BetterFrame-{commit}/deploy/angie/betterframe.docker.conf")
-            if not member.isfile() or member.size > 1024 * 1024:
-                raise DeploymentError("released proxy configuration is not a regular bounded file")
-            proxy = bundle.extractfile(member).read().decode("utf-8")
+            def released_file(path):
+                member = bundle.getmember(f"BetterFrame-{commit}/{path}")
+                if not member.isfile() or member.size > 1024 * 1024:
+                    raise DeploymentError("released deployment source is not a regular bounded file")
+                return bundle.extractfile(member).read().decode("utf-8")
+
+            proxy = released_file("deploy/angie/betterframe.docker.conf")
+            manager = released_file("deploy/nodered-manager/manager.mjs")
     except (tarfile.TarError, KeyError, UnicodeError, OSError):
-        raise DeploymentError("source archive does not contain the released proxy configuration") from None
+        raise DeploymentError("source archive does not contain the required released deployment files") from None
+    # Docker's readiness check must exist in the exact released manager. Do not
+    # modify an old tag's contents or begin updating services before finding this.
+    if ('const EASY1_READINESS_CONTRACT = 1;' not in manager
+            or 'url.pathname === "/readyz"' not in manager):
+        raise DeploymentError("release lacks the required Node-RED readiness contract; refusing unsupported release")
     # Adapt only Compose DNS names. Retain the released canonical-host redirect.
     proxy, server_count = re.subn(r"\bserver server:(1808[012]);", r"server betterframe_server:\1;", proxy)
     proxy, nodered_count = re.subn(r"\bserver nodered:1880;", "server betterframe_nodered:1880;", proxy)

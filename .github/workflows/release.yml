@@ -37,14 +37,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
-      - name: Release deployment checks
-        run: |
-          python3 scripts/test-release-versions.py
-          python3 scripts/test-easy1-deploy.py
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
+      - name: Release deployment checks
+        run: |
+          python3 scripts/test-release-versions.py
+          python3 scripts/test-easy1-deploy.py
       - run: npm ci
       - run: npm test
       - run: npm run build

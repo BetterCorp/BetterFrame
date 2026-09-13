@@ -5,8 +5,12 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import json
+import os
+import shutil
 import subprocess
 import tarfile
+import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
@@ -25,6 +29,19 @@ upstream betterframe_ws { server server:18082; }
 upstream betterframe_nodered { server nodered:1880; }
 server { server_name frame.betterportal.net; return 307 https://frame-eu.betterportal.net$request_uri; }
 """
+MANAGER = 'const EASY1_READINESS_CONTRACT = 1;\nif (url.pathname === "/readyz") { /* supported readiness endpoint */ }'
+
+
+def release_archive(manager=MANAGER):
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+        for path, content in {"deploy/angie/betterframe.docker.conf": PROXY,
+                              "deploy/nodered-manager/manager.mjs": manager}.items():
+            data = content.encode()
+            member = tarfile.TarInfo(f"BetterFrame-{SHA}/{path}")
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    return stream.getvalue()
 
 
 def container(commit=SHA, version=VERSION, health="healthy"):
@@ -58,6 +75,54 @@ class FakeApi:
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_nodered_release_installs_lockfile_and_replaces_the_previous_application_tree(self):
+        template = (Path(__file__).parents[1] / "deploy/easy1/nodered.Dockerfile").read_text()
+        self.assertIn("WORKDIR /tmp/betterframe-source", template)
+        self.assertIn("npm ci --omit=dev --workspace=nodered", template)
+        self.assertIn("npm ls --omit=dev --workspace=nodered", template)
+        self.assertIn("RUN rm -rf /usr/src/betterframe-nodes /usr/src/betterframe-release", template)
+        self.assertIn("/tmp/betterframe-source/nodered/ /usr/src/betterframe-release/nodered/", template)
+        self.assertIn("/tmp/betterframe-source/node_modules/ /usr/src/betterframe-release/node_modules/", template)
+        self.assertIn("ln -s /usr/src/betterframe-release/nodered /usr/src/betterframe-nodes", template)
+        self.assertIn("http://127.0.0.1:1880/readyz", template)
+        self.assertNotIn("ENTRYPOINT", template)  # Preserve the existing tenant manager runtime.
+
+    def test_nodered_locked_workspace_dependencies_resolve_after_runtime_relocation(self):
+        # Exercise actual npm installation using local tarballs: no registry or
+        # credentials. A prior release's removed dependency must not survive.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            workspace = source / "nodered"
+            workspace.mkdir(parents=True)
+            (source / "package.json").write_text(json.dumps({"name": "release-fixture", "private": True, "workspaces": ["nodered"]}))
+            (workspace / "package.json").write_text(json.dumps({"name": "@betterframe/nodered-nodes", "version": "1.0.0", "dependencies": {"released-dependency": "file:../dependency.tgz"}}))
+            with tarfile.open(source / "dependency.tgz", "w:gz") as archive:
+                for name, content in {"package.json": json.dumps({"name": "released-dependency", "version": "2.0.0", "main": "index.js"}),
+                                      "index.js": "module.exports = 'released-2.0.0';"}.items():
+                    data = content.encode()
+                    member = tarfile.TarInfo("package/" + name)
+                    member.size = len(data)
+                    archive.addfile(member, io.BytesIO(data))
+            # Use a private npm cache and remain offline even during lock creation.
+            environment = {**os.environ, "npm_config_cache": str(root / "npm-cache"), "npm_config_offline": "true", "npm_config_audit": "false", "npm_config_fund": "false"}
+            subprocess.run(["npm", "install", "--package-lock-only", "--ignore-scripts", "--workspace=nodered"], cwd=source, env=environment, check=True, capture_output=True, timeout=60)
+            (workspace / "node_modules/removed-dependency").mkdir(parents=True)
+            (workspace / "node_modules/removed-dependency/index.js").write_text("module.exports = 'obsolete';")
+            subprocess.run(["npm", "ci", "--omit=dev", "--workspace=nodered"], cwd=source, env=environment, check=True, capture_output=True, timeout=60)
+            release = root / "runtime/betterframe-release"
+            release.mkdir(parents=True)
+            shutil.copytree(workspace, release / "nodered", symlinks=True)
+            shutil.copytree(source / "node_modules", release / "node_modules", symlinks=True)
+            nodes_dir = release.parent / "betterframe-nodes"
+            nodes_dir.symlink_to(release / "nodered", target_is_directory=True)
+            (release / "nodered/probe.js").write_text("console.log(require('released-dependency')); console.log(require.resolve('@betterframe/nodered-nodes/package.json')); try { require.resolve('removed-dependency'); process.exit(1); } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e; }")
+            # The original checkout must not accidentally satisfy a broken link.
+            shutil.rmtree(source)
+            result = subprocess.run(["node", str(nodes_dir / "probe.js")], check=True, capture_output=True, text=True, timeout=30)
+            self.assertIn("released-2.0.0", result.stdout)
+            self.assertIn(str(release / "nodered/package.json"), result.stdout)
+
     def test_invalid_tags_and_short_or_injected_commits_fail_before_github(self):
         with patch.object(DEPLOY, "github") as github:
             for tag in ("latest", "master", "v1", "v1.2.3-rc.1", "v01.2.3", "v1.2.3\nRUN evil"):
@@ -86,13 +151,7 @@ class DeploymentTests(unittest.TestCase):
             DEPLOY.verify_release(TAG, SHA)
 
     def test_templates_and_proxy_come_from_checksummed_exact_commit_archive(self):
-        stream = io.BytesIO()
-        with tarfile.open(fileobj=stream, mode="w:gz") as archive:
-            data = PROXY.encode()
-            member = tarfile.TarInfo(f"BetterFrame-{SHA}/deploy/angie/betterframe.docker.conf")
-            member.size = len(data)
-            archive.addfile(member, io.BytesIO(data))
-        archive_bytes = stream.getvalue()
+        archive_bytes = release_archive()
         with patch.object(DEPLOY, "request", return_value=archive_bytes) as request:
             rendered = DEPLOY.source_plan(TAG, SHA)
         request.assert_called_once_with(f"https://codeload.github.com/BetterCorp/BetterFrame/tar.gz/{SHA}",
@@ -108,6 +167,17 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn("betterframe_server:18080", rendered["proxy"])
         self.assertIn("betterframe_nodered:1880", rendered["proxy"])
         self.assertIn("return 307 https://frame-eu.betterportal.net$request_uri;", rendered["proxy"])
+
+    def test_release_without_readiness_contract_is_rejected_before_easy1_access(self):
+        for manager in ('if (url.pathname === "/healthz") {}',
+                        'if (url.pathname === "/readyz") {}',
+                        'const EASY1_READINESS_CONTRACT = 1;'):
+            with self.subTest(manager=manager), patch.object(DEPLOY, "request", return_value=release_archive(manager)), \
+                    patch.object(DEPLOY, "verify_release"), patch.object(DEPLOY, "Easypanel") as api, \
+                    contextlib.redirect_stderr(io.StringIO()) as errors:
+                self.assertEqual(DEPLOY.main(["--tag", TAG, "--commit", SHA]), 1)
+                self.assertIn("refusing unsupported release", errors.getvalue())
+                api.assert_not_called()
 
     def test_healthy_old_revision_or_wrong_version_does_not_satisfy_rollout(self):
         self.assertTrue(DEPLOY.healthy_containers([container()], SHA, VERSION))

@@ -316,7 +316,7 @@ class ViewerSession(context: Context, private val listener: Listener) {
     private fun heartbeat(): Boolean {
         val metrics = app.resources.displayMetrics
         val displays = JSONArray().put(JSONObject().put("index", 0).put("name", "Android display")
-            .put("width_px", metrics.widthPixels).put("height_px", metrics.heightPixels).put("power_state", "on"))
+            .put("width_px", metrics.widthPixels).put("height_px", metrics.heightPixels).put("power_state", "awake"))
         return request("/api/kiosk/heartbeat", JSONObject().put("displays", displays).put("capabilities", capabilities())
             .put("kiosk_app_version", BuildConfig.VERSION_NAME).put("os_version", "Android ${Build.VERSION.RELEASE}")
             .put("bundle_version", state.optString("bundle_version"))).use { authorized(it) }

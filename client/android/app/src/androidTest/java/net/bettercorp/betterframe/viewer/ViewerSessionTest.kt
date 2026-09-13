@@ -71,7 +71,9 @@ class ViewerSessionTest {
                             }
                         }
                         "/api/kiosk/heartbeat" -> {
-                            check(JSONObject(request.body.readUtf8()).getJSONArray("displays").length() == 1) { "Single display heartbeat missing" }
+                            val displays = JSONObject(request.body.readUtf8()).getJSONArray("displays")
+                            check(displays.length() == 1) { "Single display heartbeat missing" }
+                            check(displays.getJSONObject(0).getString("power_state") == "awake") { "Active display must report BF's awake power state" }
                             json("{}")
                         }
                         "/api/kiosk/bundle" -> if (unassigned.get()) json("""{"error":"display_unassigned"}""", 409)

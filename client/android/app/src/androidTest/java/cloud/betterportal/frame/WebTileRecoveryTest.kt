@@ -32,12 +32,17 @@ class WebTileRecoveryTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private val context get() = instrumentation.targetContext
     private val server = MockWebServer()
+    private lateinit var assignedUrl: String
+    private lateinit var otherUrl: String
     private var activity: Activity? = null
     private var tile: WebTile? = null
 
     @Before fun prepare() {
         ProtectedStore(context).write(JSONObject().put("server", "http://127.0.0.1:9"))
         server.start()
+        // MockWebServer.url resolves its canonical hostname; keep DNS off the UI thread.
+        assignedUrl = server.url("/assigned").toString()
+        otherUrl = server.url("/other").toString()
     }
 
     @After fun finish() {
@@ -71,7 +76,7 @@ class WebTileRecoveryTest {
         awaitHistorySize(browser, 1)
         instrumentation.runOnMainSync {
             assertSame("Network recovery retains the browser", browser, findBrowser(tile!!))
-            browser.loadUrl(server.url("/other").toString())
+            browser.loadUrl(otherUrl)
         }
         assertEquals("/other", paths.poll(10, TimeUnit.SECONDS))
         awaitDocument(browser, "other")
@@ -104,7 +109,7 @@ class WebTileRecoveryTest {
             // recovery, but a subsequent navigation finishes before the retry timer fires.
             // This avoids depending on emulator/network speed to win that timer race.
             val request = object : WebResourceRequest {
-                override fun getUrl(): Uri = Uri.parse(server.url("/assigned").toString())
+                override fun getUrl(): Uri = Uri.parse(assignedUrl)
                 override fun isForMainFrame() = true
                 override fun isRedirect() = false
                 override fun hasGesture() = false
@@ -130,7 +135,7 @@ class WebTileRecoveryTest {
             val field = MainActivity::class.java.getDeclaredField("session").apply { isAccessible = true }
             (field.get(activity) as ViewerSession).stop()
             tile = WebTile(activity!!, JSONObject().put("id", "recovery-test").put("web",
-                JSONObject().put("url", server.url("/assigned").toString()).put("localStorage", JSONObject()))) {}
+                JSONObject().put("url", assignedUrl).put("localStorage", JSONObject()))) {}
             activity!!.addContentView(tile, ViewGroup.LayoutParams(-1, -1))
             browser.set(findBrowser(tile!!))
         }

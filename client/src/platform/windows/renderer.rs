@@ -283,6 +283,12 @@ struct WebCellSpec {
     local_storage: Option<HashMap<String, String>>,
 }
 
+fn web_cell_key(hwnd: HWND, layout: &str, bundle: &str, view: &str, content: &str, server: &str) -> String {
+    // Navigation policy and relative URLs capture the server at creation time.
+    // Keep the window prefix used for cleanup, but recreate views after migration.
+    format!("{hwnd}:{}", serde_json::to_string(&(layout, bundle, view, content, server)).unwrap())
+}
+
 pub(super) fn sync_webviews(
     hwnd: HWND,
     canvas: RECT,
@@ -303,10 +309,7 @@ pub(super) fn sync_webviews(
             let target = cell_rect(canvas, cols, rows, cell);
             let view_id = cell.view_id.clone().unwrap_or_else(|| index.to_string());
             Some(WebCellSpec {
-                key: format!(
-                    "{hwnd}:{}:{bundle_version}:{}:{}",
-                    layout.id, view_id, cell.content_type,
-                ),
+                key: web_cell_key(hwnd, &layout.id, bundle_version, &view_id, &cell.content_type, &state.server_url),
                 bounds: web_rect(target),
                 url: cell
                     .web_url
@@ -627,10 +630,13 @@ pub(super) fn handle_pointer_event(display_id: &str, x: i32, y: i32, kind: &str)
     if let Some((action, params)) = configured_cell_action(cell, kind) {
         if action == "layout.switch" {
             if let Some(layout_id) = params.get("layout_id").map(flexible_id_ref) {
-                let mut next = state.clone();
-                next.active_layouts
-                    .insert(display.id.clone(), layout_id.clone());
-                let _ = save_state(&next);
+                let next = match update_state(|latest| {
+                    latest.active_layouts.insert(display.id.clone(), layout_id.clone());
+                    Ok(())
+                }) {
+                    Ok(saved) => saved,
+                    Err(error) => { warn!("save layout selection: {error}"); return; }
+                };
                 if let Some(key) = next.kiosk_key.clone() {
                     let server = next.server_url.clone();
                     let did = display.id.clone();
@@ -971,4 +977,25 @@ pub(super) fn display_allowed(policy: &WindowsPolicy, display_name: &str) -> boo
         .selected_display_names
         .iter()
         .any(|name| name.eq_ignore_ascii_case(display_name))
+}
+
+#[cfg(test)]
+mod origin_cache_tests {
+    use super::*;
+
+    #[test]
+    fn migration_invalidates_existing_web_and_html_views_without_a_bundle_change() {
+        for content in ["web", "html"] {
+            let old = web_cell_key(7, "layout", "cached-v1", "view", content, "https://frame.betterportal.net");
+            let new = web_cell_key(7, "layout", "cached-v1", "view", content, "https://frame-eu.betterportal.net");
+            let other_window = web_cell_key(8, "layout", "cached-v1", "view", content, "https://frame.betterportal.net");
+            let wanted = HashSet::from([new.clone()]);
+            let mut cached = HashSet::from([old.clone(), other_window.clone()]);
+            assert!(!cached.contains(&new), "regional view must be created even with the same bundle version");
+            cached.insert(new.clone());
+            cached.retain(|key| !key.starts_with("7:") || wanted.contains(key));
+            assert_eq!(cached, HashSet::from([new.clone(), other_window]));
+            assert_eq!(new, web_cell_key(7, "layout", "cached-v1", "view", content, "https://frame-eu.betterportal.net"));
+        }
+    }
 }

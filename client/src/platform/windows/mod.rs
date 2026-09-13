@@ -322,9 +322,10 @@ async fn run_agent(server_url: String) -> Result<(), String> {
     ensure_secure_state_dir()?;
     ensure_default_policy()?;
 
-    let mut state = load_agent_state()?;
-    state.server_url = server_url;
-    save_state(&state)?;
+    let mut state = update_state(|latest| {
+        latest.server_url = server_url;
+        Ok(())
+    })?;
     let app = Arc::new(Mutex::new(None::<Child>));
     // The renderer reads protected cached state independently. Start it before
     // regional discovery so an offline upgrade keeps showing the saved display.
@@ -345,7 +346,6 @@ async fn run_agent(server_url: String) -> Result<(), String> {
 
     if state.kiosk_key.is_none() {
         state = pair(&state.server_url).await?;
-        save_state(&state)?;
     }
 
     let policy = Arc::new(Mutex::new(load_policy()));
@@ -378,8 +378,14 @@ async fn run_agent(server_url: String) -> Result<(), String> {
                 if let Some(key) = snapshot.kiosk_key.as_deref() {
                     match heartbeat(&snapshot.server_url, key, &snapshot).await {
                         Ok(next) => {
-                            let _ = save_state(&next);
-                            *state.lock().unwrap() = next;
+                            match update_state(|latest| {
+                                latest.managed_config_applied_version = next.managed_config_applied_version;
+                                latest.managed_config_error = next.managed_config_error;
+                                Ok(())
+                            }) {
+                                Ok(saved) => *state.lock().unwrap() = saved,
+                                Err(error) => warn!("save heartbeat state: {error}"),
+                            }
                         }
                         Err(HeartbeatError::Unauthorized) => {
                             warn!(
@@ -391,7 +397,6 @@ async fn run_agent(server_url: String) -> Result<(), String> {
                 } else {
                     match pair(&snapshot.server_url).await {
                         Ok(next) => {
-                            let _ = save_state(&next);
                             *state.lock().unwrap() = next;
                         }
                         Err(err) => warn!("pairing failed: {err}"),
@@ -409,24 +414,23 @@ async fn run_agent(server_url: String) -> Result<(), String> {
                 if let Some(key) = snapshot.kiosk_key.as_deref() {
                     match fetch_bundle(&snapshot.server_url, key).await {
                         Ok(bundle) => {
-                            let mut next = snapshot.clone();
-                            next.kiosk_id = Some(bundle.kiosk_id.clone());
-                            next.kiosk_name = Some(bundle.kiosk_name.clone());
-                            next.bundle_version = Some(bundle.version.clone());
-                            for display in &bundle.displays {
-                                if let Some(layout_id) = display
-                                    .default_layout_id
-                                    .clone()
-                                    .or_else(|| display.layouts.first().map(|l| l.id.clone()))
-                                {
-                                    next.active_layouts
-                                        .entry(display.id.clone())
-                                        .or_insert(layout_id);
-                                }
-                            }
                             let _ = save_bundle(&bundle);
-                            let _ = save_state(&next);
-                            *state.lock().unwrap() = next;
+                            match update_state(|latest| {
+                                latest.kiosk_id = Some(bundle.kiosk_id.clone());
+                                latest.kiosk_name = Some(bundle.kiosk_name.clone());
+                                latest.bundle_version = Some(bundle.version.clone());
+                                for display in &bundle.displays {
+                                    if let Some(layout_id) = display.default_layout_id.clone()
+                                        .or_else(|| display.layouts.first().map(|l| l.id.clone()))
+                                    {
+                                        latest.active_layouts.entry(display.id.clone()).or_insert(layout_id);
+                                    }
+                                }
+                                Ok(())
+                            }) {
+                                Ok(saved) => *state.lock().unwrap() = saved,
+                                Err(error) => warn!("save bundle state: {error}"),
+                            }
                         }
                         Err(err) => warn!("bundle fetch failed: {err}"),
                     }
@@ -459,10 +463,9 @@ async fn run_agent(server_url: String) -> Result<(), String> {
 async fn migrate_canonical_state(state: &mut ClientState) -> Result<(), String> {
     if !crate::core::protocol::needs_regional_migration(&state.server_url) { return Ok(()); }
     let target = crate::network::discover(&state.server_url, true).await?;
-    // Cached UI controls may update selections while discovery is offline.
-    let mut latest = load_agent_state()?;
-    apply_regional_state(&mut latest, target, save_state)?;
-    *state = latest;
+    // Discover outside the lock; read and change the latest state in one
+    // cross-process transaction so cached UI selections cannot undo migration.
+    *state = update_state(|latest| apply_regional_state(latest, target, |_| Ok(())))?;
     Ok(())
 }
 
@@ -531,7 +534,7 @@ async fn pair(server_url: &str) -> Result<ClientState, String> {
         pending.pairing_code = Some(init.code.clone());
         pending.pairing_expires_at = Some(init.expires_at.clone());
         pending.pairing_secret = init.polling_secret.clone();
-        save_state(&pending)?;
+        update_state(|latest| { *latest = pending; Ok(()) })?;
         let mut deadline = Instant::now() + init.lifetime();
         let mut delay = init.poll_delay();
         loop {
@@ -590,8 +593,9 @@ async fn pair(server_url: &str) -> Result<ClientState, String> {
                                 pairing_secret: init.polling_secret.clone(),
                                 ..ClientState::default()
                             };
-                            match save_state(&state) {
-                                Ok(()) => {
+                            match update_state(|latest| { *latest = state.clone(); Ok(()) }) {
+                                Ok(saved) => {
+                                    state = saved;
                                     acknowledge_pairing(&client, &mut state).await;
                                     return Ok(state);
                                 }
@@ -625,7 +629,7 @@ async fn pair(server_url: &str) -> Result<ClientState, String> {
             })
             .await;
         }
-        save_state(&unpaired_state(server_url))?;
+        update_state(|latest| { *latest = unpaired_state(server_url); Ok(()) })?;
         info!("pairing session expired; requesting a new code");
     }
 }
@@ -646,11 +650,16 @@ async fn acknowledge_pairing(client: &reqwest::Client, state: &mut ClientState) 
         .await
     {
         if response.status().is_success() {
-            state.pairing_code = None;
-            state.pairing_expires_at = None;
-            state.pairing_secret = None;
-            if let Err(error) = save_state(state) {
-                warn!("save pairing acknowledgment: {error}");
+            match update_state(|latest| {
+                if latest.kiosk_key == state.kiosk_key && latest.pairing_code == state.pairing_code {
+                    latest.pairing_code = None;
+                    latest.pairing_expires_at = None;
+                    latest.pairing_secret = None;
+                }
+                Ok(())
+            }) {
+                Ok(saved) => *state = saved,
+                Err(error) => warn!("save pairing acknowledgment: {error}"),
             }
         }
     }
@@ -714,9 +723,10 @@ async fn handle_agent_command(
             if let Some(key) = snapshot.kiosk_key.as_deref() {
                 let bundle = fetch_bundle(&snapshot.server_url, key).await?;
                 save_bundle(&bundle)?;
-                let mut next = snapshot;
-                next.bundle_version = Some(bundle.version);
-                save_state(&next)?;
+                let next = update_state(|latest| {
+                    latest.bundle_version = Some(bundle.version);
+                    Ok(())
+                })?;
                 *state.lock().unwrap() = next;
             }
         }
@@ -724,36 +734,19 @@ async fn handle_agent_command(
             display_id,
             layout_id,
         } => {
-            let mut next = state.lock().unwrap().clone();
-            if let Some(display_id) = display_id {
-                next.active_layouts
-                    .insert(display_id.clone(), layout_id.clone());
-                report_layout_change(
-                    &next.server_url,
-                    next.kiosk_key.as_deref(),
-                    &display_id,
-                    &layout_id,
-                )
-                .await;
-            } else if let Some(bundle) = load_bundle() {
-                if let Some(display) = bundle
-                    .displays
-                    .iter()
+            let display_id = display_id.or_else(|| load_bundle().and_then(|bundle| {
+                bundle.displays.iter()
                     .find(|d| d.layouts.iter().any(|l| l.id == layout_id))
-                {
-                    next.active_layouts
-                        .insert(display.id.clone(), layout_id.clone());
-                    report_layout_change(
-                        &next.server_url,
-                        next.kiosk_key.as_deref(),
-                        &display.id,
-                        &layout_id,
-                    )
-                    .await;
-                }
+                    .map(|d| d.id.clone())
+            }));
+            if let Some(display_id) = display_id {
+                let next = update_state(|latest| {
+                    latest.active_layouts.insert(display_id.clone(), layout_id.clone());
+                    Ok(())
+                })?;
+                *state.lock().unwrap() = next.clone();
+                report_layout_change(&next.server_url, next.kiosk_key.as_deref(), &display_id, &layout_id).await;
             }
-            save_state(&next)?;
-            *state.lock().unwrap() = next;
             invalidate_app_windows();
         }
         AgentCommand::Standby(_) => {

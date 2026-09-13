@@ -1,5 +1,6 @@
 package cloud.betterportal.frame
 
+import android.app.AlertDialog
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
@@ -33,15 +34,19 @@ class ViewerDialogTest {
         instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_MENU)
         clickText("Settings")
         await("Settings opens") { visibleText("Display settings") }
+        val settings = showingDialog(activity)
         instrumentation.uiAutomation.waitForIdle(250, 3000)
         clock.addAndGet(1_500)
         instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN)
+        await("Dialog key input reaches the inactivity clock") { lastActivity(session) == clock.get() }
         instrumentation.uiAutomation.waitForIdle(250, 3000)
         clock.addAndGet(1_500)
         Thread.sleep(500)
-        assertTrue("Input in a dialog renews inactivity", visibleText("Display settings"))
+        // The IME may own the accessibility root after DPAD focuses the editor.
+        // Assert the actual dialog window instead of searching that unrelated root.
+        assertTrue("Input in a dialog renews inactivity", isShowing(settings))
         clock.addAndGet(501)
-        await("Idle dismisses Settings") { hasWindowFocus(activity) && !visibleText("Display settings") }
+        await("Idle dismisses Settings") { !isShowing(settings) && hasWindowFocus(activity) }
         instrumentation.uiAutomation.waitForIdle(250, 3000)
 
         instrumentation.runOnMainSync { session.expand("10") }
@@ -122,6 +127,26 @@ class ViewerDialogTest {
         var focused = false
         instrumentation.runOnMainSync { focused = activity.hasWindowFocus() }
         return focused
+    }
+    private fun showingDialog(activity: MainActivity): AlertDialog {
+        lateinit var dialog: AlertDialog
+        instrumentation.runOnMainSync {
+            val dialogs = MainActivity::class.java.getDeclaredField("dialogs").apply { isAccessible = true }
+                .get(activity) as Set<*>
+            dialog = dialogs.filterIsInstance<AlertDialog>().single { it.isShowing }
+        }
+        return dialog
+    }
+    private fun isShowing(dialog: AlertDialog): Boolean {
+        var showing = false
+        instrumentation.runOnMainSync { showing = dialog.isShowing }
+        return showing
+    }
+    private fun lastActivity(session: ViewerSession): Long {
+        val lock = ViewerSession::class.java.getDeclaredField("activityLock").apply { isAccessible = true }.get(session)
+        return synchronized(lock) {
+            ViewerSession::class.java.getDeclaredField("lastActivity").apply { isAccessible = true }.getLong(session)
+        }
     }
     private fun nodes(node: AccessibilityNodeInfo): List<AccessibilityNodeInfo> = buildList {
         add(node)

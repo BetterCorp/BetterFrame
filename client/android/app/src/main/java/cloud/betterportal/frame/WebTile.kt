@@ -40,7 +40,8 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
     @Volatile private var released = false
     private var rendererFailures = 0
     private var networkRetries = 0
-    private var pageFailed = false
+    private data class FailedNavigation(val url: String, var finished: Boolean = false)
+    private var failedNavigation: FailedNavigation? = null
     private var pruneHistoryOnSuccess = false
     private var networkRetry: Runnable? = null
     private var rendererRetry: Runnable? = null
@@ -153,11 +154,22 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
                 }
                 override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
                     if (released || browser !== view) return
-                    pageFailed = false
+                    // Some WebViews report the redirect target's HTTP error
+                    // before its start callback. That late start is still the
+                    // failed navigation, not evidence that recovery succeeded.
+                    // The same applies to a late start for its original redirect URL.
+                    failedNavigation?.let { failure ->
+                        if (failure.finished) failedNavigation = null
+                    }
                 }
                 override fun onPageFinished(view: WebView, url: String?) {
                     if (released || browser !== view) return
-                    if (!pageFailed) {
+                    val failure = failedNavigation
+                    if (failure != null) {
+                        if (failure.url == url) failure.finished = true
+                        // A late finish for an earlier redirect URL must not
+                        // cancel the retry scheduled for the failed target.
+                    } else {
                         cancelNetworkRetry()
                         if (pruneHistoryOnSuccess) {
                             // App reload/recovery returns to the assigned document. Keep
@@ -171,10 +183,10 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
                     if (!documentStart && origin(url ?: "") == initialOrigin) view.evaluateJavascript(script, null)
                 }
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                    if (!released && browser === view && request.isForMainFrame) failedPage(view)
+                    if (!released && browser === view && request.isForMainFrame) failedPage(view, request.url.toString())
                 }
                 override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, error: WebResourceResponse) {
-                    if (!released && browser === view && request.isForMainFrame && error.statusCode >= 400) failedPage(view)
+                    if (!released && browser === view && request.isForMainFrame && error.statusCode >= 400) failedPage(view, request.url.toString())
                 }
                 override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                     if (released || browser !== view) return true
@@ -205,7 +217,7 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
     private fun loadAssignedPage(web: WebView) {
         if (released || browser !== web) return
         cancelNetworkRetry()
-        pageFailed = false
+        failedNavigation = null
         pruneHistoryOnSuccess = true
         status.text = "Loading web content…"
         status.visibility = View.VISIBLE
@@ -230,8 +242,8 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
         rendererRetry = null
     }
 
-    private fun failedPage(web: WebView) {
-        pageFailed = true
+    private fun failedPage(web: WebView, failedUrl: String) {
+        failedNavigation = FailedNavigation(failedUrl)
         pruneHistoryOnSuccess = false
         status.text = "Web content unavailable · retrying"
         status.visibility = View.VISIBLE

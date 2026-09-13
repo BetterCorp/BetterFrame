@@ -15,6 +15,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.ExecutorService
 
 @RunWith(AndroidJUnit4::class)
 class ViewerIdleTest {
@@ -104,6 +107,116 @@ class ViewerIdleTest {
             clock.addAndGet(10_000)
             assertNull("Stopped sessions must not emit idle plans", plans.poll(750, TimeUnit.MILLISECONDS))
         } finally {
+            releaseNetwork.countDown()
+            act { session.close() }
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test fun freshInputBetweenIdleSampleAndCommitPreventsExpiry() {
+        val clock = AtomicLong(1_000)
+        val intercept = AtomicBoolean(false)
+        val sampled = CountDownLatch(1)
+        val releaseSample = CountDownLatch(1)
+        val fixture = IdleFixture {
+            val sampledTime = clock.get()
+            if (sampledTime >= 3_001 && android.os.Looper.myLooper() != android.os.Looper.getMainLooper() && intercept.compareAndSet(true, false)) {
+                sampled.countDown()
+                releaseSample.await(10, TimeUnit.SECONDS)
+            }
+            sampledTime
+        }
+        try {
+            fixture.start()
+            fixture.act { fixture.session.expand("10") }
+            assertEquals("10", fixture.plan().getString("expandedCellId"))
+            intercept.set(true)
+            clock.set(3_001)
+            assertTrue("Idle clock sample reached the decision boundary", sampled.await(5, TimeUnit.SECONDS))
+            fixture.act { fixture.session.recordActivity() }
+            releaseSample.countDown()
+            assertNull("New input wins over the older idle sample", fixture.plans.poll(750, TimeUnit.MILLISECONDS))
+            assertNull(fixture.idle.poll(100, TimeUnit.MILLISECONDS))
+            clock.addAndGet(2_001)
+            assertTrue(fixture.plan().isNull("expandedCellId"))
+            assertNotNull(fixture.idle.poll(5, TimeUnit.SECONDS))
+        } finally { releaseSample.countDown(); fixture.close() }
+    }
+
+    @Test fun defaultLayoutNotifiesOnceAndQueuedExpiryCannotDismissAfterFreshInput() {
+        val clock = AtomicLong(1_000)
+        val sampled = AtomicReference<CountDownLatch?>()
+        val fixture = IdleFixture {
+            clock.get().also {
+                if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) sampled.getAndSet(null)?.countDown()
+            }
+        }
+        val unblockMain = CountDownLatch(1)
+        try {
+            fixture.start()
+            clock.addAndGet(2_001)
+            assertNotNull("Default unexpanded layout still closes idle UI", fixture.idle.poll(5, TimeUnit.SECONDS))
+            assertNull("One notification per activity revision", fixture.idle.poll(750, TimeUnit.MILLISECONDS))
+            assertNull("Default layout does not need rebuilding", fixture.plans.poll(100, TimeUnit.MILLISECONDS))
+            fixture.act { fixture.session.recordActivity() }
+
+            // Hold main-thread delivery while the renderer commits the next expiry.
+            // Input on that same main thread then invalidates the queued callback.
+            val mainBlocked = CountDownLatch(1)
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                mainBlocked.countDown()
+                unblockMain.await(10, TimeUnit.SECONDS)
+                fixture.session.recordActivity()
+            }
+            assertTrue(mainBlocked.await(5, TimeUnit.SECONDS))
+            val nextSample = CountDownLatch(1)
+            clock.addAndGet(2_001)
+            sampled.set(nextSample)
+            assertTrue(nextSample.await(5, TimeUnit.SECONDS))
+            val renderer = ViewerSession::class.java.getDeclaredField("renderer").apply { isAccessible = true }
+                .get(fixture.session) as ExecutorService
+            renderer.submit {}.get(5, TimeUnit.SECONDS) // Fence after the sampled idle task.
+            unblockMain.countDown()
+            fixture.act {} // Main-thread input above has completed before examining callbacks.
+            assertNull("Fresh input invalidates a queued idle dismissal", fixture.idle.poll(750, TimeUnit.MILLISECONDS))
+            clock.addAndGet(2_001)
+            assertNotNull("New inactivity gets its own notification", fixture.idle.poll(5, TimeUnit.SECONDS))
+        } finally { unblockMain.countDown(); fixture.close() }
+    }
+
+    private inner class IdleFixture(monotonicTime: () -> Long) {
+        private val instrumentation = InstrumentationRegistry.getInstrumentation()
+        private val target = instrumentation.targetContext
+        private val directory = File(target.cacheDir, "idle-boundary-${System.nanoTime()}").apply { mkdirs() }
+        private val context = object : ContextWrapper(target) {
+            override fun getApplicationContext(): Context = this
+            override fun getNoBackupFilesDir(): File = directory
+        }
+        private val releaseNetwork = CountDownLatch(1)
+        val plans = LinkedBlockingQueue<JSONObject>()
+        val idle = LinkedBlockingQueue<Boolean>()
+        val session: ViewerSession
+        init {
+            ProtectedStore(context).write(JSONObject().put("server", "http://127.0.0.1:9")
+                .put("resolved_server", "http://127.0.0.1:9")
+                .put("identity", JSONObject().put("kiosk_key", "test-device-key"))
+                .put("bundle_profile", "android-viewer-v1").put("bundle", bundle))
+            val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
+                .addInterceptor {
+                    releaseNetwork.await(30, TimeUnit.SECONDS)
+                    throw IOException("Fixture heartbeat unavailable")
+                }.build()
+            session = ViewerSession(context, object : ViewerSession.Listener {
+                override fun onStatus(message: String) {}
+                override fun onPairing(code: String) {}
+                override fun onPlan(plan: JSONObject) { plans.add(plan) }
+                override fun onIdleReturn() { idle.add(true) }
+            }, http, monotonicTime = monotonicTime)
+        }
+        fun act(action: () -> Unit) = instrumentation.runOnMainSync(action)
+        fun start() { act { session.start() }; assertEquals("3", plan().getString("layoutId")) }
+        fun plan(): JSONObject = plans.poll(5, TimeUnit.SECONDS) ?: throw AssertionError("Expected render plan")
+        fun close() {
             releaseNetwork.countDown()
             act { session.close() }
             directory.deleteRecursively()

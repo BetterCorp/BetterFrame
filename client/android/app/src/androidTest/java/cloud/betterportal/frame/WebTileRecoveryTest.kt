@@ -5,6 +5,8 @@ import android.content.Intent
 import android.net.Uri
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.WebResourceError
+import android.webkit.WebViewClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -21,6 +23,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.ByteArrayInputStream
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -34,6 +37,8 @@ class WebTileRecoveryTest {
     private val server = MockWebServer()
     private lateinit var assignedUrl: String
     private lateinit var otherUrl: String
+    private lateinit var failedUrl: String
+    private val callbacks = ConcurrentLinkedQueue<String>()
     private var activity: Activity? = null
     private var tile: WebTile? = null
 
@@ -43,6 +48,7 @@ class WebTileRecoveryTest {
         // MockWebServer.url resolves its canonical hostname; keep DNS off the UI thread.
         assignedUrl = server.url("/assigned").toString()
         otherUrl = server.url("/other").toString()
+        failedUrl = server.url("/failed").toString()
     }
 
     @After fun finish() {
@@ -71,7 +77,8 @@ class WebTileRecoveryTest {
         val browser = launchTile()
         assertEquals("/assigned", paths.poll(10, TimeUnit.SECONDS))
         assertEquals("/failed", paths.poll(10, TimeUnit.SECONDS))
-        assertEquals("The retry must start at the assigned URL", "/assigned", paths.poll(10, TimeUnit.SECONDS))
+        val retried = paths.poll(10, TimeUnit.SECONDS)
+        assertEquals("The retry must start at the assigned URL; callbacks=$callbacks", "/assigned", retried)
         awaitDocument(browser, "assigned-2")
         awaitHistorySize(browser, 1)
         instrumentation.runOnMainSync {
@@ -108,23 +115,52 @@ class WebTileRecoveryTest {
             // Deliver the documented callback sequence in one UI turn: an error schedules
             // recovery, but a subsequent navigation finishes before the retry timer fires.
             // This avoids depending on emulator/network speed to win that timer race.
-            val request = object : WebResourceRequest {
-                override fun getUrl(): Uri = Uri.parse(assignedUrl)
-                override fun isForMainFrame() = true
-                override fun isRedirect() = false
-                override fun hasGesture() = false
-                override fun getMethod() = "GET"
-                override fun getRequestHeaders(): MutableMap<String, String> = mutableMapOf()
-            }
-            browser.webViewClient.onReceivedHttpError(browser, request,
-                WebResourceResponse("text/html", "UTF-8", 500, "Server error", emptyMap(),
-                    ByteArrayInputStream(byteArrayOf())))
+            deliverHttpError(browser, assignedUrl)
+            browser.webViewClient.onPageFinished(browser, assignedUrl)
             browser.webViewClient.onPageStarted(browser, browser.url, null)
             browser.webViewClient.onPageFinished(browser, browser.url)
         }
         assertNull("Recovered content must not be reloaded by the old two-second retry",
             paths.poll(3, TimeUnit.SECONDS))
         instrumentation.runOnMainSync { assertSame(browser, findBrowser(tile!!)) }
+    }
+
+    @Test fun failedRedirectSurvivesLateStartAndEarlierUrlFinish() {
+        val paths = LinkedBlockingQueue<String>()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                paths.offer(request.path ?: "")
+                return page("assigned")
+            }
+        }
+        val browser = launchTile()
+        assertEquals("/assigned", paths.poll(10, TimeUnit.SECONDS))
+        awaitDocument(browser, "assigned")
+        instrumentation.runOnMainSync {
+            deliverHttpError(browser, failedUrl)
+            browser.webViewClient.onPageStarted(browser, assignedUrl, null)
+            browser.webViewClient.onPageStarted(browser, failedUrl, null)
+            browser.webViewClient.onPageFinished(browser, assignedUrl)
+            browser.webViewClient.onPageFinished(browser, failedUrl)
+        }
+        val retried = paths.poll(10, TimeUnit.SECONDS)
+        assertEquals("Late redirect callbacks must retain recovery; callbacks=$callbacks", "/assigned", retried)
+        awaitDocument(browser, "assigned")
+        instrumentation.runOnMainSync { assertSame(browser, findBrowser(tile!!)) }
+    }
+
+    private fun deliverHttpError(browser: WebView, target: String) {
+        val request = object : WebResourceRequest {
+            override fun getUrl(): Uri = Uri.parse(target)
+            override fun isForMainFrame() = true
+            override fun isRedirect() = false
+            override fun hasGesture() = false
+            override fun getMethod() = "GET"
+            override fun getRequestHeaders(): MutableMap<String, String> = mutableMapOf()
+        }
+        browser.webViewClient.onReceivedHttpError(browser, request,
+            WebResourceResponse("text/html", "UTF-8", 500, "Server error", emptyMap(),
+                ByteArrayInputStream(byteArrayOf())))
     }
 
     private fun launchTile(): WebView {
@@ -138,6 +174,30 @@ class WebTileRecoveryTest {
                 JSONObject().put("url", assignedUrl).put("localStorage", JSONObject()))) {}
             activity!!.addContentView(tile, ViewGroup.LayoutParams(-1, -1))
             browser.set(findBrowser(tile!!))
+            val web = browser.get()
+            val delegate = web.webViewClient
+            web.webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
+                    delegate.shouldOverrideUrlLoading(view, request)
+                override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                    callbacks.offer("start:${Uri.parse(url ?: "").path}")
+                    delegate.onPageStarted(view, url, favicon)
+                }
+                override fun onPageFinished(view: WebView, url: String?) {
+                    callbacks.offer("finish:${Uri.parse(url ?: "").path}")
+                    delegate.onPageFinished(view, url)
+                }
+                override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                    callbacks.offer("error:${request.url.path}:main=${request.isForMainFrame}")
+                    delegate.onReceivedError(view, request, error)
+                }
+                override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, error: WebResourceResponse) {
+                    callbacks.offer("http:${request.url.path}:${error.statusCode}:main=${request.isForMainFrame}")
+                    delegate.onReceivedHttpError(view, request, error)
+                }
+                override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean =
+                    delegate.onRenderProcessGone(view, detail)
+            }
         }
         return browser.get()
     }

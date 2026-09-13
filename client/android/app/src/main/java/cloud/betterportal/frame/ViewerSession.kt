@@ -132,6 +132,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
         fun onStatus(message: String)
         fun onPairing(code: String)
         fun onPlan(plan: JSONObject)
+        fun onIdleReturn() {}
     }
     private val app = context.applicationContext
     private val store = ProtectedStore(app)
@@ -146,7 +147,10 @@ class ViewerSession internal constructor(context: Context, private val listener:
                                   val returnToDefault: Boolean, val expanded: Boolean)
     private var idlePolicy: IdlePolicy? = null // Renderer-thread owned.
     @Volatile private var idleLoop: ScheduledFuture<*>? = null
-    @Volatile private var lastActivity = 0L
+    private val activityLock = Any()
+    private var lastActivity = 0L // Guarded by activityLock, including idle commits.
+    private var activityRevision = 0L
+    private var notifiedIdleRevision = -1L
     private var serverResolved = false
     private var state = JSONObject()
     @Volatile private var storageGeneration = -1L
@@ -309,7 +313,13 @@ class ViewerSession internal constructor(context: Context, private val listener:
     fun refresh() { currentWork { nextSync = 0L; nextCookie = 0L; nextPairPoll = 0L } }
 
     /** Input activity is local and must never wait for discovery/heartbeat I/O. */
-    fun recordActivity() { lastActivity = monotonicTime() }
+    fun recordActivity() {
+        val now = monotonicTime()
+        synchronized(activityLock) {
+            lastActivity = maxOf(lastActivity, now)
+            activityRevision++
+        }
+    }
 
     fun selectLayout(id: String) {
         recordActivity()
@@ -334,17 +344,38 @@ class ViewerSession internal constructor(context: Context, private val listener:
 
     private fun checkIdle(epoch: Int) {
         val policy = idlePolicy ?: return
-        if (!running || generation != epoch || closed || renderSnapshot !== policy.snapshot) return
-        if (policy.timeoutMs <= 0 || (!policy.expanded && (!policy.returnToDefault || policy.layout == policy.defaultLayout))) return
-        val activity = lastActivity
-        if (monotonicTime() - activity < policy.timeoutMs || lastActivity != activity) return
-        // Sticky layouts still collapse local fullscreen expansion, but retain
-        // their selected layout. Other layouts return to the assigned default.
+        if (!running || generation != epoch || closed || renderSnapshot !== policy.snapshot || policy.timeoutMs <= 0) return
+        val observedRevision = synchronized(activityLock) { activityRevision }
+        val now = monotonicTime()
+        val changeLayout = policy.expanded || (policy.returnToDefault && policy.layout != policy.defaultLayout)
         val target = if (policy.returnToDefault) policy.defaultLayout else policy.layout
-        layoutId = target
-        expandedId = null
-        persistSelection(target, epoch)
-        renderAndEmit(policy.snapshot)
+        val notifyIdle = synchronized(activityLock) {
+            // Input may arrive while the clock/idle decision is evaluated. Validate and
+            // commit together, so newer input cannot be overwritten by an old expiry.
+            if (!running || generation != epoch || renderSnapshot !== policy.snapshot ||
+                activityRevision != observedRevision || now - lastActivity < policy.timeoutMs) return
+            val notify = notifiedIdleRevision != observedRevision
+            // A new bundle can change the default while the device remains idle.
+            // Deduplicate UI notifications, but still apply the updated layout policy.
+            if (!notify && !changeLayout) return
+            notifiedIdleRevision = observedRevision
+            if (changeLayout) {
+                // Sticky layouts collapse expansion while retaining their selection.
+                layoutId = target
+                expandedId = null
+            }
+            notify
+        }
+        if (changeLayout) {
+            persistSelection(target, epoch)
+            renderAndEmit(policy.snapshot)
+        }
+        if (notifyIdle) ui(epoch) {
+            synchronized(activityLock) {
+                // A queued expiry must not dismiss a dialog opened by fresh input.
+                if (activityRevision == observedRevision) listener.onIdleReturn()
+            }
+        }
     }
 
     fun unpair(nextServer: String? = null) {

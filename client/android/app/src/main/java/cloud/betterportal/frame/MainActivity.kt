@@ -40,6 +40,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
     private var displayVisible = false
     private var focusedCellId: String? = null
     private val tiles = linkedMapOf<String, Pair<String, ViewerTile>>()
+    private val dialogs = mutableSetOf<AlertDialog>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -104,6 +105,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
 
     override fun onDestroy() {
         unregisterReceiver(screenReceiver)
+        dismissDialogs()
         releaseTiles()
         session.close()
         super.onDestroy()
@@ -180,30 +182,67 @@ class MainActivity : Activity(), ViewerSession.Listener {
         } else if (webTiles.isNotEmpty()) {
             actions += "Web content" to {
                 AlertDialog.Builder(this).setTitle("Web content")
-                    .setItems(webTiles.map { it.contentLabel }.toTypedArray()) { _, index ->
+                    .setItems(webTiles.map(::webTileLabel).toTypedArray()) { _, index ->
                         session.recordActivity()
                         showWebMenu(webTiles[index])
-                    }.setNegativeButton("Close", null).show()
+                    }.setNegativeButton("Close", null).create().let(::showDialog)
             }
         }
         actions += "Refresh" to { session.refresh() }
         actions += "Settings" to { showSettings() }
         AlertDialog.Builder(this).setTitle("BetterFrame")
             .setItems(actions.map { it.first }.toTypedArray()) { _, index -> session.recordActivity(); actions[index].second() }
-            .setNegativeButton("Close", null).show()
+            .setNegativeButton("Close", null).create().let(::showDialog)
     }
 
     private fun showWebMenu(tile: WebTile) {
         val actions = mutableListOf<Pair<String, () -> Unit>>()
         tile.assignedActionLabel?.let { actions += it to { tile.activateAssignedAction() } }
         actions += "Reload web content" to { tile.reload() }
-        AlertDialog.Builder(this).setTitle(tile.contentLabel)
+        AlertDialog.Builder(this).setTitle(webTileLabel(tile))
             .setItems(actions.map { it.first }.toTypedArray()) { _, index -> session.recordActivity(); actions[index].second() }
-            .setNegativeButton("Close", null).show()
+            .setNegativeButton("Close", null).create().let(::showDialog)
     }
 
+    private fun webTileLabel(tile: WebTile): String {
+        val position = tile.layoutParams as? CellGrid.Params ?: return tile.contentLabel
+        return "${tile.contentLabel} (row ${position.row + 1}, column ${position.col + 1})"
+    }
+
+    private fun showDialog(dialog: AlertDialog) {
+        dialogs.add(dialog)
+        dialog.setOnDismissListener { dialogs.remove(dialog) }
+        dialog.show()
+        val window = dialog.window ?: return
+        val callback = window.callback ?: return
+        // Dialogs have their own windows, so Activity dispatch never sees their input.
+        window.callback = object : android.view.Window.Callback by callback {
+            override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+                recordTouchActivity(event)
+                return callback.dispatchTouchEvent(event)
+            }
+            override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+                if (event.action == android.view.KeyEvent.ACTION_DOWN) session.recordActivity()
+                return callback.dispatchKeyEvent(event)
+            }
+            override fun dispatchGenericMotionEvent(event: android.view.MotionEvent): Boolean {
+                recordMotionActivity(event)
+                return callback.dispatchGenericMotionEvent(event)
+            }
+        }
+    }
+
+    private fun dismissDialogs() { dialogs.toList().forEach { it.dismiss() } }
+
+    override fun onIdleReturn() = runOnUiThread { dismissDialogs() }
+
     private fun showSettings() {
-        val address = EditText(this).apply {
+        val address = object : EditText(this) {
+            override fun onCreateInputConnection(outAttrs: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? =
+                super.onCreateInputConnection(outAttrs)?.let { connection ->
+                    IdleInputConnection.wrap(connection) { if (isAttachedToWindow) session.recordActivity() }
+                }
+        }.apply {
             hint = ServerAddress.DEFAULT
             setSingleLine(true)
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
@@ -235,14 +274,14 @@ class MainActivity : Activity(), ViewerSession.Listener {
                 }
             }
         }
-        dialog.show()
+        showDialog(dialog)
     }
 
     private fun confirmReset(server: String) {
         AlertDialog.Builder(this).setTitle("Reset this display?")
             .setMessage("Remove this display's saved enrollment, cached configuration and web sessions, then pair with $server?")
             .setNegativeButton("Cancel", null)
-            .setPositiveButton("Reset and connect") { _, _ -> resetEnrollment(server) }.show()
+            .setPositiveButton("Reset and connect") { _, _ -> resetEnrollment(server) }.create().let(::showDialog)
     }
 
     private fun resetEnrollment(server: String) {
@@ -384,7 +423,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
         AlertDialog.Builder(this).setTitle("Assigned layouts")
             .setItems(entries.map { it.optString("name", "Layout") }.toTypedArray()) { _, position ->
                 session.selectLayout(entries[position].getString("id"))
-            }.setNegativeButton("Cancel", null).show()
+            }.setNegativeButton("Cancel", null).create().let(::showDialog)
     }
 
     @Deprecated("Required for TV and Android versions before predictive back")
@@ -394,10 +433,19 @@ class MainActivity : Activity(), ViewerSession.Listener {
         showKioskMenu()
     }
 
-    override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+    private fun recordTouchActivity(event: android.view.MotionEvent) {
         if (::session.isInitialized && (event.actionMasked == android.view.MotionEvent.ACTION_DOWN ||
                 event.actionMasked == android.view.MotionEvent.ACTION_MOVE ||
                 event.actionMasked == android.view.MotionEvent.ACTION_UP)) session.recordActivity()
+    }
+
+    private fun recordMotionActivity(event: android.view.MotionEvent) {
+        if (::session.isInitialized && (event.actionMasked == android.view.MotionEvent.ACTION_SCROLL ||
+                event.actionMasked == android.view.MotionEvent.ACTION_HOVER_MOVE)) session.recordActivity()
+    }
+
+    override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+        recordTouchActivity(event)
         return super.dispatchTouchEvent(event)
     }
 
@@ -407,8 +455,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
     }
 
     override fun dispatchGenericMotionEvent(event: android.view.MotionEvent): Boolean {
-        if (::session.isInitialized && (event.actionMasked == android.view.MotionEvent.ACTION_SCROLL ||
-                event.actionMasked == android.view.MotionEvent.ACTION_HOVER_MOVE)) session.recordActivity()
+        recordMotionActivity(event)
         return super.dispatchGenericMotionEvent(event)
     }
 

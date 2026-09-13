@@ -26,7 +26,9 @@ Empty displays/layouts retain the BF logo on black with assignment instructions.
 Configured idle timeouts restore expanded content independently of network retries.
 The selected layout's timeout overrides the display timeout; zero disables idle.
 Sticky layouts retain their selection while collapsing expanded content. Touch,
-remote input and web text editing renew inactivity.
+remote input and web text editing renew inactivity. Idle also closes open kiosk
+menus and Settings; input within those dialogs renews the same timer. Multiple
+web tiles are identified by their current row and column in the content picker.
 Settings contains server selection and confirmed enrollment reset. Changing the
 server confirms a reset, clears saved enrollment/browser sessions, and connects
 to the selected server. The application ID and signing key remain unchanged.

@@ -40,6 +40,9 @@ class MainActivity : Activity(), ViewerSession.Listener {
     private var displayVisible = false
     private var focusedCellId: String? = null
     private val tiles = linkedMapOf<String, Pair<String, ViewerTile>>()
+    private val dialogs = mutableSetOf<AlertDialog>()
+    private val contentDialogs = mutableSetOf<AlertDialog>()
+    private var contentMenuState: ContentMenuState? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -104,6 +107,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
 
     override fun onDestroy() {
         unregisterReceiver(screenReceiver)
+        dismissDialogs()
         releaseTiles()
         session.close()
         super.onDestroy()
@@ -170,15 +174,84 @@ class MainActivity : Activity(), ViewerSession.Listener {
         if ((plan?.optJSONArray("layouts")?.length() ?: 0) > 1) {
             actions += "Assigned layouts" to { chooseLayout() }
         }
+        val webTiles = tiles.values.map { it.second }.filterIsInstance<WebTile>()
+        if (webTiles.size == 1) {
+            val tile = webTiles.single()
+            tile.assignedActionLabel?.let { label ->
+                if (actions.none { it.first == label }) actions += label to { tile.activateAssignedAction() }
+            }
+            actions += "Reload web content" to { tile.reload() }
+        } else if (webTiles.isNotEmpty()) {
+            actions += "Web content" to {
+                AlertDialog.Builder(this).setTitle("Web content")
+                    .setItems(webTiles.map(::webTileLabel).toTypedArray()) { _, index ->
+                        session.recordActivity()
+                        showWebMenu(webTiles[index])
+                    }.setNegativeButton("Close", null).create().let(::showContentDialog)
+            }
+        }
         actions += "Refresh" to { session.refresh() }
         actions += "Settings" to { showSettings() }
         AlertDialog.Builder(this).setTitle("BetterFrame")
-            .setItems(actions.map { it.first }.toTypedArray()) { _, index -> actions[index].second() }
-            .setNegativeButton("Close", null).show()
+            .setItems(actions.map { it.first }.toTypedArray()) { _, index -> session.recordActivity(); actions[index].second() }
+            .setNegativeButton("Close", null).create().let(::showContentDialog)
     }
 
+    private fun showWebMenu(tile: WebTile) {
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
+        tile.assignedActionLabel?.let { actions += it to { tile.activateAssignedAction() } }
+        actions += "Reload web content" to { tile.reload() }
+        AlertDialog.Builder(this).setTitle(webTileLabel(tile))
+            .setItems(actions.map { it.first }.toTypedArray()) { _, index -> session.recordActivity(); actions[index].second() }
+            .setNegativeButton("Close", null).create().let(::showContentDialog)
+    }
+
+    private fun webTileLabel(tile: WebTile): String {
+        val position = tile.layoutParams as? CellGrid.Params ?: return tile.contentLabel
+        return "${tile.contentLabel} (row ${position.row + 1}, column ${position.col + 1})"
+    }
+
+    private fun showDialog(dialog: AlertDialog) {
+        dialogs.add(dialog)
+        dialog.setOnDismissListener { dialogs.remove(dialog); contentDialogs.remove(dialog) }
+        dialog.show()
+        val window = dialog.window ?: return
+        val callback = window.callback ?: return
+        // Dialogs have their own windows, so Activity dispatch never sees their input.
+        window.callback = object : android.view.Window.Callback by callback {
+            override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+                recordTouchActivity(event)
+                return callback.dispatchTouchEvent(event)
+            }
+            override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+                if (event.action == android.view.KeyEvent.ACTION_DOWN) session.recordActivity()
+                return callback.dispatchKeyEvent(event)
+            }
+            override fun dispatchGenericMotionEvent(event: android.view.MotionEvent): Boolean {
+                recordMotionActivity(event)
+                return callback.dispatchGenericMotionEvent(event)
+            }
+        }
+    }
+
+    private fun showContentDialog(dialog: AlertDialog) {
+        contentDialogs.add(dialog)
+        showDialog(dialog)
+    }
+
+    private fun dismissContentDialogs() { contentDialogs.toList().forEach { it.dismiss() } }
+
+    private fun dismissDialogs() { dialogs.toList().forEach { it.dismiss() } }
+
+    override fun onIdleReturn() = runOnUiThread { dismissDialogs() }
+
     private fun showSettings() {
-        val address = EditText(this).apply {
+        val address = object : EditText(this) {
+            override fun onCreateInputConnection(outAttrs: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? =
+                super.onCreateInputConnection(outAttrs)?.let { connection ->
+                    IdleInputConnection.wrap(connection) { if (isAttachedToWindow) session.recordActivity() }
+                }
+        }.apply {
             hint = ServerAddress.DEFAULT
             setSingleLine(true)
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
@@ -210,14 +283,14 @@ class MainActivity : Activity(), ViewerSession.Listener {
                 }
             }
         }
-        dialog.show()
+        showDialog(dialog)
     }
 
     private fun confirmReset(server: String) {
         AlertDialog.Builder(this).setTitle("Reset this display?")
             .setMessage("Remove this display's saved enrollment, cached configuration and web sessions, then pair with $server?")
             .setNegativeButton("Cancel", null)
-            .setPositiveButton("Reset and connect") { _, _ -> resetEnrollment(server) }.show()
+            .setPositiveButton("Reset and connect") { _, _ -> resetEnrollment(server) }.create().let(::showDialog)
     }
 
     private fun resetEnrollment(server: String) {
@@ -287,15 +360,23 @@ class MainActivity : Activity(), ViewerSession.Listener {
             else "This layout is empty. Add content to it in BetterFrame.")
         status.text = lastStatus
         if (cells == null) { releaseTiles(); return }
-        val desired = (0 until cells.length()).map { cells.getJSONObject(it) }
-        val ids = desired.map { it.getString("id") }.toSet()
+        val desired = compatibleWebSessions((0 until cells.length()).map { cells.getJSONObject(it) })
+        val contentKeys = desired.associate { it.getString("id") to tileContentKey(it) }
+        val menuState = ContentMenuState(value.optString("layoutId"), value.optString("expandedCellId"),
+            value.optJSONArray("layouts")?.toString().orEmpty(), desired.map { cell ->
+                MenuCellState(cell.getString("id"), contentKeys.getValue(cell.getString("id")),
+                    cell.optInt("row"), cell.optInt("col"), cell.optInt("rowSpan", 1), cell.optInt("colSpan", 1))
+            })
+        // Menus capture tile instances and assigned choices. Invalidate them in the
+        // same UI transaction before those targets change; identical refreshes stay open.
+        if (contentMenuState != menuState) dismissContentDialogs()
+        contentMenuState = menuState
         currentFocus?.let { focus ->
             tiles.entries.firstOrNull { (_, entry) -> containsView(entry.second, focus) }?.let { focusedCellId = it.key }
         }
         // Release replaced/hidden resources before allocating a single new decoder or browser.
         tiles.keys.toList().forEach { id ->
-            val next = desired.firstOrNull { it.optString("id") == id }
-            if (id !in ids || next.toString() != tiles[id]?.first) {
+            if (contentKeys[id] != tiles[id]?.first) {
                 tiles.remove(id)?.second?.let { it.release(); grid.removeView(it) }
             }
         }
@@ -304,7 +385,6 @@ class MainActivity : Activity(), ViewerSession.Listener {
         grid.gap = value.optInt("gap", 4).coerceIn(0, 32)
         var cameraCount = 0
         var webCount = 0
-        val hasWeb = desired.any { it.optString("kind") == "web" }
         fun activate(cell: JSONObject) {
             val id = cell.getString("id")
             focusedCellId = id
@@ -320,8 +400,8 @@ class MainActivity : Activity(), ViewerSession.Listener {
             val id = cell.getString("id")
             val kind = cell.optString("kind")
             val allowed = when (kind) {
-                "camera" -> ++cameraCount <= if (hasWeb) 2 else 4
-                "web" -> ++webCount <= 1
+                "camera" -> ++cameraCount <= 32
+                "web" -> ++webCount <= 32
                 else -> true
             }
             val existing = tiles[id]?.second
@@ -329,11 +409,11 @@ class MainActivity : Activity(), ViewerSession.Listener {
                 PlaceholderTile(this, cell.optString("label"), "Layout exceeds this device's playback budget")
             } else when (kind) {
                 "camera" -> CameraTile(this, cell) { activate(cell) }
-                "web" -> WebTile(this, cell) { activate(cell) }
+                "web" -> WebTile(this, cell, onActivity = session::recordActivity, onActivate = { activate(cell) })
                 else -> PlaceholderTile(this, cell.optString("label"), cell.optString("message", "No content assigned")) { activate(cell) }
             }
             if (existing == null) {
-                tiles[id] = cell.toString() to tile
+                tiles[id] = contentKeys.getValue(id) to tile
                 grid.addView(tile)
             }
             tile.layoutParams = CellGrid.Params(
@@ -361,23 +441,45 @@ class MainActivity : Activity(), ViewerSession.Listener {
         AlertDialog.Builder(this).setTitle("Assigned layouts")
             .setItems(entries.map { it.optString("name", "Layout") }.toTypedArray()) { _, position ->
                 session.selectLayout(entries[position].getString("id"))
-            }.setNegativeButton("Cancel", null).show()
+            }.setNegativeButton("Cancel", null).create().let(::showContentDialog)
     }
 
     @Deprecated("Required for TV and Android versions before predictive back")
     override fun onBackPressed() {
-        if (tiles.values.any { it.second.exitInteraction() }) return
         val expanded = plan?.optString("expandedCellId")
         if (!expanded.isNullOrBlank() && expanded != "null") { session.expand(null); return }
         showKioskMenu()
     }
 
-    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
-        if (keyCode == android.view.KeyEvent.KEYCODE_MENU) {
-            if (event.repeatCount == 0) showKioskMenu()
+    private fun recordTouchActivity(event: android.view.MotionEvent) {
+        if (::session.isInitialized && (event.actionMasked == android.view.MotionEvent.ACTION_DOWN ||
+                event.actionMasked == android.view.MotionEvent.ACTION_MOVE ||
+                event.actionMasked == android.view.MotionEvent.ACTION_UP)) session.recordActivity()
+    }
+
+    private fun recordMotionActivity(event: android.view.MotionEvent) {
+        if (::session.isInitialized && (event.actionMasked == android.view.MotionEvent.ACTION_SCROLL ||
+                event.actionMasked == android.view.MotionEvent.ACTION_HOVER_MOVE)) session.recordActivity()
+    }
+
+    override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+        recordTouchActivity(event)
+        return super.dispatchTouchEvent(event)
+    }
+
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (::session.isInitialized && event.action == android.view.KeyEvent.ACTION_DOWN) session.recordActivity()
+        // Keep the kiosk menu reachable when an interactive WebView owns keyboard focus.
+        if (event.keyCode == android.view.KeyEvent.KEYCODE_MENU) {
+            if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) showKioskMenu()
             return true
         }
-        return super.onKeyDown(keyCode, event)
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun dispatchGenericMotionEvent(event: android.view.MotionEvent): Boolean {
+        recordMotionActivity(event)
+        return super.dispatchGenericMotionEvent(event)
     }
 
     override fun onTrimMemory(level: Int) {
@@ -386,9 +488,54 @@ class MainActivity : Activity(), ViewerSession.Listener {
     }
 
     private fun releaseTiles() {
+        dismissContentDialogs()
+        contentMenuState = null
         tiles.values.forEach { it.second.release() }
         tiles.clear()
         if (::grid.isInitialized) grid.removeAllViews()
+    }
+}
+
+private data class ContentMenuState(val layoutId: String, val expandedId: String, val layouts: String,
+                                    val cells: List<MenuCellState>)
+private data class MenuCellState(val id: String, val contentKey: String, val row: Int, val col: Int,
+                                val rowSpan: Int, val colSpan: Int)
+
+/** Geometry changes resize existing browser/decoder surfaces without restarting content. */
+private fun tileContentKey(cell: JSONObject): String = JSONObject().apply {
+    cell.keys().forEach { key ->
+        if (key != "row" && key != "col" && key != "rowSpan" && key != "colSpan") put(key, cell.get(key))
+    }
+}.toString()
+
+/** Resolve shared-origin conflicts before assigning the 32 WebViews and reconciling resources. */
+internal fun compatibleWebSessions(cells: List<JSONObject>): List<JSONObject> {
+    val sessions = mutableMapOf<String, Map<String, String>>()
+    var webCount = 0
+    return cells.map { cell ->
+        val web = cell.optJSONObject("web")
+        if (cell.optString("kind") != "web" || web == null) return@map cell
+        val html = web.optString("html")
+        // ViewerSession resolves URLs before this guard; HTML has a per-cell synthetic origin.
+        val origin = if (!html.isNullOrBlank() && html != "null") null else WebTile.origin(web.optString("url"))
+        val storage = web.optJSONObject("localStorage") ?: JSONObject()
+        val assigned = storage.keys().asSequence().associateWith { storage.optString(it) }
+        val message = when {
+            origin != null && sessions[origin]?.let { it != assigned } == true ->
+                "Conflicting web session configuration · use a separate display or expand this tile"
+            webCount >= 32 -> "Web content limit reached; expand this tile to view"
+            else -> null
+        }
+        if (message == null) {
+            webCount++
+            if (origin != null) sessions[origin] = assigned
+            cell
+        } else {
+            // Compare before reconciliation so changing eligibility replaces the right resources.
+            JSONObject(cell.toString()).put("kind", "placeholder")
+                .put("action", JSONObject().put("type", "expand"))
+                .put("message", message)
+        }
     }
 }
 

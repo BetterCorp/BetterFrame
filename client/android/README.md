@@ -17,8 +17,18 @@ Connection messages do not replace the pairing code. The screen adapts to TV,
 landscape and portrait displays; no server form is shown during normal startup.
 
 Assigned content fills the window. Open the small bottom-right kiosk menu by
-touch or with the remote Menu key for layouts, refresh and settings. Back exits
-web interaction or restores an expanded camera; otherwise it opens the menu.
+touch or with the remote Menu key for layouts, assigned content actions, reload,
+refresh and settings. Web, HTML and signage have no native header and accept touch,
+remote and keyboard input immediately. Back restores expanded content; otherwise
+it opens the menu. Camera connection/retry screens show only a spinner on black.
+Empty displays/layouts retain the BF logo on black with assignment instructions.
+
+Configured idle timeouts restore expanded content independently of network retries.
+The selected layout's timeout overrides the display timeout; zero disables idle.
+Sticky layouts retain their selection while collapsing expanded content. Touch,
+remote input and web text editing renew inactivity. Idle also closes open kiosk
+menus and Settings; input within those dialogs renews the same timer. Multiple
+web tiles are identified by their current row and column in the content picker.
 Settings contains server selection and confirmed enrollment reset. Changing the
 server confirms a reset, clears saved enrollment/browser sessions, and connects
 to the selected server. The application ID and signing key remain unchanged.
@@ -167,20 +177,77 @@ The resolved regional origin must serve `/api/**` and `/ws/**` directly. Android
 continues refusing redirects for pairing and device requests, so those requests
 cannot forward polling secrets or device credentials to another origin.
 
+## Web rendering performance
+
+The application window already enables Android hardware acceleration. WebView
+uses its normal compositor (`LAYER_TYPE_NONE`); this does not disable GPU
+rendering. Forcing every page into an additional hardware layer can allocate
+large textures and increase memory pressure, especially with many visible tiles.
+Geometry-only layout changes preserve existing browsers and camera decoders;
+changed URLs, HTML, storage settings or actions still replace their tile.
+Network retries and menu reloads reuse the browser and return to its original
+assigned document; renderer crashes recreate it. A successful page recovery
+cancels queued retries, and app-initiated reloads discard obsolete navigation
+history after loading. Normal page navigation keeps its own history.
+Hidden/replaced content is released before replacement content is allocated, and
+all players/browsers are released when the screen turns off or the app stops.
+
+WebView chooses web-video decoding based on its provider, the codec and device
+capabilities. The native camera decoder policy cannot force third-party web
+video into hardware decoding. Keep Android System WebView current; use device-
+appropriate video resolution/frame rate and reduce simultaneous heavy pages if
+needed. The 32-view ceiling does not guarantee smooth playback on every device.
+
+See [Android hardware acceleration](https://developer.android.com/topic/performance/hardware-accel)
+and [WebView rendering layers](https://developer.android.com/reference/android/webkit/WebView#setLayerType(int,%20android.graphics.Paint)).
+
+## Sleep and wake deployment
+
+Current behavior: BetterFrame keeps the screen awake while displaying content.
+When the user or Android turns the screen off, playback and synchronization stop;
+the current layout resumes when the existing activity becomes visible again.
+This does not bypass a secure lock screen or relaunch an app that Android has
+removed from the foreground. Android's configured BF sleep timeout and server
+power commands are not implemented by this viewer yet.
+
+Support is planned for both ordinary APKs and managed dedicated devices:
+
+- Ordinary installs: an in-app black standby surface can release media and wake
+  on the first touch/remote input. This is display blanking, not hardware sleep;
+  an LCD backlight may remain on. Actual screen-off uses Android's normal power
+  controls and wake/unlock behavior.
+- Managed kiosks: an EMM/device-owner controller can launch
+  `cloud.betterportal.frame/.MainActivity` in dedicated kiosk mode and manage
+  lock-screen/power policy. Unattended restart and genuine screen-off wake need
+  provisioning and validation against the target device/OEM. The BF APK is not
+  currently a device-policy controller or a Home intent handler.
+- Scheduled or remote wake additionally needs a supported wake source. A
+  WebSocket that is suspended with the app cannot itself wake a sleeping device;
+  a fully powered-off TV may need its own timer, HDMI-CEC or vendor control.
+
+See [Android dedicated devices](https://developer.android.com/work/dpc/dedicated-devices),
+[custom Home/kiosk setup](https://developer.android.com/work/dpc/dedicated-devices/cookbook)
+and [background activity restrictions](https://developer.android.com/guide/components/activities/background-starts).
+
 ## Initial limits
 
 - Android 9/API 28 minimum; arm64 and x86_64 only. A working System WebView is
   required for web content. AbleSign storage initialization needs WebView's
   document-start script feature.
-- Four camera substreams, or two cameras plus one web/HTML/signage cell.
-  Fullscreen expansion releases hidden media. Additional cells display a limit
-  message and can be expanded individually. Actual capacity depends on hardware
-  and page complexity; these ceilings are not a performance certification.
+- Up to 32 visible camera streams and 32 web/HTML/signage cells, within the
+  64-cell layout limit. Fullscreen expansion releases hidden media. Excess cells
+  display a limit message and can be expanded individually. Tune camera count,
+  substream resolution, frame rate and bitrate to the device and page workload;
+  32 is the application ceiling, not a guaranteed hardware capacity.
 - RTSP H.264 over TCP. Known H.265 streams are rejected; untagged streams are
   attempted and may fail. Expanded cameras prefer main streams and fall back to
   substreams. Camera audio is muted.
-- One active web cell bounds resource usage and prevents simultaneous AbleSign
-  screen identities from overwriting shared browser storage. Assigned storage is
+- Web cells sharing an origin must have matching assigned browser-storage
+  settings. The first visible configuration wins; a conflicting cell shows a
+  session-configuration message and can be expanded individually. Compatible
+  cells and independent origins can render together. Conflicting or unavailable
+  pages do not consume the 32-view budget; later compatible cells fill those slots.
+  Assigned storage is
   initialized only on its player origin. External top-level navigation/SSO,
   scripted smart-URL login and native JavaScript bridges are unsupported.
 - Raw HTML uses a unique unprivileged synthetic origin. Self-contained markup

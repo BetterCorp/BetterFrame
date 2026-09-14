@@ -7,6 +7,11 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.KeyEvent
 import android.widget.Button
+import android.graphics.Rect
+import android.os.SystemClock
+import android.view.MotionEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import android.webkit.WebView
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONObject
@@ -18,7 +23,7 @@ import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class ViewerActionsTest {
-    @Test fun htmlToolbarHonorsAssignedActionsWithoutInterceptingPageInteraction() {
+    @Test fun htmlFillsItsTileWithDefaultInteractionAndMenuActions() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         val directory = File(context.cacheDir, "actions-test-${System.nanoTime()}").apply { mkdirs() }
@@ -55,25 +60,30 @@ class ViewerActionsTest {
                 }
                 assertTrue(message, satisfied)
             }
-            fun tileButton(text: String): Button? = descendants(activity.window.decorView)
-                .filterIsInstance<WebTile>().flatMap(::descendants).filterIsInstance<Button>()
-                .firstOrNull { it.text.toString() == text }
+            fun webTile(): WebTile? = descendants(activity.window.decorView).filterIsInstance<WebTile>().firstOrNull()
+            fun currentLayout(): String? = (MainActivity::class.java.getDeclaredField("plan").apply { isAccessible = true }
+                .get(activity) as? JSONObject)?.optString("layoutId")
+            fun menuAction(label: String) {
+                instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_MENU)
+                clickAccessibleText(label)
+            }
             fun expandedCell(): String? = (MainActivity::class.java.getDeclaredField("plan").apply { isAccessible = true }
                 .get(activity) as? JSONObject)?.optString("expandedCellId")?.takeUnless { it.isBlank() || it == "null" }
 
-            awaitUi("Cached HTML layout did not load") { tileButton("Switch layout") != null }
+            awaitUi("Cached HTML layout did not load") { currentLayout() == "3" && (webTile()?.width ?: 0) > 0 }
             instrumentation.runOnMainSync {
-                tileButton("Interact")!!.performClick()
-                assertNotNull("Entering the page must preserve the assigned layout", tileButton("Switch layout"))
-                tileButton("Exit page")!!.performClick()
-                tileButton("Switch layout")!!.performClick()
+                val tile = webTile()!!
+                val web = descendants(tile).filterIsInstance<WebView>().single()
+                assertTrue("Web pages accept focus immediately", web.isFocusable && web.isFocusableInTouchMode)
+                assertEquals("No native header reserves vertical space", tile.height, web.height)
+                assertEquals(tile.width, web.width)
+                assertTrue("No toolbar buttons belong inside web content", descendants(tile).none { it is Button })
             }
-            awaitUi("HTML action must switch to the assigned layout, not expand its current tile") {
-                tileButton("Switch layout") == null && tileButton("Restore") != null
-            }
+            menuAction("Switch layout")
+            awaitUi("Assigned HTML action must switch layouts") { currentLayout() == "4" }
             instrumentation.runOnMainSync { session.expand("20") }
             awaitUi("HTML must expand without requiring a persistent toolbar") { expandedCell() == "20" }
-            instrumentation.runOnMainSync { tileButton("Restore")!!.performClick() }
+            menuAction("Restore layout")
             awaitUi("Assigned restore action must leave the expanded view") { expandedCell() == null }
             instrumentation.runOnMainSync { session.expand("20") }
             awaitUi("HTML must expand again before testing remote Back") { expandedCell() == "20" }
@@ -85,6 +95,36 @@ class ViewerActionsTest {
             ProtectedStore(context).clear()
             directory.deleteRecursively()
         }
+    }
+
+    private fun clickAccessibleText(value: String) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.uiAutomation.waitForIdle(250, 3000)
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        fun nodes(node: AccessibilityNodeInfo): List<AccessibilityNodeInfo> = buildList {
+            add(node)
+            for (i in 0 until node.childCount) node.getChild(i)?.let { addAll(nodes(it)) }
+        }
+        while (System.nanoTime() < deadline) {
+            val selected = instrumentation.uiAutomation.rootInActiveWindow?.let(::nodes)?.firstOrNull {
+                it.isVisibleToUser && it.isEnabled && it.text?.toString() == value
+            }
+            if (selected != null) {
+                val bounds = Rect()
+                selected.getBoundsInScreen(bounds)
+                if (!bounds.isEmpty) {
+                    val downTime = SystemClock.uptimeMillis()
+                    for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+                        val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action,
+                            bounds.exactCenterX(), bounds.exactCenterY(), 0)
+                        try { instrumentation.sendPointerSync(event) } finally { event.recycle() }
+                    }
+                    return
+                }
+            }
+            Thread.sleep(50)
+        }
+        fail("Kiosk menu action unavailable: $value")
     }
 
     private fun descendants(view: View): List<View> = buildList {

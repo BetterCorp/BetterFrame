@@ -6,7 +6,8 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
@@ -17,16 +18,14 @@ import android.webkit.WebSettings
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.TextView
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 import kotlin.math.min
 
 /** Assigned browser content never receives a native bridge or the device API key. */
-class WebTile(context: Context, cell: JSONObject, onActivate: () -> Unit) : ViewerTile(context) {
+class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> Unit = {},
+              private val onActivate: () -> Unit) : ViewerTile(context) {
     private val handler = Handler(Looper.getMainLooper())
     private val content = cell.getJSONObject("web")
     private val html = content.optString("html").takeUnless { it.isBlank() || it == "null" }
@@ -37,64 +36,47 @@ class WebTile(context: Context, cell: JSONObject, onActivate: () -> Unit) : View
     private val initialOrigin = if (html != null) origin(htmlBase) else origin(url)
     private val storage = content.optJSONObject("localStorage") ?: JSONObject()
     private val interactive = content.optBoolean("interactive", true)
-    private var browser: WebView? = null
-    private var released = false
+    @Volatile private var browser: WebView? = null
+    @Volatile private var released = false
     private var rendererFailures = 0
     private var networkRetries = 0
-    private var interacting = false
-    private var pageFailed = false
+    private data class FailedNavigation(val url: String, var finished: Boolean = false)
+    private var failedNavigation: FailedNavigation? = null
+    private var pruneHistoryOnSuccess = false
+    private var networkRetry: Runnable? = null
+    private var rendererRetry: Runnable? = null
     private val body = android.widget.FrameLayout(context)
     private val status = message("Loading web content…")
-    private val interactButton = Button(context).apply {
-        text = "Interact"
-        contentDescription = "Interact with ${cell.optString("label", "web content")}"
-        visibility = if (interactive) View.VISIBLE else View.GONE
-        setOnClickListener {
-            if (interacting) exitInteraction() else {
-                interacting = true
-                text = "Exit page"
-                browser?.apply { isFocusable = true; isFocusableInTouchMode = true; requestFocus() }
-            }
-        }
+    val contentLabel: String = cell.optString("label", "Web content")
+    val assignedActionLabel: String? = when (cell.optJSONObject("action")?.optString("type")) {
+        "restore" -> "Restore layout"
+        "layout.switch" -> "Switch layout"
+        "unsupported" -> null
+        else -> "Expand content"
     }
 
     init {
-        val column = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        addView(column, LayoutParams(-1, -1))
-        val toolbar = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(Color.rgb(17, 24, 39))
-        }
-        toolbar.addView(TextView(context).apply {
-            text = cell.optString("label", "Web content")
-            setTextColor(Color.WHITE)
-            setPadding(12, 0, 4, 0)
-            maxLines = 1
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        toolbar.addView(interactButton)
-        toolbar.addView(Button(context).apply {
-            text = when (cell.optJSONObject("action")?.optString("type")) {
-                "restore" -> "Restore"
-                "layout.switch" -> "Switch layout"
-                "unsupported" -> "Unavailable"
-                else -> "Expand"
-            }
-            setOnClickListener { onActivate() }
-        })
-        toolbar.addView(Button(context).apply {
-            text = "Reload"
-            setOnClickListener { rendererFailures = 0; networkRetries = 0; createBrowser() }
-        })
-        column.addView(toolbar, LinearLayout.LayoutParams(-1, -2))
-        column.addView(body, LinearLayout.LayoutParams(-1, 0, 1f))
+        // Content owns the entire assigned rectangle; native controls live in the kiosk menu.
+        addView(body, LayoutParams(-1, -1))
         createBrowser()
+    }
+
+    fun activateAssignedAction() { if (!released) onActivate() }
+
+    fun reload() {
+        if (released) return
+        cancelNetworkRetry()
+        cancelRendererRetry()
+        rendererFailures = 0
+        networkRetries = 0
+        browser?.let(::loadAssignedPage) ?: createBrowser()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun createBrowser() {
         if (released) return
-        handler.removeCallbacksAndMessages(null)
+        cancelNetworkRetry()
+        cancelRendererRetry()
         destroyBrowser()
         body.removeAllViews()
         body.addView(status, LayoutParams(-1, -1))
@@ -102,7 +84,14 @@ class WebTile(context: Context, cell: JSONObject, onActivate: () -> Unit) : View
         status.visibility = View.VISIBLE
         if (initialOrigin == null) { status.text = "Web content needs an HTTP or HTTPS URL"; return }
         try {
-            val web = WebView(context)
+            val web = object : WebView(context) {
+                override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? =
+                    super.onCreateInputConnection(outAttrs)?.let { connection ->
+                        IdleInputConnection.wrap(connection) {
+                            if (!released && browser === this) onActivity()
+                        }
+                    }
+            }
             browser = web
             web.setBackgroundColor(Color.BLACK)
             web.settings.apply {
@@ -120,10 +109,12 @@ class WebTile(context: Context, cell: JSONObject, onActivate: () -> Unit) : View
                 // Enabled below only when a document-start mute script is available.
                 mediaPlaybackRequiresUserGesture = true
                 cacheMode = WebSettings.LOAD_DEFAULT
+                // Keep default offscreen preraster disabled: extra raster tiles consume
+                // memory without helping this grid of already visible WebViews.
             }
             CookieManager.getInstance().setAcceptThirdPartyCookies(web, false)
-            web.isFocusable = false
-            web.isFocusableInTouchMode = false
+            web.isFocusable = interactive
+            web.isFocusableInTouchMode = interactive
             if (!interactive) web.setOnTouchListener { _, _ -> true }
             val documentStart = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
             // Assigned signage must start without a gesture. The script mutes HTML media;
@@ -155,43 +146,67 @@ class WebTile(context: Context, cell: JSONObject, onActivate: () -> Unit) : View
             if (documentStart) WebViewCompat.addDocumentStartJavaScript(web, script, setOf(initialOrigin))
             web.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                    if (released || browser !== view) return true
                     if (!request.isForMainFrame) return false
                     val allowed = origin(request.url.toString()) == initialOrigin
                     if (!allowed) { status.text = "Navigation outside the assigned site was blocked"; status.visibility = View.VISIBLE }
                     return !allowed
                 }
                 override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
-                    pageFailed = false
+                    if (released || browser !== view) return
+                    // Some WebViews report the redirect target's HTTP error
+                    // before its start callback. That late start is still the
+                    // failed navigation, not evidence that recovery succeeded.
+                    // The same applies to a late start for its original redirect URL.
+                    failedNavigation?.let { failure ->
+                        if (failure.finished) failedNavigation = null
+                    }
                 }
                 override fun onPageFinished(view: WebView, url: String?) {
-                    if (!pageFailed) {
+                    if (released || browser !== view) return
+                    val failure = failedNavigation
+                    if (failure != null) {
+                        if (failure.url == url) failure.finished = true
+                        // A late finish for an earlier redirect URL must not
+                        // cancel the retry scheduled for the failed target.
+                    } else {
+                        cancelNetworkRetry()
+                        if (pruneHistoryOnSuccess) {
+                            // App reload/recovery returns to the assigned document. Keep
+                            // that page only; ordinary in-page navigation retains history.
+                            pruneHistoryOnSuccess = false
+                            view.clearHistory()
+                        }
                         status.visibility = View.GONE
                         networkRetries = 0
                     }
                     if (!documentStart && origin(url ?: "") == initialOrigin) view.evaluateJavascript(script, null)
                 }
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                    if (request.isForMainFrame) failedPage()
+                    if (!released && browser === view && request.isForMainFrame) failedPage(view, request.url.toString())
                 }
                 override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, error: WebResourceResponse) {
-                    if (request.isForMainFrame && error.statusCode >= 400) failedPage()
+                    if (!released && browser === view && request.isForMainFrame && error.statusCode >= 400) failedPage(view, request.url.toString())
                 }
                 override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-                    // Remove and destroy every affected tile through its own callback; no stale WebView reuse.
+                    if (released || browser !== view) return true
+                    // Renderer death requires a new WebView, unlike ordinary page errors.
+                    cancelNetworkRetry()
+                    cancelRendererRetry()
                     destroyBrowser()
                     status.visibility = View.VISIBLE
                     status.text = "Web renderer stopped"
                     rendererFailures++
-                    if (rendererFailures <= 3) handler.postDelayed({ createBrowser() }, 2_000L * rendererFailures)
-                    else status.text = "Web renderer repeatedly stopped · select Reload"
+                    if (rendererFailures <= 3) {
+                        rendererRetry = Runnable { rendererRetry = null; createBrowser() }.also {
+                            handler.postDelayed(it, 2_000L * rendererFailures)
+                        }
+                    } else status.text = "Web renderer repeatedly stopped · reload from the kiosk menu"
                     return true
                 }
             }
             body.addView(web, 0, LayoutParams(-1, -1))
-            if (html != null) {
-                // A synthetic origin prevents HTML from inheriting the authenticated BF origin.
-                web.loadDataWithBaseURL(htmlBase, html, "text/html", "UTF-8", null)
-            } else web.loadUrl(url)
+            loadAssignedPage(web)
         } catch (_: Exception) {
             destroyBrowser()
             status.text = "WebView unavailable · install or update Android System WebView"
@@ -199,22 +214,45 @@ class WebTile(context: Context, cell: JSONObject, onActivate: () -> Unit) : View
         }
     }
 
-    private fun failedPage() {
-        pageFailed = true
-        status.text = "Web content unavailable · retrying"
+    private fun loadAssignedPage(web: WebView) {
+        if (released || browser !== web) return
+        cancelNetworkRetry()
+        failedNavigation = null
+        pruneHistoryOnSuccess = true
+        status.text = "Loading web content…"
         status.visibility = View.VISIBLE
-        handler.removeCallbacksAndMessages(null)
-        networkRetries = min(networkRetries + 1, 6)
-        handler.postDelayed({ createBrowser() }, min(60_000L, 1_000L shl networkRetries))
+        try {
+            web.stopLoading()
+            // Retry the assigned document, never a redirect target or a page in browser history.
+            if (html != null) web.loadDataWithBaseURL(htmlBase, html, "text/html", "UTF-8", null)
+            else web.loadUrl(url)
+        } catch (_: Exception) {
+            destroyBrowser()
+            status.text = "WebView unavailable · install or update Android System WebView"
+        }
     }
 
-    override fun exitInteraction(): Boolean {
-        if (!interacting && browser?.hasFocus() != true) return false
-        interacting = false
-        browser?.apply { clearFocus(); isFocusable = false; isFocusableInTouchMode = false }
-        interactButton.text = "Interact"
-        interactButton.requestFocus()
-        return true
+    private fun cancelNetworkRetry() {
+        networkRetry?.let(handler::removeCallbacks)
+        networkRetry = null
+    }
+
+    private fun cancelRendererRetry() {
+        rendererRetry?.let(handler::removeCallbacks)
+        rendererRetry = null
+    }
+
+    private fun failedPage(web: WebView, failedUrl: String) {
+        failedNavigation = FailedNavigation(failedUrl)
+        pruneHistoryOnSuccess = false
+        status.text = "Web content unavailable · retrying"
+        status.visibility = View.VISIBLE
+        cancelNetworkRetry()
+        networkRetries = min(networkRetries + 1, 6)
+        networkRetry = Runnable {
+            networkRetry = null
+            if (!released && browser === web) loadAssignedPage(web)
+        }.also { handler.postDelayed(it, min(60_000L, 1_000L shl networkRetries)) }
     }
 
     private fun destroyBrowser() {
@@ -224,13 +262,12 @@ class WebTile(context: Context, cell: JSONObject, onActivate: () -> Unit) : View
         previous.stopLoading()
         previous.removeAllViews()
         previous.destroy()
-        interacting = false
-        interactButton.text = "Interact"
     }
 
     override fun release() {
         released = true
-        handler.removeCallbacksAndMessages(null)
+        cancelNetworkRetry()
+        cancelRendererRetry()
         destroyBrowser()
     }
 

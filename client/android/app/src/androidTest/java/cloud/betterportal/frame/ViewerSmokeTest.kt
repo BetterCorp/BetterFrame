@@ -5,6 +5,11 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.view.View
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.os.SystemClock
+import android.view.MotionEvent
+import android.widget.ProgressBar
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.TextView
@@ -99,8 +104,8 @@ class ViewerSmokeTest {
         try {
             instrumentation.runOnMainSync {
                 val cell = JSONObject("""{"id":"html-test","label":"Offline signage","web":{
-                    "html":"<html><body data-ready='yes'><video id='signage' autoplay></video><script>localStorage.setItem('html-test','ready')</script></body></html>",
-                    "baseUrl":"https://bf-html-instrumentation.invalid/","localStorage":{},"interactive":true}}
+                    "html":"<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head><body data-ready='yes'><video id='signage' autoplay></video><button id='touch-target' style='position:fixed;top:16px;left:16px;width:160px;height:80px' onclick='document.body.dataset.tapped=1'>Touch content</button><script>localStorage.setItem('html-test','ready')</script></body></html>",
+                    "baseUrl":"https://bf-html-instrumentation.invalid/","localStorage":{}}}
                 """)
                 tile.set(WebTile(activity, cell) {})
                 activity.addContentView(tile.get(), ViewGroup.LayoutParams(-1, -1))
@@ -111,18 +116,27 @@ class ViewerSmokeTest {
             }
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
             var ready = false
+            var touchGeometry = JSONObject()
             var diagnostic = "No JavaScript response"
             while (!ready && System.nanoTime() < deadline) {
                 val response = AtomicReference<String>()
                 val complete = CountDownLatch(1)
                 instrumentation.runOnMainSync {
                     browser.get().evaluateJavascript("""
-                        JSON.stringify({
+                        (function() {
+                        var target = document.getElementById('touch-target');
+                        var bounds = target ? target.getBoundingClientRect() : {left:0,top:0,width:0,height:0};
+                        var x = bounds.left + bounds.width / 2;
+                        var y = bounds.top + bounds.height / 2;
+                        return JSON.stringify({
+                          touchX: x, touchY: y, viewportWidth: innerWidth,
                           documentReady: document.body !== null && document.body.dataset.ready === 'yes',
                           origin: location.origin,
+                          touchTargetReady: (document.elementFromPoint(x, y) || {}).id === 'touch-target',
                           storageReady: (function() { try { return localStorage.getItem('html-test') === 'ready'; } catch (_) { return false; } })(),
                           muted: !!(document.getElementById('signage') && document.getElementById('signage').muted)
-                        })
+                        });
+                        })()
                     """.trimIndent()) {
                         response.set(it); complete.countDown()
                     }
@@ -131,10 +145,45 @@ class ViewerSmokeTest {
                 diagnostic = runCatching { org.json.JSONTokener(response.get()).nextValue() as? String }.getOrNull() ?: response.get()
                 val result = runCatching { JSONObject(diagnostic) }.getOrNull()
                 ready = result != null && result.optBoolean("documentReady") && result.optBoolean("storageReady") &&
-                    result.optBoolean("muted") && result.optString("origin") == "https://bf-html-instrumentation.invalid"
-                if (!ready) Thread.sleep(100)
+                    result.optBoolean("muted") && result.optBoolean("touchTargetReady") && result.optString("origin") == "https://bf-html-instrumentation.invalid"
+                if (ready) touchGeometry = result!! else Thread.sleep(100)
             }
             assertTrue("Offline HTML, JS, isolated origin and muted media initialize: $diagnostic", ready)
+            // Wait for Chromium's submitted frame, then inject a real touchscreen
+            // gesture through the window (direct View dispatch omits input routing).
+            instrumentation.uiAutomation.waitForIdle(250, 3000)
+            val position = IntArray(2)
+            instrumentation.runOnMainSync {
+                assertTrue("Interaction defaults to enabled", browser.get().isFocusableInTouchMode)
+                assertTrue("Web content uses the hardware-accelerated window", browser.get().isHardwareAccelerated)
+                assertEquals("No extra full-tile GPU texture is forced", View.LAYER_TYPE_NONE, browser.get().layerType)
+                assertEquals(tile.get().height, browser.get().height)
+                assertEquals(tile.get().width, browser.get().width)
+                browser.get().getLocationOnScreen(position)
+                val scale = browser.get().width / touchGeometry.getDouble("viewportWidth")
+                position[0] += (touchGeometry.getDouble("touchX") * scale).toInt()
+                position[1] += (touchGeometry.getDouble("touchY") * scale).toInt()
+            }
+            val downTime = SystemClock.uptimeMillis()
+            for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+                val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action,
+                    position[0].toFloat(), position[1].toFloat(), 0).apply {
+                    source = android.view.InputDevice.SOURCE_TOUCHSCREEN
+                }
+                try { instrumentation.sendPointerSync(event) } finally { event.recycle() }
+                if (action == MotionEvent.ACTION_DOWN) Thread.sleep(80)
+            }
+            val touched = CountDownLatch(1)
+            val touchDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            while (touched.count != 0L && System.nanoTime() < touchDeadline) {
+                instrumentation.runOnMainSync {
+                    browser.get().evaluateJavascript("document.body.dataset.tapped === '1'") {
+                        if (it == "true") touched.countDown()
+                    }
+                }
+                touched.await(100, TimeUnit.MILLISECONDS)
+            }
+            assertEquals("HTML receives touch without entering an interaction mode", 0L, touched.count)
             instrumentation.runOnMainSync {
                 tile.get().release()
                 assertTrue(descendants(tile.get()).none { it is WebView })
@@ -142,6 +191,129 @@ class ViewerSmokeTest {
         } finally {
             instrumentation.runOnMainSync { tile.get()?.release(); activity.finish() }
         }
+    }
+
+    @Test fun resizingWebContentKeepsTheBrowserButChangedContentReplacesIt() {
+        val activity = launch() as MainActivity
+        try {
+            instrumentation.runOnMainSync {
+                val field = MainActivity::class.java.getDeclaredField("session").apply { isAccessible = true }
+                (field.get(activity) as ViewerSession).stop()
+                val cell = JSONObject("""{"id":"web-resize","kind":"web","row":0,"col":0,"rowSpan":1,"colSpan":1,
+                    "web":{"html":"<p>Original</p>","baseUrl":"https://bf-resize.invalid/","localStorage":{}}}""")
+                val plan = JSONObject().put("layoutId", "3").put("rows", 2).put("cols", 2)
+                    .put("cells", org.json.JSONArray().put(cell))
+                activity.onPlan(plan)
+                val original = descendants(activity.window.decorView).filterIsInstance<WebView>().single()
+                val moved = JSONObject(plan.toString())
+                moved.getJSONArray("cells").getJSONObject(0).put("row", 1).put("colSpan", 2)
+                activity.onPlan(moved)
+                assertSame("Moving/resizing a tile must preserve its running page and media",
+                    original, descendants(activity.window.decorView).filterIsInstance<WebView>().single())
+                val updated = JSONObject(moved.toString())
+                updated.getJSONArray("cells").getJSONObject(0).getJSONObject("web").put("html", "<p>Updated</p>")
+                activity.onPlan(updated)
+                assertNotSame("Changed content still needs a new page", original,
+                    descendants(activity.window.decorView).filterIsInstance<WebView>().single())
+                assertNull("Retired browser is detached", original.parent)
+            }
+        } finally { instrumentation.runOnMainSync { activity.finish() } }
+    }
+
+    @Test fun cameraConnectionShowsOnlyASpinnerOnBlack() {
+        val activity = launch()
+        var tile: CameraTile? = null
+        try {
+            instrumentation.runOnMainSync {
+                tile = CameraTile(activity, JSONObject("""{"label":"Fixture camera","camera":{"uri":"rtsp://127.0.0.1:9/live"}}""")) {}
+                activity.addContentView(tile!!, ViewGroup.LayoutParams(-1, -1))
+                val spinner = descendants(tile!!).filterIsInstance<ProgressBar>().single { it.contentDescription == "Connecting camera" }
+                assertTrue(spinner.isShown)
+                assertEquals(Color.BLACK, ((spinner.parent as View).background as ColorDrawable).color)
+                assertFalse("Connecting camera has no visible text", descendants(tile!!).filterIsInstance<TextView>()
+                    .any { it.isShown && it.text.isNotEmpty() })
+            }
+        } finally { instrumentation.runOnMainSync { tile?.release(); activity.finish() } }
+    }
+
+    @Test fun emptyDisplayAndEmptyLayoutKeepTheLogoOnBlack() {
+        val activity = launch() as MainActivity
+        try {
+            instrumentation.runOnMainSync {
+                val session = MainActivity::class.java.getDeclaredField("session").apply { isAccessible = true }
+                (session.get(activity) as ViewerSession).stop()
+                for (layout in listOf("", "3")) {
+                    activity.onPlan(JSONObject().put("layoutId", layout).put("cells", org.json.JSONArray()))
+                    val views = descendants(activity.window.decorView)
+                    val idle = views.single { it.tag == "kiosk-setup" }
+                    assertTrue(idle.isShown)
+                    assertEquals(Color.BLACK, (idle.background as ColorDrawable).color)
+                    assertTrue(views.any { it.contentDescription == "BetterFrame" && it.isShown })
+                    assertTrue(views.filterIsInstance<TextView>().any { it.isShown && it.text.toString() ==
+                        if (layout.isEmpty()) "go into BetterFrame and assign layouts to this display"
+                        else "This layout is empty. Add content to it in BetterFrame." })
+                }
+            }
+        } finally { instrumentation.runOnMainSync { activity.finish() } }
+    }
+
+    @Test fun conflictingWebIdentitiesAreIsolatedWithoutLimitingCompatiblePages() {
+        fun cell(id: String, url: String, storage: String) = JSONObject().put("id", id).put("kind", "web")
+            .put("web", JSONObject().put("url", url).put("localStorage", JSONObject(storage)))
+        val first = cell("1", "https://SIGNAGE.example:443/one", """{"screen":"one","mode":"show"}""")
+        val compatible = cell("2", "https://signage.example/two", """{"mode":"show","screen":"one"}""")
+        val conflicting = cell("3", "https://signage.example/three", """{"screen":"two"}""")
+            .put("action", JSONObject().put("type", "layout.switch").put("layoutId", "elsewhere"))
+        val empty = cell("4", "https://signage.example/four", "{}")
+        val independent = cell("5", "https://other.example/five", """{"screen":"two"}""")
+        val result = compatibleWebSessions(listOf(first, compatible, conflicting, empty, independent))
+        assertEquals(listOf("web", "web", "placeholder", "placeholder", "web"), result.map { it.getString("kind") })
+        assertEquals("expand", result[2].getJSONObject("action").getString("type"))
+        assertEquals("web", conflicting.getString("kind")) // Never mutate the saved render plan.
+        assertEquals("layout.switch", conflicting.getJSONObject("action").getString("type"))
+        assertEquals("web", compatibleWebSessions(listOf(conflicting)).single().getString("kind"))
+        assertEquals("web", compatibleWebSessions(listOf(empty)).single().getString("kind"))
+    }
+
+    @Test fun webBudgetFillsFromCompatibleCandidatesAfterNativeProjection() {
+        val bundle = fixture()
+        val layout = bundle.getJSONArray("displays").getJSONObject(0).getJSONArray("layouts").getJSONObject(0)
+        val cells = org.json.JSONArray()
+        for (index in 0 until 64) {
+            cells.put(JSONObject().put("view_id", 100 + index).put("row", index / 8).put("col", index % 8)
+                .put("row_span", 1).put("col_span", 1).put("content_type", "web")
+                .put("web_url", if (index < 32) "https://signage.example/$index" else "https://page-$index.example/")
+                .put("local_storage", JSONObject().put("screen", if (index == 0) "first" else "screen-$index")))
+        }
+        layout.put("grid_rows", 8).put("grid_cols", 8).put("cells", cells)
+        val plan = JSONObject(NativeCore.renderPlan(bundle.toString(), null, null))
+        assertFalse(plan.toString(), plan.has("error"))
+        val projected = plan.getJSONArray("cells")
+        val candidates = (0 until projected.length()).map { projected.getJSONObject(it) }
+        val allocated = compatibleWebSessions(candidates)
+        assertEquals(32, allocated.count { it.getString("kind") == "web" })
+        assertEquals(31, allocated.count { it.optString("message").startsWith("Conflicting web session") })
+        assertEquals("web", allocated[62].getString("kind"))
+        assertEquals("Web content limit reached; expand this tile to view", allocated[63].getString("message"))
+        assertEquals("expand", allocated[63].getJSONObject("action").getString("type"))
+        assertEquals("web", candidates[63].getString("kind")) // Allocation leaves the source plan intact.
+
+        // Removing an earlier eligible page promotes the unchanged last candidate on the next reconciliation.
+        val waiting = candidates.mapIndexed { index, cell ->
+            if (index == 32) JSONObject(cell.toString()).put("kind", "placeholder").put("web", JSONObject.NULL) else cell
+        }
+        val refilled = compatibleWebSessions(waiting)
+        assertEquals(32, refilled.count { it.getString("kind") == "web" })
+        assertEquals("web", refilled[63].getString("kind"))
+        val expanded = JSONObject(NativeCore.renderPlan(bundle.toString(), null, "163")).getJSONArray("cells")
+        assertEquals("web", compatibleWebSessions(listOf(expanded.getJSONObject(0))).single().getString("kind"))
+
+        // Isolated HTML origins still share the same resource budget.
+        val html = (0 until 33).map { index ->
+            JSONObject().put("id", "$index").put("kind", "web")
+                .put("web", JSONObject().put("html", "<p>$index</p>"))
+        }
+        assertEquals(32, compatibleWebSessions(html).count { it.getString("kind") == "web" })
     }
 
     private fun launch(): Activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

@@ -33,6 +33,8 @@ const HeartbeatDisplay = av.object(
     width_px: av.int().min(0).max(16384).default(0),
     height_px: av.int().min(0).max(16384).default(0),
     power_state: av.string().maxLength(16).default("unknown"),
+    power_session_id: av.optional(av.string().maxLength(36)),
+    power_revision: av.optional(av.int().min(0).max(Number.MAX_SAFE_INTEGER)),
   },
   { unknownKeys: "strip" },
 );

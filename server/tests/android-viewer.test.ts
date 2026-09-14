@@ -243,3 +243,78 @@ test("empty viewer assignments retain only an authoritative single-display power
   assert.equal(revoked.status, 409);
   assert.deepEqual(await revoked.json(), { error: "display_unassigned", display_id: null });
 });
+
+test("delayed Android heartbeats cannot overwrite acknowledged power or race a newer command write", async (t) => {
+  const { registerAdminRoutes } = await import("../src/plugins/service-admin-http/routes-admin.js");
+  const { getCoordinator, setCoordinator } = await import("../src/shared/coordinator-registry.js");
+  const { bindPowerSession, unbindPowerSession, advancePowerSample } = await import("../src/shared/power-state-order.js");
+  const original = getCoordinator();
+  t.after(() => setCoordinator(original));
+  const { repo: base, secrets, kiosk } = fixture();
+  kiosk.capabilities = ["android-viewer", "android-standby-v1"];
+  const display = { ...(await base.listDisplaysForKiosk())[0]!, kiosk_id: "viewer", index: 0, actual_power_state: "awake" };
+  let holdWrite: (() => Promise<void>) | undefined;
+  const repo = { ...base, getSetupExtra: async () => null, touchKiosk: async () => {},
+    listDisplaysForKiosk: async () => [display], getDisplayById: async () => display,
+    updateDisplay: async (_id: string, patch: object) => { await holdWrite?.(); Object.assign(display, patch); },
+    updateKiosk: async () => {}, deleteDisplayIfUnused: async () => false, insertAudit: async () => {},
+  };
+  const auth = { verifyKioskKey: async () => ({ id: "viewer", schema_name: "public", tenant_slug: "default" }) };
+  const app = new H3();
+  registerViewerDeviceAuth(app, repo as never, auth as never, secrets as never);
+  registerKioskRoutes(app, repo as never, auth as never, secrets as never, { forward() {} } as never, {} as never, {} as never, { publishTelemetry() {} } as never, "");
+  registerAdminRoutes(app, { repo, nodered: { forward() {} } } as never);
+  const sessionId = "33333333-3333-4333-8333-333333333333";
+  const owner = {};
+  bindPowerSession(kiosk.id, owner, { sessionId, revision: 0 });
+  t.after(() => unbindPowerSession(kiosk.id, owner));
+  const heartbeat = (state: string, revision: number, session = sessionId) => app.request("https://bf.test/api/kiosk/heartbeat", {
+    method: "POST", headers: { authorization: "Bearer device-key", "content-type": "application/json" },
+    body: JSON.stringify({ displays: [{ index: 0, name: "Main", width_px: 1920, height_px: 1080,
+      power_state: state, power_session_id: session, power_revision: revision }] }),
+  });
+  let acknowledge!: () => void;
+  let entered!: () => void;
+  const dispatchStarted = new Promise<void>((resolve) => { entered = resolve; });
+  const ack = new Promise<void>((resolve) => { acknowledge = resolve; });
+  setCoordinator({ ...original, sendPowerToKiosk: async () => {
+    entered(); await ack; advancePowerSample(kiosk.id, { sessionId, revision: 1 }); return true;
+  } });
+  const command = app.request("https://bf.test/admin/kiosks/viewer/power/standby", { method: "POST" });
+  await dispatchStarted;
+  const delayed = heartbeat("awake", 0);
+  acknowledge();
+  assert.equal((await command).status, 302);
+  assert.equal((await delayed).status, 200);
+  assert.equal(display.actual_power_state, "standby");
+  const legacy = await app.request("https://bf.test/api/kiosk/heartbeat", {
+    method: "POST", headers: { authorization: "Bearer device-key", "content-type": "application/json" },
+    body: JSON.stringify({ capabilities: ["android-viewer"], displays: [{ index: 0, name: "Main", width_px: 1920, height_px: 1080, power_state: "awake" }] }),
+  });
+  assert.equal(legacy.status, 200);
+  assert.equal(display.actual_power_state, "standby", "An old APK heartbeat cannot downgrade ordering after a current-session ACK");
+  assert.equal((await heartbeat("awake", 2)).status, 200);
+  assert.equal((await heartbeat("standby", 1)).status, 200);
+  assert.equal(display.actual_power_state, "awake", "Only newer local transitions supersede the ACK");
+  assert.equal((await heartbeat("standby", 99, "44444444-4444-4444-8444-444444444444")).status, 200);
+  assert.equal(display.actual_power_state, "awake", "Another process cannot replace the socket's pinned session");
+
+  let finishWrite!: () => void;
+  let writeEntered!: () => void;
+  const writing = new Promise<void>((resolve) => { writeEntered = resolve; });
+  const finish = new Promise<void>((resolve) => { finishWrite = resolve; });
+  holdWrite = async () => { holdWrite = undefined; writeEntered(); await finish; };
+  const writingHeartbeat = heartbeat("standby", 3);
+  await writing;
+  let commandSent = false;
+  setCoordinator({ ...original, sendPowerToKiosk: async () => {
+    commandSent = true; advancePowerSample(kiosk.id, { sessionId, revision: 4 }); return true;
+  } });
+  const next = app.request("https://bf.test/admin/kiosks/viewer/power/wake", { method: "POST" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(commandSent, false, "Command waits until the older heartbeat DB write finishes");
+  finishWrite();
+  assert.equal((await writingHeartbeat).status, 200);
+  assert.equal((await next).status, 302);
+  assert.equal(display.actual_power_state, "awake");
+});

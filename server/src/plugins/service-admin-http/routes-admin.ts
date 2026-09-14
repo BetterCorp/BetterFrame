@@ -69,6 +69,7 @@ import {
 import { currentTenantSchema, withDefaultTenant } from "../../shared/default-tenant.js";
 import { createOnvifCallbackToken } from "../../shared/onvif-callback-token.js";
 import { localTimeHtml } from "../../web-templates/layout.js";
+import { withPowerStateLock } from "../../shared/power-state-order.js";
 import { isAndroidViewer, supportsAndroidStandby } from "../../shared/android-viewer.js";
 
 interface DiscoverAddStream {
@@ -3120,7 +3121,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const display = await deps.repo.getDisplayById(id);
     if (!display) return Response.json({ error: "Display not found" }, { status: 404 });
     if (!display.kiosk_id) return Response.json({ error: "Display has no kiosk" }, { status: 409 });
-    const result = await sendPowerCommand(display.kiosk_id, state, id);
+    return withPowerStateLock(display.kiosk_id, async () => {
+    const result = await sendPowerCommand(display.kiosk_id!, state, id);
     if (result instanceof Response) return result;
     await deps.repo.updateDisplay(id, {
       actual_power_state: state === "on" ? "awake" : "standby",
@@ -3137,6 +3139,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       noderedTenant(event),
     );
     return new Response(null, { status: 302, headers: { location: `/admin/displays/${id}` } });
+    });
   };
   app.post("/admin/displays/:id/power/standby", (event) => displayPower(event, "standby"));
   app.post("/admin/displays/:id/power/wake", (event) => displayPower(event, "on"));
@@ -3172,20 +3175,24 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.post("/admin/kiosks/:id/power/standby", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
+    return withPowerStateLock(id, async () => {
     const result = await sendPowerCommand(id, "standby");
     if (result instanceof Response) return result;
     await emitDisplayPower(event, id, "standby", result.displayIds);
     await audit(deps.repo, event as any, "display.standby", { resource_type: "kiosk", resource_id: id });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+    });
   });
 
   app.post("/admin/kiosks/:id/power/wake", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
+    return withPowerStateLock(id, async () => {
     const result = await sendPowerCommand(id, "on");
     if (result instanceof Response) return result;
     await emitDisplayPower(event, id, "on", result.displayIds);
     await audit(deps.repo, event as any, "display.wake", { resource_type: "kiosk", resource_id: id });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
+    });
   });
 
   app.post("/admin/kiosks/:id/tailscale", async (event) => {

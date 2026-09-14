@@ -210,23 +210,32 @@ class ViewerPowerTest {
                 if (target != null) message.put("display_id", target)
                 listener.onMessage(socket, message.toString())
             }
-            fun acknowledgement(request: String, accepted: Boolean) {
+            val initial = fixture.heartbeats.poll(2, TimeUnit.SECONDS)!!.getJSONArray("displays").getJSONObject(0)
+            val sessionId = initial.getString("power_session_id")
+            assertEquals("awake", initial.getString("power_state"))
+            assertEquals(0L, initial.getLong("power_revision"))
+            assertEquals(sessionId, java.util.UUID.fromString(sessionId).toString())
+            fun acknowledgement(request: String, accepted: Boolean, revision: Long) {
                 val result = JSONObject(current.sent.poll(2, TimeUnit.SECONDS) ?: throw AssertionError("Expected power acknowledgement"))
                 assertEquals("power-result", result.getString("type"))
                 assertEquals(request, result.getString("request_id"))
                 assertEquals(accepted, result.getBoolean("accepted"))
+                assertEquals(sessionId, result.getString("power_session_id"))
+                assertEquals(revision, result.getLong("power_revision"))
             }
             send(current, "sleep", "standby", "2")
-            acknowledgement("sleep", true)
+            acknowledgement("sleep", true, 1)
             assertTrue("Positive ACK follows state commit", fixture.session.isStandby)
+            send(current, "already-asleep", "standby", "2")
+            acknowledgement("already-asleep", true, 1)
             send(current, "wrong-display", "wake", "3")
-            acknowledgement("wrong-display", false)
+            acknowledgement("wrong-display", false, 1)
             assertTrue(fixture.session.isStandby)
             send(current, "invalid-target", "wake", JSONObject.NULL)
-            acknowledgement("invalid-target", false)
+            acknowledgement("invalid-target", false, 1)
             assertTrue(fixture.session.isStandby)
             send(current, "wake", "wake", null)
-            acknowledgement("wake", true)
+            acknowledgement("wake", true, 2)
             assertFalse(fixture.session.isStandby)
             send(stale, "stale", "standby", "2")
             fixture.renderer.submit {}.get(2, TimeUnit.SECONDS)
@@ -238,6 +247,36 @@ class ViewerPowerTest {
             assertFalse("Malformed correlation IDs must not mutate power", fixture.session.isStandby)
             assertEquals("ACK must bypass blocked HTTP", 1L, fixture.releaseNetwork.count)
         } finally { fixture.close() }
+    }
+
+    @Test fun concurrentPowerSamplesNeverMixStateAndRevision() {
+        val fixture = Fixture(0)
+        val tasks = java.util.concurrent.Executors.newFixedThreadPool(2)
+        val start = CountDownLatch(1)
+        try {
+            fixture.start()
+            val report = ViewerSession::class.java.getDeclaredMethod("powerStateReport").apply { isAccessible = true }
+            val sessionId = (report.invoke(fixture.session) as JSONObject).getString("power_session_id")
+            val writer = tasks.submit {
+                start.await()
+                repeat(100) { fixture.session.setStandby(true); fixture.session.setStandby(false) }
+            }
+            val reader = tasks.submit {
+                start.await()
+                repeat(500) {
+                    val sample = report.invoke(fixture.session) as JSONObject
+                    val revision = sample.getLong("power_revision")
+                    assertEquals(sessionId, sample.getString("power_session_id"))
+                    assertEquals(if (revision % 2 == 0L) "awake" else "standby", sample.getString("power_state"))
+                }
+            }
+            start.countDown()
+            writer.get(5, TimeUnit.SECONDS)
+            reader.get(5, TimeUnit.SECONDS)
+            val finalSample = report.invoke(fixture.session) as JSONObject
+            assertEquals(200L, finalSample.getLong("power_revision"))
+            assertEquals("awake", finalSample.getString("power_state"))
+        } finally { start.countDown(); tasks.shutdownNow(); fixture.close() }
     }
 
     private class TestSocket : WebSocket {

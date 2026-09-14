@@ -32,6 +32,8 @@ export const kioskHeartbeat = av.object(
       width_px: av.int().min(0),
       height_px: av.int().min(0),
       power_state: av.optional(av.enum_(["awake", "standby", "unknown"] as const)),
+      power_session_id: av.optional(av.string().maxLength(36)),
+      power_revision: av.optional(av.int().min(0).max(Number.MAX_SAFE_INTEGER)),
     }))),
     active_layout_id: av.optional(av.int().min(1)),
     streams_warm: av.optional(av.int().min(0)),

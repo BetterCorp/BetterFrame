@@ -154,6 +154,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
     private var lastActivity = 0L // Guarded by activityLock, including idle commits.
     private var activityRevision = 0L
     private var notifiedIdleRevision = -1L
+    private val powerSessionId = UUID.randomUUID().toString()
     private var powerRevision = 0L // Guarded by activityLock.
     @Volatile var isStandby: Boolean = false
         private set
@@ -400,7 +401,8 @@ class ViewerSession internal constructor(context: Context, private val listener:
                     // Confirm the committed device decision, not merely server delivery.
                     // WebSocket.send queues asynchronously and never waits for HTTP work.
                     if (source != null && requestId != null) source.send(JSONObject().put("type", "power-result")
-                        .put("request_id", requestId).put("accepted", accepted).toString())
+                        .put("request_id", requestId).put("accepted", accepted)
+                        .put("power_session_id", powerSessionId).put("power_revision", powerRevision).toString())
                 }
             }
         } catch (_: RejectedExecutionException) { /* Session was closed. */ }
@@ -697,10 +699,15 @@ class ViewerSession internal constructor(context: Context, private val listener:
         }
     }
 
+    private fun powerStateReport(): JSONObject = synchronized(activityLock) {
+        JSONObject().put("power_state", if (isStandby) "standby" else "awake")
+            .put("power_session_id", powerSessionId).put("power_revision", powerRevision)
+    }
+
     private fun heartbeat(): Boolean {
         val metrics = app.resources.displayMetrics
-        val displays = JSONArray().put(JSONObject().put("index", 0).put("name", "Android display")
-            .put("width_px", metrics.widthPixels).put("height_px", metrics.heightPixels).put("power_state", if (isStandby) "standby" else "awake"))
+        val displays = JSONArray().put(powerStateReport().put("index", 0).put("name", "Android display")
+            .put("width_px", metrics.widthPixels).put("height_px", metrics.heightPixels))
         return request("/api/kiosk/heartbeat", JSONObject().put("displays", displays).put("capabilities", capabilities())
             .put("kiosk_app_version", BuildConfig.VERSION_NAME).put("os_version", "Android ${Build.VERSION.RELEASE}")
             .put("bundle_version", state.optString("bundle_version"))).use {
@@ -887,7 +894,12 @@ class ViewerSession internal constructor(context: Context, private val listener:
         val url = NativeCore.websocketUrl(serverUrl, kioskKey) ?: return
         socketConnecting = true
         nextSocketAttempt = System.currentTimeMillis() + 30_000
-        val opened = http.newWebSocket(Request.Builder().url(url).build(), socketListener(epoch))
+        val request = Request.Builder().url(url).build()
+        val power = powerStateReport()
+        val sessionUrl = request.url.newBuilder()
+            .addQueryParameter("power_session_id", power.getString("power_session_id"))
+            .addQueryParameter("power_revision", power.getLong("power_revision").toString()).build()
+        val opened = http.newWebSocket(request.newBuilder().url(sessionUrl).build(), socketListener(epoch))
         synchronized(activityLock) { socket = opened }
     }
 

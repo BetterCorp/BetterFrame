@@ -29,6 +29,7 @@ import { initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
 import { setCoordinator } from "../../shared/coordinator-registry.js";
 import { isAndroidViewer, supportsAndroidStandby, androidViewerCommandAllowed, viewerAssignment } from "../../shared/android-viewer.js";
+import { readPowerSample, bindPowerSession, unbindPowerSession, ownsPowerSession, powerSampleAllowed, advancePowerSample, withPowerStateLock } from "../../shared/power-state-order.js";
 import { dispatchPower, acceptPowerResult } from "../../shared/power-dispatch.js";
 import { KioskConnections } from "../../shared/kiosk-connections.js";
 import { createCoordinatorWebSocketServer } from "../../shared/coordinator-websocket.js";
@@ -217,7 +218,7 @@ function requestKiosk<T = unknown>(kioskId: string, message: object, timeoutMs =
 }
 
 function sendPowerToKiosk(kioskId: string, message: object): Promise<boolean> {
-  return dispatchPower(connectedKiosks, kioskId, message, 5_000, (connection, requestId) => {
+  return withPowerStateLock(kioskId, () => dispatchPower(connectedKiosks, kioskId, message, 5_000, (connection, requestId) => {
     const result = new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {
         pendingRequests.delete(requestId);
@@ -233,7 +234,7 @@ function sendPowerToKiosk(kioskId: string, message: object): Promise<boolean> {
       if (pending) clearTimeout(pending.timer);
       pendingRequests.delete(requestId);
     } };
-  });
+  }));
 }
 
 function broadcastAll(message: object): void {
@@ -420,7 +421,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
             // disconnect, replacement and disposal release it together.
             ...(viewer ? { validateViewerPower: (message: object) => repo.adapter.withSearchPath(kiosk.schema_name, async () => {
               const current = await repo.getKioskById(kiosk.id);
-              if (!current?.enabled || !supportsAndroidStandby(current)) return false;
+              if (!current?.enabled || !supportsAndroidStandby(current) || !ownsPowerSession(kiosk.id, ws)) return false;
               const displays = (await repo.listDisplaysForKiosk(current.id)).filter((display) => display.is_enabled);
               return displays.length === 1 && androidViewerCommandAllowed(message, undefined, { supported: true, displayId: displays[0]!.id });
             }) } : {}),
@@ -429,6 +430,11 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
               return Boolean(current?.enabled && isAndroidViewer(current) && (await viewerAssignment(repo, current)).layoutIds.has(layoutId));
             }) } : {}),
           });
+          if (viewer) bindPowerSession(kiosk.id, ws, readPowerSample({
+            power_session_id: url.searchParams.get("power_session_id"),
+            power_revision: url.searchParams.has("power_revision") ? Number(url.searchParams.get("power_revision")) : undefined,
+          }));
+          else if (previous) unbindPowerSession(kiosk.id, previous.ws);
           if (previous && previous.ws !== ws) {
             for (const [requestId, pending] of pendingRequests) {
               if (pending.socket !== previous.ws) continue;
@@ -459,7 +465,11 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
               const msg = JSON.parse(data.toString()) as Record<string, unknown>;
               if (msg["type"] === "pong") { connectedKiosks.pong(kiosk.id, ws); return; }
               if (msg["type"] === "power-result") {
-                acceptPowerResult(pendingRequests, kiosk.id, ws, msg);
+                const sample = readPowerSample(msg);
+                if (!ownsPowerSession(kiosk.id, ws) || !powerSampleAllowed(kiosk.id, sample)) return;
+                acceptPowerResult(pendingRequests, kiosk.id, ws, msg, (accepted) => {
+                  if (accepted) advancePowerSample(kiosk.id, sample!);
+                });
                 return;
               }
               if (viewer) return; // heartbeat carries viewer health; no proxy/debug/event responses
@@ -536,6 +546,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           });
 
           ws.on("close", () => {
+            unbindPowerSession(kiosk.id, ws);
             if (!connectedKiosks.removeSocket(kiosk.id, ws)) return;
             for (const [requestId, pending] of pendingRequests) {
               if (pending.socket !== ws) continue;
@@ -602,6 +613,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   async dispose(): Promise<void> {
     if (this.pingInterval) clearInterval(this.pingInterval);
     for (const k of connectedKiosks.values()) {
+      unbindPowerSession(k.id, k.ws);
       try { k.ws.close(); } catch { /* ignore */ }
     }
     connectedKiosks.clear();

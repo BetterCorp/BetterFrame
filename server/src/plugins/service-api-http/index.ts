@@ -35,6 +35,7 @@ import { withDefaultTenant } from "../../shared/default-tenant.js";
 import { onvifCallbackTokenMatches } from "../../shared/onvif-callback-token.js";
 import { isVersionUpgrade } from "../../shared/version.js";
 import { registerViewerDeviceAuth } from "../../shared/display-session.js";
+import { hasPowerSession, readPowerSample, powerSampleAllowed, advancePowerSample, withPowerStateLock } from "../../shared/power-state-order.js";
 import { isAndroidViewer } from "../../shared/android-viewer.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { AuthApi } from "../../shared/auth.js";
@@ -1025,6 +1026,7 @@ export function registerKioskRoutes(
 
     const profile = (event.context as any).kioskProfile;
     const viewer = isAndroidViewer(profile);
+    const orderedPower = viewer && (body.capabilities?.includes("android-standby-v1") || profile?.capabilities?.includes("android-standby-v1"));
     if (viewer && body.displays.length > 1) throw createError({ statusCode: 400, statusMessage: "Android viewer supports one display" });
     if (viewer && body.capabilities) {
       // The restrictive identity cannot be removed by a later heartbeat.
@@ -1139,6 +1141,8 @@ export function registerKioskRoutes(
       let updatedCount = 0;
       let removedCount = 0;
       try {
+      await withPowerStateLock(kiosk.id, async () => {
+      const enforcePowerOrder = orderedPower || (viewer && hasPowerSession(kiosk.id));
       const existing = await repo.listDisplaysForKiosk(kiosk.id);
       const seenDisplayIds = new Set<string>();
       for (const [position, reported] of body.displays.entries()) {
@@ -1148,10 +1152,12 @@ export function registerKioskRoutes(
         currentDisplay = reported.name;
         currentIndex = reportedIndex;
         const displayName = kioskDisplayName(kioskFull?.name ?? String(kiosk.id), reported.name);
+        const sample = readPowerSample(reported);
+        const acceptsPower = !enforcePowerOrder || powerSampleAllowed(kiosk.id, sample);
         const match = findReportedDisplayMatch(existing, seenDisplayIds, reported.name, reportedIndex);
         if (match) {
           seenDisplayIds.add(match.id);
-          const powerState = reported.power_state === "awake" || reported.power_state === "standby"
+          const powerState = !acceptsPower ? null : reported.power_state === "awake" || reported.power_state === "standby"
             ? reported.power_state
             : reported.power_state === "unknown"
               ? "unknown"
@@ -1190,7 +1196,7 @@ export function registerKioskRoutes(
             width_px: reported.width_px,
             height_px: reported.height_px,
           });
-          const powerState = reported.power_state === "awake" || reported.power_state === "standby"
+          const powerState = !acceptsPower ? null : reported.power_state === "awake" || reported.power_state === "standby"
             ? reported.power_state
             : reported.power_state === "unknown"
               ? "unknown"
@@ -1209,6 +1215,7 @@ export function registerKioskRoutes(
             index: reportedIndex,
           });
         }
+        if (enforcePowerOrder && acceptsPower && sample && ["awake", "standby", "unknown"].includes(reported.power_state)) advancePowerSample(kiosk.id, sample);
       }
       for (const display of existing) {
         if (seenDisplayIds.has(display.id)) continue;
@@ -1226,6 +1233,7 @@ export function registerKioskRoutes(
         "display.created_count": createdCount,
         "display.updated_count": updatedCount,
         "display.removed_count": removedCount,
+      });
       });
       } catch (cause) {
         const error = cause instanceof Error ? cause : new Error(String(cause));

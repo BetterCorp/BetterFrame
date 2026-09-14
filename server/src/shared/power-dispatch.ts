@@ -89,6 +89,7 @@ export function acceptPowerResult<S>(
   kioskId: string,
   socket: S,
   message: Record<string, unknown>,
+  beforeResolve?: (accepted: boolean) => void,
 ): boolean {
   const requestId = typeof message["request_id"] === "string" ? message["request_id"] : "";
   const pending = pendingRequests.get(requestId);
@@ -96,6 +97,7 @@ export function acceptPowerResult<S>(
     || pending.kioskId !== kioskId || pending.socket !== socket || typeof message["accepted"] !== "boolean") return false;
   pendingRequests.delete(requestId);
   clearTimeout(pending.timer);
+  beforeResolve?.(message["accepted"]);
   pending.resolve(message["accepted"]);
   return true;
 }

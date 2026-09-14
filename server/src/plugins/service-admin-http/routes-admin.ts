@@ -3104,12 +3104,15 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       displayId = displays[0]!.id;
     }
     if (!kiosk.enabled) return Response.json({ error: "Kiosk is disabled" }, { status: 409 });
+    // Carry the command's targets through delivery. Re-reading assignment after
+    // the write could report a power change for an untouched replacement display.
+    const displayIds = displayId ? [displayId] : (await deps.repo.listDisplaysForKiosk(kioskId)).map((display) => display.id);
     const sent = await getCoordinator().sendPowerToKiosk(kioskId, {
       type: state === "on" ? "wake" : "standby",
       ...(displayId ? { display_id: displayId } : {}),
     });
     if (!sent) return Response.json({ error: "Power command could not be delivered" }, { status: 409 });
-    return null;
+    return { displayIds };
   };
 
   const displayPower = async (event: any, state: "on" | "standby") => {
@@ -3117,8 +3120,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const display = await deps.repo.getDisplayById(id);
     if (!display) return Response.json({ error: "Display not found" }, { status: 404 });
     if (!display.kiosk_id) return Response.json({ error: "Display has no kiosk" }, { status: 409 });
-    const rejected = await sendPowerCommand(display.kiosk_id, state, id);
-    if (rejected) return rejected;
+    const result = await sendPowerCommand(display.kiosk_id, state, id);
+    if (result instanceof Response) return result;
     await deps.repo.updateDisplay(id, {
       actual_power_state: state === "on" ? "awake" : "standby",
       actual_power_state_at: new Date().toISOString(),
@@ -3145,15 +3148,12 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   });
 
   // ---- CEC power commands -----------------------------------------------
-  const emitDisplayPower = async (event: any, kioskId: string, state: "on" | "standby") => {
-    const kiosk = await deps.repo.getKioskById(kioskId);
-    const displays = (await deps.repo.listDisplaysForKiosk(kioskId))
-      .filter((display) => !isAndroidViewer(kiosk) || display.is_enabled);
-    const displayId = displays[0]?.id ?? null;
+  const emitDisplayPower = async (event: any, kioskId: string, state: "on" | "standby", displayIds: readonly string[]) => {
+    const displayId = displayIds[0] ?? null;
     const actual = state === "on" ? "awake" : "standby";
     const at = new Date().toISOString();
-    for (const display of displays) {
-      await deps.repo.updateDisplay(display.id, {
+    for (const targetId of displayIds) {
+      await deps.repo.updateDisplay(targetId, {
         actual_power_state: actual,
         actual_power_state_at: at,
       } as any);
@@ -3172,18 +3172,18 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.post("/admin/kiosks/:id/power/standby", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
-    const rejected = await sendPowerCommand(id, "standby");
-    if (rejected) return rejected;
-    await emitDisplayPower(event, id, "standby");
+    const result = await sendPowerCommand(id, "standby");
+    if (result instanceof Response) return result;
+    await emitDisplayPower(event, id, "standby", result.displayIds);
     await audit(deps.repo, event as any, "display.standby", { resource_type: "kiosk", resource_id: id });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
   app.post("/admin/kiosks/:id/power/wake", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
-    const rejected = await sendPowerCommand(id, "on");
-    if (rejected) return rejected;
-    await emitDisplayPower(event, id, "on");
+    const result = await sendPowerCommand(id, "on");
+    if (result instanceof Response) return result;
+    await emitDisplayPower(event, id, "on", result.displayIds);
     await audit(deps.repo, event as any, "display.wake", { resource_type: "kiosk", resource_id: id });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });

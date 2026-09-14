@@ -41,6 +41,8 @@ class MainActivity : Activity(), ViewerSession.Listener {
     private var focusedCellId: String? = null
     private val tiles = linkedMapOf<String, Pair<String, ViewerTile>>()
     private val dialogs = mutableSetOf<AlertDialog>()
+    private val contentDialogs = mutableSetOf<AlertDialog>()
+    private var contentMenuState: ContentMenuState? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -185,14 +187,14 @@ class MainActivity : Activity(), ViewerSession.Listener {
                     .setItems(webTiles.map(::webTileLabel).toTypedArray()) { _, index ->
                         session.recordActivity()
                         showWebMenu(webTiles[index])
-                    }.setNegativeButton("Close", null).create().let(::showDialog)
+                    }.setNegativeButton("Close", null).create().let(::showContentDialog)
             }
         }
         actions += "Refresh" to { session.refresh() }
         actions += "Settings" to { showSettings() }
         AlertDialog.Builder(this).setTitle("BetterFrame")
             .setItems(actions.map { it.first }.toTypedArray()) { _, index -> session.recordActivity(); actions[index].second() }
-            .setNegativeButton("Close", null).create().let(::showDialog)
+            .setNegativeButton("Close", null).create().let(::showContentDialog)
     }
 
     private fun showWebMenu(tile: WebTile) {
@@ -201,7 +203,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
         actions += "Reload web content" to { tile.reload() }
         AlertDialog.Builder(this).setTitle(webTileLabel(tile))
             .setItems(actions.map { it.first }.toTypedArray()) { _, index -> session.recordActivity(); actions[index].second() }
-            .setNegativeButton("Close", null).create().let(::showDialog)
+            .setNegativeButton("Close", null).create().let(::showContentDialog)
     }
 
     private fun webTileLabel(tile: WebTile): String {
@@ -211,7 +213,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
 
     private fun showDialog(dialog: AlertDialog) {
         dialogs.add(dialog)
-        dialog.setOnDismissListener { dialogs.remove(dialog) }
+        dialog.setOnDismissListener { dialogs.remove(dialog); contentDialogs.remove(dialog) }
         dialog.show()
         val window = dialog.window ?: return
         val callback = window.callback ?: return
@@ -231,6 +233,13 @@ class MainActivity : Activity(), ViewerSession.Listener {
             }
         }
     }
+
+    private fun showContentDialog(dialog: AlertDialog) {
+        contentDialogs.add(dialog)
+        showDialog(dialog)
+    }
+
+    private fun dismissContentDialogs() { contentDialogs.toList().forEach { it.dismiss() } }
 
     private fun dismissDialogs() { dialogs.toList().forEach { it.dismiss() } }
 
@@ -353,6 +362,15 @@ class MainActivity : Activity(), ViewerSession.Listener {
         if (cells == null) { releaseTiles(); return }
         val desired = compatibleWebSessions((0 until cells.length()).map { cells.getJSONObject(it) })
         val contentKeys = desired.associate { it.getString("id") to tileContentKey(it) }
+        val menuState = ContentMenuState(value.optString("layoutId"), value.optString("expandedCellId"),
+            value.optJSONArray("layouts")?.toString().orEmpty(), desired.map { cell ->
+                MenuCellState(cell.getString("id"), contentKeys.getValue(cell.getString("id")),
+                    cell.optInt("row"), cell.optInt("col"), cell.optInt("rowSpan", 1), cell.optInt("colSpan", 1))
+            })
+        // Menus capture tile instances and assigned choices. Invalidate them in the
+        // same UI transaction before those targets change; identical refreshes stay open.
+        if (contentMenuState != menuState) dismissContentDialogs()
+        contentMenuState = menuState
         currentFocus?.let { focus ->
             tiles.entries.firstOrNull { (_, entry) -> containsView(entry.second, focus) }?.let { focusedCellId = it.key }
         }
@@ -423,7 +441,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
         AlertDialog.Builder(this).setTitle("Assigned layouts")
             .setItems(entries.map { it.optString("name", "Layout") }.toTypedArray()) { _, position ->
                 session.selectLayout(entries[position].getString("id"))
-            }.setNegativeButton("Cancel", null).create().let(::showDialog)
+            }.setNegativeButton("Cancel", null).create().let(::showContentDialog)
     }
 
     @Deprecated("Required for TV and Android versions before predictive back")
@@ -470,11 +488,18 @@ class MainActivity : Activity(), ViewerSession.Listener {
     }
 
     private fun releaseTiles() {
+        dismissContentDialogs()
+        contentMenuState = null
         tiles.values.forEach { it.second.release() }
         tiles.clear()
         if (::grid.isInitialized) grid.removeAllViews()
     }
 }
+
+private data class ContentMenuState(val layoutId: String, val expandedId: String, val layouts: String,
+                                    val cells: List<MenuCellState>)
+private data class MenuCellState(val id: String, val contentKey: String, val row: Int, val col: Int,
+                                val rowSpan: Int, val colSpan: Int)
 
 /** Geometry changes resize existing browser/decoder surfaces without restarting content. */
 private fun tileContentKey(cell: JSONObject): String = JSONObject().apply {

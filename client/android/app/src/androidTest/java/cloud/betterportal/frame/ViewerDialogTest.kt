@@ -95,6 +95,63 @@ class ViewerDialogTest {
         await("The tile now at column one is expanded") { expanded(activity) == "11" }
     }
 
+    @Test fun contentChangesDismissStaleMenusButKeepSettingsAndUnchangedMenus() = withViewer { activity, session, _ ->
+        val original = JSONObject(plan(activity).toString())
+        val firstTile = webTile(activity, "10")
+        openWebMenu(activity, firstTile)
+        val menu = showingDialog(activity)
+        instrumentation.runOnMainSync { activity.onPlan(JSONObject(original.toString())) }
+        assertTrue("An unchanged refresh leaves the menu usable", isShowing(menu))
+
+        val changed = JSONObject(original.toString()).apply {
+            getJSONArray("cells").getJSONObject(0).getJSONObject("web").put("html", "<p>Updated</p>")
+        }
+        instrumentation.runOnMainSync { activity.onPlan(changed) }
+        assertFalse("Replaced content invalidates its captured menu target", isShowing(menu))
+        val replacement = webTile(activity, "10")
+        assertNotSame(firstTile, replacement)
+        openWebMenu(activity, replacement)
+        val freshMenu = showingDialog(activity)
+        instrumentation.runOnMainSync {
+            val list = freshMenu.listView
+            val index = (0 until list.adapter.count).single { list.adapter.getItem(it).toString() == "Expand content" }
+            list.performItemClick(list.getChildAt(index), index, list.adapter.getItemId(index))
+        }
+        await("A newly opened menu acts on the current tile") { expanded(activity) == "10" }
+        session.expand(null)
+        await("Restore both tiles") { expanded(activity) == null && plan(activity)?.getJSONArray("cells")?.length() == 2 }
+
+        val current = JSONObject(plan(activity).toString())
+        val beforeMove = webTile(activity, "10")
+        openWebMenu(activity, beforeMove)
+        val positionedMenu = showingDialog(activity)
+        val moved = JSONObject(current.toString()).apply {
+            getJSONArray("cells").getJSONObject(0).put("col", 1)
+            getJSONArray("cells").getJSONObject(1).put("col", 0)
+        }
+        instrumentation.runOnMainSync { activity.onPlan(moved) }
+        assertFalse("Position labels cannot outlive a geometry change", isShowing(positionedMenu))
+        assertSame("Geometry alone still reuses the browser", beforeMove, webTile(activity, "10"))
+
+        invokeActivity(activity, "chooseLayout")
+        val layoutMenu = showingDialog(activity)
+        val renamed = JSONObject(moved.toString()).apply {
+            getJSONArray("layouts").getJSONObject(0).put("name", "Renamed")
+        }
+        instrumentation.runOnMainSync { activity.onPlan(renamed) }
+        assertFalse("Assigned layout choices invalidate their menu", isShowing(layoutMenu))
+
+        invokeActivity(activity, "showSettings")
+        val settings = showingDialog(activity)
+        instrumentation.runOnMainSync { activity.onPlan(original) }
+        assertTrue("Content updates preserve Settings input", isShowing(settings))
+        instrumentation.runOnMainSync { settings.dismiss() }
+        openWebMenu(activity, webTile(activity, "10"))
+        val suspendedMenu = showingDialog(activity)
+        invokeActivity(activity, "releaseTiles")
+        assertFalse("Releasing playback also releases its menus", isShowing(suspendedMenu))
+    }
+
     private fun withViewer(test: (MainActivity, ViewerSession, AtomicLong) -> Unit) {
         val context = instrumentation.targetContext
         val directory = File(context.cacheDir, "dialog-test-${System.nanoTime()}").apply { mkdirs() }
@@ -151,6 +208,20 @@ class ViewerDialogTest {
             dialog = dialogs.filterIsInstance<AlertDialog>().single { it.isShowing }
         }
         return dialog
+    }
+    private fun webTile(activity: MainActivity, id: String): WebTile {
+        lateinit var tile: WebTile
+        instrumentation.runOnMainSync {
+            val tiles = MainActivity::class.java.getDeclaredField("tiles").apply { isAccessible = true }.get(activity) as Map<*, *>
+            tile = (tiles[id] as Pair<*, *>).second as WebTile
+        }
+        return tile
+    }
+    private fun openWebMenu(activity: MainActivity, tile: WebTile) = instrumentation.runOnMainSync {
+        MainActivity::class.java.getDeclaredMethod("showWebMenu", WebTile::class.java).apply { isAccessible = true }.invoke(activity, tile)
+    }
+    private fun invokeActivity(activity: MainActivity, method: String) = instrumentation.runOnMainSync {
+        MainActivity::class.java.getDeclaredMethod(method).apply { isAccessible = true }.invoke(activity)
     }
     private fun isShowing(dialog: AlertDialog): Boolean {
         var showing = false

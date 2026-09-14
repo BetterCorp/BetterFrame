@@ -322,11 +322,13 @@ class ViewerSession internal constructor(context: Context, private val listener:
     }
 
     fun selectLayout(id: String) {
-        recordActivity()
         renderWork { snapshot ->
             try {
                 val plan = JSONObject(NativeCore.renderPlan(snapshot.raw, id, null))
-                if (plan.has("error") || renderSnapshot !== snapshot || generation != snapshot.epoch) return@renderWork
+                if (plan.has("error") || renderSnapshot !== snapshot || generation != snapshot.epoch || !running || closed) return@renderWork
+                // Remote stale/unassigned commands are not user activity. Only an
+                // accepted selection renews idle; physical input is tracked by Activity.
+                recordActivity()
                 layoutId = id; expandedId = null
                 persistSelection(id, snapshot.epoch)
                 renderAndEmit(snapshot)

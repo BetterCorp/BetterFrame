@@ -113,6 +113,32 @@ class ViewerIdleTest {
         }
     }
 
+    @Test fun rejectedLayoutCommandsDoNotRenewIdleButAcceptedSelectionsDo() {
+        val clock = AtomicLong(1_000)
+        val fixture = IdleFixture(clock::get)
+        try {
+            fixture.start()
+            clock.set(2_500)
+            fixture.act { fixture.session.selectLayout("4") }
+            assertEquals("4", fixture.plan().getString("layoutId"))
+            val renderer = ViewerSession::class.java.getDeclaredField("renderer").apply { isAccessible = true }
+                .get(fixture.session) as ExecutorService
+            for ((time, rejected) in listOf(4_500L to "unassigned", 5_499L to "removed-layout")) {
+                clock.set(time)
+                // This is the same entry point as a remote command; no physical
+                // Activity input should be manufactured for a rejected layout ID.
+                fixture.session.selectLayout(rejected)
+                renderer.submit {}.get(5, TimeUnit.SECONDS)
+                assertNull("Accepted selection gets its full three-second idle period",
+                    fixture.plans.poll(350, TimeUnit.MILLISECONDS))
+            }
+            clock.set(5_501)
+            assertEquals("Rejected commands cannot postpone the accepted selection's idle return",
+                "3", fixture.plan().getString("layoutId"))
+            assertNotNull(fixture.idle.poll(5, TimeUnit.SECONDS))
+        } finally { fixture.close() }
+    }
+
     @Test fun freshInputBetweenIdleSampleAndCommitPreventsExpiry() {
         val clock = AtomicLong(1_000)
         val intercept = AtomicBoolean(false)

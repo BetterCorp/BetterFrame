@@ -35,7 +35,7 @@ import { withDefaultTenant } from "../../shared/default-tenant.js";
 import { onvifCallbackTokenMatches } from "../../shared/onvif-callback-token.js";
 import { isVersionUpgrade } from "../../shared/version.js";
 import { registerViewerDeviceAuth } from "../../shared/display-session.js";
-import { hasPowerSession, readPowerSample, powerSampleAllowed, advancePowerSample, withPowerStateLock } from "../../shared/power-state-order.js";
+import { hasPowerSession, readPowerSample, heartbeatPowerSampleAllowed, advancePowerSample, withPowerStateLock } from "../../shared/power-state-order.js";
 import { isAndroidViewer } from "../../shared/android-viewer.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { AuthApi } from "../../shared/auth.js";
@@ -1153,7 +1153,8 @@ export function registerKioskRoutes(
         currentIndex = reportedIndex;
         const displayName = kioskDisplayName(kioskFull?.name ?? String(kiosk.id), reported.name);
         const sample = readPowerSample(reported);
-        const acceptsPower = !enforcePowerOrder || powerSampleAllowed(kiosk.id, sample);
+        const validPowerState = ["awake", "standby", "unknown"].includes(reported.power_state);
+        const acceptsPower = !enforcePowerOrder || (validPowerState && heartbeatPowerSampleAllowed(kiosk.id, sample));
         const match = findReportedDisplayMatch(existing, seenDisplayIds, reported.name, reportedIndex);
         if (match) {
           seenDisplayIds.add(match.id);
@@ -1215,7 +1216,7 @@ export function registerKioskRoutes(
             index: reportedIndex,
           });
         }
-        if (enforcePowerOrder && acceptsPower && sample && ["awake", "standby", "unknown"].includes(reported.power_state)) advancePowerSample(kiosk.id, sample);
+        if (enforcePowerOrder && acceptsPower && sample && validPowerState) advancePowerSample(kiosk.id, sample);
       }
       for (const display of existing) {
         if (seenDisplayIds.has(display.id)) continue;

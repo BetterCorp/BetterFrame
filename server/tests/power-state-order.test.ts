@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { bindPowerSession, unbindPowerSession, readPowerSample, powerSampleAllowed, advancePowerSample, withPowerStateLock } from "../src/shared/power-state-order.js";
+import { bindPowerSession, unbindPowerSession, readPowerSample, powerSampleAllowed, heartbeatPowerSampleAllowed, advancePowerSample, withPowerStateLock } from "../src/shared/power-state-order.js";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const sample = (revision: number) => ({ sessionId, revision });
@@ -49,4 +49,37 @@ test("power mutation lock is reentrant, releases after errors and serializes asy
   assert.deepEqual(steps, ["sample"]);
   release(); await rejected; await second;
   assert.deepEqual(steps, ["sample", "write", "next-command"]);
+});
+
+
+test("HTTP-only power reports work while disconnected without losing the ACK revision floor", () => {
+  const kiosk = "offline-ordering";
+  const now = Date.now();
+  assert.equal(heartbeatPowerSampleAllowed(kiosk, sample(0), now), true);
+  advancePowerSample(kiosk, sample(0), now);
+  assert.equal(heartbeatPowerSampleAllowed(kiosk, sample(2), now), true);
+  advancePowerSample(kiosk, sample(2), now);
+  assert.equal(heartbeatPowerSampleAllowed(kiosk, sample(1), now), false);
+  const owner = {};
+  bindPowerSession(kiosk, owner, sample(2));
+  advancePowerSample(kiosk, sample(5));
+  unbindPowerSession(kiosk, owner);
+  assert.equal(heartbeatPowerSampleAllowed(kiosk, sample(4)), false, "Disconnect retains the accepted command floor");
+  assert.equal(heartbeatPowerSampleAllowed(kiosk, sample(6)), true);
+  advancePowerSample(kiosk, sample(6));
+  const restarted = { sessionId: "55555555-5555-4555-8555-555555555555", revision: 0 };
+  assert.equal(heartbeatPowerSampleAllowed(kiosk, restarted), true);
+  advancePowerSample(kiosk, restarted);
+  assert.equal(heartbeatPowerSampleAllowed(kiosk, sample(99)), false, "Delayed reports from the retired process cannot switch back");
+  assert.equal(powerSampleAllowed(kiosk, restarted, now + 31 * 60_000), false, "Ownerless history expires");
+});
+
+test("retained HTTP-only history is bounded", () => {
+  const now = Date.now();
+  for (let index = 0; index < 4097; index++) {
+    assert.equal(heartbeatPowerSampleAllowed(`bounded-offline-${index}`, sample(0), now), true);
+    advancePowerSample(`bounded-offline-${index}`, sample(0), now);
+  }
+  assert.equal(powerSampleAllowed("bounded-offline-0", sample(0), now), false);
+  assert.equal(powerSampleAllowed("bounded-offline-4096", sample(0), now), true);
 });

@@ -266,36 +266,45 @@ test("delayed Android heartbeats cannot overwrite acknowledged power or race a n
   registerAdminRoutes(app, { repo, nodered: { forward() {} } } as never);
   const sessionId = "33333333-3333-4333-8333-333333333333";
   const owner = {};
-  bindPowerSession(kiosk.id, owner, { sessionId, revision: 0 });
   t.after(() => unbindPowerSession(kiosk.id, owner));
   const heartbeat = (state: string, revision: number, session = sessionId) => app.request("https://bf.test/api/kiosk/heartbeat", {
     method: "POST", headers: { authorization: "Bearer device-key", "content-type": "application/json" },
     body: JSON.stringify({ displays: [{ index: 0, name: "Main", width_px: 1920, height_px: 1080,
       power_state: state, power_session_id: session, power_revision: revision }] }),
   });
+  // Bootstrap with HTTP only: local sleep and wake must be visible before /ws/kiosk connects.
+  assert.equal((await heartbeat("standby", 1)).status, 200);
+  assert.equal(display.actual_power_state, "standby");
+  assert.equal((await heartbeat("awake", 2)).status, 200);
+  assert.equal(display.actual_power_state, "awake");
+  bindPowerSession(kiosk.id, owner, { sessionId, revision: 2 });
   let acknowledge!: () => void;
   let entered!: () => void;
   const dispatchStarted = new Promise<void>((resolve) => { entered = resolve; });
   const ack = new Promise<void>((resolve) => { acknowledge = resolve; });
   setCoordinator({ ...original, sendPowerToKiosk: async () => {
-    entered(); await ack; advancePowerSample(kiosk.id, { sessionId, revision: 1 }); return true;
+    entered(); await ack; advancePowerSample(kiosk.id, { sessionId, revision: 3 }); return true;
   } });
   const command = app.request("https://bf.test/admin/kiosks/viewer/power/standby", { method: "POST" });
   await dispatchStarted;
-  const delayed = heartbeat("awake", 0);
+  const delayed = heartbeat("awake", 2);
   acknowledge();
   assert.equal((await command).status, 302);
   assert.equal((await delayed).status, 200);
   assert.equal(display.actual_power_state, "standby");
+  unbindPowerSession(kiosk.id, owner);
+  assert.equal((await heartbeat("awake", 2)).status, 200);
+  assert.equal(display.actual_power_state, "standby", "A disconnected socket retains its ACK floor for delayed HTTP");
   const legacy = await app.request("https://bf.test/api/kiosk/heartbeat", {
     method: "POST", headers: { authorization: "Bearer device-key", "content-type": "application/json" },
     body: JSON.stringify({ capabilities: ["android-viewer"], displays: [{ index: 0, name: "Main", width_px: 1920, height_px: 1080, power_state: "awake" }] }),
   });
   assert.equal(legacy.status, 200);
   assert.equal(display.actual_power_state, "standby", "An old APK heartbeat cannot downgrade ordering after a current-session ACK");
-  assert.equal((await heartbeat("awake", 2)).status, 200);
-  assert.equal((await heartbeat("standby", 1)).status, 200);
+  assert.equal((await heartbeat("awake", 4)).status, 200);
+  assert.equal((await heartbeat("standby", 3)).status, 200);
   assert.equal(display.actual_power_state, "awake", "Only newer local transitions supersede the ACK");
+  bindPowerSession(kiosk.id, owner, { sessionId, revision: 4 });
   assert.equal((await heartbeat("standby", 99, "44444444-4444-4444-8444-444444444444")).status, 200);
   assert.equal(display.actual_power_state, "awake", "Another process cannot replace the socket's pinned session");
 
@@ -304,11 +313,11 @@ test("delayed Android heartbeats cannot overwrite acknowledged power or race a n
   const writing = new Promise<void>((resolve) => { writeEntered = resolve; });
   const finish = new Promise<void>((resolve) => { finishWrite = resolve; });
   holdWrite = async () => { holdWrite = undefined; writeEntered(); await finish; };
-  const writingHeartbeat = heartbeat("standby", 3);
+  const writingHeartbeat = heartbeat("standby", 5);
   await writing;
   let commandSent = false;
   setCoordinator({ ...original, sendPowerToKiosk: async () => {
-    commandSent = true; advancePowerSample(kiosk.id, { sessionId, revision: 4 }); return true;
+    commandSent = true; advancePowerSample(kiosk.id, { sessionId, revision: 6 }); return true;
   } });
   const next = app.request("https://bf.test/admin/kiosks/viewer/power/wake", { method: "POST" });
   await new Promise<void>((resolve) => setImmediate(resolve));

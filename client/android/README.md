@@ -225,7 +225,8 @@ assigned. Revoked or ambiguous assignments reject remote power commands.
 BF waits for the Android app to acknowledge the change before reporting success;
 a viewer still refreshing a reassignment rejects power until it knows the new display.
 Session/revision metadata orders heartbeats against acknowledged power changes so
-a delayed earlier report cannot restore stale state in BF.
+a delayed earlier report cannot restore stale state in BF. Local power changes
+still report through HTTP when the WebSocket connection is unavailable.
 Both the updated server and APK are needed for remote controls. Older viewer APKs
 remain blocked from power commands. Other device-management commands stay unsupported.
 

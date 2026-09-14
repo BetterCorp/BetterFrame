@@ -187,3 +187,21 @@ test("production bundle and heartbeat routes preserve tenant context and revoke 
   kiosk.enabled = false;
   assert.equal((await app.request("https://bf.test/api/kiosk/bundle", { headers: { ...headers, "if-none-match": etag } })).status, 401);
 });
+
+
+test("Android standby is opt-in and scoped to the assigned display", () => {
+  const power = { supported: true, displayId: "assigned-display" };
+  for (const type of ["standby", "wake"]) {
+    assert.equal(androidViewerCommandAllowed({ type }), false);
+    assert.equal(androidViewerCommandAllowed({ type }, undefined, { ...power, supported: false }), false);
+    assert.equal(androidViewerCommandAllowed({ type }, undefined, power), true);
+    assert.equal(androidViewerCommandAllowed({ type, display_id: "assigned-display" }, undefined, power), true);
+    for (const display_id of ["other-display", "", null, 42]) {
+      assert.equal(androidViewerCommandAllowed({ type, display_id }, undefined, power), false);
+    }
+    assert.equal(androidViewerCommandAllowed({ type }, undefined, { ...power, displayId: "" }), false);
+  }
+  for (const type of ["reboot", "volume-set", "terminal-request", "firmware_check", "future"]) {
+    assert.equal(androidViewerCommandAllowed({ type }, undefined, power), false);
+  }
+});

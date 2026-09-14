@@ -133,6 +133,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
         fun onPairing(code: String)
         fun onPlan(plan: JSONObject)
         fun onIdleReturn() {}
+        fun onStandbyChanged(standby: Boolean) {}
     }
     private val app = context.applicationContext
     private val store = ProtectedStore(app)
@@ -144,13 +145,16 @@ class ViewerSession internal constructor(context: Context, private val listener:
     @Volatile private var renderSnapshot: RenderSnapshot? = null
     private data class IdlePolicy(val snapshot: RenderSnapshot, val timeoutMs: Long,
                                   val layout: String, val defaultLayout: String,
-                                  val returnToDefault: Boolean, val expanded: Boolean)
+                                  val returnToDefault: Boolean, val expanded: Boolean, val sleepTimeoutMs: Long)
     private var idlePolicy: IdlePolicy? = null // Renderer-thread owned.
     @Volatile private var idleLoop: ScheduledFuture<*>? = null
     private val activityLock = Any()
     private var lastActivity = 0L // Guarded by activityLock, including idle commits.
     private var activityRevision = 0L
     private var notifiedIdleRevision = -1L
+    private var powerRevision = 0L // Guarded by activityLock.
+    @Volatile var isStandby: Boolean = false
+        private set
     private var serverResolved = false
     private var state = JSONObject()
     @Volatile private var storageGeneration = -1L
@@ -222,6 +226,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
         running = true
         recordActivity()
         val epoch = ++generation
+        ui(epoch) { synchronized(activityLock) { listener.onStandbyChanged(isStandby) } }
         enqueue {
             if (generation != epoch || !running) return@enqueue
             activeEpoch = epoch
@@ -266,7 +271,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
                 if (!state.optBoolean("blocked")) emitPlan()
                 else status(state.optString("block_reason", AUTH_REJECTED))
                 idleLoop?.cancel(false)
-                val idle = renderer.scheduleWithFixedDelay({ checkIdle(epoch) }, 250, 250, TimeUnit.MILLISECONDS)
+                val idle = renderer.scheduleWithFixedDelay({ checkSleep(epoch); checkIdle(epoch) }, 250, 250, TimeUnit.MILLISECONDS)
                 idleLoop = idle
                 if (!active()) idle.cancel(false) // stop() may race initial cache loading.
                 nextSync = 0L
@@ -318,6 +323,81 @@ class ViewerSession internal constructor(context: Context, private val listener:
         synchronized(activityLock) {
             lastActivity = maxOf(lastActivity, now)
             activityRevision++
+        }
+    }
+
+    /** Soft standby keeps the authenticated control connection alive. */
+    fun setStandby(standby: Boolean) {
+        if (closed) return
+        val now = monotonicTime()
+        val epoch = generation
+        val revision = synchronized(activityLock) {
+            if (!standby) {
+                lastActivity = maxOf(lastActivity, now)
+                activityRevision++
+            }
+            if (isStandby == standby) return
+            isStandby = standby
+            ++powerRevision
+        }
+        currentWork { nextSync = 0L }
+        ui(epoch) {
+            synchronized(activityLock) {
+                if (powerRevision == revision) listener.onStandbyChanged(isStandby)
+            }
+        }
+    }
+
+    private fun checkSleep(epoch: Int) {
+        val policy = idlePolicy ?: return
+        if (policy.sleepTimeoutMs <= 0 || isStandby) return
+        val observedRevision = synchronized(activityLock) { activityRevision }
+        val now = monotonicTime()
+        synchronized(activityLock) {
+            if (!running || closed || generation != epoch || renderSnapshot !== policy.snapshot ||
+                isStandby || activityRevision != observedRevision || now - lastActivity < policy.sleepTimeoutMs) return
+        }
+        // Commit on the UI thread so input arriving before the queued transition
+        // cannot leave a logically sleeping session behind a still-awake display.
+        ui(epoch) {
+            synchronized(activityLock) {
+                if (renderSnapshot === policy.snapshot && !isStandby && activityRevision == observedRevision) {
+                    isStandby = true
+                    powerRevision++
+                    currentWork { nextSync = 0L }
+                    listener.onStandbyChanged(true)
+                }
+            }
+        }
+    }
+
+    private fun applyPowerCommand(command: JSONObject) {
+        val type = command.optString("type")
+        if (type != "standby" && type != "wake") return
+        // Only an omitted target means all displays. Malformed explicit targets
+        // must never turn into a broadcast, even from an authenticated server.
+        val target = if (command.has("display_id")) {
+            val value = command.opt("display_id")
+            if (value !is String && value !is Number) return
+            value.toString().takeIf { it.isNotBlank() && it != "null" } ?: return
+        } else null
+        renderWork { snapshot ->
+            try {
+                // Assignment survives an empty/invalid layout. Wake must remain
+                // available so the display can show its no-content guidance.
+                val bundle = JSONObject(snapshot.raw)
+                val displays = bundle.optJSONArray("displays")
+                val assigned = if (displays != null && displays.length() > 0) {
+                    if (displays.length() != 1) return@renderWork
+                    displays.optJSONObject(0)
+                } else bundle.optJSONObject("display") // Legacy core normalization.
+                val id = assigned?.opt("id")
+                val display = if (id is String || id is Number) id.toString().takeIf { it.isNotBlank() && it != "null" } else null
+                if (display != null && (target == null || target == display) &&
+                    renderSnapshot === snapshot && generation == snapshot.epoch && running && !closed) {
+                    setStandby(type == "standby")
+                }
+            } catch (_: Exception) { /* Ignore malformed or stale assignments. */ }
         }
     }
 
@@ -385,6 +465,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
         // Validate before changing enrollment; retain the choice through activity recreation.
         val target = try { nextServer?.let { ServerAddress.parse(it).toString().trimEnd('/') } }
         catch (_: Exception) { status("Enter a valid BF server origin."); return }
+        setStandby(false)
         val claim = EnrollmentCleanup.begin(app, UUID.randomUUID().toString())
         val token = claim.token
         clearingEnrollment = true
@@ -597,7 +678,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
     private fun heartbeat(): Boolean {
         val metrics = app.resources.displayMetrics
         val displays = JSONArray().put(JSONObject().put("index", 0).put("name", "Android display")
-            .put("width_px", metrics.widthPixels).put("height_px", metrics.heightPixels).put("power_state", "awake"))
+            .put("width_px", metrics.widthPixels).put("height_px", metrics.heightPixels).put("power_state", if (isStandby) "standby" else "awake"))
         return request("/api/kiosk/heartbeat", JSONObject().put("displays", displays).put("capabilities", capabilities())
             .put("kiosk_app_version", BuildConfig.VERSION_NAME).put("os_version", "Android ${Build.VERSION.RELEASE}")
             .put("bundle_version", state.optString("bundle_version"))).use {
@@ -736,7 +817,8 @@ class ViewerSession internal constructor(context: Context, private val listener:
             expandedId = plan.textValue("expandedCellId")
             idlePolicy = IdlePolicy(snapshot, plan.optLong("idleTimeoutSeconds").coerceAtLeast(0) * 1000,
                 plan.getString("layoutId"), plan.optString("idleReturnLayoutId", plan.getString("layoutId")),
-                plan.optBoolean("resetsIdleTimer"), expandedId != null)
+                plan.optBoolean("resetsIdleTimer"), expandedId != null,
+                plan.optLong("sleepTimeoutSeconds").coerceIn(0, Long.MAX_VALUE / 1000) * 1000)
             fun enrich(cells: JSONArray?) {
                 if (cells == null) return
                 for (index in 0 until cells.length()) {
@@ -795,6 +877,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
                         when (command.optString("type")) {
                             "ping" -> webSocket.send("{\"type\":\"pong\"}")
                             "reload-bundle" -> nextSync = 0L
+                            "standby", "wake" -> applyPowerCommand(command)
                             "layout-switch" -> {
                                 val raw = state.optString("bundle")
                                 val display = JSONObject(NativeCore.renderPlan(raw, layoutId, null)).optString("displayId")
@@ -814,5 +897,5 @@ class ViewerSession internal constructor(context: Context, private val listener:
         })
     }
 
-    private fun capabilities() = JSONArray(listOf("android", "android-viewer", "android-viewer-v1", "rtsp", "web", "html", "touch", "dpad"))
+    private fun capabilities() = JSONArray(listOf("android", "android-viewer", "android-viewer-v1", "android-standby-v1", "rtsp", "web", "html", "touch", "dpad"))
 }

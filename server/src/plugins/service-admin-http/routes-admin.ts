@@ -69,7 +69,7 @@ import {
 import { currentTenantSchema, withDefaultTenant } from "../../shared/default-tenant.js";
 import { createOnvifCallbackToken } from "../../shared/onvif-callback-token.js";
 import { localTimeHtml } from "../../web-templates/layout.js";
-import { isAndroidViewer } from "../../shared/android-viewer.js";
+import { isAndroidViewer, supportsAndroidStandby } from "../../shared/android-viewer.js";
 
 interface DiscoverAddStream {
   profile_name: string;
@@ -3095,7 +3095,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   const sendPowerCommand = async (kioskId: string, state: "on" | "standby", displayId?: string) => {
     const kiosk = await deps.repo.getKioskById(kioskId);
     if (!kiosk) return Response.json({ error: "Kiosk not found" }, { status: 404 });
-    if (isAndroidViewer(kiosk)) return Response.json({ error: "Power control is not supported by Android viewers" }, { status: 409 });
+    if (isAndroidViewer(kiosk)) {
+      if (!supportsAndroidStandby(kiosk)) return Response.json({ error: "Update the Android viewer to enable standby/wake" }, { status: 409 });
+      const displays = (await deps.repo.listDisplaysForKiosk(kioskId)).filter((display) => display.is_enabled);
+      if (displays.length !== 1 || (displayId !== undefined && displayId !== displays[0]!.id)) {
+        return Response.json({ error: "Power target is not the Android viewer's assigned display" }, { status: 409 });
+      }
+      displayId = displays[0]!.id;
+    }
     if (!kiosk.enabled) return Response.json({ error: "Kiosk is disabled" }, { status: 409 });
     const sent = getCoordinator().sendToKiosk(kioskId, {
       type: state === "on" ? "wake" : "standby",
@@ -3139,7 +3146,9 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- CEC power commands -----------------------------------------------
   const emitDisplayPower = async (event: any, kioskId: string, state: "on" | "standby") => {
-    const displays = await deps.repo.listDisplaysForKiosk(kioskId);
+    const kiosk = await deps.repo.getKioskById(kioskId);
+    const displays = (await deps.repo.listDisplaysForKiosk(kioskId))
+      .filter((display) => !isAndroidViewer(kiosk) || display.is_enabled);
     const displayId = displays[0]?.id ?? null;
     const actual = state === "on" ? "awake" : "standby";
     const at = new Date().toISOString();

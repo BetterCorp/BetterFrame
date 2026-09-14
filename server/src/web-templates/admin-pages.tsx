@@ -2,7 +2,7 @@
  * Admin page templates: overview, cameras, kiosks, account, etc.
  */
 import { js } from "jsx-htmx";
-import { isAndroidViewer } from "../shared/android-viewer.js";
+import { isAndroidViewer, supportsAndroidStandby } from "../shared/android-viewer.js";
 import { formatTimeFallback, Layout, LocalTime, localTimeData } from "./layout.js";
 import type {
   AuditEntry,
@@ -2487,9 +2487,10 @@ export function KioskEditPage(props: KioskEditProps) {
               </div>
             ) : null}
           </div>
-          {!isAndroidViewer(k) ? (
+          {!isAndroidViewer(k) || supportsAndroidStandby(k) ? (
             <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
               <div style="font-size:0.85rem; font-weight:600; margin-bottom:0.5rem">Display Power</div>
+              {supportsAndroidStandby(k) ? <div class="form-hint">Standby blanks the app and stops playback. Wake resumes it while the device screen is on.</div> : null}
               <button
                 type="button"
                 class="btn btn-sm"
@@ -3892,7 +3893,7 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
             </div>
           ) : null}
 
-          {d.kiosk_id && !isAndroidViewer(props.kiosk) ? (
+          {d.kiosk_id && (!isAndroidViewer(props.kiosk) || supportsAndroidStandby(props.kiosk)) ? (
             <div style="margin-bottom:1rem; display:flex; gap:0.5rem; flex-wrap:wrap">
               <button
                 type="button"

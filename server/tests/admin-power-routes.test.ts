@@ -4,19 +4,19 @@ import { H3 } from "h3";
 import { registerAdminRoutes } from "../src/plugins/service-admin-http/routes-admin.js";
 import { getCoordinator, setCoordinator } from "../src/shared/coordinator-registry.js";
 
-function fixture(capabilities: string[], delivered: boolean, enabled = true) {
+function fixture(capabilities: string[], delivered: boolean, enabled = true, assigned = true, extraDisplay = false) {
   const commands: { id: string; message: object; queue?: boolean }[] = [];
   const updates: { id: string; patch: Record<string, unknown> }[] = [];
   const kioskUpdates: { id: string; patch: Record<string, unknown> }[] = [];
   const events: unknown[][] = [];
   const audits: Record<string, unknown>[] = [];
-  const display = { id: "display", kiosk_id: "kiosk", actual_power_state: "unknown" };
+  const display = { id: "display", kiosk_id: "kiosk", actual_power_state: "unknown", is_enabled: assigned };
   const app = new H3();
   registerAdminRoutes(app, {
     repo: {
       getKioskById: async () => ({ id: "kiosk", capabilities, enabled }),
       getDisplayById: async () => display,
-      listDisplaysForKiosk: async () => [display],
+      listDisplaysForKiosk: async () => [display, ...(extraDisplay ? [{ ...display, id: "second-display" }] : [])],
       updateDisplay: async (id: string, patch: Record<string, unknown>) => { updates.push({ id, patch }); },
       updateKiosk: async (id: string, patch: Record<string, unknown>) => { kioskUpdates.push({ id, patch }); },
       insertAudit: async (entry: Record<string, unknown>) => { audits.push(entry); },
@@ -56,7 +56,7 @@ test("viewer reboot and every audio action reject direct requests before sending
   t.after(() => setCoordinator(original));
   for (const delivered of [true, false]) {
     for (const action of ["reboot", "apply", "mute", "unmute", "output", "save_default"]) {
-      const f = fixture(["android-viewer"], delivered);
+      const f = fixture(["android-viewer", "android-standby-v1"], delivered);
       const response = await f.app.request(`http://bf.test/admin/kiosks/kiosk/${action === "reboot" ? "reboot" : "volume"}`, {
         method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ action, volume: "75", output_id: "hdmi" }).toString(),
@@ -106,4 +106,30 @@ test("delivered desktop power commands preserve state, event and audit behavior"
       if (f.audits.length) assert.equal(f.audits[0]?.action, `display.${command}`);
     }
   }
+});
+
+
+test("new Android standby routes deliver only to the active display and refuse offline or unassigned targets", async (t) => {
+  const original = getCoordinator();
+  t.after(() => setCoordinator(original));
+  for (const target of ["displays/display", "kiosks/kiosk"]) {
+    for (const command of ["wake", "standby"]) {
+      for (const [delivered, assigned] of [[true, true], [false, true], [true, false]] as const) {
+        const f = fixture(["android-viewer", "android-standby-v1"], delivered, true, assigned);
+        const response = await f.app.request(`http://bf.test/admin/${target}/power/${command}`, { method: "POST" });
+        assert.equal(response.status, delivered && assigned ? 302 : 409);
+        assert.deepEqual(f.commands, assigned ? [{ id: "kiosk", message: { type: command, display_id: "display" }, queue: false }] : []);
+        assert.equal(f.updates.length, delivered && assigned ? 1 : 0);
+        assert.equal(f.events.length, delivered && assigned ? 1 : 0);
+      }
+    }
+  }
+  const ambiguous = fixture(["android-viewer", "android-standby-v1"], true, true, true, true);
+  assert.equal((await ambiguous.app.request("http://bf.test/admin/kiosks/kiosk/power/wake", { method: "POST" })).status, 409);
+  assert.deepEqual(ambiguous.commands, []);
+  const f = fixture(["android-viewer", "android-standby-v1"], true);
+  const response = await f.app.request("http://bf.test/admin/displays/other/power/wake", { method: "POST" });
+  assert.equal(response.status, 409);
+  assert.deepEqual(f.commands, []);
+  assert.deepEqual(f.updates, []);
 });

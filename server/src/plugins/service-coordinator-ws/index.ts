@@ -28,7 +28,7 @@ import { initDb } from "../../shared/db/init.js";
 import { initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
 import { setCoordinator } from "../../shared/coordinator-registry.js";
-import { isAndroidViewer, androidViewerCommandAllowed, viewerAssignment } from "../../shared/android-viewer.js";
+import { isAndroidViewer, supportsAndroidStandby, androidViewerCommandAllowed, viewerAssignment } from "../../shared/android-viewer.js";
 import { KioskConnections } from "../../shared/kiosk-connections.js";
 import { createCoordinatorWebSocketServer } from "../../shared/coordinator-websocket.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
@@ -140,6 +140,13 @@ function sendToKiosk(kioskId: string, message: object, queueWhenOffline = true):
   if (validateLayout) {
     const msg = message as Record<string, unknown>;
     const layoutId = typeof msg["layout_id"] === "string" ? msg["layout_id"] : "";
+    if (["standby", "wake"].includes(String(msg["type"]))) {
+      if (!k?.validateViewerPower || k.ws.readyState !== WebSocket.OPEN) return false;
+      void k.validateViewerPower(message).then((allowed) => {
+        if (allowed && connectedKiosks.get(kioskId)?.ws === k.ws && k.ws.readyState === WebSocket.OPEN) k.ws.send(JSON.stringify(message));
+      }).catch(() => {});
+      return true;
+    }
     if (!androidViewerCommandAllowed(message, new Set([layoutId]))) return false;
     if (msg["type"] === "layout-switch") {
       if (!k || k.ws.readyState !== WebSocket.OPEN) return false;
@@ -389,6 +396,12 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
             id: kiosk.id, name: kioskData.name, ws, lastPong: Date.now(),
             // Keep the assignment closure owned by its authenticated socket so
             // disconnect, replacement and disposal release it together.
+            ...(viewer ? { validateViewerPower: (message: object) => repo.adapter.withSearchPath(kiosk.schema_name, async () => {
+              const current = await repo.getKioskById(kiosk.id);
+              if (!current?.enabled || !supportsAndroidStandby(current)) return false;
+              const displays = (await repo.listDisplaysForKiosk(current.id)).filter((display) => display.is_enabled);
+              return displays.length === 1 && androidViewerCommandAllowed(message, undefined, { supported: true, displayId: displays[0]!.id });
+            }) } : {}),
             ...(viewer ? { validateViewerLayout: (layoutId: string) => repo.adapter.withSearchPath(kiosk.schema_name, async () => {
               const current = await repo.getKioskById(kiosk.id);
               return Boolean(current?.enabled && isAndroidViewer(current) && (await viewerAssignment(repo, current)).layoutIds.has(layoutId));

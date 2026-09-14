@@ -82,7 +82,7 @@ The lean default is H.264 RTSP on qualified cameras, with TCP as the initial tra
 - Maintain players for visible streams only. During expansion release hidden players; reuse the selected player/surface where practical. Warm/preloaded desktop stream behavior must be disabled or capped by the Android resource policy. Returning to the grid may require reconnection.
 - Bound player transitions so opening a new layout never temporarily doubles decoder demand. Unsupported layouts must be flagged in BF before assignment, with a clear device-side fallback for legacy assignments.
 - When decoder allocation or sustained performance fails, step down stream quality or switch to a supported layout/one-camera view with a visible explanation. Avoid silent missing tiles and software-decoder fallback storms.
-- Release camera playback when the app is backgrounded or the screen is off. Restore cleanly on resume. Keep the display awake only during active display use; do not implement background video playback for v1.
+- Release camera playback when the app is backgrounded, in standby or the screen is off. Restore cleanly on resume. Software standby keeps a black, dimmed screen and the control connection alive for remote wake; actual screen-off suspends networking. Do not implement background video playback.
 - Use a bounded WebView pool for visible cells. Preserve unchanged visible pages across bundle refreshes; stop hidden media and destroy hidden views when their short retention budget expires or memory is tight. WebView pause alone is not a guarantee that JavaScript/media stops; test the player and destroy hidden views if necessary. Avoid global timer controls while another page is visible. Account for renderer memory as well as the app heap, following Android's [WebView memory guidance](https://developer.android.com/develop/ui/views/layout/webapps/manage-webview-memory).
 - Use bounded buffers and per-camera reconnect backoff with jitter. BF reconnection must not restart healthy camera players. Cap logs and health/event queues.
 
@@ -90,7 +90,7 @@ Provisional acceptance targets, to be calibrated on the chosen hardware: cached 
 
 **BF integration and security**
 
-Reuse `/api/pair/initiate`, `/api/pair/claim`, `/api/kiosk/bundle`, and `/api/kiosk/heartbeat`, plus the authenticated server WebSocket. Initially allow only bundle reload and assigned-layout switch commands. All other decoded commands return/report unsupported where the protocol permits; never acknowledge successful execution.
+Reuse `/api/pair/initiate`, `/api/pair/claim`, `/api/kiosk/bundle`, and `/api/kiosk/heartbeat`, plus the authenticated server WebSocket. Allow bundle reload and assigned-layout switch commands; viewers advertising `android-standby-v1` also accept standby/wake for their assigned display. All other decoded commands return/report unsupported where the protocol permits; never acknowledge successful execution.
 
 Advertise a versioned Android viewer capability profile at pairing/heartbeat: single display, supported cell/actions, input modes, codec/transport support, WebView availability/features and qualified mixed-content budget. This is proposed server work, not an existing complete capability-negotiation contract. Hide inapplicable BF controls and enforce command/assignment restrictions on the server as well as the client. Do not classify Android as a managed Linux image or a Windows client to obtain existing features.
 

@@ -7,6 +7,7 @@ export interface KioskConnection<S extends KioskSocket> {
   name: string;
   ws: S;
   lastPong: number;
+  validateViewerPower?: (message: object) => Promise<boolean>;
   validateViewerLayout?: (layoutId: string) => Promise<boolean>;
 }
 

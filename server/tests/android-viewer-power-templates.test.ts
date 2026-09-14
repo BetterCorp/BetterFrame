@@ -10,9 +10,9 @@ const display = {
 } as Display;
 const layout = { id: "layout-1", name: "Cameras" } as Layout;
 
-for (const capabilities of [["android-viewer"], ["linux"], ["windows"]]) {
+for (const capabilities of [["android-viewer"], ["android-viewer", "android-standby-v1"], ["linux"], ["windows"]]) {
   const viewer = capabilities.includes("android-viewer");
-  test(`${capabilities[0]} kiosk and display pages expose only supported hardware controls`, () => {
+  test(`${capabilities.join("+")} kiosk and display pages expose only supported hardware controls`, () => {
     const kiosk = { id: "kiosk-1", name: "Lobby", enabled: true, capabilities, cpu_temp_c: 42.5 } as Kiosk;
     const kioskHtml = String(KioskEditPage({
       user: "admin", kiosk, labels: [], allLabels: [],
@@ -40,10 +40,10 @@ for (const capabilities of [["android-viewer"], ["linux"], ["windows"]]) {
     }
     assert.match(kioskHtml, /CPU: 42\.5°C/);
 
-    for (const [html, resource] of [[kioskHtml, "kiosks/kiosk-1"], [displayHtml, "displays/display-1"]]) {
+    for (const [html, resource] of [[kioskHtml, "kiosks/kiosk-1"], [displayHtml, "displays/display-1"]] as const) {
       for (const action of ["wake", "standby"]) {
         const endpoint = new RegExp(`/admin/${resource}/power/${action}`);
-        if (viewer) assert.doesNotMatch(html, endpoint);
+        if (viewer && !capabilities.includes("android-standby-v1")) assert.doesNotMatch(html, endpoint);
         else assert.match(html, endpoint);
       }
       // Removing unsupported power buttons must leave the viewer's layout switch available.

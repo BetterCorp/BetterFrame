@@ -21,6 +21,7 @@ pub struct RenderPlan {
     pub layouts: Vec<LayoutChoice>,
     pub expanded_cell_id: Option<String>,
     pub idle_timeout_seconds: u32,
+    pub sleep_timeout_seconds: u32,
     pub idle_return_layout_id: String,
     pub resets_idle_timer: bool,
     pub background: &'static str,
@@ -277,6 +278,7 @@ pub fn render_plan(
             selected_layout.grid_cols
         },
         expanded_cell_id: expanded,
+        sleep_timeout_seconds: display.sleep_timeout_seconds,
         idle_timeout_seconds: selected_layout
             .idle_timeout_seconds
             .unwrap_or(display.idle_timeout_seconds),
@@ -467,8 +469,10 @@ mod tests {
     fn idle_policy_uses_layout_override_display_fallback_and_assigned_default() {
         let mut f = fixture();
         f["displays"][0]["idle_timeout_seconds"] = json!(30);
+        f["displays"][0]["sleep_timeout_seconds"] = json!(120);
         let inherited = plan(f.clone(), None, Some("10"));
         assert_eq!(inherited.idle_timeout_seconds, 30);
+        assert_eq!(inherited.sleep_timeout_seconds, 120);
         assert_eq!(inherited.idle_return_layout_id, "3");
         assert!(inherited.resets_idle_timer);
         let mut secondary = f["displays"][0]["layouts"][0].clone();
@@ -482,11 +486,14 @@ mod tests {
             .push(secondary);
         let selected = plan(f.clone(), Some("4"), Some("10"));
         assert_eq!(selected.idle_timeout_seconds, 7);
+        assert_eq!(selected.sleep_timeout_seconds, 120);
         assert_eq!(selected.idle_return_layout_id, "3");
         assert!(!selected.resets_idle_timer);
         f["displays"][0]["layouts"][1]["idle_timeout_seconds"] = json!(0);
         f["displays"][0]["default_layout_id"] = json!("removed");
+        f["displays"][0]["sleep_timeout_seconds"] = json!(0);
         let disabled = plan(f, Some("4"), None);
+        assert_eq!(disabled.sleep_timeout_seconds, 0);
         assert_eq!(disabled.idle_timeout_seconds, 0);
         assert_eq!(disabled.idle_return_layout_id, "3");
     }

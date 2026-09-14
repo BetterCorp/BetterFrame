@@ -3104,10 +3104,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       displayId = displays[0]!.id;
     }
     if (!kiosk.enabled) return Response.json({ error: "Kiosk is disabled" }, { status: 409 });
-    const sent = getCoordinator().sendToKiosk(kioskId, {
+    const sent = await getCoordinator().sendPowerToKiosk(kioskId, {
       type: state === "on" ? "wake" : "standby",
       ...(displayId ? { display_id: displayId } : {}),
-    }, false);
+    });
     if (!sent) return Response.json({ error: "Power command could not be delivered" }, { status: 409 });
     return null;
   };

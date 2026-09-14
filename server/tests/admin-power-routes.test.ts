@@ -26,6 +26,7 @@ function fixture(capabilities: string[], delivered: boolean, enabled = true, ass
   setCoordinator({
     ...getCoordinator(),
     sendToKiosk: (id, message, queue) => { commands.push({ id, message, queue }); return delivered; },
+    sendPowerToKiosk: async (id, message) => { commands.push({ id, message, queue: false }); return delivered; },
   });
   return { app, commands, updates, kioskUpdates, events, audits };
 }
@@ -132,4 +133,30 @@ test("new Android standby routes deliver only to the active display and refuse o
   assert.equal(response.status, 409);
   assert.deepEqual(f.commands, []);
   assert.deepEqual(f.updates, []);
+});
+
+
+test("power routes wait for confirmed dispatch before changing state or emitting events", async (t) => {
+  const original = getCoordinator();
+  t.after(() => setCoordinator(original));
+  for (const target of ["displays/display", "kiosks/kiosk"]) {
+    for (const confirmed of [false, true]) {
+      const f = fixture(["android-viewer", "android-standby-v1"], true);
+      let finish!: (value: boolean) => void;
+      const pending = new Promise<boolean>((resolve) => { finish = resolve; });
+      let entered!: () => void;
+      const dispatched = new Promise<void>((resolve) => { entered = resolve; });
+      setCoordinator({ ...getCoordinator(), sendPowerToKiosk: async () => { entered(); return pending; } });
+      const request = f.app.request(`http://bf.test/admin/${target}/power/standby`, { method: "POST" });
+      await dispatched;
+      assert.deepEqual(f.updates, []);
+      assert.deepEqual(f.events, []);
+      assert.deepEqual(f.audits, []);
+      finish(confirmed);
+      assert.equal((await request).status, confirmed ? 302 : 409);
+      assert.equal(f.updates.length, confirmed ? 1 : 0);
+      assert.equal(f.events.length, confirmed ? 1 : 0);
+      assert.equal(f.audits.length, confirmed && target.startsWith("kiosks") ? 1 : 0);
+    }
+  }
 });

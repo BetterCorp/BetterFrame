@@ -29,6 +29,7 @@ import { initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
 import { setCoordinator } from "../../shared/coordinator-registry.js";
 import { isAndroidViewer, supportsAndroidStandby, androidViewerCommandAllowed, viewerAssignment } from "../../shared/android-viewer.js";
+import { dispatchPower } from "../../shared/power-dispatch.js";
 import { KioskConnections } from "../../shared/kiosk-connections.js";
 import { createCoordinatorWebSocketServer } from "../../shared/coordinator-websocket.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
@@ -135,18 +136,17 @@ const MESSAGE_QUEUE_CAP = 100;
 const offlineQueues = new Map<string, string[]>();
 
 function sendToKiosk(kioskId: string, message: object, queueWhenOffline = true): boolean {
+  const type = (message as Record<string, unknown>)["type"];
+  if (type === "standby" || type === "wake") {
+    // Power dispatch requires async validation and transport confirmation.
+    // Reject synchronous callers rather than reporting an unconfirmed result.
+    return false;
+  }
   const k = connectedKiosks.get(kioskId);
   const validateLayout = k?.validateViewerLayout;
   if (validateLayout) {
     const msg = message as Record<string, unknown>;
     const layoutId = typeof msg["layout_id"] === "string" ? msg["layout_id"] : "";
-    if (["standby", "wake"].includes(String(msg["type"]))) {
-      if (!k?.validateViewerPower || k.ws.readyState !== WebSocket.OPEN) return false;
-      void k.validateViewerPower(message).then((allowed) => {
-        if (allowed && connectedKiosks.get(kioskId)?.ws === k.ws && k.ws.readyState === WebSocket.OPEN) k.ws.send(JSON.stringify(message));
-      }).catch(() => {});
-      return true;
-    }
     if (!androidViewerCommandAllowed(message, new Set([layoutId]))) return false;
     if (msg["type"] === "layout-switch") {
       if (!k || k.ws.readyState !== WebSocket.OPEN) return false;
@@ -216,9 +216,10 @@ function requestKiosk<T = unknown>(kioskId: string, message: object, timeoutMs =
 }
 
 function broadcastAll(message: object): void {
-  const payload = JSON.stringify(message);
+  const type = (message as Record<string, unknown>)["type"];
   for (const k of connectedKiosks.values()) {
-    sendToKiosk(k.id, message, false);
+    if (type === "standby" || type === "wake") void dispatchPower(connectedKiosks, k.id, message);
+    else sendToKiosk(k.id, message, false);
   }
 }
 
@@ -546,6 +547,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     // Register coordinator API for other plugins to use
     setCoordinator({
       sendToKiosk,
+      sendPowerToKiosk: (kioskId, message) => dispatchPower(connectedKiosks, kioskId, message),
       requestKiosk,
       broadcastAll,
       notifyBundleChanged: () => broadcastAll({ type: "reload-bundle" }),

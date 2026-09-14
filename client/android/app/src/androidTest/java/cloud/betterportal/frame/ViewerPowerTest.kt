@@ -5,6 +5,10 @@ import android.content.ContextWrapper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import okhttp3.OkHttpClient
+import okhttp3.Response
+import okhttp3.Protocol
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -111,6 +115,37 @@ class ViewerPowerTest {
         } finally { fixture.close() }
     }
 
+    @Test fun errorResponseRetainsOnlyCurrentAuthoritativePowerAssignment() {
+        val fixture = Fixture(0, blockNetwork = false)
+        try {
+            fixture.start()
+            fixture.command("standby", "2")
+            assertEquals(true, fixture.power.poll(5, TimeUnit.SECONDS))
+            fixture.fetchUnassigned(JSONObject().put("display_id", "2"))
+            fixture.command("wake", "2")
+            assertEquals(false, fixture.power.poll(5, TimeUnit.SECONDS))
+            fixture.command("standby", "2")
+            assertEquals(true, fixture.power.poll(5, TimeUnit.SECONDS))
+            fixture.fetchUnassigned(JSONObject().put("display_id", "3"))
+            fixture.command("wake", "2")
+            assertTrue("Old assignment must not control a reassigned display", fixture.session.isStandby)
+            fixture.command("wake", "3")
+            assertEquals(false, fixture.power.poll(5, TimeUnit.SECONDS))
+            fixture.command("standby", "3")
+            assertEquals(true, fixture.power.poll(5, TimeUnit.SECONDS))
+            for (response in listOf(JSONObject().put("display_id", JSONObject.NULL), JSONObject())) {
+                fixture.fetchUnassigned(response)
+                fixture.command("wake", null)
+                fixture.command("wake", "3")
+                assertTrue("No authoritative identity must fail closed", fixture.session.isStandby)
+            }
+            fixture.fetchUnassigned(JSONObject().put("display_id", "3"))
+            fixture.act { fixture.session.stop() }
+            fixture.command("wake", "3")
+            assertTrue("Power-only assignment must not survive stop", fixture.session.isStandby)
+        } finally { fixture.close() }
+    }
+
     @Test fun freshInputInvalidatesQueuedSleepBeforeItCommits() {
         val fixture = Fixture(2)
         try {
@@ -161,6 +196,7 @@ class ViewerPowerTest {
         val releaseNetwork = CountDownLatch(if (blockNetwork) 1 else 0)
         val power = LinkedBlockingQueue<Boolean>()
         val heartbeats = LinkedBlockingQueue<JSONObject>()
+        private val bundleErrors = LinkedBlockingQueue<JSONObject>()
         private val plans = LinkedBlockingQueue<JSONObject>()
         val session: ViewerSession
         val renderer get() = field("renderer") as ExecutorService
@@ -176,6 +212,11 @@ class ViewerPowerTest {
                 .put("identity", JSONObject().put("kiosk_key", "test-device-key"))
                 .put("bundle_profile", "android-viewer-v1").put("bundle", bundle))
             val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (chain.request().url.encodedPath == "/api/kiosk/bundle") {
+                    val error = bundleErrors.poll() ?: throw IOException("Unexpected bundle request")
+                    return@addInterceptor Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                        .code(409).message("Conflict").body(error.toString().toResponseBody("application/json".toMediaType())).build()
+                }
                 if (chain.request().url.encodedPath == "/api/kiosk/heartbeat") {
                     val buffer = Buffer()
                     chain.request().body!!.writeTo(buffer)
@@ -212,6 +253,17 @@ class ViewerPowerTest {
                 ViewerSession::class.java.getDeclaredMethod("emitPlan").apply { isAccessible = true }.invoke(session)
             }.get(5, TimeUnit.SECONDS)
             assertNotNull("Updated assignment must render even if it has no content", plans.poll(5, TimeUnit.SECONDS))
+        }
+        fun fetchUnassigned(response: JSONObject) {
+            bundleErrors.add(response.put("error", "display_unassigned"))
+            val worker = field("worker") as ExecutorService
+            worker.submit {
+                ViewerSession::class.java.getDeclaredField("profileVerified").apply { isAccessible = true }.setBoolean(session, true)
+                ViewerSession::class.java.getDeclaredMethod("bundle").apply { isAccessible = true }.invoke(session)
+            }.get(5, TimeUnit.SECONDS)
+            assertEquals("go into BetterFrame and assign layouts to this display", plans.poll(5, TimeUnit.SECONDS)?.optString("error"))
+            assertNull("409 must remove playback state", field("renderSnapshot"))
+            assertFalse("409 must discard cached content", (field("state") as JSONObject).has("bundle"))
         }
         fun invokeSleep() {
             ViewerSession::class.java.getDeclaredMethod("checkSleep", Int::class.javaPrimitiveType)

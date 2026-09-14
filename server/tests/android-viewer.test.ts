@@ -183,7 +183,7 @@ test("production bundle and heartbeat routes preserve tenant context and revoke 
   assert.ok(updates.length > 0, "exercise actual display update branch");
   const revoked = await app.request("https://bf.test/api/kiosk/bundle", { headers: { ...headers, "if-none-match": etag } });
   assert.equal(revoked.status, 409);
-  assert.deepEqual(await revoked.json(), { error: "display_unassigned" });
+  assert.deepEqual(await revoked.json(), { error: "display_unassigned", display_id: null });
   kiosk.enabled = false;
   assert.equal((await app.request("https://bf.test/api/kiosk/bundle", { headers: { ...headers, "if-none-match": etag } })).status, 401);
 });
@@ -204,4 +204,42 @@ test("Android standby is opt-in and scoped to the assigned display", () => {
   for (const type of ["reboot", "volume-set", "terminal-request", "firmware_check", "future"]) {
     assert.equal(androidViewerCommandAllowed({ type }, undefined, power), false);
   }
+});
+
+
+test("empty viewer assignments retain only an authoritative single-display power target", async () => {
+  const { repo: base, secrets } = fixture();
+  const template = (await base.listDisplaysForKiosk())[0]!;
+  let displays = [template];
+  let revokeDuringGeneration = false;
+  const repo = { ...base, getSetupExtra: async () => null,
+    listDisplaysForKiosk: async () => displays,
+    layoutsForDisplayId: async () => { if (revokeDuringGeneration) displays = []; return []; },
+  };
+  const auth = { verifyKioskKey: async () => ({ id: "viewer", schema_name: "public", tenant_slug: "default" }) };
+  const app = new H3();
+  registerViewerDeviceAuth(app, repo as never, auth as never, secrets as never);
+  registerKioskRoutes(app, repo as never, auth as never, secrets as never, { forward: () => {} } as never, {} as never, {} as never, {} as never, "");
+  const cases = [
+    { assigned: [template], id: template.id },
+    { assigned: [{ ...template, id: "reassigned" }], id: "reassigned" },
+    { assigned: [], id: null },
+    { assigned: [{ ...template, is_enabled: false }], id: null },
+    { assigned: [template, { ...template, id: "ambiguous" }], id: null },
+    { assigned: [template, { ...template, id: "disabled", is_enabled: false }], id: template.id },
+  ];
+  for (const { assigned, id } of cases) {
+    displays = assigned;
+    const response = await app.request("https://bf.test/api/kiosk/bundle", {
+      headers: { authorization: "Bearer device-key", "if-none-match": '"old-layout-bundle"' },
+    });
+    assert.equal(response.status, 409);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await response.json(), { error: "display_unassigned", display_id: id });
+  }
+  displays = [template];
+  revokeDuringGeneration = true;
+  const revoked = await app.request("https://bf.test/api/kiosk/bundle", { headers: { authorization: "Bearer device-key" } });
+  assert.equal(revoked.status, 409);
+  assert.deepEqual(await revoked.json(), { error: "display_unassigned", display_id: null });
 });

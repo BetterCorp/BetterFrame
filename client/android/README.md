@@ -220,6 +220,8 @@ A local or server wake restarts the inactivity period. Heartbeats report
 
 Updated viewers advertise `android-standby-v1`. BetterFrame enables its existing
 Standby/Wake controls only for these viewers and validates the assigned display.
+Remote Wake also works after all layouts are removed, provided the display remains
+assigned. Revoked or ambiguous assignments reject remote power commands.
 Both the updated server and APK are needed for remote controls. Older viewer APKs
 remain blocked from power commands. Other device-management commands stay unsupported.
 

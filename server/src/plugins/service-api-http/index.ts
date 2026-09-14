@@ -950,6 +950,17 @@ export function registerKioskRoutes(
     const kiosk = await requireKiosk(event, repo, auth);
 
     event.context.obs?.log.info("bundle fetch for kiosk {id}", { id: String(kiosk.id) });
+    const viewer = isAndroidViewer((event.context as any).kioskProfile);
+    const powerTarget = async () => {
+      const displays = (await repo.listDisplaysForKiosk(kiosk.id)).filter((display) => display.is_enabled);
+      return displays.length === 1 ? displays[0]!.id : null;
+    };
+    // Power remains addressable when an assigned display has no layouts. Never
+    // reuse a cached target after revocation or an ambiguous multi-display assignment.
+    const unassigned = async () => Response.json({ error: "display_unassigned", display_id: await powerTarget() }, {
+      status: 409, headers: { "cache-control": "no-store" },
+    });
+    if (viewer && await powerTarget() === null) return unassigned();
     const clusterKey = await getClusterKey(repo, secrets);
     const bundle = await generateBundle(repo, secrets, kiosk.id, clusterKey, event.context.obs)
       .catch((error: unknown) => {
@@ -966,12 +977,10 @@ export function registerKioskRoutes(
       });
     if (bundle instanceof Response) return bundle;
     if (!bundle) {
-      if (isAndroidViewer((event.context as any).kioskProfile)) return new Response(JSON.stringify({ error: "display_unassigned" }), { status: 409, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+      if (viewer) return unassigned();
       throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
     }
-    if (isAndroidViewer((event.context as any).kioskProfile) && !bundle.displays[0]?.layouts.length) {
-      return new Response(JSON.stringify({ error: "display_unassigned" }), { status: 409, headers: { "content-type": "application/json", "cache-control": "no-store" } });
-    }
+    if (viewer && !bundle.displays[0]?.layouts.length) return unassigned();
     bundle.tenant_slug = kiosk.tenant_slug;
 
     // Stable bundle ETag: the payload contains randomized encrypted fields,

@@ -143,6 +143,8 @@ class ViewerSession internal constructor(context: Context, private val listener:
     private val renderer = Executors.newSingleThreadScheduledExecutor()
     private data class RenderSnapshot(val raw: String, val server: String, val encryptKey: String?, val cookieReady: Boolean, val epoch: Int)
     @Volatile private var renderSnapshot: RenderSnapshot? = null
+    private data class PowerAssignment(val displayId: String, val epoch: Int)
+    @Volatile private var powerAssignment: PowerAssignment? = null
     private data class IdlePolicy(val snapshot: RenderSnapshot, val timeoutMs: Long,
                                   val layout: String, val defaultLayout: String,
                                   val returnToDefault: Boolean, val expanded: Boolean, val sleepTimeoutMs: Long)
@@ -292,6 +294,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
         running = false
         generation++
         renderSnapshot = null
+        updatePowerAssignment(null)
         idleLoop?.cancel(false)
         loop?.cancel(false)
         http.dispatcher.cancelAll()
@@ -381,25 +384,32 @@ class ViewerSession internal constructor(context: Context, private val listener:
             if (value !is String && value !is Number) return
             value.toString().takeIf { it.isNotBlank() && it != "null" } ?: return
         } else null
-        renderWork { snapshot ->
-            try {
-                // Assignment survives an empty/invalid layout. Wake must remain
-                // available so the display can show its no-content guidance.
-                val bundle = JSONObject(snapshot.raw)
-                val displays = bundle.optJSONArray("displays")
-                val assigned = if (displays != null && displays.length() > 0) {
-                    if (displays.length() != 1) return@renderWork
-                    displays.optJSONObject(0)
-                } else bundle.optJSONObject("display") // Legacy core normalization.
-                val id = assigned?.opt("id")
-                val display = if (id is String || id is Number) id.toString().takeIf { it.isNotBlank() && it != "null" } else null
-                if (display != null && (target == null || target == display) &&
-                    renderSnapshot === snapshot && generation == snapshot.epoch && running && !closed) {
-                    setStandby(type == "standby")
+        val assignment = powerAssignment ?: return
+        try {
+            renderer.execute {
+                synchronized(activityLock) {
+                    if (powerAssignment === assignment && running && !closed && generation == assignment.epoch &&
+                        (target == null || target == assignment.displayId)) setStandby(type == "standby")
                 }
-            } catch (_: Exception) { /* Ignore malformed or stale assignments. */ }
-        }
+            }
+        } catch (_: RejectedExecutionException) { /* Session was closed. */ }
     }
+
+    private fun updatePowerAssignment(id: String?, epoch: Int = generation) = synchronized(activityLock) {
+        powerAssignment = id?.let { PowerAssignment(it, epoch) }
+    }
+
+    private fun powerDisplayId(value: Any?): String? =
+        if (value is String || value is Number) value.toString().takeIf { it.isNotBlank() && it != "null" } else null
+
+    private fun assignedDisplayId(raw: String): String? = try {
+        val bundle = JSONObject(raw)
+        val displays = bundle.optJSONArray("displays")
+        val assigned = if (displays != null && displays.length() > 0) {
+            if (displays.length() == 1) displays.optJSONObject(0) else null
+        } else bundle.optJSONObject("display") // Legacy core normalization.
+        powerDisplayId(assigned?.opt("id"))
+    } catch (_: Exception) { null }
 
     fun selectLayout(id: String) {
         renderWork { snapshot ->
@@ -660,14 +670,14 @@ class ViewerSession internal constructor(context: Context, private val listener:
 
     private fun clearCachedBundle() {
         for (key in listOf("bundle", "etag", "bundle_version", "layout_id", "bundle_profile")) state.remove(key)
-        layoutId = null; expandedId = null; renderSnapshot = null
+        layoutId = null; expandedId = null; renderSnapshot = null; updatePowerAssignment(null)
     }
 
     private fun blockDisplay(reason: String) {
         state.put("blocked", true).put("block_reason", reason); persist()
         profileVerified = false
         socket?.cancel(); socket = null; socketConnecting = false
-        expandedId = null; renderSnapshot = null; dashboardSessionReady = false; nextCookie = 0L
+        expandedId = null; renderSnapshot = null; updatePowerAssignment(null); dashboardSessionReady = false; nextCookie = 0L
         ui(activeEpoch) {
             listener.onPlan(JSONObject().put("error", reason))
             WebTile.clearSessions(app)
@@ -717,6 +727,9 @@ class ViewerSession internal constructor(context: Context, private val listener:
                 val problem = json(it)
                 if (problem.optString("error") == "display_unassigned") {
                     clearCachedBundle()
+                    // The server may retain a display assignment with no layouts.
+                    // Trust only its current explicit identity, never a discarded cache.
+                    updatePowerAssignment(powerDisplayId(problem.opt("display_id")), activeEpoch)
                     awaitingAssignment = true
                     state.put("blocked", false).remove("block_reason")
                     persist()
@@ -795,6 +808,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
         val raw = state.optString("bundle").takeIf { it.isNotBlank() } ?: return
         val identity = state.optJSONObject("identity") ?: JSONObject()
         val encryptKey = identity.textValue("encrypt_key") ?: identity.textValue("cluster_key")
+        updatePowerAssignment(assignedDisplayId(raw), activeEpoch)
         renderSnapshot = RenderSnapshot(raw, serverUrl, encryptKey, dashboardSessionReady, activeEpoch)
         renderWork(::renderAndEmit)
     }

@@ -195,10 +195,56 @@ class ViewerPowerTest {
         } finally { releaseRenderer.countDown(); fixture.close() }
     }
 
+    @Test fun websocketAcknowledgesCommittedPowerAndRejectedTargets() {
+        val fixture = Fixture(0)
+        try {
+            fixture.start()
+            val current = TestSocket()
+            val stale = TestSocket()
+            val listener = ViewerSession::class.java.getDeclaredMethod("socketListener", Int::class.javaPrimitiveType)
+                .apply { isAccessible = true }.invoke(fixture.session, fixture.field("generation")) as WebSocketListener
+            val socketField = ViewerSession::class.java.getDeclaredField("socket").apply { isAccessible = true }
+            socketField.set(fixture.session, current)
+            fun send(socket: WebSocket, request: String, type: String, target: Any?) {
+                val message = JSONObject().put("type", type).put("request_id", request)
+                if (target != null) message.put("display_id", target)
+                listener.onMessage(socket, message.toString())
+            }
+            fun acknowledgement(request: String, accepted: Boolean) {
+                val result = JSONObject(current.sent.poll(2, TimeUnit.SECONDS) ?: throw AssertionError("Expected power acknowledgement"))
+                assertEquals("power-result", result.getString("type"))
+                assertEquals(request, result.getString("request_id"))
+                assertEquals(accepted, result.getBoolean("accepted"))
+            }
+            send(current, "sleep", "standby", "2")
+            acknowledgement("sleep", true)
+            assertTrue("Positive ACK follows state commit", fixture.session.isStandby)
+            send(current, "wrong-display", "wake", "3")
+            acknowledgement("wrong-display", false)
+            assertTrue(fixture.session.isStandby)
+            send(current, "invalid-target", "wake", JSONObject.NULL)
+            acknowledgement("invalid-target", false)
+            assertTrue(fixture.session.isStandby)
+            send(current, "wake", "wake", null)
+            acknowledgement("wake", true)
+            assertFalse(fixture.session.isStandby)
+            send(stale, "stale", "standby", "2")
+            fixture.renderer.submit {}.get(2, TimeUnit.SECONDS)
+            assertTrue(stale.sent.isEmpty())
+            assertFalse(fixture.session.isStandby)
+            send(current, "x".repeat(129), "standby", "2")
+            fixture.renderer.submit {}.get(2, TimeUnit.SECONDS)
+            assertTrue(current.sent.isEmpty())
+            assertFalse("Malformed correlation IDs must not mutate power", fixture.session.isStandby)
+            assertEquals("ACK must bypass blocked HTTP", 1L, fixture.releaseNetwork.count)
+        } finally { fixture.close() }
+    }
+
     private class TestSocket : WebSocket {
+        val sent = LinkedBlockingQueue<String>()
         override fun request(): Request = Request.Builder().url("http://127.0.0.1:9/api/kiosk/ws").build()
         override fun queueSize(): Long = 0
-        override fun send(text: String): Boolean = true
+        override fun send(text: String): Boolean { sent.add(text); return true }
         override fun send(bytes: ByteString): Boolean = true
         override fun close(code: Int, reason: String?): Boolean = true
         override fun cancel() {}

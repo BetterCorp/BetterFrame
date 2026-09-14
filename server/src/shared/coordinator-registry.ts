@@ -4,7 +4,7 @@
  */
 export interface CoordinatorApi {
   sendToKiosk(kioskId: string, message: object, queueWhenOffline?: boolean): boolean;
-  /** True confirms validation and socket write, not device execution; heartbeat reports actual state. */
+  /** Android true confirms validation, write and accepted logical-state ACK; desktop true confirms write. */
   sendPowerToKiosk(kioskId: string, message: object): Promise<boolean>;
   requestKiosk<T = unknown>(kioskId: string, message: object, timeoutMs?: number): Promise<T>;
   broadcastAll(message: object): void;

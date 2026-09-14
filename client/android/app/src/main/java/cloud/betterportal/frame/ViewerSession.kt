@@ -380,19 +380,27 @@ class ViewerSession internal constructor(context: Context, private val listener:
     private fun dispatchPowerCommand(command: JSONObject, source: WebSocket?, epoch: Int) {
         val type = command.optString("type")
         if (type != "standby" && type != "wake") return
-        // Only an omitted target means all displays. Malformed explicit targets
-        // must never turn into a broadcast, even from an authenticated server.
-        val target = if (command.has("display_id")) {
-            val value = command.opt("display_id")
-            if (value !is String && value !is Number) return
-            value.toString().takeIf { it.isNotBlank() && it != "null" } ?: return
+        val requestId = if (command.has("request_id")) {
+            val value = command.opt("request_id")
+            if (value !is String || value.isBlank() || value.length > 128) return
+            value
         } else null
-        val assignment = powerAssignment ?: return
+        // Only an omitted target means all displays. Explicit invalid targets
+        // receive a negative acknowledgement, never a broadcast action.
+        val target = powerDisplayId(command.opt("display_id"))
+        val targetValid = !command.has("display_id") || target != null
+        val assignment = powerAssignment
         try {
             renderer.execute {
                 synchronized(activityLock) {
-                    if (powerAssignment === assignment && running && !closed && generation == epoch && assignment.epoch == epoch &&
-                        (source == null || socket === source) && (target == null || target == assignment.displayId)) setStandby(type == "standby")
+                    if (!running || closed || generation != epoch || (source != null && socket !== source)) return@synchronized
+                    val accepted = targetValid && assignment != null && powerAssignment === assignment &&
+                        assignment.epoch == epoch && (target == null || target == assignment.displayId)
+                    if (accepted) setStandby(type == "standby")
+                    // Confirm the committed device decision, not merely server delivery.
+                    // WebSocket.send queues asynchronously and never waits for HTTP work.
+                    if (source != null && requestId != null) source.send(JSONObject().put("type", "power-result")
+                        .put("request_id", requestId).put("accepted", accepted).toString())
                 }
             }
         } catch (_: RejectedExecutionException) { /* Session was closed. */ }

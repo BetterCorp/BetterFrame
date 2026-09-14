@@ -29,7 +29,7 @@ import { initSecrets } from "../../shared/secrets.js";
 import { createAuth } from "../../shared/auth.js";
 import { setCoordinator } from "../../shared/coordinator-registry.js";
 import { isAndroidViewer, supportsAndroidStandby, androidViewerCommandAllowed, viewerAssignment } from "../../shared/android-viewer.js";
-import { dispatchPower } from "../../shared/power-dispatch.js";
+import { dispatchPower, acceptPowerResult } from "../../shared/power-dispatch.js";
 import { KioskConnections } from "../../shared/kiosk-connections.js";
 import { createCoordinatorWebSocketServer } from "../../shared/coordinator-websocket.js";
 import { initNoderedBridge, type NoderedBridge } from "../../shared/nodered-bridge.js";
@@ -94,6 +94,7 @@ const pendingRequests = new Map<string, {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  responseType?: "power-result";
 }>();
 
 // Admin debug subscribers: admin WS connections subscribed to a kiosk's
@@ -215,10 +216,30 @@ function requestKiosk<T = unknown>(kioskId: string, message: object, timeoutMs =
   });
 }
 
+function sendPowerToKiosk(kioskId: string, message: object): Promise<boolean> {
+  return dispatchPower(connectedKiosks, kioskId, message, 5_000, (connection, requestId) => {
+    const result = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        pendingRequests.delete(requestId);
+        resolve(false);
+      }, 5_000);
+      pendingRequests.set(requestId, {
+        kioskId, socket: connection.ws, timer, responseType: "power-result",
+        resolve: (value) => resolve(value === true), reject: () => resolve(false),
+      });
+    });
+    return { result, cancel: () => {
+      const pending = pendingRequests.get(requestId);
+      if (pending) clearTimeout(pending.timer);
+      pendingRequests.delete(requestId);
+    } };
+  });
+}
+
 function broadcastAll(message: object): void {
   const type = (message as Record<string, unknown>)["type"];
   for (const k of connectedKiosks.values()) {
-    if (type === "standby" || type === "wake") void dispatchPower(connectedKiosks, k.id, message);
+    if (type === "standby" || type === "wake") void sendPowerToKiosk(k.id, message);
     else sendToKiosk(k.id, message, false);
   }
 }
@@ -437,6 +458,10 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
             try {
               const msg = JSON.parse(data.toString()) as Record<string, unknown>;
               if (msg["type"] === "pong") { connectedKiosks.pong(kiosk.id, ws); return; }
+              if (msg["type"] === "power-result") {
+                acceptPowerResult(pendingRequests, kiosk.id, ws, msg);
+                return;
+              }
               if (viewer) return; // heartbeat carries viewer health; no proxy/debug/event responses
               if (
                 msg["type"] === "onvif-soap-response"
@@ -450,7 +475,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
               ) {
                 const requestId = typeof msg["request_id"] === "string" ? msg["request_id"] : "";
                 const pending = pendingRequests.get(requestId);
-                if (!pending || pending.kioskId !== kiosk.id || pending.socket !== ws) return;
+                if (!pending || pending.responseType || pending.kioskId !== kiosk.id || pending.socket !== ws) return;
                 pendingRequests.delete(requestId);
                 clearTimeout(pending.timer);
                 const error = typeof msg["error"] === "string" ? msg["error"] : "";
@@ -547,7 +572,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     // Register coordinator API for other plugins to use
     setCoordinator({
       sendToKiosk,
-      sendPowerToKiosk: (kioskId, message) => dispatchPower(connectedKiosks, kioskId, message),
+      sendPowerToKiosk,
       requestKiosk,
       broadcastAll,
       notifyBundleChanged: () => broadcastAll({ type: "reload-bundle" }),

@@ -8,6 +8,8 @@ import android.graphics.Rect
 import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -35,6 +37,18 @@ class ViewerDialogTest {
         clickText("Settings")
         await("Settings opens") { visibleText("Display settings") }
         val settings = showingDialog(activity)
+        instrumentation.runOnMainSync {
+            // This exercises remote input in the dialog. An open IME can consume
+            // DPAD navigation before the dialog receives any event or text edit.
+            settings.window!!.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+            settings.getButton(AlertDialog.BUTTON_NEGATIVE).apply {
+                isFocusableInTouchMode = true
+                requestFocus()
+            }
+            (activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                .hideSoftInputFromWindow(settings.window!!.decorView.windowToken, 0)
+        }
+        await("Settings dialog has input focus") { dialogHasFocus(settings) }
         instrumentation.uiAutomation.waitForIdle(250, 3000)
         clock.addAndGet(1_500)
         instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN)
@@ -142,6 +156,11 @@ class ViewerDialogTest {
         var showing = false
         instrumentation.runOnMainSync { showing = dialog.isShowing }
         return showing
+    }
+    private fun dialogHasFocus(dialog: AlertDialog): Boolean {
+        var focused = false
+        instrumentation.runOnMainSync { focused = dialog.window?.decorView?.hasWindowFocus() == true }
+        return focused
     }
     private fun lastActivity(session: ViewerSession): Long {
         val lock = ViewerSession::class.java.getDeclaredField("activityLock").apply { isAccessible = true }.get(session)

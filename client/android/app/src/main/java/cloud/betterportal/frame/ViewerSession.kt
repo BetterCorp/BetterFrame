@@ -161,7 +161,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
     private var state = JSONObject()
     @Volatile private var storageGeneration = -1L
     private var loop: ScheduledFuture<*>? = null
-    private var socket: WebSocket? = null
+    @Volatile private var socket: WebSocket? = null
     private var socketConnecting = false
     private var nextSocketAttempt = 0L
     private var nextSync = 0L
@@ -299,7 +299,8 @@ class ViewerSession internal constructor(context: Context, private val listener:
         loop?.cancel(false)
         http.dispatcher.cancelAll()
         enqueue {
-            socket?.cancel(); socket = null; socketConnecting = false
+            synchronized(activityLock) { socket?.cancel(); socket = null }
+            socketConnecting = false
             if (saveSelection && state.has("identity")) {
                 if (selected == null) state.remove("layout_id") else state.put("layout_id", selected)
                 runCatching { EnrollmentCleanup.writeIfIdle(app, savedStorageGeneration) { store.write(state) } }
@@ -374,7 +375,9 @@ class ViewerSession internal constructor(context: Context, private val listener:
         }
     }
 
-    private fun applyPowerCommand(command: JSONObject) {
+    private fun applyPowerCommand(command: JSONObject) = dispatchPowerCommand(command, null, generation)
+
+    private fun dispatchPowerCommand(command: JSONObject, source: WebSocket?, epoch: Int) {
         val type = command.optString("type")
         if (type != "standby" && type != "wake") return
         // Only an omitted target means all displays. Malformed explicit targets
@@ -388,8 +391,8 @@ class ViewerSession internal constructor(context: Context, private val listener:
         try {
             renderer.execute {
                 synchronized(activityLock) {
-                    if (powerAssignment === assignment && running && !closed && generation == assignment.epoch &&
-                        (target == null || target == assignment.displayId)) setStandby(type == "standby")
+                    if (powerAssignment === assignment && running && !closed && generation == epoch && assignment.epoch == epoch &&
+                        (source == null || socket === source) && (target == null || target == assignment.displayId)) setStandby(type == "standby")
                 }
             }
         } catch (_: RejectedExecutionException) { /* Session was closed. */ }
@@ -676,7 +679,8 @@ class ViewerSession internal constructor(context: Context, private val listener:
     private fun blockDisplay(reason: String) {
         state.put("blocked", true).put("block_reason", reason); persist()
         profileVerified = false
-        socket?.cancel(); socket = null; socketConnecting = false
+        synchronized(activityLock) { socket?.cancel(); socket = null }
+        socketConnecting = false
         expandedId = null; renderSnapshot = null; updatePowerAssignment(null); dashboardSessionReady = false; nextCookie = 0L
         ui(activeEpoch) {
             listener.onPlan(JSONObject().put("error", reason))
@@ -875,40 +879,64 @@ class ViewerSession internal constructor(context: Context, private val listener:
         val url = NativeCore.websocketUrl(serverUrl, kioskKey) ?: return
         socketConnecting = true
         nextSocketAttempt = System.currentTimeMillis() + 30_000
-        socket = http.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                enqueue {
-                    if (epoch != generation || !running || socket !== webSocket) webSocket.cancel()
-                    else socketConnecting = false
-                }
+        val opened = http.newWebSocket(Request.Builder().url(url).build(), socketListener(epoch))
+        synchronized(activityLock) { socket = opened }
+    }
+
+    private fun socketListener(epoch: Int) = object : WebSocketListener() {
+        override fun onOpen(webSocket: WebSocket, response: Response) {
+            enqueue {
+                if (epoch != generation || !running || socket !== webSocket) webSocket.cancel()
+                else socketConnecting = false
             }
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                if (text.length > 64 * 1024 || epoch != generation || !running) return
-                enqueue {
-                    if (epoch != generation || !running || socket !== webSocket) return@enqueue
-                    try {
-                        val command = JSONObject(text)
-                        when (command.optString("type")) {
-                            "ping" -> webSocket.send("{\"type\":\"pong\"}")
-                            "reload-bundle" -> nextSync = 0L
-                            "standby", "wake" -> applyPowerCommand(command)
-                            "layout-switch" -> {
-                                val raw = state.optString("bundle")
-                                val display = JSONObject(NativeCore.renderPlan(raw, layoutId, null)).optString("displayId")
-                                val target = command.optString("display_id").takeUnless { it.isBlank() || it == "null" }
-                                if (display.isNotBlank() && (target == null || target == display)) selectLayout(command.get("layout_id").toString())
-                            }
-                            else -> Unit // No device/management commands are executed.
+        }
+        override fun onMessage(webSocket: WebSocket, text: String) {
+            if (text.length > 64 * 1024 || epoch != generation || !running || closed || socket !== webSocket) return
+            val command = try { JSONObject(text) } catch (_: Exception) { return }
+            if (command.optString("type") in listOf("standby", "wake")) {
+                // Power must remain responsive while heartbeat/bundle HTTP blocks
+                // the network executor. Recheck socket identity at renderer commit.
+                dispatchPowerCommand(command, webSocket, epoch)
+                return
+            }
+            enqueue {
+                if (epoch != generation || !running || socket !== webSocket) return@enqueue
+                try {
+                    when (command.optString("type")) {
+                        "ping" -> webSocket.send("{\"type\":\"pong\"}")
+                        "reload-bundle" -> nextSync = 0L
+                        "layout-switch" -> {
+                            val raw = state.optString("bundle")
+                            val display = JSONObject(NativeCore.renderPlan(raw, layoutId, null)).optString("displayId")
+                            val target = command.optString("display_id").takeUnless { it.isBlank() || it == "null" }
+                            if (display.isNotBlank() && (target == null || target == display)) selectLayout(command.get("layout_id").toString())
                         }
-                    } catch (_: Exception) { /* Ignore invalid server messages. */ }
+                        else -> Unit // No device/management commands are executed.
+                    }
+                } catch (_: Exception) { /* Ignore invalid server messages. */ }
+            }
+        }
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = disconnected(webSocket)
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = disconnected(webSocket)
+        private fun disconnected(webSocket: WebSocket) {
+            val current = synchronized(activityLock) {
+                if (epoch == generation && socket === webSocket) { socket = null; true } else false
+            }
+            enqueue {
+                // A connection may fail before newWebSocket returns and installs
+                // its handle. Recheck after that worker operation completes too.
+                val detached = synchronized(activityLock) {
+                    if (epoch == generation && (socket === webSocket || (current && socket == null))) {
+                        socket = null
+                        true
+                    } else false
+                }
+                if (detached) {
+                    socketConnecting = false
+                    nextSocketAttempt = System.currentTimeMillis() + 10_000 + (0..3000).random()
                 }
             }
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = disconnected(webSocket)
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = disconnected(webSocket)
-            private fun disconnected(webSocket: WebSocket) { enqueue {
-                if (epoch == generation && socket === webSocket) { socket = null; socketConnecting = false; nextSocketAttempt = System.currentTimeMillis() + 10_000 + (0..3000).random() }
-            } }
-        })
+        }
     }
 
     private fun capabilities() = JSONArray(listOf("android", "android-viewer", "android-viewer-v1", "android-standby-v1", "rtsp", "web", "html", "touch", "dpad"))

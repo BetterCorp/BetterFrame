@@ -6,6 +6,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import okhttp3.OkHttpClient
 import okhttp3.Response
+import okhttp3.Request
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
 import okhttp3.Protocol
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -144,6 +148,60 @@ class ViewerPowerTest {
             fixture.command("wake", "3")
             assertTrue("Power-only assignment must not survive stop", fixture.session.isStandby)
         } finally { fixture.close() }
+    }
+
+    @Test fun websocketPowerBypassesBlockedHttpAndRejectsStaleSources() {
+        val fixture = Fixture(0)
+        val rendererBlocked = CountDownLatch(1)
+        val releaseRenderer = CountDownLatch(1)
+        try {
+            fixture.start()
+            val original = TestSocket()
+            val replacement = TestSocket()
+            val listener = ViewerSession::class.java.getDeclaredMethod("socketListener", Int::class.javaPrimitiveType)
+                .apply { isAccessible = true }.invoke(fixture.session, fixture.field("generation")) as WebSocketListener
+            val socketField = ViewerSession::class.java.getDeclaredField("socket").apply { isAccessible = true }
+            socketField.set(fixture.session, original)
+            fun send(socket: WebSocket, type: String) = listener.onMessage(socket, """{"type":"$type","display_id":"2"}""")
+            send(original, "standby")
+            assertEquals(true, fixture.power.poll(2, TimeUnit.SECONDS))
+            send(original, "wake")
+            assertEquals(false, fixture.power.poll(2, TimeUnit.SECONDS))
+            assertEquals("Socket control must not wait for the HTTP worker", 1L, fixture.releaseNetwork.count)
+            fixture.session.setStandby(true)
+            assertEquals(true, fixture.power.poll(2, TimeUnit.SECONDS))
+            fixture.renderer.execute { rendererBlocked.countDown(); releaseRenderer.await(5, TimeUnit.SECONDS) }
+            assertTrue(rendererBlocked.await(2, TimeUnit.SECONDS))
+            send(original, "wake")
+            socketField.set(fixture.session, replacement)
+            releaseRenderer.countDown()
+            fixture.renderer.submit {}.get(2, TimeUnit.SECONDS)
+            fixture.act {}
+            assertTrue("Replacement must invalidate already queued source", fixture.session.isStandby)
+            send(original, "wake")
+            fixture.renderer.submit {}.get(2, TimeUnit.SECONDS)
+            assertTrue(fixture.session.isStandby)
+            send(replacement, "wake")
+            assertEquals(false, fixture.power.poll(2, TimeUnit.SECONDS))
+            listener.onFailure(replacement, IOException("Disconnected"), null)
+            send(replacement, "standby")
+            fixture.renderer.submit {}.get(2, TimeUnit.SECONDS)
+            assertFalse("Failed sockets must be rejected even while HTTP is blocked", fixture.session.isStandby)
+            socketField.set(fixture.session, original)
+            fixture.act { fixture.session.stop() }
+            send(original, "standby")
+            fixture.renderer.submit {}.get(2, TimeUnit.SECONDS)
+            assertFalse("Old generation must be rejected", fixture.session.isStandby)
+        } finally { releaseRenderer.countDown(); fixture.close() }
+    }
+
+    private class TestSocket : WebSocket {
+        override fun request(): Request = Request.Builder().url("http://127.0.0.1:9/api/kiosk/ws").build()
+        override fun queueSize(): Long = 0
+        override fun send(text: String): Boolean = true
+        override fun send(bytes: ByteString): Boolean = true
+        override fun close(code: Int, reason: String?): Boolean = true
+        override fun cancel() {}
     }
 
     @Test fun freshInputInvalidatesQueuedSleepBeforeItCommits() {

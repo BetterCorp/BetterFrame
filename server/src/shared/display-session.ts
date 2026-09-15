@@ -4,6 +4,7 @@ import type { Repository } from "./db/repository.js";
 import type { AuthApi } from "./auth.js";
 import type { SecretsApi } from "./secrets.js";
 import { isAndroidViewer, androidViewerRouteAllowed, viewerAssignment } from "./android-viewer.js";
+import type { NoderedBridge, NoderedDashboard } from "./nodered-bridge.js";
 import { requestOriginIsValid } from "./csrf.js";
 
 function displayOriginIsValid(event: Parameters<typeof requestOriginIsValid>[0]): boolean {
@@ -21,7 +22,22 @@ const CONTEXT = "android-display-session-v1";
 const LIFETIME = 3600;
 const fingerprint = (key: string) => createHash("sha256").update(key).digest("hex");
 
-export function registerViewerDeviceAuth(app: H3, repo: Repository, auth: AuthApi, secrets: SecretsApi): void {
+export function displayDashboardRequestAllowed(uri: string, assignedPaths: ReadonlySet<string>, pages: NoderedDashboard[]): boolean {
+  const rawPath = uri.split(/[?#]/, 1)[0] ?? "";
+  if (!rawPath.startsWith("/") || rawPath.startsWith("//") || /[\\%\x00-\x20]/.test(rawPath)) return false;
+  const requested = new URL(uri, "https://display.invalid").pathname.replace(/\/$/, "");
+  if (rawPath.replace(/\/$/, "") !== requested) return false;
+  // The shared Socket.IO setup exposes all pages in a UI base. Display sessions
+  // remain denied until the provider can authorize individual subscriptions.
+  if (requested.split("/").includes("socket.io")) return false;
+  if (assignedPaths.has(requested)) return true;
+  const assignedPages = pages.filter((page) => assignedPaths.has(`/dash/${page.id}`));
+  return assignedPages.some((page) => requested === page.path
+    || requested.startsWith(`${page.basePath}/assets/`)
+    || ["favicon.ico", "apple-touch-icon.png"].some((file) => requested === `${page.basePath}/${file}`));
+}
+
+export function registerViewerDeviceAuth(app: H3, repo: Repository, auth: AuthApi, secrets: SecretsApi, nodered?: NoderedBridge): void {
   app.use(async (event, next) => {
     const path = new URL(event.req.url).pathname;
     if (!path.startsWith("/api/kiosk/")) return next();
@@ -39,18 +55,11 @@ export function registerViewerDeviceAuth(app: H3, repo: Repository, auth: AuthAp
           const kiosk = await repo.getKioskById(claims.kiosk);
           if (!kiosk?.enabled || !isAndroidViewer(kiosk) || fingerprint(kiosk.key_hash) !== claims.key) return new Response(null, { status: 401 });
           const uri = getRequestHeader(event, "x-original-uri") ?? "";
-          // Proxy must overwrite this header with the original browser URI.
-          if (!uri.startsWith("/dash/") || uri.startsWith("//")) return new Response(null, { status: 403 });
-          const requested = new URL(uri, "https://display.invalid").pathname.replace(/\/$/, "");
+          // Resolve actual FlowFuse paths from this tenant's live page catalog.
+          // The browser cookie itself cannot select a different tenant or page.
           const { dashboardPaths } = await viewerAssignment(repo, kiosk);
-          // Shared assets are part of the dashboard application, but pages
-          // outside the current assignment do not acquire a display session.
-          // FlowFuse Socket.IO can expose unassigned rooms. Fail closed until
-          // the provider enforces display scope on every channel subscription.
-          if (requested.startsWith("/dash/socket.io")) return new Response(null, { status: 403 });
-          const pageAllowed = [...dashboardPaths].some((p) => requested === p || requested.startsWith(`${p}/`));
-          const assetAllowed = dashboardPaths.size > 0 && /^\/dash\/assets\//.test(requested);
-          if (!pageAllowed && !assetAllowed) return new Response(null, { status: 403 });
+          const pages = nodered ? await nodered.listDashboards(tenant.id) : [];
+          if (!displayDashboardRequestAllowed(uri, dashboardPaths, pages)) return new Response(null, { status: 403 });
           (event.context as any).verifiedKiosk = { id: kiosk.id, tenant_id: tenant.id, tenant_slug: tenant.slug, tenant_name: tenant.name, schema_name: tenant.schema_name };
           (event.context as any).displaySession = true;
           return next();
@@ -85,7 +94,7 @@ export function registerViewerDeviceAuth(app: H3, repo: Repository, auth: AuthAp
     return new Response(JSON.stringify({ expires_in: LIFETIME }), {
       headers: {
         "content-type": "application/json", "cache-control": "no-store",
-        "set-cookie": `${COOKIE}=${token}; Path=/dash/; Max-Age=${LIFETIME}; ${secure ? "Secure; " : ""}HttpOnly; SameSite=Strict`,
+        "set-cookie": `${COOKIE}=${token}; Path=/; Max-Age=${LIFETIME}; ${secure ? "Secure; " : ""}HttpOnly; SameSite=Strict`,
       },
     });
   });

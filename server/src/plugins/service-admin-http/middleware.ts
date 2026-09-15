@@ -123,6 +123,7 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
 
   app.use(async (event) => {
     const path = getRequestPath(event);
+    const authCheck = path === "/api/admin/_check";
 
     if (
       path === "/setup" ||
@@ -136,6 +137,7 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
     }
 
     if (!(await deps.repo.isSetupComplete())) {
+      if (authCheck) return new Response(null, { status: 401 });
       if (!path.startsWith("/auth/")) {
         return new Response(null, { status: 302, headers: { location: "/setup" } });
       }
@@ -177,20 +179,21 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
 
       const cookie = getCookie(event, deps.cookieName);
       if (!cookie) {
-        return new Response(null, { status: 302, headers: { location: "/auth/login" } });
+        return authCheck ? new Response(null, { status: 401 }) : new Response(null, { status: 302, headers: { location: "/auth/login" } });
       }
       const requestedTenant = event.context.tenant;
       const resolved = await deps.auth.resolveSession(cookie);
       if (!resolved) {
-        return new Response(null, { status: 302, headers: { location: "/auth/login" } });
+        return authCheck ? new Response(null, { status: 401 }) : new Response(null, { status: 302, headers: { location: "/auth/login" } });
       }
       if (resolved.user.role === "admin" && resolved.tenant.slug !== "default") {
         await deps.repo.adapter.withSearchPath(resolved.tenant.schema_name, () =>
           deps.auth.revokeSession(resolved.session.id));
+        if (authCheck) return new Response(null, { status: 401 });
         return redirectClearCookie("/auth/login", [deps.cookieName, "betterframe_csrf", "bf_tenant"]);
       }
       if (resolved.session.totp_pending) {
-        return new Response(null, { status: 302, headers: { location: "/auth/totp" } });
+        return authCheck ? new Response(null, { status: 401 }) : new Response(null, { status: 302, headers: { location: "/auth/totp" } });
       }
       const platformAdmin = resolved.user.role === "admin" && resolved.tenant.slug === "default";
       const targetTenant = requestedTenant ?? resolved.tenant;

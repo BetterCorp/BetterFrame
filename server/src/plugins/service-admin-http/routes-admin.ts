@@ -3657,7 +3657,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const result = await syncDashboardsFromNodered(deps, event.context.tenant?.id ?? "default");
     if (isHtmxRequest(event)) {
       return htmlFragment(
-        `<div class="flash flash-success">Synced: +${String(result.added)} added, ${String(result.updated)} updated, ${String(result.total)} total.</div>`,
+        `<div class="flash flash-success">Synced: +${String(result.added)} added, ${String(result.updated)} updated, ${String(result.total)} total, ${String(result.unavailable)} unavailable.</div>`,
       );
     }
     return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
@@ -3671,16 +3671,22 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
  * deleted — admins might still be using a stale layout cell that points to one,
  * and dashboards are cheap to leave around.
  */
-async function syncDashboardsFromNodered(
+export async function syncDashboardsFromNodered(
   deps: AdminDeps,
   tenantId: string,
-): Promise<{ added: number; updated: number; total: number }> {
+): Promise<{ added: number; updated: number; total: number; unavailable: number }> {
   const tabs = await deps.nodered.listDashboards(tenantId);
   let added = 0;
   let updated = 0;
+  let unavailable = 0;
+  const missingPrefix = "Unavailable in Node-RED. ";
   for (const tab of tabs) {
     const existing = await deps.repo.getEntityForDashboard(tab.id);
     if (existing) {
+      if (existing.description?.startsWith(missingPrefix)) {
+        await deps.repo.updateEntity(existing.id, { description: existing.description.slice(missingPrefix.length) || null });
+        updated += 1;
+      }
       if (existing.name !== tab.name) {
         // Avoid name collisions with non-dashboard entities of the same name.
         const collision = await deps.repo.getEntityByName(tab.name);
@@ -3705,8 +3711,17 @@ async function syncDashboardsFromNodered(
     });
     added += 1;
   }
+  const liveIds = new Set(tabs.map((tab) => tab.id));
+  for (const entity of await deps.repo.listEntities()) {
+    if (entity.type !== "dashboard" || liveIds.has(entity.dashboard_id ?? "")) continue;
+    unavailable += 1;
+    if (!entity.description?.startsWith(missingPrefix)) {
+      await deps.repo.updateEntity(entity.id, { description: missingPrefix + (entity.description ?? "") });
+      updated += 1;
+    }
+  }
   if (added > 0 || updated > 0) {
     try { getCoordinator().notifyBundleChanged(); } catch { /* ignore */ }
   }
-  return { added, updated, total: tabs.length };
+  return { added, updated, total: tabs.length, unavailable };
 }

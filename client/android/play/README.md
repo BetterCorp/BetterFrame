@@ -5,7 +5,7 @@ Draft, English-first listing for `cloud.betterportal.frame`. See [publishing set
 ## Included
 
 - `listings/en-US`: title, short/full descriptions and release-note template.
-- `assets/en-US`: opaque 512×512 icon, 1024×500 feature graphic and 1280×720 TV banner using existing BetterFrame branding.
+- `assets/en-US`: opaque 512×512 icon, 1024×500 feature graphic and 1280×720 TV banner using the existing `client/assets/betterframe-logo-dark.svg` as the source. The square store and Android launcher icons use its display mark; banners retain the complete wordmark.
 - `assets/source`: editable SVG sources. Rebuild with `python3 client/android/scripts/render-play-assets.py --help` and an installed `rsvg-convert`.
 - Default Android resources now contain the main settings, enrollment and power-menu strings, ready for translation. Remaining camera/renderer diagnostics and error messages still need a translation pass.
 

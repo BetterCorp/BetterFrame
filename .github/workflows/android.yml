@@ -2,7 +2,7 @@ name: Android viewer
 
 on:
   pull_request:
-    paths: ['client/**', 'scripts/gen-android-signing-key.sh', '.github/workflows/android.yml', '.github/workflows/android-release.yml', '.github/workflows/release.yml']
+    paths: ['client/**', 'scripts/gen-android-signing-key.sh', '.github/workflows/android.yml', '.github/workflows/android-release.yml', '.github/workflows/android-publish-play.yml', '.github/workflows/release.yml']
   workflow_dispatch:
 
 permissions:
@@ -29,7 +29,7 @@ jobs:
           targets: aarch64-linux-android,x86_64-linux-android
       - uses: gradle/actions/setup-gradle@v4
       - name: Install Android build tools
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
       - name: Shared policy and credential tests
         run: cargo test --manifest-path client/Cargo.toml -p betterframe-client-core -p betterframe-android-bridge --locked
       - name: APK verifier failure cases
@@ -52,7 +52,23 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Build both ABIs, unit tests and lint
         working-directory: client/android
-        run: ./gradlew --no-daemon assembleDebug assembleRelease testDebugUnitTest lintDebug
+        run: ./gradlew --no-daemon assembleDebug assembleRelease bundleRelease testDebugUnitTest lintDebug lintRelease
+      - name: Verify store metadata and signed bundle
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 client/android/scripts/check-play-metadata.py
+          gh release download 1.18.3 --repo google/bundletool --pattern bundletool-all-1.18.3.jar --dir "$RUNNER_TEMP"
+          echo "a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29  $RUNNER_TEMP/bundletool-all-1.18.3.jar" | sha256sum --check
+          certificate=$(cat "$RUNNER_TEMP/android-ci-key/certificate-sha256.txt")
+          python3 client/android/scripts/verify-apk.py --apk client/android/app/build/outputs/apk/release/app-release.apk \
+            --certificate-sha256 "$certificate" --version-code 1001 --version-name ci.1 \
+            --apksigner "$ANDROID_HOME/build-tools/36.0.0/apksigner" --aapt "$ANDROID_HOME/build-tools/36.0.0/aapt" \
+            --metadata "$RUNNER_TEMP/ci-android.json"
+          python3 client/android/scripts/verify-aab.py --bundle client/android/app/build/outputs/bundle/release/app-release.aab \
+            --metadata "$RUNNER_TEMP/ci-android.json" --bundletool "$RUNNER_TEMP/bundletool-all-1.18.3.jar" \
+            --certificate-sha256 "$certificate"
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 client/android/app/build/outputs/apk/release/app-release.apk
       - name: Build and verify signed release upgrade
         run: |
           mkdir -p "$RUNNER_TEMP/android-upgrade"
@@ -63,7 +79,7 @@ jobs:
           )
           cp client/android/app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/android-upgrade/update.apk"
           certificate=$(cat "$RUNNER_TEMP/android-ci-key/certificate-sha256.txt")
-          build_tools="$ANDROID_HOME/build-tools/35.0.0"
+          build_tools="$ANDROID_HOME/build-tools/36.0.0"
           python3 client/android/scripts/verify-apk.py --apk "$RUNNER_TEMP/android-upgrade/base.apk" \
             --certificate-sha256 "$certificate" --version-code 1001 --version-name ci.1 \
             --apksigner "$build_tools/apksigner" --aapt "$build_tools/aapt"
@@ -87,6 +103,14 @@ jobs:
           api-level: 29
           arch: x86_64
           target: default
+          disable-animations: true
+          script: bash "$GITHUB_WORKSPACE/client/android/scripts/test-viewer.sh"
+      - name: Android 16 target SDK smoke tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          arch: x86_64
+          target: google_apis
           disable-animations: true
           script: bash "$GITHUB_WORKSPACE/client/android/scripts/test-viewer.sh"
       - name: Remove disposable signing material

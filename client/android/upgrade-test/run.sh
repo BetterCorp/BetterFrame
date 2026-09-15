@@ -3,8 +3,8 @@
 set -euo pipefail
 test_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd -- "$test_dir/../../.." && pwd)
-build_tools="${ANDROID_HOME:?}/build-tools/35.0.0"
-android_jar="$ANDROID_HOME/platforms/android-35/android.jar"
+build_tools="${ANDROID_HOME:?}/build-tools/36.0.0"
+android_jar="$ANDROID_HOME/platforms/android-36/android.jar"
 upgrade_dir="${RUNNER_TEMP:?}/android-upgrade"
 probe_dir="$upgrade_dir/probe"
 mkdir -p "$probe_dir/classes" "$probe_dir/dex"

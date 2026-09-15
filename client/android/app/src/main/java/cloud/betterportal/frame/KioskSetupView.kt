@@ -85,14 +85,14 @@ internal class KioskSetupView(context: Context) : LinearLayout(context) {
 
     fun showPairing(value: String) {
         val pairing = value.isNotBlank()
-        heading.text = if (pairing) "PAIR THIS DISPLAY" else ""
+        heading.text = if (pairing) context.getString(R.string.pair_display) else ""
         heading.visibility = if (pairing) View.VISIBLE else View.GONE
         code.text = value
-        code.contentDescription = "Pairing code: ${value.toCharArray().joinToString(" ")}"
+        code.contentDescription = context.getString(R.string.pairing_code, value.toCharArray().joinToString(" "))
         code.visibility = if (pairing) View.VISIBLE else View.GONE
-        instructions.text = "Enter this code in BetterFrame admin to pair."
+        instructions.text = context.getString(R.string.pairing_instructions)
         instructions.visibility = if (pairing) View.VISIBLE else View.GONE
-        status.text = if (pairing) "Waiting for approval…" else "Connecting to BetterFrame…"
+        status.text = if (pairing) context.getString(R.string.waiting_approval) else context.getString(R.string.connecting_betterframe)
     }
 
     fun showIdle(message: String) {
@@ -108,7 +108,7 @@ internal class KioskSetupView(context: Context) : LinearLayout(context) {
             manager.getLinkProperties(manager.activeNetwork)?.linkAddresses
                 ?.map { it.address }?.firstOrNull { !it.isLoopbackAddress && !it.isLinkLocalAddress }
                 ?.hostAddress
-        }.getOrNull() ?: "Not connected"
+        }.getOrNull() ?: context.getString(R.string.not_connected)
         details.text = "Server: $server\nIP: $network\nFW: ${BuildConfig.VERSION_NAME}  •  Android ${Build.VERSION.RELEASE}  •  ${Build.MODEL}"
     }
 }

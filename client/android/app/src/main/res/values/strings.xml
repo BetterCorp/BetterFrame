@@ -1,0 +1,47 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name" translatable="false">BetterFrame</string>
+    <string name="kiosk_menu">Kiosk menu</string>
+    <string name="restore_layout">Restore layout</string>
+    <string name="assigned_layouts">Assigned layouts</string>
+    <string name="reload_web">Reload web content</string>
+    <string name="web_content">Web content</string>
+    <string name="close">Close</string>
+    <string name="refresh">Refresh</string>
+    <string name="standby">Standby</string>
+    <string name="power_and_kiosk">Power and kiosk</string>
+    <string name="settings">Settings</string>
+    <string name="disable_managed_kiosk">Disable managed kiosk</string>
+    <string name="enable_managed_kiosk">Enable managed kiosk</string>
+    <string name="managed_kiosk_failed">Unable to update managed kiosk policy</string>
+    <string name="screen_off_action">Turn screen off (power button to wake)</string>
+    <string name="screen_off_failed">Unable to turn the screen off</string>
+    <string name="standby_explanation">Standby shows a black screen and stops playback. Touch, a remote button or BetterFrame Wake resumes it. The device remains connected; its backlight may stay on.</string>
+    <string name="managed_explanation">Managed device: enable kiosk mode to launch BetterFrame automatically. True screen-off uses the power button to wake and may require unlocking.</string>
+    <string name="device_manager_explanation">Kiosk launch and hardware power policy are controlled by your device manager.</string>
+    <string name="ordinary_install_explanation">Ordinary install: use the device power button for actual screen-off. Automatic kiosk launch requires device-management provisioning.</string>
+    <string name="server_address">BetterFrame server address</string>
+    <string name="server_reset_required">Server changes after enrollment require a reset.</string>
+    <string name="display_settings">Display settings</string>
+    <string name="connect">Connect</string>
+    <string name="reset_enrollment">Reset enrollment</string>
+    <string name="invalid_server_origin">Enter a valid BF server origin.</string>
+    <string name="reset_display_title">Reset this display?</string>
+    <string name="cancel">Cancel</string>
+    <string name="reset_connect">Reset and connect</string>
+    <string name="clearing_enrollment">Clearing enrollment…</string>
+    <string name="configuration_unavailable">Display configuration unavailable</string>
+    <string name="assign_layouts">go into BetterFrame and assign layouts to this display</string>
+    <string name="empty_layout">This layout is empty. Add content to it in BetterFrame.</string>
+    <string name="control_unavailable">This control is unavailable in the Android viewer</string>
+    <string name="playback_budget">Layout exceeds this device\'s playback budget</string>
+    <string name="no_content">No content assigned</string>
+    <string name="layout">Layout</string>
+    <string name="pair_display">PAIR THIS DISPLAY</string>
+    <string name="pairing_instructions">Enter this code in BetterFrame admin to pair.</string>
+    <string name="waiting_approval">Waiting for approval…</string>
+    <string name="connecting_betterframe">Connecting to BetterFrame…</string>
+    <string name="not_connected">Not connected</string>
+    <string name="reset_display_message">Remove this display\'s saved enrollment, cached configuration and web sessions, then pair with %1$s?</string>
+    <string name="pairing_code">Pairing code: %1$s</string>
+</resources>

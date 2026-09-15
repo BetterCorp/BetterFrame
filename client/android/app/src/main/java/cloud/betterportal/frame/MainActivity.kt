@@ -151,7 +151,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
 
     private fun addMenu() {
         val menu = button("⋮") { showKioskMenu() }.apply {
-            contentDescription = "Kiosk menu"
+            contentDescription = getString(R.string.kiosk_menu)
             textSize = 24f
             setTextColor(android.content.res.ColorStateList(
                 arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf()),
@@ -189,10 +189,10 @@ class MainActivity : Activity(), ViewerSession.Listener {
         val actions = mutableListOf<Pair<String, () -> Unit>>()
         val expanded = plan?.optString("expandedCellId")
         if (!expanded.isNullOrBlank() && expanded != "null") {
-            actions += "Restore layout" to { session.expand(null) }
+            actions += getString(R.string.restore_layout) to { session.expand(null) }
         }
         if ((plan?.optJSONArray("layouts")?.length() ?: 0) > 1) {
-            actions += "Assigned layouts" to { chooseLayout() }
+            actions += getString(R.string.assigned_layouts) to { chooseLayout() }
         }
         val webTiles = tiles.values.map { it.second }.filterIsInstance<WebTile>()
         if (webTiles.size == 1) {
@@ -200,32 +200,32 @@ class MainActivity : Activity(), ViewerSession.Listener {
             tile.assignedActionLabel?.let { label ->
                 if (actions.none { it.first == label }) actions += label to { tile.activateAssignedAction() }
             }
-            actions += "Reload web content" to { tile.reload() }
+            actions += getString(R.string.reload_web) to { tile.reload() }
         } else if (webTiles.isNotEmpty()) {
-            actions += "Web content" to {
-                AlertDialog.Builder(this).setTitle("Web content")
+            actions += getString(R.string.web_content) to {
+                AlertDialog.Builder(this).setTitle(getString(R.string.web_content))
                     .setItems(webTiles.map(::webTileLabel).toTypedArray()) { _, index ->
                         session.recordActivity()
                         showWebMenu(webTiles[index])
-                    }.setNegativeButton("Close", null).create().let(::showContentDialog)
+                    }.setNegativeButton(getString(R.string.close), null).create().let(::showContentDialog)
             }
         }
-        actions += "Refresh" to { session.refresh() }
-        if (plan?.optString("displayId")?.isNotBlank() == true) actions += "Standby" to { session.setStandby(true) }
-        actions += "Power and kiosk" to { showPowerSettings() }
-        actions += "Settings" to { showSettings() }
+        actions += getString(R.string.refresh) to { session.refresh() }
+        if (plan?.optString("displayId")?.isNotBlank() == true) actions += getString(R.string.standby) to { session.setStandby(true) }
+        actions += getString(R.string.power_and_kiosk) to { showPowerSettings() }
+        actions += getString(R.string.settings) to { showSettings() }
         AlertDialog.Builder(this).setTitle("BetterFrame")
             .setItems(actions.map { it.first }.toTypedArray()) { _, index -> session.recordActivity(); actions[index].second() }
-            .setNegativeButton("Close", null).create().let(::showContentDialog)
+            .setNegativeButton(getString(R.string.close), null).create().let(::showContentDialog)
     }
 
     private fun showWebMenu(tile: WebTile) {
         val actions = mutableListOf<Pair<String, () -> Unit>>()
         tile.assignedActionLabel?.let { actions += it to { tile.activateAssignedAction() } }
-        actions += "Reload web content" to { tile.reload() }
+        actions += getString(R.string.reload_web) to { tile.reload() }
         AlertDialog.Builder(this).setTitle(webTileLabel(tile))
             .setItems(actions.map { it.first }.toTypedArray()) { _, index -> session.recordActivity(); actions[index].second() }
-            .setNegativeButton("Close", null).create().let(::showContentDialog)
+            .setNegativeButton(getString(R.string.close), null).create().let(::showContentDialog)
     }
 
     private fun webTileLabel(tile: WebTile): String {
@@ -301,29 +301,29 @@ class MainActivity : Activity(), ViewerSession.Listener {
         val actions = mutableListOf<Pair<String, () -> Unit>>()
         if (managed.isOwner) {
             val wasAllowed = managed.isAllowed
-            actions += (if (wasAllowed) "Disable managed kiosk" else "Enable managed kiosk") to {
+            actions += (if (wasAllowed) getString(R.string.disable_managed_kiosk) else getString(R.string.enable_managed_kiosk)) to {
                 runCatching { if (wasAllowed) managed.disable() else managed.enable() }
                     .onSuccess { dismissDialogs(); showPowerSettings() }
-                    .onFailure { android.widget.Toast.makeText(this, "Unable to update managed kiosk policy", android.widget.Toast.LENGTH_LONG).show() }
+                    .onFailure { android.widget.Toast.makeText(this, getString(R.string.managed_kiosk_failed), android.widget.Toast.LENGTH_LONG).show() }
             }
-            actions += "Turn screen off (power button to wake)" to {
+            actions += getString(R.string.screen_off_action) to {
                 dismissDialogs()
-                runCatching { managed.screenOff() }.onFailure { onStatus("Unable to turn the screen off") }
+                runCatching { managed.screenOff() }.onFailure { onStatus(getString(R.string.screen_off_failed)) }
             }
         }
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(8), dp(16), dp(8))
-            addView(text("Standby shows a black screen and stops playback. Touch, a remote button or BetterFrame Wake resumes it. The device remains connected; its backlight may stay on."))
+            addView(text(getString(R.string.standby_explanation)))
             addView(text(when {
-                managed.isOwner -> "Managed device: enable kiosk mode to launch BetterFrame automatically. True screen-off uses the power button to wake and may require unlocking."
-                managed.isAllowed -> "Kiosk launch and hardware power policy are controlled by your device manager."
-                else -> "Ordinary install: use the device power button for actual screen-off. Automatic kiosk launch requires device-management provisioning."
+                managed.isOwner -> getString(R.string.managed_explanation)
+                managed.isAllowed -> getString(R.string.device_manager_explanation)
+                else -> getString(R.string.ordinary_install_explanation)
             }))
             actions.forEach { (label, action) -> addView(button(label, action)) }
         }
-        AlertDialog.Builder(this).setTitle("Power and kiosk").setView(content)
-            .setNegativeButton("Close", null).create().let(::showDialog)
+        AlertDialog.Builder(this).setTitle(getString(R.string.power_and_kiosk)).setView(content)
+            .setNegativeButton(getString(R.string.close), null).create().let(::showDialog)
     }
 
     private fun showSettings() {
@@ -337,18 +337,18 @@ class MainActivity : Activity(), ViewerSession.Listener {
             setSingleLine(true)
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
             setText(session.serverUrl.ifBlank { ServerAddress.DEFAULT })
-            contentDescription = "BetterFrame server address"
+            contentDescription = getString(R.string.server_address)
         }
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(24), dp(8), dp(24), dp(8))
             addView(text(lastStatus))
-            addView(text("Server changes after enrollment require a reset."))
+            addView(text(getString(R.string.server_reset_required)))
             addView(address, LinearLayout.LayoutParams(-1, -2))
         }
-        val dialog = AlertDialog.Builder(this).setTitle("Display settings").setView(content)
-            .setNegativeButton("Close", null).setPositiveButton("Connect", null)
-            .setNeutralButton("Reset enrollment") { _, _ ->
+        val dialog = AlertDialog.Builder(this).setTitle(getString(R.string.display_settings)).setView(content)
+            .setNegativeButton(getString(R.string.close), null).setPositiveButton(getString(R.string.connect), null)
+            .setNeutralButton(getString(R.string.reset_enrollment)) { _, _ ->
                 confirmReset(session.serverUrl.ifBlank { ServerAddress.DEFAULT })
             }.create()
         dialog.setOnShowListener {
@@ -356,7 +356,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
                 val parsed = runCatching { ServerAddress.parse(address.text.toString()).toString().trimEnd('/') }
                 val entered = parsed.getOrNull()
                 if (entered == null) {
-                    address.error = parsed.exceptionOrNull()?.message ?: "Enter a valid BF server origin."
+                    address.error = parsed.exceptionOrNull()?.message ?: getString(R.string.invalid_server_origin)
                 } else {
                     dialog.dismiss()
                     if (entered != session.serverUrl.trimEnd('/')) confirmReset(entered)
@@ -368,10 +368,10 @@ class MainActivity : Activity(), ViewerSession.Listener {
     }
 
     private fun confirmReset(server: String) {
-        AlertDialog.Builder(this).setTitle("Reset this display?")
-            .setMessage("Remove this display's saved enrollment, cached configuration and web sessions, then pair with $server?")
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Reset and connect") { _, _ -> resetEnrollment(server) }.create().let(::showDialog)
+        AlertDialog.Builder(this).setTitle(getString(R.string.reset_display_title))
+            .setMessage(getString(R.string.reset_display_message, server))
+            .setNegativeButton(getString(R.string.cancel), null)
+            .setPositiveButton(getString(R.string.reset_connect)) { _, _ -> resetEnrollment(server) }.create().let(::showDialog)
     }
 
     private fun resetEnrollment(server: String) {
@@ -379,7 +379,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
         plan = null
         resetRequested = true
         showSetup("")
-        status.text = "Clearing enrollment…"
+        status.text = getString(R.string.clearing_enrollment)
         // Queue the restart in the session, which waits for durable/browser cleanup.
         // Connection-status callbacks must not decide whether this reset reconnects.
         session.unpair(server)
@@ -432,7 +432,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
         if (!displayVisible) showDisplay()
         if (value.has("error")) {
             releaseTiles()
-            setupView?.showIdle(value.optString("error", "Display configuration unavailable"))
+            setupView?.showIdle(value.optString("error", getString(R.string.configuration_unavailable)))
             status.text = lastStatus
             setupView?.visibility = View.VISIBLE
             return
@@ -440,8 +440,8 @@ class MainActivity : Activity(), ViewerSession.Listener {
         val cells = value.optJSONArray("cells")
         setupView?.visibility = if (cells == null || cells.length() == 0) View.VISIBLE else View.GONE
         setupView?.showIdle(if (value.optString("layoutId").isBlank())
-            "go into BetterFrame and assign layouts to this display"
-            else "This layout is empty. Add content to it in BetterFrame.")
+            getString(R.string.assign_layouts)
+            else getString(R.string.empty_layout))
         status.text = lastStatus
         if (cells == null) { releaseTiles(); return }
         val desired = compatibleWebSessions((0 until cells.length()).map { cells.getJSONObject(it) })
@@ -477,7 +477,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
                 "restore" -> session.expand(null)
                 "layout.switch" -> action?.optString("layoutId")?.let { session.selectLayout(it) }
                 "expand" -> session.expand(if (plan?.optString("expandedCellId") == id) null else id)
-                else -> status.text = "This control is unavailable in the Android viewer"
+                else -> status.text = getString(R.string.control_unavailable)
             }
         }
         desired.forEach { cell ->
@@ -490,11 +490,11 @@ class MainActivity : Activity(), ViewerSession.Listener {
             }
             val existing = tiles[id]?.second
             val tile = existing ?: if (!allowed) {
-                PlaceholderTile(this, cell.optString("label"), "Layout exceeds this device's playback budget")
+                PlaceholderTile(this, cell.optString("label"), getString(R.string.playback_budget))
             } else when (kind) {
                 "camera" -> CameraTile(this, cell) { activate(cell) }
                 "web" -> WebTile(this, cell, onActivity = session::recordActivity, onActivate = { activate(cell) })
-                else -> PlaceholderTile(this, cell.optString("label"), cell.optString("message", "No content assigned")) { activate(cell) }
+                else -> PlaceholderTile(this, cell.optString("label"), cell.optString("message", getString(R.string.no_content))) { activate(cell) }
             }
             if (existing == null) {
                 tiles[id] = contentKeys.getValue(id) to tile
@@ -522,10 +522,10 @@ class MainActivity : Activity(), ViewerSession.Listener {
     private fun chooseLayout() {
         val assigned = plan?.optJSONArray("layouts") ?: return
         val entries = (0 until assigned.length()).map { assigned.getJSONObject(it) }
-        AlertDialog.Builder(this).setTitle("Assigned layouts")
-            .setItems(entries.map { it.optString("name", "Layout") }.toTypedArray()) { _, position ->
+        AlertDialog.Builder(this).setTitle(getString(R.string.assigned_layouts))
+            .setItems(entries.map { it.optString("name", getString(R.string.layout)) }.toTypedArray()) { _, position ->
                 session.selectLayout(entries[position].getString("id"))
-            }.setNegativeButton("Cancel", null).create().let(::showContentDialog)
+            }.setNegativeButton(getString(R.string.cancel), null).create().let(::showContentDialog)
     }
 
     @Deprecated("Required for TV and Android versions before predictive back")

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MARKER="/run/betterframe/kiosk-healthy"
-CONFIRMED_MARKER="/run/betterframe/rauc-confirmed"
+MARKER="${BF_RAUC_HEALTH_MARKER:-/run/betterframe/kiosk-healthy}"
+CONFIRMED_MARKER="${BF_RAUC_CONFIRMED_MARKER:-/run/betterframe/rauc-confirmed}"
 TIMEOUT="${BF_RAUC_MARK_GOOD_TIMEOUT:-300}"
 
 if ! command -v rauc >/dev/null 2>&1; then

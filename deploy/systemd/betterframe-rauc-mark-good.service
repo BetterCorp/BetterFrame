@@ -10,6 +10,9 @@ ConditionPathExists=/usr/bin/rauc
 Type=oneshot
 ExecStart=/usr/local/sbin/betterframe-rauc-mark-good.sh
 RemainAfterExit=yes
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=360s
 
 [Install]
 WantedBy=multi-user.target

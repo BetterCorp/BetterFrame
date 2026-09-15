@@ -43,6 +43,8 @@ fi
 # it the slot images carry stale build-time references and the device
 # drops to initramfs after activation.
 cp "${SCRIPT_DIR}/hook.sh" "${STAGE}/hook.sh"
+cp "${SCRIPT_DIR}/reboot-after-install.sh" "${STAGE}/reboot-after-install.sh"
+cp "${SCRIPT_DIR}/../systemd/betterframe-rauc-state.sh" "${STAGE}/betterframe-rauc-state.sh"
 chmod +x "${STAGE}/hook.sh"
 
 echo "==> Rendering manifest"

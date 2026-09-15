@@ -105,6 +105,7 @@ install -m 755 /tmp/bf-files/betterframe-rauc-boot.sh /usr/local/sbin/betterfram
 # RAUC's Debian package ships without systemd unit + D-Bus activation files.
 # Without these, `rauc install` and `rauc status` fail because the D-Bus
 # daemon name de.pengutronix.rauc is never registered.
+install -m 755 /tmp/bf-files/betterframe-rauc-state.sh /usr/local/sbin/betterframe-rauc-state.sh
 install -m 644 /tmp/bf-files/rauc.service /etc/systemd/system/rauc.service
 install -d -m 755 /usr/share/dbus-1/system-services
 install -m 644 /tmp/bf-files/de.pengutronix.rauc.service \

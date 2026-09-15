@@ -5108,11 +5108,20 @@ export function KioskOsUpdatePanel(props: KioskOsUpdatePanelProps) {
   const matchingReleases = compatibility
     ? props.releases.filter((r) => !r.yanked_at && r.compatibility === compatibility)
     : [];
+  const statusLabels = {
+    installed: "Installed — awaiting reboot scheduling",
+    pending_reboot: "Awaiting reboot and boot confirmation",
+    confirmed: "Boot confirmed",
+    rolled_back: "Rolled back — update did not pass boot confirmation",
+    failed: "Update failed",
+  };
+  const needsRetry = k.os_update_state === "failed" || k.os_update_state === "rolled_back";
   return (
     <div id={`kiosk-os-${String(k.id)}`} class="card" style="margin-bottom:1.5rem">
       <h3 style="margin:0 0 0.75rem; font-size:1rem">OS</h3>
       <div style="font-size:0.85rem; color:#666; margin-bottom:0.75rem">
         <div>Running: <code>{current}</code></div>
+        <div>Status: {k.os_update_last_attempt_version ? statusLabels[k.os_update_state] : "No update attempt reported"}</div>
         <div>Compatibility: {compatibility ? <code>{compatibility}</code> : "unknown, waiting for kiosk check-in"}</div>
         {k.os_update_last_attempt_version && (
           <div>
@@ -5162,7 +5171,7 @@ export function KioskOsUpdatePanel(props: KioskOsUpdatePanelProps) {
               "hx-post": `/admin/kiosks/${String(k.id)}/os-update/push`,
               "hx-swap": "none",
             }}
-          >Push OS update now</button>
+          >{needsRetry ? "Retry OS update now" : "Push OS update now"}</button>
         </div>
       </form>}
     </div>

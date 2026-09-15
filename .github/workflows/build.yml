@@ -62,6 +62,8 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
+      - name: Test OS update boot safety
+        run: python3 -m unittest discover -s deploy/rauc/tests -v
       - name: Test shared client behavior
         run: cargo test --manifest-path client/Cargo.toml -p betterframe-client-core --locked
 
@@ -485,6 +487,7 @@ jobs:
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/systemd/betterframe-rauc-mark-good.sh \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/systemd/betterframe-rauc-state.sh deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/tmpfiles/betterframe-kiosk.conf \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/udev/90-betterframe-no-hid.rules \

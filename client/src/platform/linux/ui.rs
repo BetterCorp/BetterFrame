@@ -256,22 +256,6 @@ fn activate(app: &Application) {
                     }
                 }
             }
-            if server::ota_enabled("BF_ENABLE_OS_OTA") {
-                let _ = tx.send(WorkerMsg::StartupStatus("Checking for OS updates".into()));
-                if let Some(update) = os_update::check_public(&server) {
-                    let version = update.version.clone();
-                    let tx_progress = tx.clone();
-                    if let Err(e) = os_update::apply_public(&server, &update, move |phase, pct| {
-                        let _ = tx_progress.send(WorkerMsg::UpdateProgress(Some((
-                            format!("OS Update {version}: {phase}"),
-                            pct,
-                        ))));
-                    }) {
-                        let _ = tx.send(WorkerMsg::UpdateProgress(None));
-                        tracing::warn!("preboot OS update failed: {e}");
-                    }
-                }
-            }
         }
 
         let key = if server::is_paired() {
@@ -302,6 +286,31 @@ fn activate(app: &Application) {
                         continue;
                     }
                 };
+                let _ = tx.send(WorkerMsg::ShowPairingCode(session.code.clone()));
+                // Let the displayed pairing screen confirm this boot before
+                // replacing another slot. Pairing health is independent of claim.
+                for _ in 0..15 {
+                    if os_update::boot_is_confirmed() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+                if server::ota_enabled("BF_ENABLE_OS_OTA") && os_update::boot_is_confirmed() {
+                    let _ = tx.send(WorkerMsg::StartupStatus("Checking for OS updates".into()));
+                    if let Some(update) = os_update::check_public(&server) {
+                        let version = update.version.clone();
+                        let tx_progress = tx.clone();
+                        if let Err(e) = os_update::apply_public(&server, &update, move |phase, pct| {
+                            let _ = tx_progress.send(WorkerMsg::UpdateProgress(Some((
+                                format!("OS Update {version}: {phase}"),
+                                pct,
+                            ))));
+                        }) {
+                            let _ = tx.send(WorkerMsg::UpdateProgress(None));
+                            tracing::warn!("preboot OS update failed: {e}");
+                        }
+                    }
+                }
                 let _ = tx.send(WorkerMsg::ShowPairingCode(session.code.clone()));
                 if let Some((name, key)) =
                     server::poll_claim_until_expiry(&server, &session, |status| {
@@ -558,7 +567,7 @@ fn activate(app: &Application) {
                 apply_boot_audio_default();
                 first_iter = false;
             }
-            if heartbeat_ok && !confirmation_reported && os_update::boot_is_confirmed() {
+            if heartbeat_ok && !confirmation_reported {
                 confirmation_reported = os_update::report_confirmed(&server, &key);
             }
             if server::auto_updates_allowed() {
@@ -914,6 +923,10 @@ fn maybe_apply_os_update(
         info!("os-update: disabled (BF_ENABLE_OS_OTA = 0)");
         return;
     }
+    if !os_update::boot_is_confirmed() {
+        info!("os-update: waiting for current boot health confirmation");
+        return;
+    }
     if OS_UPDATE_ACTIVE
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -980,14 +993,20 @@ fn maybe_apply_os_update(
         }
         let version = info.version.clone();
         let tx_cb = tx.clone();
-        let result = os_update::apply(&server_url, &kiosk_key, &info, move |phase, pct| {
-            let label = format!("OS Update {version}: {phase}");
-            let _ = tx_cb.send(WorkerMsg::UpdateProgress(Some((label, pct))));
-        });
+        let result = os_update::apply(
+            &server_url,
+            &kiosk_key,
+            &info,
+            move |phase, pct| {
+                let label = format!("OS Update {version}: {phase}");
+                let _ = tx_cb.send(WorkerMsg::UpdateProgress(Some((label, pct))));
+            },
+            force,
+        );
         UPDATE_APPLY_ACTIVE.store(false, Ordering::SeqCst);
         OS_UPDATE_ACTIVE.store(false, Ordering::SeqCst);
         if let Err(err) = result {
-            let failures = crate::update_guard::record_failure("os", &info.version, &err);
+            let failures = crate::update_guard::failure_count("os", &info.version);
             let _ = tx.send(WorkerMsg::UpdateProgress(None));
             warn!("os-update: apply failed: {err}");
             server::report_kiosk_log(
@@ -1320,6 +1339,12 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str, status: &str) {
     vbox.append(&title);
     vbox.append(&code_label);
     vbox.append(&hint);
+    if let Some(note) = os_update::last_update_note() {
+        let diagnostic = Label::new(Some(&note));
+        diagnostic.set_wrap(true);
+        diagnostic.set_max_width_chars(72);
+        vbox.append(&diagnostic);
+    }
 
     let fw_ver = server::kiosk_app_version();
     let os_ver =
@@ -1340,6 +1365,7 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str, status: &str) {
     window.set_child(Some(&overlay));
     window.queue_resize();
     window.queue_draw();
+    mark_kiosk_healthy();
     info!("pairing display updated to {code}");
 }
 

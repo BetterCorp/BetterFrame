@@ -35,6 +35,21 @@ pub fn blocked(kind: &str, version: &str, force: bool) -> Option<u32> {
     (failures >= ATTEMPT_LIMIT).then_some(failures)
 }
 
+/// Persist an attempt before starting work, including attempts interrupted by power loss.
+pub fn record_attempt(kind: &str, version: &str) -> Result<u32, String> {
+    let _lock = GUARD_LOCK
+        .lock()
+        .map_err(|_| "Update attempt record locked")?;
+    let mut state = read_state();
+    let entry = state.entries.entry(key(kind, version)).or_default();
+    entry.failures = entry.failures.saturating_add(1);
+    entry.last_error = Some("Attempt started; awaiting boot confirmation".into());
+    entry.last_failed_at = now_secs();
+    let attempts = entry.failures;
+    write_state(&state)?;
+    Ok(attempts)
+}
+
 pub fn record_failure(kind: &str, version: &str, err: &str) -> u32 {
     let _lock = GUARD_LOCK.lock().ok();
     let mut state = read_state();
@@ -85,7 +100,16 @@ fn read_state() -> AttemptState {
 fn write_state(state: &AttemptState) -> Result<(), String> {
     fs::create_dir_all("/var/lib/betterframe/kiosk").map_err(|e| format!("mkdir: {e}"))?;
     let raw = serde_json::to_string(state).map_err(|e| format!("encode: {e}"))?;
-    fs::write(ATTEMPT_FILE, raw).map_err(|e| format!("write: {e}"))
+    use std::io::Write;
+    let tmp = format!("{ATTEMPT_FILE}.tmp");
+    let mut file = fs::File::create(&tmp).map_err(|e| format!("create: {e}"))?;
+    file.write_all(raw.as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("write: {e}"))?;
+    fs::rename(tmp, ATTEMPT_FILE).map_err(|e| format!("rename: {e}"))?;
+    fs::File::open("/var/lib/betterframe/kiosk")
+        .and_then(|f| f.sync_all())
+        .map_err(|e| format!("sync directory: {e}"))
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {

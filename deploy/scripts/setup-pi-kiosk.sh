@@ -341,6 +341,7 @@ for name in ['default','left_ptr','arrow','watch','hand2','text','xterm',
     /usr/local/sbin/betterframe-firmware-rollback.sh
   install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-rauc-mark-good.service" \
     /etc/systemd/system/betterframe-rauc-mark-good.service
+  install -m 755 "${REPO_ROOT}/deploy/systemd/betterframe-rauc-state.sh" /usr/local/sbin/betterframe-rauc-state.sh
   install -m 755 "${REPO_ROOT}/deploy/systemd/betterframe-rauc-mark-good.sh" \
     /usr/local/sbin/betterframe-rauc-mark-good.sh
   install -d -m 755 /etc/tmpfiles.d

@@ -25,11 +25,16 @@ test("persistent kiosk data is mounted before services can use it", () => {
   }
 });
 
-test("unpaired kiosks check signed OS updates before starting pairing", () => {
+test("unpaired kiosks render pairing and confirm boot before checking signed OS updates", () => {
   const kiosk = readFileSync(new URL("../../client/src/platform/linux/ui.rs", import.meta.url), "utf8");
   const api = readFileSync(new URL("../src/plugins/service-api-http/index.ts", import.meta.url), "utf8");
   const proxy = readFileSync(new URL("../../deploy/angie/betterframe.docker.conf", import.meta.url), "utf8");
-  assert.ok(kiosk.indexOf("os_update::check_public(&server)") < kiosk.indexOf("server::initiate_pairing(&server)"));
+  const update = kiosk.indexOf("os_update::check_public(&server)");
+  assert.ok(kiosk.indexOf("WorkerMsg::ShowPairingCode(session.code.clone())") < update);
+  assert.ok(kiosk.indexOf('server::ota_enabled("BF_ENABLE_OS_OTA") && os_update::boot_is_confirmed()') < update);
+  assert.ok(update < kiosk.indexOf("server::poll_claim_until_expiry"));
+  const pairingScreen = kiosk.slice(kiosk.indexOf("fn show_pairing_code("), kiosk.indexOf("fn show_pairing_progress("));
+  assert.match(pairingScreen, /mark_kiosk_healthy\(\)/);
   assert.match(api, /\/api\/os\/public\/check/);
   assert.match(api, /\/api\/os\/public\/download\/:id/);
   assert.match(proxy, /\^\/api\/\(firmware\|os\)\/public\//);

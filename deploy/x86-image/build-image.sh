@@ -101,6 +101,7 @@ cp "${REPO_ROOT}/deploy/mediamtx.version" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-firmware-rollback.sh" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-rauc-mark-good.service" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-rauc-mark-good.sh" "${WORK}/root/tmp/bf-files/"
+cp "${REPO_ROOT}/deploy/systemd/betterframe-rauc-state.sh" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-expand-data.service" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-expand-data.sh" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-apply-managed-config.sh" "${WORK}/root/tmp/bf-files/"
@@ -189,6 +190,7 @@ install -m 644 /tmp/bf-files/cage.pam /etc/pam.d/cage
 install -m 755 /tmp/bf-files/betterframe-firmware-rollback.sh /usr/local/sbin/betterframe-firmware-rollback.sh
 install -m 644 /tmp/bf-files/betterframe-rauc-mark-good.service /etc/systemd/system/betterframe-rauc-mark-good.service
 install -m 755 /tmp/bf-files/betterframe-rauc-mark-good.sh /usr/local/sbin/betterframe-rauc-mark-good.sh
+install -m 755 /tmp/bf-files/betterframe-rauc-state.sh /usr/local/sbin/betterframe-rauc-state.sh
 install -m 644 /tmp/bf-files/betterframe-expand-data.service /etc/systemd/system/betterframe-expand-data.service
 install -m 755 /tmp/bf-files/betterframe-expand-data.sh /usr/local/sbin/betterframe-expand-data.sh
 install -m 755 /tmp/bf-files/betterframe-apply-managed-config.sh /usr/local/sbin/betterframe-apply-managed-config.sh

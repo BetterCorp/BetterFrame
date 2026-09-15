@@ -28,7 +28,47 @@
 //! at image build time). Falls back to env `BF_RAUC_COMPATIBILITY`, then
 //! a hardcoded default matching deploy/rauc/system.conf.
 
+use crate::os_journal::{self, Journal, Stage};
 use std::fs;
+use std::sync::Mutex;
+const JOURNAL_PATH: &str = "/var/lib/betterframe/kiosk/os-update.json";
+static JOURNAL_LOCK: Mutex<()> = Mutex::new(());
+fn boot_id() -> String {
+    fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+pub fn last_update_note() -> Option<String> {
+    let _lock = JOURNAL_LOCK.lock().ok()?;
+    match os_journal::read(std::path::Path::new(JOURNAL_PATH)) {
+        Ok(Some(j)) => j.error.clone().or_else(|| {
+            if j.blocks_apply() {
+                Some(format!(
+                    "OS update {} awaits boot confirmation. Manage updates in BetterFrame.",
+                    j.version
+                ))
+            } else {
+                None
+            }
+        }),
+        Err(e) => Some(e),
+        _ => None,
+    }
+}
+
+fn save_stage(stage: Stage, error: Option<String>) -> Result<(), String> {
+    let _lock = JOURNAL_LOCK.lock().map_err(|_| "OS update record locked")?;
+    let path = std::path::Path::new(JOURNAL_PATH);
+    if let Some(mut j) = os_journal::read(path)? {
+        j.stage = stage;
+        j.error = error;
+        os_journal::write(path, &j)?;
+    }
+    Ok(())
+}
+
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -41,6 +81,19 @@ use tracing::{info, warn};
 
 pub const DEFAULT_COMPATIBILITY: &str = "betterframe-rpi5-aarch64";
 static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
+fn installer_idle() -> bool {
+    Command::new("busctl")
+        .args([
+            "get-property",
+            "de.pengutronix.rauc",
+            "/",
+            "de.pengutronix.rauc.Installer",
+            "Operation",
+        ])
+        .output()
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "s \"idle\"")
+        .unwrap_or(false)
+}
 
 pub fn compatibility_public() -> String {
     compatibility()
@@ -57,8 +110,9 @@ fn compatibility() -> String {
 }
 
 pub fn request_cancel() {
+    // Only the active downloader may discard its file. A channel change must
+    // never unlink a bundle that the root RAUC daemon might still be using.
     CANCEL_REQUESTED.store(true, Ordering::SeqCst);
-    cleanup_partial_update();
 }
 
 pub fn clear_cancel() {
@@ -67,19 +121,6 @@ pub fn clear_cancel() {
 
 fn cancel_requested() -> bool {
     CANCEL_REQUESTED.load(Ordering::SeqCst)
-}
-
-fn cleanup_partial_update() {
-    let staging = PathBuf::from("/var/lib/betterframe/tmp");
-    let Ok(entries) = fs::read_dir(staging) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) == Some("raucb") {
-            let _ = fs::remove_file(path);
-        }
-    }
 }
 
 pub fn current_os_version_public() -> String {
@@ -170,8 +211,9 @@ pub fn apply(
     key: &str,
     info: &UpdateInfo,
     on_progress: impl Fn(&str, u8),
+    force: bool,
 ) -> Result<(), String> {
-    apply_inner(server, Some(key), info, on_progress)
+    apply_tracked(server, Some(key), info, on_progress, force)
 }
 
 pub fn apply_public(
@@ -179,7 +221,72 @@ pub fn apply_public(
     info: &UpdateInfo,
     on_progress: impl Fn(&str, u8),
 ) -> Result<(), String> {
-    apply_inner(server, None, info, on_progress)
+    apply_tracked(server, None, info, on_progress, false)
+}
+
+fn apply_tracked(
+    server: &str,
+    key: Option<&str>,
+    info: &UpdateInfo,
+    on_progress: impl Fn(&str, u8),
+    force: bool,
+) -> Result<(), String> {
+    ensure_upgrade(info, &current_os_version())?;
+    let id = boot_id();
+    if id.is_empty() {
+        return Err("Cannot identify this boot; OS update deferred".into());
+    }
+    {
+        let _lock = JOURNAL_LOCK.lock().map_err(|_| "OS update record locked")?;
+        let path = std::path::Path::new(JOURNAL_PATH);
+        if let Some(mut j) = os_journal::read(path)? {
+            j.reconcile(&id, &current_os_version(), boot_is_confirmed());
+            os_journal::write(path, &j)?;
+            if j.blocks_apply() && force && !installer_idle() {
+                return Err(
+                    "OS installer is still busy or unavailable; retry after installation finishes"
+                        .into(),
+                );
+            }
+            if j.blocks_apply() && !force {
+                return Err(j.error.unwrap_or_else(|| format!("OS update {} is awaiting reboot/confirmation; retry from BetterFrame if needed", j.version)));
+            }
+        }
+        if let Some(n) = crate::update_guard::blocked("os", &info.version, force) {
+            return Err(format!(
+                "OS update {} paused after {n} attempts. Pair this display and retry from BetterFrame.",
+                info.version
+            ));
+        }
+        os_journal::write(
+            path,
+            &Journal {
+                version: info.version.clone(),
+                release_id: info.release_id.clone(),
+                boot_id: id,
+                stage: Stage::Downloading,
+                error: None,
+            },
+        )?;
+        // Count before starting so power loss also consumes an attempt.
+        crate::update_guard::record_attempt("os", &info.version)?;
+    }
+    let result = apply_inner(server, key, info, on_progress);
+    if let Err(ref error) = result {
+        let _lock = JOURNAL_LOCK.lock().map_err(|_| "OS update record locked")?;
+        let path = std::path::Path::new(JOURNAL_PATH);
+        if let Some(mut j) = os_journal::read(path)? {
+            // An installed slot is never downloaded again automatically while
+            // the reboot outcome remains unknown.
+            if !matches!(j.stage, Stage::Installing | Stage::PendingReboot) {
+                j.stage = Stage::Failed;
+            }
+            j.error = Some(error.chars().take(4000).collect());
+            os_journal::write(path, &j)?;
+        }
+        let _ = report_applied(server, key, &info.version, Some(error));
+    }
+    result
 }
 
 fn apply_inner(
@@ -385,6 +492,10 @@ fn apply_inner(
     // Hand off to rauc. `rauc install` blocks until the bundle is fully
     // copied into the inactive slot and bootloader is flipped. Exit code 0
     // = success; anything else = leave current slot booted, no reboot.
+    if !installer_idle() {
+        return Err("OS installer is busy or unavailable; installation deferred".into());
+    }
+    save_stage(Stage::Installing, None)?;
     let mut child = Command::new("rauc")
         .args(["install", bundle_path.to_str().unwrap_or("")])
         .stdout(Stdio::piped())
@@ -417,25 +528,14 @@ fn apply_inner(
         let _ = child_stderr.read_to_end(&mut bytes);
         bytes
     });
+    // Once RAUC has accepted the install, cancelling its CLI cannot cancel
+    // the root daemon. Finish observing the transaction before retry/reboot.
     let status = loop {
-        if cancel_requested() {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = report_applied(
-                server,
-                key,
-                &info.version,
-                Some("os update canceled after channel change"),
-            );
-            let _ = fs::remove_file(&bundle_path);
-            return Err("os update canceled after channel change".to_string());
-        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => std::thread::sleep(Duration::from_secs(1)),
             Err(e) => {
-                let _ = fs::remove_file(&bundle_path);
-                return Err(format!("rauc wait: {e}"));
+                return Err(format!("RAUC outcome unknown; bundle retained: {e}"));
             }
         }
     };
@@ -445,7 +545,8 @@ fn apply_inner(
         let msg = format_command_failure("rauc install", status, &stdout, &stderr);
         warn!("os-update: {msg}");
         let _ = report_applied(server, key, &info.version, Some(&msg));
-        let _ = fs::remove_file(&bundle_path);
+        // The CLI may have lost D-Bus while the daemon continues. Keep the
+        // bundle and blocked Installing record until an explicit retry.
         return Err(msg);
     }
     let _ = fs::remove_file(&bundle_path);
@@ -455,15 +556,20 @@ fn apply_inner(
     // the next heartbeat anyway, but recording success now means the
     // admin UI shows progress immediately.
     let _ = report_applied(server, key, &info.version, None);
-    crate::update_guard::record_success("os", &info.version);
+    save_stage(Stage::PendingReboot, None)?;
 
     on_progress("Rebooting", 100);
     info!("os-update: rauc install OK → rebooting into the new slot");
     // The root-run RAUC hook schedules the reboot after it finishes patching
     // the target slot. The kiosk service has NoNewPrivileges=yes for WebKit,
     // so attempting sudo here can never work.
-    std::thread::sleep(Duration::from_secs(60));
-    let message = "scheduled reboot did not occur".to_string();
+    std::thread::sleep(Duration::from_secs(180));
+    let detail = fs::read_to_string("/run/betterframe-rauc/os-reboot-status.txt")
+        .unwrap_or_else(|_| "No reboot-service diagnostics available from this OS".into());
+    let message = format!(
+        "OS installed but reboot was not confirmed: {}. Retry from BetterFrame.",
+        detail.trim()
+    );
     let _ = report_applied(server, key, &info.version, Some(&message));
     Err(message)
 }
@@ -512,21 +618,68 @@ fn report_applied(
         .json(&payload)
         .timeout(Duration::from_secs(5))
         .send()
+        .and_then(|response| response.error_for_status())
         .map(|_| ())
         .map_err(|e| format!("report applied: {e}"))
 }
 
 pub fn report_confirmed(server: &str, key: &str) -> bool {
-    let version =
-        fs::read_to_string("/etc/betterframe/os-version").unwrap_or_else(|_| "unknown".to_string());
-    crate::network::blocking_client()
+    let Ok(_lock) = JOURNAL_LOCK.lock() else {
+        return false;
+    };
+    let path = std::path::Path::new(JOURNAL_PATH);
+    let running = current_os_version();
+    let id = boot_id();
+    if running.is_empty() || id.is_empty() {
+        return false;
+    }
+    let mut journal = match os_journal::read(path) {
+        Ok(j) => j,
+        Err(_) => return false,
+    };
+    let mut version = running.clone();
+    let mut state = "confirmed";
+    let mut error = None;
+    if let Some(j) = journal.as_mut() {
+        j.reconcile(&id, &running, boot_is_confirmed());
+        version = j.version.clone();
+        match j.stage {
+            Stage::Downloading | Stage::Installing => return false,
+            Stage::PendingReboot if j.boot_id == id => return false,
+            Stage::RolledBack => {
+                state = "rolled_back";
+                error = j.error.clone();
+            }
+            Stage::Failed => {
+                state = "failed";
+                error = j.error.clone();
+            }
+            _ => {
+                if !boot_is_confirmed() {
+                    return false;
+                }
+                j.stage = Stage::Confirmed;
+                j.error = None;
+            }
+        }
+        if os_journal::write(path, j).is_err() {
+            return false;
+        }
+    } else if !boot_is_confirmed() {
+        return false;
+    }
+    let ok = crate::network::blocking_client()
         .post(format!("{server}/api/kiosk/os/status"))
         .header("Authorization", format!("Bearer {key}"))
-        .json(&serde_json::json!({ "version": version.trim(), "state": "confirmed" }))
+        .json(&serde_json::json!({ "version": version, "state": state, "error": error }))
         .timeout(Duration::from_secs(5))
         .send()
-        .map(|response| response.status().is_success())
-        .unwrap_or(false)
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+    if ok && state == "confirmed" {
+        crate::update_guard::record_success("os", &version);
+    }
+    ok
 }
 
 pub fn boot_is_confirmed() -> bool {

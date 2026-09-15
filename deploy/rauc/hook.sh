@@ -61,7 +61,7 @@ write_x86_rauc_system_conf() {
 compatible=betterframe-x86_64-generic
 bootloader=grub
 grubenv=/boot/efi/EFI/betterframe/grubenv
-data-directory=/var/lib/rauc
+data-directory=/var/lib/betterframe/rauc
 bundle-formats=plain
 
 [keyring]
@@ -81,12 +81,18 @@ RAUCCONF
 }
 
 schedule_reboot() {
-  local -a command=(/usr/bin/systemctl reboot)
-  if [ "$1" = "pi" ]; then
-    command=(/usr/sbin/reboot 0 tryboot)
-  fi
-  systemd-run --unit=betterframe-rauc-reboot --on-active=30s --collect "${command[@]}"
-  echo "hook: scheduled reboot after successful RAUC install"
+  # This hook is still inside the install transaction. Start a root-owned
+  # guard, copied out of the bundle before RAUC unmounts it. Never reboot on
+  # a timer measured from an unfinished transaction.
+  local owner guard_dir
+  owner="$(busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus GetNameOwner s de.pengutronix.rauc)"
+  [ "$(busctl get-property de.pengutronix.rauc / de.pengutronix.rauc.Installer Operation)" = 's "installing"' ]
+  guard_dir="$(mktemp -d /run/betterframe-rauc-reboot.XXXXXX)"
+  install -m 700 "$(dirname "$0")/reboot-after-install.sh" "$guard_dir/reboot.sh"
+  install -m 700 "$(dirname "$0")/betterframe-rauc-state.sh" "$guard_dir/state.sh"
+  systemd-run --unit=betterframe-rauc-reboot --collect \
+    --property=RuntimeMaxSec=1900s "$guard_dir/reboot.sh" "$1" "$RAUC_SLOT_NAME" "$owner"
+  echo "hook: waiting for RAUC transaction completion before reboot"
 }
 
 LETTER="$(slot_letter)"

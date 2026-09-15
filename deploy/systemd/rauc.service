@@ -2,10 +2,12 @@
 Description=RAUC Update Service
 Documentation=https://rauc.readthedocs.io
 After=dbus.service
+RequiresMountsFor=/var/lib/betterframe
 
 [Service]
 Type=dbus
 BusName=de.pengutronix.rauc
+ExecStartPre=/usr/local/sbin/betterframe-rauc-state.sh
 ExecStart=/usr/bin/rauc service
 
 [Install]

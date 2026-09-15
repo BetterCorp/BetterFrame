@@ -3,7 +3,7 @@ set -euo pipefail
 
 BOOT_A_DEV="${BF_RAUC_BOOT_A_DEV:-/dev/disk/by-partlabel/BF_BOOT_A}"
 BOOT_B_DEV="${BF_RAUC_BOOT_B_DEV:-/dev/disk/by-partlabel/BF_BOOT_B}"
-STATE_DIR="${BF_RAUC_STATE_DIR:-/var/lib/rauc/betterframe}"
+STATE_DIR="${BF_RAUC_STATE_DIR:-/var/lib/betterframe/rauc/betterframe}"
 STATE_FILE="${STATE_DIR}/slot-state"
 
 slot_to_entry() {

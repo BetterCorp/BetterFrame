@@ -1,3 +1,4 @@
+import { reconcileOsUpdateReport } from "../../shared/os-update-status.js";
 /**
  * service-api-http — h3 listener for kiosk-facing REST API.
  *
@@ -1732,7 +1733,10 @@ export function registerKioskRoutes(
     const kiosk = await requireKiosk(event, repo, auth);
 
     const body = validateBody(OsAppliedBody, await readBody(event));
-    await repo.recordKioskOsUpdateAttempt(kiosk.id, body.version, body.error ?? null, body.error ? "failed" : "pending_reboot");
+    const current = await repo.getKioskById(kiosk.id);
+    if (!current) throw createError({ statusCode: 404, statusMessage: "kiosk not found" });
+    const report = reconcileOsUpdateReport(current, { version: body.version, error: body.error ?? null, state: body.error ? "failed" : "pending_reboot" });
+    if (report) await repo.recordKioskOsUpdateAttempt(kiosk.id, report.version, report.error, report.state);
     await repo.insertEvent({
       source_kiosk_id: kiosk.id,
       source_camera_id: null,
@@ -1752,7 +1756,10 @@ export function registerKioskRoutes(
   app.post("/api/kiosk/os/status", async (event) => {
     const kiosk = await requireKiosk(event, repo, auth);
     const body = validateBody(OsStatusBody, await readBody(event));
-    await repo.recordKioskOsUpdateAttempt(kiosk.id, body.version, body.error ?? null, body.state);
+    const current = await repo.getKioskById(kiosk.id);
+    if (!current) throw createError({ statusCode: 404, statusMessage: "kiosk not found" });
+    const report = reconcileOsUpdateReport(current, { version: body.version, error: body.error ?? null, state: body.state });
+    if (report) await repo.recordKioskOsUpdateAttempt(kiosk.id, report.version, report.error, report.state);
     await repo.insertEvent({
       source_kiosk_id: kiosk.id,
       source_camera_id: null,

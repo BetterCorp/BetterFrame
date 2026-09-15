@@ -39,6 +39,9 @@ mod operator_console;
 #[path = "platform/linux/os_update.rs"]
 mod os_update;
 #[cfg(target_os = "linux")]
+#[path = "platform/linux/os_journal.rs"]
+mod os_journal;
+#[cfg(target_os = "linux")]
 #[path = "platform/linux/pipeline.rs"]
 mod pipeline;
 #[cfg(target_os = "linux")]

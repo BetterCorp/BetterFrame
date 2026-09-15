@@ -63,7 +63,7 @@ python3 client/android/scripts/publish-play.py --plan --version 1.0.3-dev.gabc -
 python3 client/android/scripts/publish-play.py --plan --version 1.0.3 --channel stable
 ```
 
-`--ready` deliberately fails until actual screenshots and owner-approved contact/policy inputs exist. It is a local completeness check, not Google policy approval. CI builds target API 36, checks signatures/package/version, and verifies 16 KB native alignment before releasing. Physical phone, tablet and TV testing, including enrollment, remote control and camera playback, remains necessary. No Play credentials, Console app, tester memberships or production release are created by this PR.
+`--ready` deliberately fails until actual screenshots and owner-approved contact/policy inputs exist. It is a local completeness check, not Google policy approval. CI builds target API 36, checks signatures/package/version, and verifies 16 KB native alignment before releasing. The manifest explicitly retains legacy kiosk Back handling under API 36; migrate this to predictive-back callbacks before removing the opt-out. Physical phone, tablet and TV testing, including enrollment, remote control and camera playback, remains necessary. No Play credentials, Console app, tester memberships or production release are created by this PR.
 
 The workflow updates the AAB and localized release notes only. Upload listing descriptions and image assets to Console during initial setup; subsequent text/image changes also require Console review. Update the checked-in release notes before each release; the initial file is a draft template.
 
@@ -77,3 +77,5 @@ The workflow updates the AAB and localized release notes only. Upload listing de
 - [Android Publisher service account access](https://developers.google.com/android-publisher/getting_started)
 - [Workload Identity Federation for deployment pipelines](https://cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines)
 - [Play tracks](https://developers.google.com/android-publisher/tracks)
+
+- [Android 16 behavior changes and Back handling](https://developer.android.com/about/versions/16/behavior-changes-16)

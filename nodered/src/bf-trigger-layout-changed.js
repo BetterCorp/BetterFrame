@@ -8,8 +8,9 @@ const { subscribeEvent } = require("./_event-dispatch.js");
  *
  * Optional config:
  *   - display_id: only fire for that display id
+ *   - source: blank for all events, or server/kiosk
  *
- * Output msg.payload: { display_id, kiosk_id, layout_id, layout_name }
+ * Output msg.payload: { display_id, kiosk_id, layout_id, layout_name, source }
  */
 const { readJsonBody } = require("./_http-body.js");
 const { tenantMatchesBody } = require("./_tenant.js");
@@ -24,6 +25,7 @@ module.exports = function (RED) {
     const node = this;
     const cfg = RED.nodes.getNode(config.config);
     const filterId = String(config.display_id || "").trim() || null;
+    const filterSource = String(config.source || "").trim() || null;
 
     async function handler(req, res) {
       if (!cfg || !cfg.tenant_slug) {
@@ -38,6 +40,9 @@ module.exports = function (RED) {
       if (filterId !== null && displayId !== filterId) {
         return res.status(200).end();
       }
+      if (filterSource !== null && body.source !== filterSource) {
+        return res.status(200).end();
+      }
       const out = {
         topic: TOPIC,
         payload: withIdentity(body, {
@@ -45,6 +50,7 @@ module.exports = function (RED) {
           kiosk_id: body.kiosk_id !== undefined ? body.kiosk_id : null,
           layout_id: body.layout_id !== undefined ? body.layout_id : null,
           layout_name: body.layout_name || null,
+          source: body.source ?? null,
         }),
       };
       node.status({

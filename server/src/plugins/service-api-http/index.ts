@@ -35,6 +35,7 @@ import { withDefaultTenant } from "../../shared/default-tenant.js";
 import { onvifCallbackTokenMatches } from "../../shared/onvif-callback-token.js";
 import { isVersionUpgrade } from "../../shared/version.js";
 import { registerViewerDeviceAuth } from "../../shared/display-session.js";
+import { hasPowerSession, readPowerSample, heartbeatPowerSampleAllowed, advancePowerSample, withPowerStateLock } from "../../shared/power-state-order.js";
 import { isAndroidViewer } from "../../shared/android-viewer.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { AuthApi } from "../../shared/auth.js";
@@ -950,6 +951,17 @@ export function registerKioskRoutes(
     const kiosk = await requireKiosk(event, repo, auth);
 
     event.context.obs?.log.info("bundle fetch for kiosk {id}", { id: String(kiosk.id) });
+    const viewer = isAndroidViewer((event.context as any).kioskProfile);
+    const powerTarget = async () => {
+      const displays = (await repo.listDisplaysForKiosk(kiosk.id)).filter((display) => display.is_enabled);
+      return displays.length === 1 ? displays[0]!.id : null;
+    };
+    // Power remains addressable when an assigned display has no layouts. Never
+    // reuse a cached target after revocation or an ambiguous multi-display assignment.
+    const unassigned = async () => Response.json({ error: "display_unassigned", display_id: await powerTarget() }, {
+      status: 409, headers: { "cache-control": "no-store" },
+    });
+    if (viewer && await powerTarget() === null) return unassigned();
     const clusterKey = await getClusterKey(repo, secrets);
     const bundle = await generateBundle(repo, secrets, kiosk.id, clusterKey, event.context.obs)
       .catch((error: unknown) => {
@@ -966,12 +978,10 @@ export function registerKioskRoutes(
       });
     if (bundle instanceof Response) return bundle;
     if (!bundle) {
-      if (isAndroidViewer((event.context as any).kioskProfile)) return new Response(JSON.stringify({ error: "display_unassigned" }), { status: 409, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+      if (viewer) return unassigned();
       throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
     }
-    if (isAndroidViewer((event.context as any).kioskProfile) && !bundle.displays[0]?.layouts.length) {
-      return new Response(JSON.stringify({ error: "display_unassigned" }), { status: 409, headers: { "content-type": "application/json", "cache-control": "no-store" } });
-    }
+    if (viewer && !bundle.displays[0]?.layouts.length) return unassigned();
     bundle.tenant_slug = kiosk.tenant_slug;
 
     // Stable bundle ETag: the payload contains randomized encrypted fields,
@@ -1016,6 +1026,7 @@ export function registerKioskRoutes(
 
     const profile = (event.context as any).kioskProfile;
     const viewer = isAndroidViewer(profile);
+    const orderedPower = viewer && (body.capabilities?.includes("android-standby-v1") || profile?.capabilities?.includes("android-standby-v1"));
     if (viewer && body.displays.length > 1) throw createError({ statusCode: 400, statusMessage: "Android viewer supports one display" });
     if (viewer && body.capabilities) {
       // The restrictive identity cannot be removed by a later heartbeat.
@@ -1130,6 +1141,8 @@ export function registerKioskRoutes(
       let updatedCount = 0;
       let removedCount = 0;
       try {
+      await withPowerStateLock(kiosk.id, async () => {
+      const enforcePowerOrder = orderedPower || (viewer && hasPowerSession(kiosk.id));
       const existing = await repo.listDisplaysForKiosk(kiosk.id);
       const seenDisplayIds = new Set<string>();
       for (const [position, reported] of body.displays.entries()) {
@@ -1139,10 +1152,13 @@ export function registerKioskRoutes(
         currentDisplay = reported.name;
         currentIndex = reportedIndex;
         const displayName = kioskDisplayName(kioskFull?.name ?? String(kiosk.id), reported.name);
+        const sample = readPowerSample(reported);
+        const validPowerState = ["awake", "standby", "unknown"].includes(reported.power_state);
+        const acceptsPower = !enforcePowerOrder || (validPowerState && heartbeatPowerSampleAllowed(kiosk.id, sample));
         const match = findReportedDisplayMatch(existing, seenDisplayIds, reported.name, reportedIndex);
         if (match) {
           seenDisplayIds.add(match.id);
-          const powerState = reported.power_state === "awake" || reported.power_state === "standby"
+          const powerState = !acceptsPower ? null : reported.power_state === "awake" || reported.power_state === "standby"
             ? reported.power_state
             : reported.power_state === "unknown"
               ? "unknown"
@@ -1181,7 +1197,7 @@ export function registerKioskRoutes(
             width_px: reported.width_px,
             height_px: reported.height_px,
           });
-          const powerState = reported.power_state === "awake" || reported.power_state === "standby"
+          const powerState = !acceptsPower ? null : reported.power_state === "awake" || reported.power_state === "standby"
             ? reported.power_state
             : reported.power_state === "unknown"
               ? "unknown"
@@ -1200,6 +1216,7 @@ export function registerKioskRoutes(
             index: reportedIndex,
           });
         }
+        if (enforcePowerOrder && acceptsPower && sample && validPowerState) advancePowerSample(kiosk.id, sample);
       }
       for (const display of existing) {
         if (seenDisplayIds.has(display.id)) continue;
@@ -1217,6 +1234,7 @@ export function registerKioskRoutes(
         "display.created_count": createdCount,
         "display.updated_count": updatedCount,
         "display.removed_count": removedCount,
+      });
       });
       } catch (cause) {
         const error = cause instanceof Error ? cause : new Error(String(cause));

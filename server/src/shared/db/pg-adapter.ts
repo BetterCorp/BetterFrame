@@ -14,6 +14,7 @@ import type { DbAdapter, RunResult, Row, SqlValue } from "./db-adapter.js";
 
 export class PgAdapter implements DbAdapter {
   private readonly pool: Pool;
+  private readonly connectedClients = new Set<PoolClient>();
   private readonly context = new AsyncLocalStorage<{
     searchPath: string;
     transaction?: { client: PoolClient; depth: number; callbacks: Array<() => void> };
@@ -24,6 +25,10 @@ export class PgAdapter implements DbAdapter {
       connectionString,
       max: poolMax,
       idleTimeoutMillis: 30_000,
+    });
+    this.pool.on("connect", (client) => {
+      this.connectedClients.add(client);
+      client.once("end", () => this.connectedClients.delete(client));
     });
   }
 
@@ -190,5 +195,10 @@ export class PgAdapter implements DbAdapter {
 
   async close(): Promise<void> {
     await this.pool.end();
+    // pg-pool removes idle clients before their asynchronous client.end()
+    // completes. Wait for actual socket shutdown before reporting closed.
+    await Promise.all([...this.connectedClients].map((client) =>
+      new Promise<void>((resolve) => client.once("end", resolve)),
+    ));
   }
 }

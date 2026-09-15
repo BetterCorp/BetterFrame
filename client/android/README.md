@@ -201,32 +201,83 @@ needed. The 32-view ceiling does not guarantee smooth playback on every device.
 See [Android hardware acceleration](https://developer.android.com/topic/performance/hardware-accel)
 and [WebView rendering layers](https://developer.android.com/reference/android/webkit/WebView#setLayerType(int,%20android.graphics.Paint)).
 
-## Sleep and wake deployment
+## Sleep and wake
 
-Current behavior: BetterFrame keeps the screen awake while displaying content.
-When the user or Android turns the screen off, playback and synchronization stop;
-the current layout resumes when the existing activity becomes visible again.
-This does not bypass a secure lock screen or relaunch an app that Android has
-removed from the foreground. Android's configured BF sleep timeout and server
-power commands are not implemented by this viewer yet.
+### Ordinary APKs and managed devices
 
-Support is planned for both ordinary APKs and managed dedicated devices:
+Open the kiosk menu (bottom-right ⋮ or the remote Menu key) and select **Standby**.
+The viewer releases cameras and WebViews, shows pure black and dims its window.
+The screen remains on so the authenticated BF connection can receive **Wake**.
+Touch, a remote key, mouse click/scroll or an accessibility click wakes the display;
+the waking gesture is consumed so it cannot activate the restored content.
+Bundle refreshes and layout commands update saved content without waking playback.
 
-- Ordinary installs: an in-app black standby surface can release media and wake
-  on the first touch/remote input. This is display blanking, not hardware sleep;
-  an LCD backlight may remain on. Actual screen-off uses Android's normal power
-  controls and wake/unlock behavior.
-- Managed kiosks: an EMM/device-owner controller can launch
-  `cloud.betterportal.frame/.MainActivity` in dedicated kiosk mode and manage
-  lock-screen/power policy. Unattended restart and genuine screen-off wake need
-  provisioning and validation against the target device/OEM. The BF APK is not
-  currently a device-policy controller or a Home intent handler.
-- Scheduled or remote wake additionally needs a supported wake source. A
-  WebSocket that is suspended with the app cannot itself wake a sleeping device;
-  a fully powered-off TV may need its own timer, HDMI-CEC or vendor control.
+The display's **sleep timeout** now enters the same standby automatically after
+inactivity; `0` disables it. It runs locally even while a network request is blocked.
+The separate **idle timeout** still restores the assigned default layout.
+A local or server wake restarts the inactivity period. Heartbeats report
+`standby` or `awake`; ordinary standby does not stop synchronization.
+
+Updated viewers advertise `android-standby-v1`. BetterFrame enables its existing
+Standby/Wake controls only for these viewers and validates the assigned display.
+Remote Wake also works after all layouts are removed, provided the display remains
+assigned. Revoked or ambiguous assignments reject remote power commands.
+BF waits for the Android app to acknowledge the change before reporting success;
+a viewer still refreshing a reassignment rejects power until it knows the new display.
+Session/revision metadata orders heartbeats against acknowledged power changes so
+a delayed earlier report cannot restore stale state in BF. Local power changes
+still report through HTTP when the WebSocket connection is unavailable.
+Both the updated server and APK are needed for remote controls. Older viewer APKs
+remain blocked from power commands. Other device-management commands stay unsupported.
+
+Standby is software blanking: an LCD backlight may remain on even at minimum
+brightness. Use the device power button for true screen-off. Actual screen-off
+stops playback and networking; power-button wake/unlock resumes BF when its activity
+is visible. BF cannot remotely wake itself through a connection Android has suspended.
+It cannot bypass a secure lock screen, wake a fully powered-off TV or guarantee
+background relaunch on an ordinary installation. Android activity-state restoration
+preserves standby; a fresh launch without saved activity state starts awake.
+
+### Dedicated managed kiosks
+
+An existing EMM can allowlist `cloud.betterportal.frame` for lock task and launch
+`cloud.betterportal.frame/.MainActivity`. BF enters lock task only when already
+permitted by management; ordinary installs never invoke screen pinning automatically.
+The device manager continues to control startup and lock-screen policy.
+
+Alternatively, provision BF's optional device-owner receiver on a clean dedicated
+Android device with no existing owner/accounts, following Android's provisioning
+requirements. For development/deployment with authorized ADB access:
+
+```sh
+adb install betterframe-android.apk
+adb shell dpm set-device-owner cloud.betterportal.frame/.KioskAdminReceiver
+```
+
+Then open **Power and kiosk → Enable managed kiosk**. This enables BF's Home alias,
+makes it the persistent Home application and allowlists it for lock task. Android
+launches Home after boot/unlock, and returning Home reuses the existing BF activity.
+The Home alias is disabled by default on normal installations.
+
+**Power and kiosk → Turn screen off (power button to wake)** uses the device-owner
+lock API for genuine screen-off. Use the physical power/remote controls to wake;
+unlock is still required if a secure screen lock is configured. Keep using BF's
+soft Standby/Wake for remote control. Scheduled hardware wake/TV power via OEM,
+HDMI-CEC or EMM is outside this APK and must be qualified on the target hardware.
+
+**Disable managed kiosk** removes BF's Home/lock-task policy but retains device-owner
+provisioning. It does not change other allowlisted packages or wipe enrollment.
+The kiosk menu and Settings remain accessible; this mode supplies dedicated launch
+and power behavior, not an administrator-PIN protection scheme.
+
+CI checks ordinary standby/media release and input consumption, independent timeout
+and network behavior, then provisions a disposable emulator to test device-owner
+Home/lock-task, screen-off/wake and policy cleanup before the signed-upgrade tests.
+The managed test script refuses non-CI and physical-device execution.
 
 See [Android dedicated devices](https://developer.android.com/work/dpc/dedicated-devices),
-[custom Home/kiosk setup](https://developer.android.com/work/dpc/dedicated-devices/cookbook)
+[Home/kiosk provisioning](https://developer.android.com/work/dpc/dedicated-devices/cookbook),
+[device-owner lock](https://developer.android.com/reference/android/app/admin/DevicePolicyManager#lockNow())
 and [background activity restrictions](https://developer.android.com/guide/components/activities/background-starts).
 
 ## Initial limits
@@ -257,7 +308,7 @@ and [background activity restrictions](https://developer.android.com/guide/compo
   to assigned dashboard pages. Dynamic FlowFuse Socket.IO is denied until the
   provider can authorize individual dashboard channels; ordinary external
   webpages and signage players use their own sessions.
-- No PTZ/recording/operator console, inbound API, power/OS controls, or automatic
+- No PTZ/recording/operator console, inbound API, remote reboot/OS controls, or automatic
   boot/locked kiosk deployment. Only bundle reload and assigned layout switching
   are accepted over the server WebSocket; HTTP polling also reconciles bundles.
 

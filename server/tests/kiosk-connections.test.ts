@@ -31,17 +31,21 @@ test("viewer layout validation follows the current socket and is released on dis
   sockets.set("viewer", {
     id: "viewer", name: "Viewer", ws: old, lastPong: 1,
     validateViewerLayout: async (layoutId) => layoutId === "old-layout",
+    validateViewerPower: async () => false,
   });
   sockets.set("viewer", {
     id: "viewer", name: "Viewer", ws: current, lastPong: 2,
     validateViewerLayout: async (layoutId) => layoutId === "current-layout",
+    validateViewerPower: async () => true,
   });
 
   assert.equal(sockets.removeSocket("viewer", old), false);
+  assert.equal(await sockets.get("viewer")?.validateViewerPower?.({ type: "wake" }), true);
   assert.equal(await sockets.get("viewer")?.validateViewerLayout?.("current-layout"), true);
   assert.equal(await sockets.get("viewer")?.validateViewerLayout?.("old-layout"), false);
   assert.equal(sockets.removeSocket("viewer", current), true);
   assert.equal(sockets.get("viewer")?.validateViewerLayout, undefined);
+  assert.equal(sockets.get("viewer")?.validateViewerPower, undefined);
   assert.equal(sockets.size, 0);
 });
 
@@ -51,13 +55,16 @@ test("desktop replacement and service cleanup release viewer layout validators",
   const connection = {
     id: "k1", name: "Viewer", ws: viewer, lastPong: 1,
     validateViewerLayout: async () => true,
+    validateViewerPower: async () => true,
   };
   sockets.set("k1", connection);
   sockets.set("k1", { id: "k1", name: "Desktop", ws: desktop, lastPong: 2 });
   assert.equal(sockets.get("k1")?.validateViewerLayout, undefined);
+  assert.equal(sockets.get("k1")?.validateViewerPower, undefined);
 
   sockets.set("k2", { ...connection, id: "k2" });
   sockets.clear();
   assert.equal(sockets.size, 0);
   assert.equal(sockets.get("k2")?.validateViewerLayout, undefined);
+  assert.equal(sockets.get("k2")?.validateViewerPower, undefined);
 });

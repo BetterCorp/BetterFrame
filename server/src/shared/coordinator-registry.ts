@@ -4,6 +4,8 @@
  */
 export interface CoordinatorApi {
   sendToKiosk(kioskId: string, message: object, queueWhenOffline?: boolean): boolean;
+  /** Android true confirms validation, write and accepted logical-state ACK; desktop true confirms write. */
+  sendPowerToKiosk(kioskId: string, message: object): Promise<boolean>;
   requestKiosk<T = unknown>(kioskId: string, message: object, timeoutMs?: number): Promise<T>;
   broadcastAll(message: object): void;
   notifyBundleChanged(): void;
@@ -12,6 +14,7 @@ export interface CoordinatorApi {
 
 const noop: CoordinatorApi = {
   sendToKiosk: () => false,
+  sendPowerToKiosk: async () => false,
   requestKiosk: async () => { throw new Error("kiosk is not connected"); },
   broadcastAll: () => {},
   notifyBundleChanged: () => {},

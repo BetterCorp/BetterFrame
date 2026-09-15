@@ -29,11 +29,18 @@ class MainActivity : Activity(), ViewerSession.Listener {
     private var plan: JSONObject? = null
     private var active = false
     private var started = false
+    private var standbyVisible = false
+    private var consumeWakeTouch = false
+    private val wakeKeys = mutableSetOf<Int>()
+    private var previousBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
     private val screenReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
             when (intent.action) {
                 android.content.Intent.ACTION_SCREEN_OFF -> suspendDisplay()
-                android.content.Intent.ACTION_SCREEN_ON -> if (started) resumeDisplay()
+                android.content.Intent.ACTION_SCREEN_ON -> {
+                    session.setStandby(false)
+                    if (started) resumeDisplay()
+                }
             }
         }
     }
@@ -48,6 +55,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         session = ViewerSession(this, this)
+        if (savedInstanceState?.getBoolean("standby") == true) session.setStandby(true)
         showSetup()
         val filter = android.content.IntentFilter().apply {
             addAction(android.content.Intent.ACTION_SCREEN_OFF)
@@ -61,6 +69,18 @@ class MainActivity : Activity(), ViewerSession.Listener {
         super.onStart()
         started = true
         resumeDisplay()
+        runCatching { ManagedKiosk(this).resume() }.onFailure { onStatus("Unable to enter managed kiosk mode") }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        // Returning through the managed Home entry point counts as a local wake.
+        if (intent.action == android.content.Intent.ACTION_MAIN) session.setStandby(false)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("standby", session.isStandby)
+        super.onSaveInstanceState(outState)
     }
 
     private fun resumeDisplay() {
@@ -68,8 +88,8 @@ class MainActivity : Activity(), ViewerSession.Listener {
         active = true
         enterFullscreen()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        plan?.let { render(it) }
         session.start()
+        onStandbyChanged(session.isStandby)
     }
 
     @Suppress("DEPRECATION")
@@ -191,6 +211,8 @@ class MainActivity : Activity(), ViewerSession.Listener {
             }
         }
         actions += "Refresh" to { session.refresh() }
+        if (plan?.optString("displayId")?.isNotBlank() == true) actions += "Standby" to { session.setStandby(true) }
+        actions += "Power and kiosk" to { showPowerSettings() }
         actions += "Settings" to { showSettings() }
         AlertDialog.Builder(this).setTitle("BetterFrame")
             .setItems(actions.map { it.first }.toTypedArray()) { _, index -> session.recordActivity(); actions[index].second() }
@@ -245,6 +267,65 @@ class MainActivity : Activity(), ViewerSession.Listener {
 
     override fun onIdleReturn() = runOnUiThread { dismissDialogs() }
 
+    override fun onStandbyChanged(standby: Boolean) = runOnUiThread {
+        if (!active) return@runOnUiThread
+        if (standby) {
+            if (standbyVisible) return@runOnUiThread
+            dismissDialogs()
+            (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                .hideSoftInputFromWindow(window.decorView.windowToken, 0)
+            releaseTiles()
+            standbyVisible = true
+            displayVisible = false
+            setupView = null
+            previousBrightness = window.attributes.screenBrightness
+            window.attributes = window.attributes.apply { screenBrightness = 0f }
+            root = kioskRoot().apply {
+                contentDescription = "BetterFrame standby. Touch or press a remote button to wake."
+                isFocusableInTouchMode = true
+                setOnClickListener { session.setStandby(false) }
+            }
+            setContentView(root)
+            root.requestFocus()
+        } else {
+            if (standbyVisible) {
+                window.attributes = window.attributes.apply { screenBrightness = previousBrightness }
+                standbyVisible = false
+            }
+            plan?.let { render(it) } ?: showSetup()
+        }
+    }
+
+    private fun showPowerSettings() {
+        val managed = ManagedKiosk(this)
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
+        if (managed.isOwner) {
+            val wasAllowed = managed.isAllowed
+            actions += (if (wasAllowed) "Disable managed kiosk" else "Enable managed kiosk") to {
+                runCatching { if (wasAllowed) managed.disable() else managed.enable() }
+                    .onSuccess { dismissDialogs(); showPowerSettings() }
+                    .onFailure { android.widget.Toast.makeText(this, "Unable to update managed kiosk policy", android.widget.Toast.LENGTH_LONG).show() }
+            }
+            actions += "Turn screen off (power button to wake)" to {
+                dismissDialogs()
+                runCatching { managed.screenOff() }.onFailure { onStatus("Unable to turn the screen off") }
+            }
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            addView(text("Standby shows a black screen and stops playback. Touch, a remote button or BetterFrame Wake resumes it. The device remains connected; its backlight may stay on."))
+            addView(text(when {
+                managed.isOwner -> "Managed device: enable kiosk mode to launch BetterFrame automatically. True screen-off uses the power button to wake and may require unlocking."
+                managed.isAllowed -> "Kiosk launch and hardware power policy are controlled by your device manager."
+                else -> "Ordinary install: use the device power button for actual screen-off. Automatic kiosk launch requires device-management provisioning."
+            }))
+            actions.forEach { (label, action) -> addView(button(label, action)) }
+        }
+        AlertDialog.Builder(this).setTitle("Power and kiosk").setView(content)
+            .setNegativeButton("Close", null).create().let(::showDialog)
+    }
+
     private fun showSettings() {
         val address = object : EditText(this) {
             override fun onCreateInputConnection(outAttrs: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? =
@@ -294,6 +375,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
     }
 
     private fun resetEnrollment(server: String) {
+        session.setStandby(false)
         plan = null
         resetRequested = true
         showSetup("")
@@ -333,6 +415,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
 
     override fun onPairing(code: String) = runOnUiThread {
         plan = null
+        if (session.isStandby) { pairingCode = code; return@runOnUiThread }
         if (displayVisible || setupView == null) showSetup(code)
         else setupView?.showPairing(code)
         pairingCode = code
@@ -341,10 +424,11 @@ class MainActivity : Activity(), ViewerSession.Listener {
 
     override fun onPlan(value: JSONObject) = runOnUiThread {
         plan = value
-        if (active) render(value)
+        if (active && !session.isStandby) render(value)
     }
 
     private fun render(value: JSONObject) {
+        if (session.isStandby) { onStandbyChanged(true); return }
         if (!displayVisible) showDisplay()
         if (value.has("error")) {
             releaseTiles()
@@ -463,11 +547,26 @@ class MainActivity : Activity(), ViewerSession.Listener {
     }
 
     override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+        if (consumeWakeTouch || standbyVisible || (::session.isInitialized && session.isStandby)) {
+            if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
+                consumeWakeTouch = true
+                session.setStandby(false)
+            }
+            if (event.actionMasked == android.view.MotionEvent.ACTION_UP || event.actionMasked == android.view.MotionEvent.ACTION_CANCEL) consumeWakeTouch = false
+            return true // The waking gesture must never activate the restored content.
+        }
         recordTouchActivity(event)
         return super.dispatchTouchEvent(event)
     }
 
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (wakeKeys.contains(event.keyCode) || standbyVisible || (::session.isInitialized && session.isStandby)) {
+            if (event.action == android.view.KeyEvent.ACTION_DOWN) {
+                wakeKeys.add(event.keyCode)
+                session.setStandby(false)
+            } else if (event.action == android.view.KeyEvent.ACTION_UP) wakeKeys.remove(event.keyCode)
+            return true
+        }
         if (::session.isInitialized && event.action == android.view.KeyEvent.ACTION_DOWN) session.recordActivity()
         // Keep the kiosk menu reachable when an interactive WebView owns keyboard focus.
         if (event.keyCode == android.view.KeyEvent.KEYCODE_MENU) {
@@ -478,6 +577,10 @@ class MainActivity : Activity(), ViewerSession.Listener {
     }
 
     override fun dispatchGenericMotionEvent(event: android.view.MotionEvent): Boolean {
+        if (standbyVisible || (::session.isInitialized && session.isStandby)) {
+            if (event.actionMasked == android.view.MotionEvent.ACTION_SCROLL || event.actionMasked == android.view.MotionEvent.ACTION_BUTTON_PRESS) session.setStandby(false)
+            return true
+        }
         recordMotionActivity(event)
         return super.dispatchGenericMotionEvent(event)
     }

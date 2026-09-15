@@ -5,15 +5,24 @@ export function isAndroidViewer(kiosk: Pick<Kiosk, "capabilities"> | null | unde
   return kiosk?.capabilities?.includes("android-viewer") === true;
 }
 
+/** Versioned: older APKs must not expose power controls they cannot execute. */
+export function supportsAndroidStandby(kiosk: Pick<Kiosk, "capabilities"> | null | undefined): boolean {
+  return isAndroidViewer(kiosk) && kiosk?.capabilities?.includes("android-standby-v1") === true;
+}
+
 /** Positive lists ensure future control endpoints are unavailable by default. */
 export function androidViewerRouteAllowed(path: string, method: string): boolean {
   return (method === "GET" && ["/api/kiosk/bundle", "/api/kiosk/_check"].includes(path))
     || (method === "POST" && ["/api/kiosk/heartbeat", "/api/kiosk/logs", "/api/kiosk/display-session"].includes(path));
 }
 
-export function androidViewerCommandAllowed(message: object, assignedLayoutIds?: ReadonlySet<string>): boolean {
+export function androidViewerCommandAllowed(message: object, assignedLayoutIds?: ReadonlySet<string>, power?: { supported: boolean; displayId: string }): boolean {
   const msg = message as Record<string, unknown>;
   if (["reload-bundle", "ping", "connected"].includes(String(msg["type"]))) return true;
+  if (["standby", "wake"].includes(String(msg["type"]))) {
+    return power?.supported === true && power.displayId.length > 0
+      && (msg["display_id"] === undefined || msg["display_id"] === power.displayId);
+  }
   return msg["type"] === "layout-switch" && typeof msg["layout_id"] === "string"
     && assignedLayoutIds?.has(msg["layout_id"]) === true;
 }

@@ -23,11 +23,13 @@ test("PostgreSQL migrations, tenant transactions and concurrent credential deliv
   await admin.exec(`CREATE DATABASE "${dbName}"`);
   const testUrl = new URL(url!); testUrl.pathname = `/${dbName}`;
   const config = { url: testUrl.toString(), host: "", port: 5432, user: "", password: "", database: dbName, poolMax: 6 };
-  const handles: Array<{ close(): Promise<void> }> = [];
+  const handles: Array<Awaited<ReturnType<typeof initDb>>> = [];
   try {
-    const [first, second] = await Promise.all([initDb(config, log), initDb(config, log)]);
-    handles.push(first, second);
-    const { repo } = first;
+    const open = async () => { const handle = await initDb(config, log); handles.push(handle); return handle; };
+    const opened = await Promise.allSettled([open(), open()]);
+    for (const result of opened) if (result.status === "rejected") throw result.reason;
+    const { repo } = handles[0]!;
+    const second = handles[1]!;
     const notifications: string[] = [];
     const notifyingRepo = new Repository(repo.adapter, async (table) => { notifications.push(table); });
     const tenant = await repo.transact(async () => {
@@ -161,7 +163,21 @@ test("PostgreSQL migrations, tenant transactions and concurrent credential deliv
     assert.equal((await repo.getTenantBySlug(collisionOne.slice(7)))?.schema_name, collisionOne);
   } finally {
     await Promise.all(handles.map((handle) => handle.close()));
-    await admin.exec(`DROP DATABASE "${dbName}" WITH (FORCE)`);
-    await admin.close();
+    try {
+      // An initialized or rejected adapter must not leave a live backend behind.
+      const deadline = Date.now() + 2_000;
+      let count = -1;
+      do {
+        const sessions = await admin.get<{ count: string }>("SELECT count(*) FROM pg_stat_activity WHERE datname = ?", [dbName]);
+        count = Number(sessions?.count);
+        if (count === 0) break;
+        // PostgreSQL can finish backend bookkeeping just after TCP shutdown.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      } while (Date.now() < deadline);
+      assert.equal(count, 0, "All test database connections must be closed before cleanup");
+    } finally {
+      try { await admin.exec(`DROP DATABASE "${dbName}" WITH (FORCE)`); }
+      finally { await admin.close(); }
+    }
   }
 });

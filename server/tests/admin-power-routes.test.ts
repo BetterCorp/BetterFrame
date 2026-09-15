@@ -4,19 +4,20 @@ import { H3 } from "h3";
 import { registerAdminRoutes } from "../src/plugins/service-admin-http/routes-admin.js";
 import { getCoordinator, setCoordinator } from "../src/shared/coordinator-registry.js";
 
-function fixture(capabilities: string[], delivered: boolean, enabled = true) {
+function fixture(capabilities: string[], delivered: boolean, enabled = true, assigned = true, extraDisplay = false) {
   const commands: { id: string; message: object; queue?: boolean }[] = [];
   const updates: { id: string; patch: Record<string, unknown> }[] = [];
   const kioskUpdates: { id: string; patch: Record<string, unknown> }[] = [];
   const events: unknown[][] = [];
   const audits: Record<string, unknown>[] = [];
-  const display = { id: "display", kiosk_id: "kiosk", actual_power_state: "unknown" };
+  const display = { id: "display", kiosk_id: "kiosk", actual_power_state: "unknown", is_enabled: assigned };
+  const displays = [display, ...(extraDisplay ? [{ ...display, id: "second-display" }] : [])];
   const app = new H3();
   registerAdminRoutes(app, {
     repo: {
       getKioskById: async () => ({ id: "kiosk", capabilities, enabled }),
       getDisplayById: async () => display,
-      listDisplaysForKiosk: async () => [display],
+      listDisplaysForKiosk: async () => displays,
       updateDisplay: async (id: string, patch: Record<string, unknown>) => { updates.push({ id, patch }); },
       updateKiosk: async (id: string, patch: Record<string, unknown>) => { kioskUpdates.push({ id, patch }); },
       insertAudit: async (entry: Record<string, unknown>) => { audits.push(entry); },
@@ -26,8 +27,9 @@ function fixture(capabilities: string[], delivered: boolean, enabled = true) {
   setCoordinator({
     ...getCoordinator(),
     sendToKiosk: (id, message, queue) => { commands.push({ id, message, queue }); return delivered; },
+    sendPowerToKiosk: async (id, message) => { commands.push({ id, message, queue: false }); return delivered; },
   });
-  return { app, commands, updates, kioskUpdates, events, audits };
+  return { app, commands, updates, kioskUpdates, events, audits, displays };
 }
 
 test("power routes reject unsupported or undelivered commands without reporting a state change", async (t) => {
@@ -56,7 +58,7 @@ test("viewer reboot and every audio action reject direct requests before sending
   t.after(() => setCoordinator(original));
   for (const delivered of [true, false]) {
     for (const action of ["reboot", "apply", "mute", "unmute", "output", "save_default"]) {
-      const f = fixture(["android-viewer"], delivered);
+      const f = fixture(["android-viewer", "android-standby-v1"], delivered);
       const response = await f.app.request(`http://bf.test/admin/kiosks/kiosk/${action === "reboot" ? "reboot" : "volume"}`, {
         method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ action, volume: "75", output_id: "hdmi" }).toString(),
@@ -104,6 +106,87 @@ test("delivered desktop power commands preserve state, event and audit behavior"
       assert.equal(f.events[0]?.[0], "display.power.changed");
       assert.equal(f.audits.length, target.startsWith("kiosks") ? 1 : 0);
       if (f.audits.length) assert.equal(f.audits[0]?.action, `display.${command}`);
+    }
+  }
+});
+
+
+test("new Android standby routes deliver only to the active display and refuse offline or unassigned targets", async (t) => {
+  const original = getCoordinator();
+  t.after(() => setCoordinator(original));
+  for (const target of ["displays/display", "kiosks/kiosk"]) {
+    for (const command of ["wake", "standby"]) {
+      for (const [delivered, assigned] of [[true, true], [false, true], [true, false]] as const) {
+        const f = fixture(["android-viewer", "android-standby-v1"], delivered, true, assigned);
+        const response = await f.app.request(`http://bf.test/admin/${target}/power/${command}`, { method: "POST" });
+        assert.equal(response.status, delivered && assigned ? 302 : 409);
+        assert.deepEqual(f.commands, assigned ? [{ id: "kiosk", message: { type: command, display_id: "display" }, queue: false }] : []);
+        assert.equal(f.updates.length, delivered && assigned ? 1 : 0);
+        assert.equal(f.events.length, delivered && assigned ? 1 : 0);
+      }
+    }
+  }
+  const ambiguous = fixture(["android-viewer", "android-standby-v1"], true, true, true, true);
+  assert.equal((await ambiguous.app.request("http://bf.test/admin/kiosks/kiosk/power/wake", { method: "POST" })).status, 409);
+  assert.deepEqual(ambiguous.commands, []);
+  const f = fixture(["android-viewer", "android-standby-v1"], true);
+  const response = await f.app.request("http://bf.test/admin/displays/other/power/wake", { method: "POST" });
+  assert.equal(response.status, 409);
+  assert.deepEqual(f.commands, []);
+  assert.deepEqual(f.updates, []);
+});
+
+
+test("power routes wait for confirmed dispatch before changing state or emitting events", async (t) => {
+  const original = getCoordinator();
+  t.after(() => setCoordinator(original));
+  for (const target of ["displays/display", "kiosks/kiosk"]) {
+    for (const confirmed of [false, true]) {
+      const f = fixture(["android-viewer", "android-standby-v1"], true);
+      let finish!: (value: boolean) => void;
+      const pending = new Promise<boolean>((resolve) => { finish = resolve; });
+      let entered!: () => void;
+      const dispatched = new Promise<void>((resolve) => { entered = resolve; });
+      setCoordinator({ ...getCoordinator(), sendPowerToKiosk: async () => { entered(); return pending; } });
+      const request = f.app.request(`http://bf.test/admin/${target}/power/standby`, { method: "POST" });
+      await dispatched;
+      assert.deepEqual(f.updates, []);
+      assert.deepEqual(f.events, []);
+      assert.deepEqual(f.audits, []);
+      finish(confirmed);
+      assert.equal((await request).status, confirmed ? 302 : 409);
+      assert.equal(f.updates.length, confirmed ? 1 : 0);
+      assert.equal(f.events.length, confirmed ? 1 : 0);
+      assert.equal(f.audits.length, confirmed && target.startsWith("kiosks") ? 1 : 0);
+    }
+  }
+});
+
+
+test("kiosk power reports the delivered target when assignment changes during dispatch", async (t) => {
+  const original = getCoordinator();
+  t.after(() => setCoordinator(original));
+  for (const capabilities of [["android-viewer", "android-standby-v1"], ["windows"]]) {
+    for (const command of ["standby", "wake"]) {
+      const f = fixture(capabilities, true);
+      let finish!: (value: boolean) => void;
+      const pending = new Promise<boolean>((resolve) => { finish = resolve; });
+      let entered!: () => void;
+      const dispatched = new Promise<void>((resolve) => { entered = resolve; });
+      setCoordinator({ ...getCoordinator(), sendPowerToKiosk: async (_id, message) => {
+        if (capabilities.includes("android-viewer")) assert.deepEqual(message, { type: command, display_id: "display" });
+        entered(); return pending;
+      } });
+      const request = f.app.request(`http://bf.test/admin/kiosks/kiosk/power/${command}`, { method: "POST" });
+      await dispatched;
+      // The command has been submitted for the original display; a later read
+      // would now select a display that never received it.
+      f.displays.splice(0, f.displays.length, { ...f.displays[0]!, id: "replacement" });
+      finish(true);
+      assert.equal((await request).status, 302);
+      assert.deepEqual(f.updates.map((update) => update.id), ["display"]);
+      assert.equal((f.events[0]?.[1] as { display_id: string }).display_id, "display");
+      assert.equal(f.audits.length, 1);
     }
   }
 });

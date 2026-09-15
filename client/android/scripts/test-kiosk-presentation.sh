@@ -10,4 +10,5 @@ collect_screenshots() {
 trap collect_screenshots EXIT
 adb shell rm -rf /sdcard/Download/betterframe-kiosk-screenshots
 cd "$android_dir"
-./gradlew --no-daemon connectedDebugAndroidTest
+./gradlew --no-daemon connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.notClass=cloud.betterportal.frame.ManagedKioskDeviceTest

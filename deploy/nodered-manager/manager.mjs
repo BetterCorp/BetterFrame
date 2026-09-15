@@ -15,6 +15,7 @@ const PORT = Number(process.env.PORT || 1880);
 const EASY1_READINESS_CONTRACT = 1;
 const NODE_RED = process.env.BF_NODE_RED_SCRIPT || "/usr/src/node-red/node_modules/node-red/red.js";
 const runtimes = new Map();
+const dashboardRoots = new Map();
 let state = { nextUid: 20000, tenants: {} };
 
 if (MANAGER_TOKEN.length < 32) throw new Error("BF_NODERED_MANAGER_SECRET must be at least 32 characters");
@@ -179,6 +180,7 @@ async function startRuntime(tenant) {
   await writeFile(settings, settingsSource(tenant), { mode: 0o600 });
   await chown(tenant.userDir, tenant.uid, tenant.gid);
   await chown(settings, tenant.uid, tenant.gid);
+  dashboardRoots.delete(tenant.tenant_id);
   const runtime = { tenant, child: null, restartDelay: current?.restartDelay || 1000, stopping: false };
   runtimes.set(tenant.tenant_id, runtime);
   const child = spawn(process.execPath, [`--max-old-space-size=${MEMORY_MB}`, NODE_RED, "--userDir", tenant.userDir, "--settings", settings], {
@@ -295,17 +297,53 @@ function dashboardPages(flows) {
   });
 }
 
+// Public webhooks use a small per-runtime root cache, never a full flow fetch
+// on the hot path. Invalidate before every editor mutation and config deploy;
+// public requests fail closed until the mutation completes and discovery succeeds.
+function rootCache(tenant) {
+  if (!dashboardRoots.has(tenant.tenant_id)) {
+    dashboardRoots.set(tenant.tenant_id, { roots: null, loading: null, generation: 0, mutations: 0, retryAfter: 0 });
+  }
+  return dashboardRoots.get(tenant.tenant_id);
+}
+
+function changingFlows(tenant) {
+  const cache = rootCache(tenant);
+  const invalidate = () => { cache.generation++; cache.roots = null; cache.loading = null; cache.retryAfter = 0; };
+  cache.mutations++;
+  invalidate();
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    cache.mutations--;
+    invalidate();
+  };
+}
+
 async function publicDashboardRequest(req, tenant) {
   if (!req.bfPublic) return false;
+  const cache = rootCache(tenant);
+  if (cache.mutations || cache.retryAfter > Date.now()) return true;
+  if (!cache.roots) {
+    if (!cache.loading) {
+      const generation = cache.generation;
+      cache.loading = runtimeFlows(tenant).then((flows) => {
+        if (cache.generation === generation) {
+          cache.roots = flows.filter((node) => node.type === "ui-base").map((node) => dashboardPath(node.path));
+        }
+      }).catch(() => {
+        if (cache.generation === generation) cache.retryAfter = Date.now() + 1000;
+      }).finally(() => {
+        if (cache.generation === generation) cache.loading = null;
+      });
+    }
+    await cache.loading;
+  }
+  if (cache.mutations || !cache.roots) return true;
   const path = new URL(req.url, "http://localhost").pathname;
-  const flows = await runtimeFlows(tenant);
-  // Socket.IO's transport handshake precedes its connection middleware.
-  // Block dashboard roots at the manager too, for HTTP polling and upgrades.
-  return flows.some((node) => {
-    if (node.type !== "ui-base") return false;
-    const base = dashboardPath(node.path);
-    return !base || path === base || path.startsWith(`${base}/`);
-  });
+  // Socket.IO transport handshakes precede connection middleware.
+  return cache.roots.some((base) => !base || path === base || path.startsWith(`${base}/`));
 }
 
 async function runtimeFlows(tenant) {
@@ -343,12 +381,15 @@ async function syncConfig(tenant) {
   if (index >= 0) flows[index] = { ...flows[index], ...desired };
   else flows.push(desired);
   const body = { flows, ...(Array.isArray(raw) || !raw.rev ? {} : { rev: raw.rev }) };
-  const updated = await fetch(`http://127.0.0.1:${tenant.port}/nrdp/flows`, {
-    method: "POST",
-    headers: { ...headers, "content-type": "application/json", "node-red-deployment-type": "full" },
-    body: JSON.stringify(body),
-  });
-  if (!updated.ok) throw new Error(`POST flows returned ${updated.status}`);
+  const finishChange = changingFlows(tenant);
+  try {
+    const updated = await fetch(`http://127.0.0.1:${tenant.port}/nrdp/flows`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json", "node-red-deployment-type": "full" },
+      body: JSON.stringify(body),
+    });
+    if (!updated.ok) throw new Error(`POST flows returned ${updated.status}`);
+  } finally { finishChange(); }
 }
 
 function tenantForRequest(req) {
@@ -411,16 +452,19 @@ async function proxy(req, res, tenant) {
       const query = new URL(req.url, "http://localhost").search;
       res.writeHead(307, { location: page.path + query, "cache-control": "no-store" }); res.end(); return;
     }
-    if (!pages.some((page) => page.path === path || ["socket.io", "_setup", "favicon.ico", "apple-touch-icon.png"].some((part) => path.replace(/\/$/, "") === `${page.basePath}/${part}`))) {
+    if (!pages.some((page) => page.path === path.replace(/\/$/, "") || ["socket.io", "_setup", "favicon.ico", "apple-touch-icon.png"].some((part) => path.replace(/\/$/, "") === `${page.basePath}/${part}`))) {
       res.writeHead(404); res.end("dashboard not found"); return;
     }
   }
+  const finishChange = /^\/nrdp(?:\/|$)/i.test(decodeURIComponent(path)) && !["GET", "HEAD", "OPTIONS"].includes(req.method)
+    ? changingFlows(tenant) : () => {};
   const headers = runtimeHeaders(req, tenant);
   const upstream = httpRequest({ hostname: "127.0.0.1", port: tenant.port, method: req.method, path: req.url, headers }, (response) => {
     res.writeHead(response.statusCode || 502, response.headers);
     response.pipe(res);
   });
-  upstream.on("error", () => { if (!res.headersSent) res.writeHead(502); res.end("runtime unavailable"); });
+  upstream.on("close", finishChange);
+  upstream.on("error", () => { finishChange(); if (!res.headersSent) res.writeHead(502); res.end("runtime unavailable"); });
   req.pipe(upstream);
 }
 
@@ -565,16 +609,18 @@ if (process.env.BF_NODERED_MANAGER_SELF_TEST === "1") {
     { id: "base", type: "ui-base", path: `/${slug}-custom` },
     { id: "page", type: "ui-page", ui: "base", path: "/page1", name: "Page" },
     { id: "container", type: "ui-base", path: "/unused" },
+    { id: "dash-base", type: "ui-base", path: "/dash" },
+    { id: "dash-page", type: "ui-page", ui: "dash-base", path: "/page1" },
     { id: "broken", type: "ui-page", ui: "missing", path: "/bad" },
   ];
-  assert.deepEqual(dashboardPages(fixtureFlows("a")).map((page) => page.path), ["/a-custom/page1"]);
+  assert.deepEqual(dashboardPages(fixtureFlows("a")).map((page) => page.path), ["/a-custom/page1", "/dash/page1"]);
   for (const path of ["//evil.test", "/a/../b", "/a/%2e", "/a?b", "/a#b"]) assert.equal(dashboardPath(path), null);
   const servers = [];
   const savedTenants = state.tenants;
   state.tenants = {};
   try {
     for (const [id, slug] of [[testId, "a"], ["8b34e4b5-24a8-43ca-b655-35ac59d798ce", "b"]]) {
-      const tenant = { tenant_id: id, slug, active: true, adminToken: secret() };
+      const tenant = { tenant_id: id, slug, active: true, adminToken: secret(), testFlows: fixtureFlows(slug), testReads: 0, testAdminFail: false };
       const module = { exports: {} };
       runInNewContext(settingsSource(tenant), { module });
       const settings = module.exports;
@@ -585,7 +631,12 @@ if (process.env.BF_NODERED_MANAGER_SELF_TEST === "1") {
       const fixture = createServer((req, res) => {
         if (req.url === "/nrdp/flows") {
           if (req.headers["x-betterframe-runtime-token"] !== tenant.adminToken) { res.writeHead(403); res.end(); return; }
-          res.setHeader("content-type", "application/json"); res.end(JSON.stringify(fixtureFlows(slug))); return;
+          if (req.method === "POST") {
+            void readJson(req).then((flows) => { tenant.testFlows = flows; res.end("{}"); }); return;
+          }
+          tenant.testReads++;
+          if (tenant.testAdminFail) { res.writeHead(503); res.end(); return; }
+          res.setHeader("content-type", "application/json"); res.end(JSON.stringify(tenant.testFlows)); return;
         }
         if (req.url === "/webhook") {
           assert.equal(req.headers.cookie, undefined);
@@ -613,6 +664,7 @@ if (process.env.BF_NODERED_MANAGER_SELF_TEST === "1") {
       const alias = await get("/dash/page?theme=dark", headers);
       assert.equal(alias.status, 307); assert.equal(alias.headers.get("location"), `/${tenant.slug}-custom/page1?theme=dark`);
       assert.equal((await get("/dash/deleted", headers)).status, 404);
+      assert.equal((await get("/dash/page1/", headers)).status, 200);
       for (const suffix of ["page1", "assets/app.js", "socket.io/?transport=polling"]) {
         const publicResponse = await get(`/in/public/${tenant.slug}/${tenant.slug}-custom/${suffix}`, {
           ...headers, "x-betterframe-dashboard-token": dashboardToken(tenant),
@@ -628,6 +680,22 @@ if (process.env.BF_NODERED_MANAGER_SELF_TEST === "1") {
       const catalog = await get(catalogPath, { authorization: `Bearer ${MANAGER_TOKEN}` });
       assert.equal(catalog.status, 200);
       assert.equal((await catalog.json())[0].path, `/${tenant.slug}-custom/page1`);
+      const reads = tenant.testReads;
+      tenant.testAdminFail = true;
+      for (let index = 0; index < 5; index++) assert.equal((await get(`/in/public/${tenant.slug}/webhook`)).status, 200);
+      assert.equal(tenant.testReads, reads, "warm webhooks must not call the admin API");
+      const finish = changingFlows(tenant);
+      assert.equal((await get(`/in/public/${tenant.slug}/webhook`)).status, 403, "deploying roots fail closed");
+      finish();
+      assert.equal((await get(`/in/public/${tenant.slug}/webhook`)).status, 403, "failed discovery cannot expose a new root");
+      tenant.testAdminFail = false;
+      const deployed = await fetch(base + "/nrdp/flows", { method: "POST", headers,
+        body: JSON.stringify([...tenant.testFlows, { id: "new-root", type: "ui-base", path: "/new-root" }]) });
+      assert.equal(deployed.status, 200); await deployed.text();
+      const beforeRefresh = tenant.testReads;
+      assert.equal((await get(`/in/public/${tenant.slug}/new-root/socket.io/?transport=polling`)).status, 403);
+      await Promise.all(Array.from({ length: 10 }, () => get(`/in/public/${tenant.slug}/webhook`).then((r) => assert.equal(r.status, 200))));
+      assert.equal(tenant.testReads, beforeRefresh + 1, "deployment refreshes roots once");
     }
   } finally {
     state.tenants = savedTenants;
@@ -655,6 +723,8 @@ server.on("upgrade", async (req, socket, head) => {
     }
   } catch { socket.destroy(); return; }
   if (!tenant?.active) { socket.destroy(); return; }
+  const finishChange = /^\/nrdp(?:\/|$)/i.test(decodeURIComponent(path)) && !["GET", "HEAD", "OPTIONS"].includes(req.method)
+    ? changingFlows(tenant) : () => {};
   const headers = runtimeHeaders(req, tenant);
   const upstream = httpRequest({ hostname: "127.0.0.1", port: tenant.port, method: "GET", path: req.url, headers });
   upstream.on("upgrade", (response, upstreamSocket, upstreamHead) => {

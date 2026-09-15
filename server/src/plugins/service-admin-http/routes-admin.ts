@@ -1392,10 +1392,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/entities", async (event) => {
     const user = event.context.user!;
-    syncDashboardsFromNodered(deps, event.context.tenant?.id ?? "default").catch(() => {});
+    const dashboards = await syncDashboardsFromNodered(deps, event.context.tenant?.id ?? "default").catch(() => null);
     return htmlPage(EntitiesPage({
       user: user.username,
       entities: await deps.repo.listEntities(),
+      unavailableDashboardIds: dashboards?.unavailableDashboardIds ?? null,
     }));
   });
 
@@ -3674,19 +3675,15 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 export async function syncDashboardsFromNodered(
   deps: AdminDeps,
   tenantId: string,
-): Promise<{ added: number; updated: number; total: number; unavailable: number }> {
+): Promise<{ added: number; updated: number; total: number; unavailable: number; unavailableDashboardIds: string[] }> {
   const tabs = await deps.nodered.listDashboards(tenantId);
   let added = 0;
   let updated = 0;
   let unavailable = 0;
-  const missingPrefix = "Unavailable in Node-RED. ";
+  const unavailableDashboardIds: string[] = [];
   for (const tab of tabs) {
     const existing = await deps.repo.getEntityForDashboard(tab.id);
     if (existing) {
-      if (existing.description?.startsWith(missingPrefix)) {
-        await deps.repo.updateEntity(existing.id, { description: existing.description.slice(missingPrefix.length) || null });
-        updated += 1;
-      }
       if (existing.name !== tab.name) {
         // Avoid name collisions with non-dashboard entities of the same name.
         const collision = await deps.repo.getEntityByName(tab.name);
@@ -3715,13 +3712,10 @@ export async function syncDashboardsFromNodered(
   for (const entity of await deps.repo.listEntities()) {
     if (entity.type !== "dashboard" || liveIds.has(entity.dashboard_id ?? "")) continue;
     unavailable += 1;
-    if (!entity.description?.startsWith(missingPrefix)) {
-      await deps.repo.updateEntity(entity.id, { description: missingPrefix + (entity.description ?? "") });
-      updated += 1;
-    }
+    unavailableDashboardIds.push(entity.dashboard_id ?? "");
   }
   if (added > 0 || updated > 0) {
     try { getCoordinator().notifyBundleChanged(); } catch { /* ignore */ }
   }
-  return { added, updated, total: tabs.length, unavailable };
+  return { added, updated, total: tabs.length, unavailable, unavailableDashboardIds };
 }

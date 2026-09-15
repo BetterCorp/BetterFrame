@@ -977,6 +977,7 @@ export function CameraDiscoverResultsPage(props: CameraDiscoverResultsProps) {
 interface EntitiesPageProps {
   user: string;
   entities: Entity[];
+  unavailableDashboardIds?: string[] | null;
 }
 
 function entityTypeLabel(type: string): string {
@@ -1078,7 +1079,13 @@ export function EntitiesPage(props: EntitiesPageProps) {
                 <tr>
                   <td><a href={`/admin/entities/${e.id}`}><strong>{entityDisplayName(e)}</strong></a></td>
                   <td style="font-family:monospace; font-size:0.8rem; color:#666">{e.dashboard_id ?? "—"}</td>
-                  <td style="color:#666; font-size:0.85rem">{e.dashboard_id ? `/dash/${e.dashboard_id}` : "—"}</td>
+                  <td style="color:#666; font-size:0.85rem">
+                    {e.dashboard_id ? `/dash/${e.dashboard_id}` : "—"}
+                    {props.unavailableDashboardIds == null
+                      ? <span class="badge badge-gray">Availability unknown</span>
+                      : props.unavailableDashboardIds.includes(e.dashboard_id ?? "")
+                        ? <span class="badge badge-gray">Unavailable in Node-RED</span> : null}
+                  </td>
                 </tr>
               ))
             )}

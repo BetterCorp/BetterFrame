@@ -6,6 +6,7 @@
       name: { value: "" },
       config: { value: "", type: "bf-server-config", required: true },
       display_id: { value: "" },
+      source: { value: "" },
     },
     inputs: 0,
     outputs: 1,
@@ -30,19 +31,33 @@
     <label for="node-input-display_id"><i class="fa fa-desktop"></i> Display ID</label>
     <input type="text" id="node-input-display_id" pattern="[0-9a-f-]+" placeholder="(blank = all displays)" />
   </div>
+  <div class="form-row">
+    <label for="node-input-source"><i class="fa fa-filter"></i> Source</label>
+    <select id="node-input-source">
+      <option value="">All (not set)</option>
+      <option value="server">Server</option>
+      <option value="kiosk">Kiosk</option>
+    </select>
+  </div>
   <div class="form-tips">
     Fires when a display's active layout changes.
     Listens on <code>POST /api/internal/layout.changed</code> internally — no upstream
     <code>http in</code> node required.
-    Emits <code>msg.payload = {display_id, kiosk_id, layout_id, layout_name}</code> for the selected tenant.
+    Emits <code>msg.payload = {display_id, kiosk_id, layout_id, layout_name, source}</code> for the selected tenant.
     Leave Display ID blank to receive events from all displays.
+    Leave Source unset to receive all events, or select Server or Kiosk.
   </div>
 </script>
 
 <script type="text/html" data-help-name="bf-trigger-layout-changed">
-  <p>Fires when a display switches to a new layout (admin layout-switch).</p>
+  <p>Receives server layout-switch events and kiosk reports of layout changes.</p>
   <p>Listens on <code>POST /api/internal/layout.changed</code> internally — no upstream
   <code>http in</code> node needed.</p>
   <p>Select a <b>BF</b> config to scope this trigger to one tenant.</p>
   <p>Optional <b>Display ID</b> filter limits this node to a single display.</p>
+  <p><b>Source</b> defaults to all events. Select <b>Server</b> for server-issued switches
+  or <b>Kiosk</b> for kiosk-reported changes, including local changes and idle returns.
+  With all sources enabled, a server-issued switch can produce both events.</p>
+  <p><code>msg.payload.source</code> preserves the event source; it is <code>null</code>
+  when absent. Events without a source are only included when Source is unset.</p>
 </script>

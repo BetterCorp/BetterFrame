@@ -80,6 +80,14 @@ Each trigger node also offers an optional ID filter (display_id / kiosk_id /
 camera_id) so you can drop one node per entity without a downstream switch.
 Tenant scoping happens before those ID filters.
 
+The Layout Changed trigger also has a **Source** dropdown: **All (not set)**
+(the default, including existing flows), **Server**, or **Kiosk**. Server events
+report server-issued switches; kiosk events report kiosk-side layout changes,
+including local switches and idle returns. All sources can produce two events
+for one server-issued switch. Select a source to receive just that side.
+The output preserves `msg.payload.source` (`null` when absent); events without
+a source pass only when the dropdown is unset.
+
 ## Installation
 
 ### Dev (single-host BetterFrame install)

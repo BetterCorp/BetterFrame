@@ -83,8 +83,8 @@ jobs:
           targets: aarch64-linux-android,x86_64-linux-android
       - uses: gradle/actions/setup-gradle@v4
       - name: Install Android build dependencies
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
-      - name: Build signed release APK
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+      - name: Build signed APK and Play bundle
         working-directory: client/android
         env:
           BF_ANDROID_KEYSTORE_BASE64: ${{ secrets.BF_ANDROID_KEYSTORE_BASE64 }}
@@ -100,7 +100,7 @@ jobs:
           test -n "$BF_ANDROID_KEYSTORE_BASE64"
           printf '%s' "$BF_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$BF_ANDROID_KEYSTORE_PATH"
           unset BF_ANDROID_KEYSTORE_BASE64
-          ./gradlew --no-daemon assembleRelease
+          ./gradlew --no-daemon assembleRelease bundleRelease lintRelease
       - name: Verify signed APK before publication
         env:
           CERTIFICATE_SHA256: ${{ vars.BF_ANDROID_CERT_SHA256 }}
@@ -112,16 +112,40 @@ jobs:
             --certificate-sha256 "$CERTIFICATE_SHA256" \
             --version-code "$BF_ANDROID_VERSION_CODE" \
             --version-name "$BF_ANDROID_VERSION_NAME" \
-            --apksigner "$ANDROID_HOME/build-tools/35.0.0/apksigner" \
-            --aapt "$ANDROID_HOME/build-tools/35.0.0/aapt" \
+            --apksigner "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
+            --aapt "$ANDROID_HOME/build-tools/36.0.0/aapt" \
             --metadata dist/android/betterframe-android.json
+      - name: Verify Play bundle
+        env:
+          CERTIFICATE_SHA256: ${{ vars.BF_ANDROID_CERT_SHA256 }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download 1.18.3 --repo google/bundletool --pattern bundletool-all-1.18.3.jar --dir "$RUNNER_TEMP"
+          echo "a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29  $RUNNER_TEMP/bundletool-all-1.18.3.jar" | sha256sum --check
+          cp client/android/app/build/outputs/bundle/release/app-release.aab dist/android/betterframe-android.aab
+          python3 client/android/scripts/verify-aab.py \
+            --bundle dist/android/betterframe-android.aab \
+            --metadata dist/android/betterframe-android.json \
+            --bundletool "$RUNNER_TEMP/bundletool-all-1.18.3.jar" \
+            --certificate-sha256 "$CERTIFICATE_SHA256"
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 dist/android/betterframe-android.apk
+      - name: Preserve verified Play publishing artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-play-${{ github.run_id }}
+          path: |
+            dist/android/betterframe-android.aab
+            dist/android/betterframe-android.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
       - name: Attach verified APK and public metadata to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            dist/android/betterframe-android.apk dist/android/betterframe-android.json --clobber
+            dist/android/betterframe-android.apk dist/android/betterframe-android.aab dist/android/betterframe-android.json --clobber
       - name: Remove signing material
         if: always()
         run: rm -f -- "$RUNNER_TEMP/betterframe-release.p12"

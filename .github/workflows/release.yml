@@ -204,3 +204,15 @@ jobs:
       BF_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.BF_ANDROID_KEYSTORE_PASSWORD }}
       BF_ANDROID_KEY_ALIAS: ${{ secrets.BF_ANDROID_KEY_ALIAS }}
       BF_ANDROID_KEY_PASSWORD: ${{ secrets.BF_ANDROID_KEY_PASSWORD }}
+
+  publish-play:
+    needs: [meta, android]
+    if: vars.BF_PLAY_PUBLISH_ENABLED == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/android-publish-play.yml
+    with:
+      version: ${{ needs.meta.outputs.version }}
+      channel: ${{ needs.meta.outputs.channel }}
+      ref: ${{ needs.meta.outputs.ref }}

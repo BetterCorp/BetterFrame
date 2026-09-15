@@ -1,0 +1,12 @@
+{
+  "applicationId": "cloud.betterportal.frame",
+  "defaultLanguage": "en-US",
+  "languages": ["en-US"],
+  "devTrack": "internal",
+  "productionTrack": "production",
+  "supportEmail": null,
+  "website": null,
+  "privacyPolicyUrl": null,
+  "listingApproved": false,
+  "screenshotsApproved": false
+}

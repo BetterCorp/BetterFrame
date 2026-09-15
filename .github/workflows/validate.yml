@@ -21,6 +21,11 @@ jobs:
           node-version: 24
       - run: python3 scripts/test-release-versions.py
       - run: python3 scripts/test-easy1-deploy.py
+      - name: Dashboard proxy isolation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nginx
+          python3 scripts/test-dashboard-proxy.py
       - run: python3 -m unittest discover -s deploy/rauc/tests -v
 
   server:

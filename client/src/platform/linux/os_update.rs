@@ -496,20 +496,12 @@ fn apply_inner(
         return Err("OS installer is busy or unavailable; installation deferred".into());
     }
     save_stage(Stage::Installing, None)?;
-    let mut child = Command::new("rauc")
+    let mut command = Command::new("rauc");
+    command
         .args(["install", bundle_path.to_str().unwrap_or("")])
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            let _ = report_applied(
-                server,
-                key,
-                &info.version,
-                Some(&format!("rauc spawn: {e}")),
-            );
-            format!("rauc spawn: {e}")
-        })?;
+        .stderr(Stdio::piped());
+    let mut child = spawn_installer(&mut command, save_stage)?;
     let mut child_stdout = child
         .stdout
         .take()
@@ -685,6 +677,57 @@ pub fn report_confirmed(server: &str, key: &str) -> bool {
 pub fn boot_is_confirmed() -> bool {
     std::path::Path::new("/run/betterframe/rauc-confirmed").exists()
         || !std::path::Path::new("/etc/rauc/system.conf").exists()
+}
+
+// Persist Installing before spawn to cover power loss during handoff, but
+// undo that uncertainty when the OS proves no child process was created.
+fn spawn_installer(
+    command: &mut Command,
+    persist: impl FnOnce(Stage, Option<String>) -> Result<(), String>,
+) -> Result<std::process::Child, String> {
+    command.spawn().map_err(|error| {
+        let message = format!("rauc spawn: {error}");
+        match persist(Stage::Failed, Some(message.clone())) {
+            Ok(()) => message,
+            Err(persist_error) => {
+                format!("{message}; could not persist retryable state: {persist_error}")
+            }
+        }
+    })
+}
+
+#[cfg(test)]
+mod spawn_tests {
+    use super::*;
+
+    #[test]
+    fn missing_executable_restores_retryable_journal() {
+        let directory = std::env::temp_dir().join(format!("bf-os-spawn-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("journal.json");
+        let mut journal = Journal {
+            version: "1.0.1".into(),
+            release_id: "release".into(),
+            boot_id: "boot".into(),
+            stage: Stage::Installing,
+            error: None,
+        };
+        os_journal::write(&path, &journal).unwrap();
+        let error = spawn_installer(
+            &mut Command::new(directory.join("missing-rauc")),
+            |stage, error| {
+                journal.stage = stage;
+                journal.error = error;
+                os_journal::write(&path, &journal)
+            },
+        )
+        .unwrap_err();
+        let persisted = os_journal::read(&path).unwrap().unwrap();
+        assert_eq!(persisted.stage, Stage::Failed);
+        assert!(!persisted.blocks_apply());
+        assert_eq!(persisted.error.as_deref(), Some(error.as_str()));
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 fn format_command_failure(

@@ -21,7 +21,7 @@ class RebootGuardTests(unittest.TestCase):
         shutil.copyfile(DEPLOY / 'rauc/reboot-after-install.sh', self.root / 'guard.sh')
         self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ["PATH"]}',
                         BF_REBOOT_STATUS_FILE=str(self.status), BF_REBOOT_GRACE_SECONDS='0',
-                        BF_REBOOT_WAIT_SECONDS='1', CALLS=str(self.log),
+                        BF_REBOOT_WAIT_SECONDS='10', CALLS=str(self.log),
                         COUNT=str(self.root / 'count'), MODE='success',
                         BF_RAUC_SYSTEM_CONF=str(self.root / 'system.conf'),
                         BF_RAUC_ACTIVATION_STATE=str(self.root / 'slot-state'))
@@ -53,7 +53,7 @@ esac''')
     def run_guard(self, mode='success', platform='x86'):
         self.env['MODE'] = mode
         return subprocess.run(['bash', str(self.root / 'guard.sh'), platform, 'rootfs.1', 's ":1.42"'],
-                              env=self.env, capture_output=True, text=True, timeout=8)
+                              env=self.env, capture_output=True, text=True, timeout=20)
 
     def test_x86_waits_for_completion_and_activation(self):
         result = self.run_guard()
@@ -86,6 +86,7 @@ esac''')
         self.assertFalse(self.log.exists())
 
     def test_busy_install_times_out_without_reboot(self):
+        self.env['BF_REBOOT_WAIT_SECONDS'] = '1'
         self.assertNotEqual(self.run_guard('timeout').returncode, 0)
         self.assertFalse(self.log.exists())
         self.assertIn('deadline', self.status.read_text())

@@ -243,7 +243,7 @@ class ViewerDialogTest {
         add(node)
         for (index in 0 until node.childCount) node.getChild(index)?.let { addAll(nodes(it)) }
     }
-    private fun visibleText(value: String) = instrumentation.uiAutomation.rootInActiveWindow?.let(::nodes)
+    private fun visibleText(value: String) = freshAccessibilityRoot()?.let(::nodes)
         ?.any { it.isVisibleToUser && it.text?.toString() == value } == true
     private fun await(message: String, condition: () -> Boolean) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
@@ -253,7 +253,7 @@ class ViewerDialogTest {
     private fun clickText(value: String) {
         instrumentation.uiAutomation.waitForIdle(250, 3000)
         await("Visible action: $value") { visibleText(value) }
-        val node = nodes(instrumentation.uiAutomation.rootInActiveWindow!!)
+        val node = nodes(freshAccessibilityRoot()!!)
             .first { it.isVisibleToUser && it.text?.toString() == value }
         val bounds = Rect().also(node::getBoundsInScreen)
         val downTime = SystemClock.uptimeMillis()

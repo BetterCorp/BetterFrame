@@ -106,7 +106,7 @@ class ViewerActionsTest {
             for (i in 0 until node.childCount) node.getChild(i)?.let { addAll(nodes(it)) }
         }
         while (System.nanoTime() < deadline) {
-            val selected = instrumentation.uiAutomation.rootInActiveWindow?.let(::nodes)?.firstOrNull {
+            val selected = freshAccessibilityRoot()?.let(::nodes)?.firstOrNull {
                 it.isVisibleToUser && it.isEnabled && it.text?.toString() == value
             }
             if (selected != null) {

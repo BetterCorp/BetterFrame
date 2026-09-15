@@ -204,7 +204,7 @@ class KioskPresentationTest {
                 awaitAccessibility("Settings server field did not appear") { root ->
                     accessibilityDescendants(root).any { it.isEditable }
                 }
-                val address = accessibilityDescendants(requireNotNull(instrumentation.uiAutomation.rootInActiveWindow)).first { it.isEditable }
+                val address = accessibilityDescendants(requireNotNull(freshAccessibilityRoot())).first { it.isEditable }
                 assertTrue(address.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,
                     Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "http://public.example") }))
                 clickAccessibleText("Connect")
@@ -212,7 +212,7 @@ class KioskPresentationTest {
                     accessibilityDescendants(root).any { it.isEditable && it.isContentInvalid }
                 }
                 assertEquals("existing-test-key", ProtectedStore(context).read().getJSONObject("identity").getString("kiosk_key"))
-                val correctedAddress = accessibilityDescendants(requireNotNull(instrumentation.uiAutomation.rootInActiveWindow)).first { it.isEditable }
+                val correctedAddress = accessibilityDescendants(requireNotNull(freshAccessibilityRoot())).first { it.isEditable }
                 assertTrue(correctedAddress.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,
                     Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, target) }))
                 clickAccessibleText("Connect")
@@ -322,7 +322,7 @@ class KioskPresentationTest {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
         var ready = false
         while (!ready && System.nanoTime() < deadline) {
-            instrumentation.uiAutomation.rootInActiveWindow?.let { ready = condition(it) }
+            freshAccessibilityRoot()?.let { ready = condition(it) }
             if (!ready) Thread.sleep(50)
         }
         assertTrue(message, ready)
@@ -335,7 +335,7 @@ class KioskPresentationTest {
             // Dialog transitions can invalidate a previously obtained node.
             // Resolve both label and row afresh after the UI has become idle.
             instrumentation.waitForIdleSync()
-            val root = instrumentation.uiAutomation.rootInActiveWindow ?: return@awaitAccessibility false
+            val root = freshAccessibilityRoot() ?: return@awaitAccessibility false
             val selected = accessibilityDescendants(root).firstOrNull {
                 it.isVisibleToUser && it.isEnabled && it.text?.toString()?.equals(value, ignoreCase = true) == true
             } ?: return@awaitAccessibility false

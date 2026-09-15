@@ -6,7 +6,8 @@ repo_dir=$(cd -- "$test_dir/../../.." && pwd)
 build_tools="${ANDROID_HOME:?}/build-tools/36.0.0"
 android_jar="$ANDROID_HOME/platforms/android-36/android.jar"
 upgrade_dir="${RUNNER_TEMP:?}/android-upgrade"
-probe_dir="$upgrade_dir/probe"
+probe_dir=$(mktemp -d "$upgrade_dir/probe.XXXXXX")
+trap 'rm -rf -- "$probe_dir"' EXIT
 mkdir -p "$probe_dir/classes" "$probe_dir/dex"
 javac --release 8 -classpath "$android_jar" -d "$probe_dir/classes" "$test_dir/UpgradeProbe.java"
 "$build_tools/d8" --lib "$android_jar" --min-api 28 --output "$probe_dir/dex" \

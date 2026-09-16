@@ -7,6 +7,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.widget.FrameLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -45,6 +46,13 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
         isFocusable = false
         isClickable = false
         setShutterBackgroundColor(Color.BLACK)
+        // Zoom intentionally makes the inner video surface larger than its cell.
+        // SurfaceView is composed separately: clip the PlayerView's render bounds,
+        // not just ordinary child drawing, so video cannot cover adjacent blocks.
+        outlineProvider = ViewOutlineProvider.BOUNDS
+        clipToOutline = true
+        clipChildren = true
+        clipToPadding = true
         resizeMode = when (cell.optString("fit")) {
             "contain" -> AspectRatioFrameLayout.RESIZE_MODE_FIT
             "fill" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
@@ -86,6 +94,10 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
 
     init {
         setBackgroundColor(Color.BLACK)
+        outlineProvider = ViewOutlineProvider.BOUNDS
+        clipToOutline = true
+        clipChildren = true
+        clipToPadding = true
         addView(playerView, LayoutParams(-1, -1))
         val spinnerSize = (36 * resources.displayMetrics.density).toInt()
         status.addView(errorMessage, LayoutParams(-1, -1))

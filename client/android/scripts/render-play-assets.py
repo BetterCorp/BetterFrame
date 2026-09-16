@@ -32,7 +32,7 @@ def android_icon(icon):
                     f'V{y+r} A{r},{r} 0 0 1 {x+r},{y} Z') if r else f'M{x},{y} h{w} v{h} h{-w} Z'
         path = ET.SubElement(vector, 'path', {ANDROID+'pathData': data})
         for svg_key, android_key in [('fill', 'fillColor'), ('stroke', 'strokeColor')]:
-            value = node.get(svg_key, 'black' if svg_key == 'fill' else 'none')
+            value = node.get(svg_key, '#000000' if svg_key == 'fill' else 'none')
             if value == 'none':
                 value = '#00000000'
             if value.startswith('url(#'):

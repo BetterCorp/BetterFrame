@@ -14,6 +14,8 @@ export interface NoderedDashboard {
   id: string;
   name: string;
   hidden: boolean;
+  path: string;
+  basePath: string;
 }
 
 export interface NoderedTenantConfig {
@@ -38,35 +40,6 @@ export interface NoderedBridge {
     tenantConfigs: NoderedTenantConfig[],
   ): Promise<"updated" | "noop" | "failed">;
   deleteTenant(tenantId: string): Promise<boolean>;
-}
-
-interface NoderedFlowNode {
-  id: string;
-  type: string;
-  label?: string;
-  name?: string;
-  hidden?: boolean;
-}
-
-async function fetchDashboards(
-  baseUrl: string,
-  timeoutMs: number,
-  tenantId: string,
-): Promise<NoderedDashboard[]> {
-  const response = await fetch(`${baseUrl}/nrdp/flows`, {
-    headers: { accept: "application/json", "x-betterframe-tenant": tenantId },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
-  const data = (await response.json()) as NoderedFlowNode[] | { flows: NoderedFlowNode[] };
-  const flows = Array.isArray(data) ? data : (data.flows ?? []);
-  return flows
-    .filter((node) => node.type === "ui_tab" || node.type === "ui-base" || node.type === "ui-page")
-    .map((node) => ({
-      id: node.id,
-      name: node.name ?? node.label ?? node.id,
-      hidden: Boolean(node.hidden),
-    }));
 }
 
 export function initNoderedBridge(config: NoderedConfig, log: NoderedLog): NoderedBridge {
@@ -102,10 +75,15 @@ export function initNoderedBridge(config: NoderedConfig, log: NoderedLog): Noder
 
     async listDashboards(tenantId): Promise<NoderedDashboard[]> {
       try {
-        return await fetchDashboards(base, timeoutMs, tenantId);
+        const response = await fetch(`${base}/_betterframe/v1/tenants/${encodeURIComponent(tenantId)}/dashboards`, {
+          headers: { accept: "application/json", authorization: `Bearer ${managerToken}` },
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.json() as NoderedDashboard[];
       } catch (error) {
         log.warn(`nodered listDashboards failed: ${(error as Error).message}`);
-        return [];
+        throw error;
       }
     },
 

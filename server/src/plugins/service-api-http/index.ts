@@ -226,7 +226,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       },
     });
 
-    registerViewerDeviceAuth(app, repo, auth, secrets);
+    registerViewerDeviceAuth(app, repo, auth, secrets, nodered);
     app.use(async (event, next) => {
       const path = new URL(event.req.url).pathname;
       if (path.startsWith("/api/kiosk/")) return next();

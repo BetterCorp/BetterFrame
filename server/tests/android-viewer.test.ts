@@ -5,7 +5,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { registerKioskRoutes } from "../src/plugins/service-api-http/index.js";
 import { generateBundle } from "../src/shared/bundle.js";
 import { androidViewerCommandAllowed, androidViewerRouteAllowed, viewerAssignment } from "../src/shared/android-viewer.js";
-import { registerViewerDeviceAuth } from "../src/shared/display-session.js";
+import { registerViewerDeviceAuth, displayDashboardRequestAllowed } from "../src/shared/display-session.js";
 
 function fixture() {
   const kiosk = { id: "viewer", name: "Viewer", enabled: true, capabilities: ["android-viewer"], key_hash: "hash", encrypt_key_encrypted: Buffer.from("cluster").toString("base64url"), operator_console_enabled: true, simple_vms_enabled: true, operator_tools_json: '[{"label":"secret","url":"https://secret"}]' };
@@ -85,14 +85,14 @@ test("display cookie authenticates assigned dashboards but never device APIs, ot
   const response = await app.request("https://bf.test/api/kiosk/display-session", { method: "POST", headers: { authorization: "Bearer device-key" } });
   assert.equal(response.status, 200);
   const setCookie = response.headers.get("set-cookie")!;
-  assert.match(setCookie, /Path=\/dash\/;.*Secure; HttpOnly; SameSite=Strict/);
+  assert.match(setCookie, /Path=\/;.*Secure; HttpOnly; SameSite=Strict/);
   assert.ok(!setCookie.includes("device-key"));
   const cookie = setCookie.split(";")[0]!;
   const check = (uri: string, extra = {}) => app.request("https://bf.test/api/kiosk/_check", { headers: { cookie, "x-original-uri": uri, ...extra } });
   assert.equal((await check("/dash/assigned")).status, 200);
   assert.equal((await check("/dash/assigned?theme=dark")).status, 200);
-  assert.equal((await check("/dash/assigned/details?view=compact")).status, 200);
-  assert.equal((await check("/dash/assets/app.js")).status, 200);
+  assert.equal((await check("/dash/assigned/details?view=compact")).status, 403);
+  assert.equal((await check("/dash/assets/app.js")).status, 403);
   assert.equal((await check("/dash/other")).status, 403);
   assert.equal((await check("/dash/assigned-other?theme=dark")).status, 403);
   assert.equal((await check("/dash/stale-camera-url")).status, 403);
@@ -326,4 +326,21 @@ test("delayed Android heartbeats cannot overwrite acknowledged power or race a n
   assert.equal((await writingHeartbeat).status, 200);
   assert.equal((await next).status, 302);
   assert.equal(display.actual_power_state, "awake");
+});
+
+
+test("display dashboard access follows assigned IDs through live tenant paths without socket or traversal access", () => {
+  const pages = [
+    { id: "assigned", name: "Page", hidden: false, basePath: "/dashboard", path: "/dashboard/page1" },
+    { id: "other", name: "Other", hidden: false, basePath: "/private", path: "/private/page2" },
+  ];
+  const assigned = new Set(["/dash/assigned"]);
+  for (const uri of ["/dash/assigned", "/dashboard/page1", "/dashboard/page1?theme=dark", "/dashboard/assets/app.js"]) {
+    assert.equal(displayDashboardRequestAllowed(uri, assigned, pages), true, uri);
+  }
+  for (const uri of ["/dashboard", "/dashboard/other", "/private/page2", "/private/assets/app.js", "/dashboard/socket.io/?transport=polling", "/dashboard/_setup", "/dashboard/page1/other", "/dashboard/assets/../other", "/dashboard/assets/%2e%2e/other", "//dashboard/page1"]) {
+    assert.equal(displayDashboardRequestAllowed(uri, assigned, pages), false, uri);
+  }
+  assert.equal(displayDashboardRequestAllowed("/dashboard/page1", assigned, []), false);
+  assert.equal(displayDashboardRequestAllowed("/dashboard/page1", new Set(), pages), false);
 });

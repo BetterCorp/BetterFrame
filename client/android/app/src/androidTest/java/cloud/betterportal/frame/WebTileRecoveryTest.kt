@@ -149,6 +149,23 @@ class WebTileRecoveryTest {
         instrumentation.runOnMainSync { assertSame(browser, findBrowser(tile!!)) }
     }
 
+    @Test fun invalidAssignedUrlsNeverShowLoadingOrCreateABrowser() {
+        instrumentation.runOnMainSync {
+            for (url in listOf("", "not-a-url", "https://", "file:///invalid")) {
+                val invalid = WebTile(context, JSONObject().put("web", JSONObject().put("url", url))) {}
+                try {
+                    repeat(2) {
+                        val spinner = findSpinner(invalid)!!
+                        assertEquals(View.GONE, spinner.visibility)
+                        assertEquals(View.VISIBLE, (spinner.parent as View).visibility)
+                        assertNull(findBrowser(invalid))
+                        invalid.reload()
+                    }
+                } finally { invalid.release() }
+            }
+        }
+    }
+
     @Test fun initialLoadingRevealsContentOnCommitAndErrorsRetainRecoveryFeedback() {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest) = page("assigned")

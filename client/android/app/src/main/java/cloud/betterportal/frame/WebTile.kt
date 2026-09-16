@@ -141,7 +141,11 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
         loading.visibility = View.VISIBLE
         status.text = "Loading web content…"
         status.visibility = View.VISIBLE
-        if (initialOrigin == null) { status.text = "Web content needs an HTTP or HTTPS URL"; return }
+        if (initialOrigin == null) {
+            stopLoadingFeedback()
+            status.text = "Web content needs an HTTP or HTTPS URL"
+            return
+        }
         try {
             val web = object : WebView(context) {
                 override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? =

@@ -6,6 +6,15 @@ root-owned reboot guard in `/run` and starts it through systemd. This works when
 the currently running kiosk predates the fix and cannot request a privileged
 reboot itself. It does not grant the kiosk additional privileges.
 
+The staged guard and its state helper run through `/bin/bash`, because `/run`
+can be mounted `noexec` by the initramfs. Directly executing a script there can
+fail before any guard diagnostics are written. The hook writes an initial
+diagnostic and starts a `Type=notify` service with a 15-second startup timeout.
+It returns success only after the guard validates its arguments and RAUC owner
+and acknowledges readiness. The acknowledgement precedes waiting for RAUC to
+finish, so it does not deadlock the post-install hook. Startup failure aborts
+installation before activation; subsequent transaction checks remain required.
+
 The guard captures the RAUC D-Bus owner during installation and requires the same
 daemon to finish with `Operation=idle` and an empty `LastError`. The guard allows
 up to 30 minutes for remaining slot writes and cleanup on slow storage; this wait

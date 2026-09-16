@@ -90,8 +90,19 @@ schedule_reboot() {
   guard_dir="$(mktemp -d /run/betterframe-rauc-reboot.XXXXXX)"
   install -m 700 "$(dirname "$0")/reboot-after-install.sh" "$guard_dir/reboot.sh"
   install -m 700 "$(dirname "$0")/betterframe-rauc-state.sh" "$guard_dir/state.sh"
-  systemd-run --unit=betterframe-rauc-reboot --collect \
-    --property=RuntimeMaxSec=1900s "$guard_dir/reboot.sh" "$1" "$RAUC_SLOT_NAME" "$owner"
+  # Leave a diagnostic even if systemd cannot execute the guard. Type=notify
+  # waits for its readiness acknowledgement; queued is not the same as running.
+  install -d -m 755 /run/betterframe-rauc
+  printf '%s\n' 'Starting OS reboot guard' > /run/betterframe-rauc/os-reboot-status.txt
+  chmod 644 /run/betterframe-rauc/os-reboot-status.txt
+  if ! systemd-run --unit=betterframe-rauc-reboot --collect \
+    --property=Type=notify --property=NotifyAccess=all --property=TimeoutStartSec=15s \
+    --property=RuntimeMaxSec=1900s /bin/bash "$guard_dir/reboot.sh" "$1" "$RAUC_SLOT_NAME" "$owner"; then
+    printf '%s\n' 'OS reboot guard failed to start or acknowledge readiness; installation cancelled' \
+      > /run/betterframe-rauc/os-reboot-status.txt
+    echo 'OS reboot guard failed to start or acknowledge readiness' >&2
+    return 1
+  fi
   echo "hook: waiting for RAUC transaction completion before reboot"
 }
 

@@ -22,7 +22,7 @@ class RebootGuardTests(unittest.TestCase):
         self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ["PATH"]}',
                         BF_REBOOT_STATUS_FILE=str(self.status), BF_REBOOT_GRACE_SECONDS='0',
                         BF_REBOOT_WAIT_SECONDS='10', CALLS=str(self.log),
-                        COUNT=str(self.root / 'count'), MODE='success',
+                        COUNT=str(self.root / 'count'), MODE='success', READY_FILE=str(self.root / 'ready'),
                         BF_RAUC_SYSTEM_CONF=str(self.root / 'system.conf'),
                         BF_RAUC_ACTIVATION_STATE=str(self.root / 'slot-state'))
         (self.root / 'system.conf').write_text('data-directory=/var/lib/betterframe/rauc\n')
@@ -42,6 +42,7 @@ case "${*: -1}" in
     if [ "$MODE" = wrongslot ]; then echo 's "rootfs.0"'; else echo 's "rootfs.1"'; fi ;;
   *) exit 2 ;;
 esac''')
+        self.script(self.bin / 'systemd-notify', '[ "$MODE" != notify_failure ]; [ "$*" = --ready ]; echo ready > "$READY_FILE"')
         self.script(self.bin / 'systemctl', 'echo "systemctl $*" >> "$CALLS"')
         self.script(self.bin / 'reboot', '[ "$#" = 1 ] && [ "$1" = "0 tryboot" ]; echo "reboot argc=$# arg=$1" >> "$CALLS"')
         self.script(self.bin / 'sync', ':')
@@ -61,11 +62,40 @@ esac''')
         self.assertEqual(self.log.read_text().splitlines(), ['migrate', 'systemctl reboot'])
         self.assertGreaterEqual(int((self.root / 'count').read_text()), 3)
         self.assertIn('reboot requested', self.status.read_text())
+        self.assertTrue((self.root / 'ready').exists())
+
+    def test_missing_readiness_acknowledgement_never_reboots(self):
+        result = self.run_guard('notify_failure')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.log.exists())
+        self.assertFalse((self.root / 'ready').exists())
+        self.assertIn('Reboot guard failed', self.status.read_text())
+
+    def test_invalid_platform_leaves_diagnostics_before_exiting(self):
+        result = self.run_guard(platform='invalid')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Invalid reboot platform or target slot', self.status.read_text())
+        self.assertFalse((self.root / 'ready').exists())
+        self.assertFalse(self.log.exists())
 
     def test_pi_requests_tryboot_only_after_activation(self):
         result = self.run_guard(platform='pi')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('reboot argc=1 arg=0 tryboot', self.log.read_text())
+
+    def test_staged_scripts_need_read_access_not_execute_permission(self):
+        # Reproduce the executable-access restriction without a privileged
+        # noexec mount. Both scripts must be interpreted by the host's bash;
+        # executing the staged state helper directly would fail with EACCES.
+        (self.root / 'guard.sh').chmod(0o600)
+        (self.root / 'state.sh').chmod(0o600)
+        for platform in ('pi', 'x86'):
+            with self.subTest(platform=platform):
+                self.log.unlink(missing_ok=True)
+                result = self.run_guard(platform=platform)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.log.read_text().splitlines()[0], 'migrate')
+                self.assertIn('reboot requested', self.status.read_text())
 
     def test_pi_without_pending_slot_does_not_reboot(self):
         (self.root / 'slot-state').write_text('pending=A\n')

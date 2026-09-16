@@ -57,7 +57,7 @@ class WebTileRecoveryTest {
         ProtectedStore(context).clear()
     }
 
-    @Test fun failedRedirectRetriesTheAssignedUrlAndReloadKeepsTheBrowser() {
+    @Test fun failedRedirectReplacesFailedBrowserAndManualReloadKeepsRecoveredBrowser() {
         val assignedLoads = AtomicInteger()
         val paths = LinkedBlockingQueue<String>()
         server.dispatcher = object : Dispatcher() {
@@ -74,15 +74,18 @@ class WebTileRecoveryTest {
                 }
             }
         }
-        val browser = launchTile()
+        var browser = launchTile()
+        val failedBrowser = browser
         assertEquals("/assigned", paths.poll(10, TimeUnit.SECONDS))
         assertEquals("/failed", paths.poll(10, TimeUnit.SECONDS))
         val retried = paths.poll(10, TimeUnit.SECONDS)
         assertEquals("The retry must start at the assigned URL; callbacks=$callbacks", "/assigned", retried)
+        instrumentation.runOnMainSync { browser = findBrowser(tile!!)!! }
+        assertNotSame("Automatic recovery isolates old navigation callbacks", failedBrowser, browser)
         awaitDocument(browser, "assigned-2")
         awaitHistorySize(browser, 1)
         instrumentation.runOnMainSync {
-            assertSame("Network recovery retains the browser", browser, findBrowser(tile!!))
+            assertSame("The recovered browser remains active", browser, findBrowser(tile!!))
             browser.loadUrl(otherUrl)
         }
         assertEquals("/other", paths.poll(10, TimeUnit.SECONDS))
@@ -145,8 +148,42 @@ class WebTileRecoveryTest {
         }
         val retried = paths.poll(10, TimeUnit.SECONDS)
         assertEquals("Late redirect callbacks must retain recovery; callbacks=$callbacks", "/assigned", retried)
-        awaitDocument(browser, "assigned")
-        instrumentation.runOnMainSync { assertSame(browser, findBrowser(tile!!)) }
+        val recovered = AtomicReference<WebView>()
+        instrumentation.runOnMainSync { recovered.set(findBrowser(tile!!)!!) }
+        assertNotSame(browser, recovered.get())
+        awaitDocument(recovered.get(), "assigned")
+    }
+
+    @Test fun lateFailedBrowserCallbacksCannotCancelRetryWatchdog() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = page("assigned")
+        }
+        val failed = launchTile()
+        awaitDocument(failed, "assigned")
+        instrumentation.runOnMainSync {
+            fun pending(name: String): Runnable? = WebTile::class.java.getDeclaredField(name)
+                .apply { isAccessible = true }.get(tile) as Runnable?
+            val oldCallbacks = failed.webViewClient
+            deliverHttpError(failed, assignedUrl)
+            // Execute the retry in this UI turn so no new page callback can race it.
+            val retry = pending("networkRetry")!!
+            val handler = WebTile::class.java.getDeclaredField("handler")
+                .apply { isAccessible = true }.get(tile) as android.os.Handler
+            handler.removeCallbacks(retry)
+            retry.run()
+            val current = findBrowser(tile!!)!!
+            assertNotSame(failed, current)
+            val watchdog = pending("loadTimeout")!!
+            // Same URL: URL comparison alone cannot distinguish these old callbacks.
+            oldCallbacks.onPageFinished(failed, assignedUrl)
+            oldCallbacks.onPageStarted(failed, assignedUrl, null)
+            oldCallbacks.onPageCommitVisible(failed, assignedUrl)
+            assertSame("Old callbacks must not cancel the active watchdog", watchdog, pending("loadTimeout"))
+            handler.removeCallbacks(watchdog)
+            watchdog.run()
+            assertNotNull("The unpainted retry still schedules recovery", pending("networkRetry"))
+            assertSame(current, findBrowser(tile!!))
+        }
     }
 
     @Test fun invalidAssignedUrlsNeverShowLoadingOrCreateABrowser() {

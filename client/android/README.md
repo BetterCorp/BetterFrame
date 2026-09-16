@@ -185,8 +185,10 @@ rendering. Forcing every page into an additional hardware layer can allocate
 large textures and increase memory pressure, especially with many visible tiles.
 Geometry-only layout changes preserve existing browsers and camera decoders;
 changed URLs, HTML, storage settings or actions still replace their tile.
-Network retries and menu reloads reuse the browser and return to its original
-assigned document; renderer crashes recreate it. A successful page recovery
+Network retries replace the failed browser and return to the original assigned
+page, so stale callbacks cannot cancel the next attempt's watchdog. Menu reloads
+reuse a completed browser, but replace failed or still-loading browsers; renderer
+crashes also recreate it. Persistent cookies and web storage are retained. A successful page recovery
 cancels queued retries, and app-initiated reloads discard obsolete navigation
 history after loading. Normal page navigation keeps its own history.
 Hidden/replaced content is released before replacement content is allocated, and

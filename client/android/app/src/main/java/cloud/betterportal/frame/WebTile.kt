@@ -127,7 +127,8 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
         cancelRendererRetry()
         rendererFailures = 0
         networkRetries = 0
-        browser?.let(::loadAssignedPage) ?: createBrowser()
+        if (failedNavigation != null || loadTimeout != null) createBrowser()
+        else browser?.let(::loadAssignedPage) ?: createBrowser()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -263,7 +264,7 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
                 }
                 override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                     if (released || browser !== view) return true
-                    // Renderer death requires a new WebView, unlike ordinary page errors.
+                    // Renderer death also requires a new WebView.
                     cancelNetworkRetry()
                     cancelRendererRetry()
                     destroyBrowser()
@@ -328,7 +329,10 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
         networkRetries = min(networkRetries + 1, 6)
         networkRetry = Runnable {
             networkRetry = null
-            if (!released && browser === web) loadAssignedPage(web)
+            // WebView callbacks carry no navigation ID, including same-URL retries.
+            // Retire the failed browser so its late finish/commit/error callbacks
+            // cannot alter the new attempt or cancel its startup watchdog.
+            if (!released && browser === web) createBrowser()
         }.also { handler.postDelayed(it, min(60_000L, 1_000L shl networkRetries)) }
     }
 

@@ -1,0 +1,23 @@
+Turn your Android tablet, compatible TV or dedicated display into a BetterFrame viewer.
+
+Bring camera views, web content and digital signage together in layouts managed by your BetterFrame administrator. Pair the device with your BetterFrame server, assign its display, and choose the content it should show.
+
+CAMERAS AND CONTENT, TOGETHER
+• View assigned camera streams alongside webpages, HTML content and supported signage players.
+• Use fullscreen layouts and expand assigned content for a closer look.
+• Switch between assigned layouts and return to your default view after inactivity.
+
+BUILT FOR DEDICATED DISPLAYS
+• A fullscreen viewing experience with controls for touch and TV remotes.
+• Standby pauses playback and shows a black screen. Touch, remote input or a BetterFrame wake command resumes viewing.
+• Optional managed-device kiosk setup for compatible, provisioned devices.
+
+MANAGED FROM BETTERFRAME
+• Pair using the code shown on your display.
+• Manage assigned layouts and content from your BetterFrame server.
+• Connect to the hosted BetterFrame service or your own compatible server.
+
+IMPORTANT
+A compatible BetterFrame server and administrator-approved enrollment are required. This app is a viewer; it does not provide cameras, content or a standalone camera-recording service. Camera and video performance depend on your device, network, codec and stream settings. Web content requires a compatible, up-to-date Android System WebView.
+
+Standby does not guarantee that a device's backlight turns off. Device-owner kiosk features require separate provisioning and are not enabled by an ordinary installation. Hardware screen-off and wake behavior depend on your device.

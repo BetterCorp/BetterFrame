@@ -51,12 +51,12 @@ val releaseVersionName = configuredVersionName?.also {
 
 android {
     namespace = "cloud.betterportal.frame"
-    compileSdk = 35
+    compileSdk = 36
     ndkVersion = "27.2.12479018"
     defaultConfig {
         applicationId = "cloud.betterportal.frame"
         minSdk = 28
-        targetSdk = 35
+        targetSdk = 36
         versionCode = releaseVersionCode
         versionName = releaseVersionName
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }

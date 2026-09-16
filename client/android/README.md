@@ -40,7 +40,7 @@ macOS builds are supported by the native bridge script.
 
 ```sh
 rustup target add aarch64-linux-android x86_64-linux-android
-sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
 cd client/android
 ./gradlew assembleDebug testDebugUnitTest lintDebug
 ```
@@ -321,3 +321,7 @@ sleep/resume; renderer crash; token expiry; image/video playlist rotation and
 autoplay; D-pad page escape; and invalid/over-budget assignments. Record memory,
 heat, frame drops, first-frame latency and recovery times. The app remains
 experimental until these checks pass on named devices.
+
+## Google Play
+
+See [publishing setup](../../docs/android-play-publishing.md) and the [store kit](play/README.md) for AAB delivery, testing/production tracks, languages and listing assets.

@@ -1,0 +1,68 @@
+name: Publish Android to Google Play
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      channel:
+        type: string
+        required: true
+      ref:
+        type: string
+        required: true
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: google-play-cloud-betterportal-frame
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: >-
+      vars.BF_PLAY_PUBLISH_ENABLED == 'true' &&
+      github.repository == 'BetterCorp/BetterFrame' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.channel == 'stable' && 'google-play-production' || 'google-play-testing' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Verify publishing context and route
+        env:
+          RELEASE_REF: ${{ inputs.ref }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          DEV_TRACK: ${{ vars.BF_PLAY_DEV_TRACK || 'internal' }}
+        run: |
+          test "$RELEASE_REF" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if [ "$RELEASE_CHANNEL" = stable ]; then test "$GITHUB_REF" = "refs/tags/v$RELEASE_VERSION"; fi
+          python3 client/android/scripts/publish-play.py --plan \
+            --version "$RELEASE_VERSION" --channel "$RELEASE_CHANNEL" --dev-track "$DEV_TRACK"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: android-play-${{ github.run_id }}
+          path: dist/play
+      - name: Authenticate to Google without a stored JSON key
+        id: google
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.BF_GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.BF_PLAY_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/androidpublisher
+          create_credentials_file: false
+      - name: Submit verified bundle to its Play track
+        env:
+          PLAY_ACCESS_TOKEN: ${{ steps.google.outputs.access_token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          DEV_TRACK: ${{ vars.BF_PLAY_DEV_TRACK || 'internal' }}
+        run: |
+          python3 client/android/scripts/publish-play.py \
+            --version "$RELEASE_VERSION" --channel "$RELEASE_CHANNEL" --dev-track "$DEV_TRACK" \
+            --bundle dist/play/betterframe-android.aab --metadata dist/play/betterframe-android.json

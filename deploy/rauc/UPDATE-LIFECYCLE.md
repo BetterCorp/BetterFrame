@@ -63,3 +63,25 @@ Pi argument, for installation by 0.318 or 1.0.0 clients. Already published
 1.0.0 bundles are immutable and retain the faulty hook. New client lifecycle
 tracking and pairing-health confirmation take effect after booting the new OS.
 No terminal access or signing-key rotation is part of this recovery path.
+
+## Root filesystem payload sizing
+
+Factory images reserve spare space in their root partitions. OTA bundles must
+not transport that entire partition allocation: historical Pi factories size
+slots from the minimum filesystem size plus 50%, so even a 1 MiB change can make
+a newer image larger than an existing slot. One reported device has a
+5,953,814,528-byte (5678 MiB) root slot; the failing bundle carried 5679 MiB.
+
+`build-bundle.sh` now compacts a staged copy with `e2fsck` and `resize2fs -M`,
+leaving up to 64 MiB working room. Source/factory images are unchanged. Pi
+payloads exceeding that reported 5678 MiB compatibility baseline fail the build.
+This baseline is not a guarantee for every historical dynamically sized slot.
+
+The bundled rootfs post-install hook grows the mounted ext4 filesystem into the
+existing partition before writing configuration or scheduling reboot. This
+also covers already-installed systems which lack RAUC's `resize=true` slot
+configuration ([RAUC reference](https://rauc.readthedocs.io/en/latest/reference.html)).
+Any growth failure aborts the hook. No partition table changes or device CLI
+access are needed. Existing bundles are unchanged; recovery requires a newly
+signed bundle. Physical Pi online growth and boot must still be verified on
+hardware; host tests exercise real ext4 shrink/grow and mock hook failure paths.

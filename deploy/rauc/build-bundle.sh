@@ -33,7 +33,16 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 STAGE="${WORK_DIR}/bundle"
 mkdir -p "$STAGE"
 
-cp "$ROOTFS_IN" "${STAGE}/rootfs.ext4"
+cp --sparse=always "$ROOTFS_IN" "${STAGE}/rootfs.ext4"
+# Transport filesystem content, not a newly calculated partition's spare space.
+# A reported deployed Pi has a 5678 MiB slot. Fail the build rather than
+# publish a bundle too large for that compatibility baseline; older devices
+# may have smaller slots because historical factory sizing was dynamic.
+ROOTFS_LIMIT=0
+if [ "$COMPATIBILITY" = "betterframe-rpi5-aarch64" ]; then
+  ROOTFS_LIMIT=5953814528
+fi
+bash "${SCRIPT_DIR}/compact-rootfs.sh" "${STAGE}/rootfs.ext4" "$ROOTFS_LIMIT"
 if [ "$COMPATIBILITY" != "betterframe-x86_64-generic" ]; then
   cp "$BOOTFS_IN" "${STAGE}/bootfs.vfat"
 fi

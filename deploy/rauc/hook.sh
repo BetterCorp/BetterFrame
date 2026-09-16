@@ -135,6 +135,11 @@ case "$RAUC_SLOT_CLASS" in
     echo "hook: patched Pi bootfs slot ${LETTER} -> root=PARTUUID=${ROOT_UUID}"
     ;;
   rootfs)
+    # Older installed systems lack RAUC's resize=true slot option. The bundle
+    # must recover them itself: grow the compact ext4 payload online into the
+    # existing partition before writing configuration or scheduling reboot.
+    # RAUC mounts ext4 slots read-write for post-install hooks.
+    resize2fs "$RAUC_SLOT_DEVICE"
     if [ -f "${MNT}/etc/betterframe/os-compatibility" ] \
       && grep -qx 'betterframe-x86_64-generic' "${MNT}/etc/betterframe/os-compatibility"; then
       BOOT_UUID="$(partuuid_of BF_BOOT)"

@@ -347,8 +347,11 @@ class KioskPresentationTest {
             val downTime = SystemClock.uptimeMillis()
             for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
                 val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action,
-                    bounds.exactCenterX(), bounds.exactCenterY(), 0)
+                    bounds.exactCenterX(), bounds.exactCenterY(), 0).apply {
+                    source = android.view.InputDevice.SOURCE_TOUCHSCREEN
+                }
                 try { instrumentation.sendPointerSync(event) } finally { event.recycle() }
+                if (action == MotionEvent.ACTION_DOWN) Thread.sleep(50)
             }
             true
         }

@@ -3,7 +3,12 @@ set -euo pipefail
 android_dir="$(cd "$(dirname "$0")/.." && pwd)"
 # Keep visual evidence even on failure; the test exit status still fails CI.
 collect_screenshots() {
+  local test_status=$?
   mkdir -p "$android_dir/app/build/reports/kiosk-screenshots"
+  if (( test_status != 0 )); then
+    adb logcat -d -t 3000 > "$android_dir/app/build/reports/kiosk-screenshots/test-failure-logcat.txt" 2>&1 || true
+    adb shell dumpsys window > "$android_dir/app/build/reports/kiosk-screenshots/test-failure-windows.txt" 2>&1 || true
+  fi
   adb pull /sdcard/Download/betterframe-kiosk-screenshots/. \
     "$android_dir/app/build/reports/kiosk-screenshots" || true
 }

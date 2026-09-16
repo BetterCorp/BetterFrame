@@ -1,13 +1,13 @@
 # Android Google Play publishing
 
-Publishing is prepared but **disabled** until `BF_PLAY_PUBLISH_ENABLED=true` is set as a repository variable. Do not enable it until the first Play release and store setup below are complete.
+Publishing is prepared but **disabled** until `BF_PLAY_PUBLISH_ENABLED=true` is set as a repository variable. Enable testing uploads after the first Play release and publisher permissions are configured. Production additionally requires `BF_PLAY_PRODUCTION_ENABLED=true`; leave it unset until production policy declarations, listing and reviewer access are ready.
 
 ## GitHub triggers
 
 | Existing release trigger | Play destination |
 | --- | --- |
 | Push to `master` producing a dev prerelease | `internal`, or the named test track in `BF_PLAY_DEV_TRACK` |
-| Stable signed `vX.Y.Z` tag producing a stable release | `production` |
+| Stable signed `vX.Y.Z` tag producing a stable release | `production`, only with `BF_PLAY_PRODUCTION_ENABLED=true` |
 | Beta prerelease | The same configured test track |
 | Pull request | Build and validation only |
 
@@ -33,7 +33,8 @@ Retry a failed publishing job using **Re-run failed jobs**, preserving the verif
    | `BF_GOOGLE_WORKLOAD_IDENTITY_PROVIDER` | `projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER` |
    | `BF_PLAY_SERVICE_ACCOUNT` | Dedicated service account email |
    | `BF_PLAY_DEV_TRACK` | `internal` (default), or exact closed-test track ID |
-   | `BF_PLAY_PUBLISH_ENABLED` | `true` **last**, after setup and validation |
+   | `BF_PLAY_PUBLISH_ENABLED` | `true` after initial Console upload and testing access are ready |
+   | `BF_PLAY_PRODUCTION_ENABLED` | `true` only after production setup/policy/reviewer access are complete; unset disables production uploads |
 
    Provider and service account can be environment variables, allowing different accounts with test-only and production permissions. The enable flag must be a repository variable because the caller checks it before entering an environment. Existing four `BF_ANDROID_*` signing secrets and certificate variable remain required.
 9. Merge this preparation, download the first verified AAB from its GitHub release for initial Console setup, then enable the flag. Confirm the next master release reaches testers. Create the next normal stable signed tag to submit production. A stable release created before this workflow exists cannot retrospectively trigger it simply by enabling the flag.
@@ -79,3 +80,5 @@ The workflow updates the AAB and localized release notes only. Upload listing de
 - [Play tracks](https://developers.google.com/android-publisher/tracks)
 
 - [Android 16 behavior changes and Back handling](https://developer.android.com/about/versions/16/behavior-changes-16)
+
+The APK and AAB include `armeabi-v7a`, `arm64-v8a`, and `x86_64`. This retains support for 32-bit Android TV userspaces such as Google TV Streamer; a 64-bit-capable CPU does not imply a 64-bit Android userspace. All packaged native libraries pass ELF architecture and 16 KB alignment checks.

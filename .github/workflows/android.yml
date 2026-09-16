@@ -26,7 +26,7 @@ jobs:
           packages: platform-tools
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,x86_64-linux-android
+          targets: armv7-linux-androideabi,aarch64-linux-android,x86_64-linux-android
       - uses: gradle/actions/setup-gradle@v4
       - name: Install Android build tools
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
@@ -50,7 +50,7 @@ jobs:
             echo 'BF_ANDROID_VERSION_CODE=1001'
             echo 'BF_ANDROID_VERSION_NAME=ci.1'
           } >> "$GITHUB_ENV"
-      - name: Build both ABIs, unit tests and lint
+      - name: Build all three ABIs, unit tests and lint
         working-directory: client/android
         run: ./gradlew --no-daemon assembleDebug assembleRelease bundleRelease testDebugUnitTest lintDebug lintRelease
       - name: Verify store metadata and signed bundle

@@ -39,14 +39,14 @@ Requires JDK 17, Android SDK 35, NDK 27.2.12479018, and stable Rust. Linux and
 macOS builds are supported by the native bridge script.
 
 ```sh
-rustup target add aarch64-linux-android x86_64-linux-android
+rustup target add armv7-linux-androideabi aarch64-linux-android x86_64-linux-android
 sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
 cd client/android
 ./gradlew assembleDebug testDebugUnitTest lintDebug
 ```
 
 Set `ANDROID_HOME` to the SDK installation or use local.properties with
-`sdk.dir=...`. Gradle builds the Rust library for both arm64-v8a and x86_64;
+`sdk.dir=...`. Gradle builds the Rust library for armeabi-v7a, arm64-v8a and x86_64;
 no desktop GStreamer/GTK dependencies are linked into the APK. Native libraries
 use 16 KiB page alignment. Install `app/build/outputs/apk/debug/app-debug.apk`
 with `adb install -r`. Release builds are minified. Local release builds are

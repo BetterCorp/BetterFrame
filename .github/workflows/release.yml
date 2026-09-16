@@ -207,7 +207,9 @@ jobs:
 
   publish-play:
     needs: [meta, android]
-    if: vars.BF_PLAY_PUBLISH_ENABLED == 'true'
+    if: >-
+      vars.BF_PLAY_PUBLISH_ENABLED == 'true' &&
+      (needs.meta.outputs.channel != 'stable' || vars.BF_PLAY_PRODUCTION_ENABLED == 'true')
     permissions:
       contents: read
       id-token: write

@@ -41,6 +41,8 @@ def verify_artifact(bundle, metadata, version):
         raise ValueError('bundle digest does not match verified metadata')
     if data.get('targetSdk', 0) < 36 or data.get('nativePageAlignment') != 16384:
         raise ValueError('bundle has not passed target SDK and native alignment checks')
+    if set(data.get('nativeAbis', [])) != {'armeabi-v7a', 'arm64-v8a', 'x86_64'}:
+        raise ValueError('bundle has not passed all three native ABI checks')
     return data
 
 

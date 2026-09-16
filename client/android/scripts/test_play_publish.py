@@ -27,19 +27,26 @@ class PublishingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             bundle=Path(directory)/'app.aab';bundle.write_bytes(b'verified bundle')
             meta=Path(directory)/'app.json'
-            data={'applicationId':publish.PACKAGE,'versionName':'1.2.3','versionCode':100,'aabSha256':hashlib.sha256(bundle.read_bytes()).hexdigest(),'targetSdk':36,'nativePageAlignment':16384}
+            data={'applicationId':publish.PACKAGE,'versionName':'1.2.3','versionCode':100,'aabSha256':hashlib.sha256(bundle.read_bytes()).hexdigest(),'targetSdk':36,'nativePageAlignment':16384,'nativeAbis':['armeabi-v7a','arm64-v8a','x86_64']}
             meta.write_text(json.dumps(data))
             self.assertEqual(publish.verify_artifact(bundle,meta,'1.2.3')['versionCode'],100)
+            missing_arm32=dict(data,nativeAbis=['arm64-v8a','x86_64'])
+            meta.write_text(json.dumps(missing_arm32))
+            with self.assertRaisesRegex(ValueError,'native ABI'):
+                publish.verify_artifact(bundle,meta,'1.2.3')
+            meta.write_text(json.dumps(data))
             bundle.write_bytes(b'tampered')
             with self.assertRaises(ValueError):publish.verify_artifact(bundle,meta,'1.2.3')
 
     def test_native_alignment_rejects_4kb_load_segments(self):
-        data=bytearray(120);data[:6]=b'\x7fELF\x02\x01'
+        data=bytearray(120);data[:7]=b'\x7fELF\x02\x01\x01'
+        struct.pack_into('<HI',data,18,183,1)
+        struct.pack_into('<H',data,52,64)
         struct.pack_into('<Q',data,32,64);struct.pack_into('<HH',data,54,56,1)
         struct.pack_into('<I',data,64,1);struct.pack_into('<Q',data,112,16384)
-        aab.elf_alignment(data)
+        aab.elf_alignment(data,'arm64-v8a')
         struct.pack_into('<Q',data,112,4096)
-        with self.assertRaises(ValueError):aab.elf_alignment(data)
+        with self.assertRaises(ValueError):aab.elf_alignment(data,'arm64-v8a')
 
     def test_commit_is_last_and_failures_do_not_publish(self):
         class API:

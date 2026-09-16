@@ -21,6 +21,7 @@ jobs:
   publish:
     if: >-
       vars.BF_PLAY_PUBLISH_ENABLED == 'true' &&
+      (inputs.channel != 'stable' || vars.BF_PLAY_PRODUCTION_ENABLED == 'true') &&
       github.repository == 'BetterCorp/BetterFrame' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))

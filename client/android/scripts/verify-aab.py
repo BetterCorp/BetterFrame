@@ -15,22 +15,66 @@ def output(command):
     return result.stdout + result.stderr
 
 
-def elf_alignment(data):
-    if data[:6] != b'\x7fELF\x02\x01':
-        raise ValueError('native library must be little-endian ELF64')
-    phoff = struct.unpack_from('<Q', data, 32)[0]
-    entsize, count = struct.unpack_from('<HH', data, 54)
+# ELF class, e_machine, minimum LOAD alignment. Require the same 16-KB
+# alignment for every ABI to preserve the release metadata guarantee.
+ABI_ELF = {'armeabi-v7a': (1, 40, 16384), 'arm64-v8a': (2, 183, 16384),
+           'x86_64': (2, 62, 16384)}
+
+
+def elf_alignment(data, abi):
+    if abi not in ABI_ELF:
+        raise ValueError(f'unsupported native ABI: {abi}')
+    elf_class, machine, minimum = ABI_ELF[abi]
+    header_size, entry_size = (52, 32) if elf_class == 1 else (64, 56)
+    if len(data) < header_size:
+        raise ValueError('truncated native ELF header')
+    if data[:7] != b'\x7fELF' + bytes((elf_class, 1, 1)):
+        raise ValueError(f'native ELF class/encoding does not match {abi}')
+    if struct.unpack_from('<H', data, 18)[0] != machine:
+        raise ValueError(f'native ELF machine does not match {abi}')
+    if struct.unpack_from('<I', data, 20)[0] != 1:
+        raise ValueError('invalid native ELF version')
+    if elf_class == 1:
+        phoff = struct.unpack_from('<I', data, 28)[0]
+        ehsize, entsize, count = struct.unpack_from('<HHH', data, 40)
+    else:
+        phoff = struct.unpack_from('<Q', data, 32)[0]
+        ehsize, entsize, count = struct.unpack_from('<HHH', data, 52)
+    if ehsize != header_size or entsize != entry_size:
+        raise ValueError('invalid native ELF header sizes')
+    if phoff < header_size or phoff + count * entsize > len(data):
+        raise ValueError('truncated or invalid native program header table')
     loads = []
     for index in range(count):
         offset = phoff + index * entsize
         kind = struct.unpack_from('<I', data, offset)[0]
         if kind == 1:
-            align = struct.unpack_from('<Q', data, offset + 48)[0]
-            if align < 16384 or align & (align - 1):
-                raise ValueError('native LOAD segment is not 16-KB aligned')
+            if elf_class == 1:
+                file_offset, vaddr = struct.unpack_from('<II', data, offset + 4)
+                align = struct.unpack_from('<I', data, offset + 28)[0]
+            else:
+                file_offset, vaddr = struct.unpack_from('<QQ', data, offset + 8)
+                align = struct.unpack_from('<Q', data, offset + 48)[0]
+            if align < minimum or align & (align - 1):
+                raise ValueError(f'native LOAD alignment for {abi} must be a power of two >= {minimum}')
+            if file_offset % align != vaddr % align:
+                raise ValueError('native LOAD offset/address alignment mismatch')
             loads.append(align)
     if not loads:
         raise ValueError('native library has no LOAD segments')
+    return min(loads)
+
+
+def verify_native_libraries(archive):
+    abis, alignments = set(), []
+    for name in archive.namelist():
+        if '/lib/' in name and name.endswith('.so'):
+            abi = name.split('/lib/', 1)[1].split('/', 1)[0]
+            abis.add(abi)
+            alignments.append(elf_alignment(archive.read(name), abi))
+    if abis != set(ABI_ELF):
+        raise ValueError('bundle must contain armeabi-v7a, arm64-v8a and x86_64')
+    return min(alignments)
 
 
 def verify(bundle, metadata_path, bundletool, certificate):
@@ -52,18 +96,11 @@ def verify(bundle, metadata_path, bundletool, certificate):
     target = int(manifest('/manifest/uses-sdk/@android:targetSdkVersion'))
     if target < 36:
         raise ValueError('Google Play submissions require target API 36')
-    abis = set()
     with zipfile.ZipFile(bundle) as archive:
-        for name in archive.namelist():
-            if '/lib/' in name and name.endswith('.so'):
-                abi = name.split('/lib/',1)[1].split('/',1)[0]
-                abis.add(abi)
-                elf_alignment(archive.read(name))
-    if abis != {'arm64-v8a','x86_64'}:
-        raise ValueError('bundle must contain the two supported 64-bit ABIs')
+        alignment = verify_native_libraries(archive)
     with bundle.open('rb') as stream:
         metadata['aabSha256'] = hashlib.file_digest(stream,'sha256').hexdigest()
-    metadata.update(targetSdk=target,nativePageAlignment=16384)
+    metadata.update(targetSdk=target,nativePageAlignment=alignment,nativeAbis=sorted(ABI_ELF))
     metadata_path.write_text(json.dumps(metadata,indent=2)+'\n')
 
 

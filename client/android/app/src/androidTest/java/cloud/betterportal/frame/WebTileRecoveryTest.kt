@@ -121,6 +121,7 @@ class WebTileRecoveryTest {
             deliverHttpError(browser, assignedUrl)
             browser.webViewClient.onPageFinished(browser, assignedUrl)
             browser.webViewClient.onPageStarted(browser, browser.url, null)
+            browser.webViewClient.onPageCommitVisible(browser, browser.url)
             browser.webViewClient.onPageFinished(browser, browser.url)
         }
         assertNull("Recovered content must not be reloaded by the old two-second retry",
@@ -152,6 +153,36 @@ class WebTileRecoveryTest {
         instrumentation.runOnMainSync { recovered.set(findBrowser(tile!!)!!) }
         assertNotSame(browser, recovered.get())
         awaitDocument(recovered.get(), "assigned")
+    }
+
+    @Test fun finishedWithoutVisualCommitRetainsWatchdogAndRecovers() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = page("assigned")
+        }
+        val browser = launchTile()
+        awaitDocument(browser, "assigned")
+        instrumentation.runOnMainSync {
+            fun timeout(): Runnable? = WebTile::class.java.getDeclaredField("loadTimeout")
+                .apply { isAccessible = true }.get(tile) as Runnable?
+            browser.webViewClient.onPageStarted(browser, assignedUrl, null)
+            val watchdog = timeout()!!
+            browser.webViewClient.onPageFinished(browser, assignedUrl)
+            assertSame("Completion without pixels must retain recovery", watchdog, timeout())
+            assertEquals(View.VISIBLE, findSpinner(tile!!)!!.visibility)
+            // The opposite callback order must also complete once pixels arrive.
+            browser.webViewClient.onPageCommitVisible(browser, assignedUrl)
+            assertNull(timeout())
+            assertEquals(View.GONE, (findSpinner(tile!!)!!.parent as View).visibility)
+            browser.webViewClient.onPageStarted(browser, assignedUrl, null)
+            browser.webViewClient.onPageFinished(browser, assignedUrl)
+            val pending = timeout()!!
+            val handler = WebTile::class.java.getDeclaredField("handler")
+                .apply { isAccessible = true }.get(tile) as android.os.Handler
+            handler.removeCallbacks(pending)
+            pending.run()
+            assertNotNull(WebTile::class.java.getDeclaredField("networkRetry")
+                .apply { isAccessible = true }.get(tile))
+        }
     }
 
     @Test fun lateFailedBrowserCallbacksCannotCancelRetryWatchdog() {

@@ -65,6 +65,7 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
         isClickable = false
     }
     private var pageVisible = false
+    private var pageFinished = false
     private var slowLoad: Runnable? = null
     private var loadTimeout: Runnable? = null
     private fun Int.dp() = (this * resources.displayMetrics.density).toInt()
@@ -77,9 +78,22 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
         spinner.visibility = View.GONE
     }
 
+    private fun finishLoadingIfReady(web: WebView) {
+        if (released || browser !== web || failedNavigation != null || !pageVisible || !pageFinished) return
+        cancelNetworkRetry()
+        if (pruneHistoryOnSuccess) {
+            pruneHistoryOnSuccess = false
+            web.clearHistory()
+        }
+        stopLoadingFeedback()
+        loading.visibility = View.GONE
+        networkRetries = 0
+    }
+
     private fun beginLoadingFeedback(web: WebView) {
         stopLoadingFeedback()
         pageVisible = false
+        pageFinished = false
         loading.layoutParams = LayoutParams(-1, -1)
         loading.visibility = View.VISIBLE
         status.visibility = View.VISIBLE
@@ -234,6 +248,7 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
                     // so provider-specific download progress and controls stay usable.
                     spinner.visibility = View.GONE
                     loading.layoutParams = LayoutParams(-1, -2, Gravity.BOTTOM)
+                    finishLoadingIfReady(view)
                 }
                 override fun onPageFinished(view: WebView, url: String?) {
                     if (released || browser !== view) return
@@ -243,16 +258,11 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
                         // A late finish for an earlier redirect URL must not
                         // cancel the retry scheduled for the failed target.
                     } else {
-                        cancelNetworkRetry()
-                        if (pruneHistoryOnSuccess) {
-                            // App reload/recovery returns to the assigned document. Keep
-                            // that page only; ordinary in-page navigation retains history.
-                            pruneHistoryOnSuccess = false
-                            view.clearHistory()
-                        }
-                        stopLoadingFeedback()
-                        loading.visibility = View.GONE
-                        networkRetries = 0
+                        // Finished is not evidence of pixels: 204/no-content pages
+                        // can finish without committing a document. Keep the watchdog
+                        // until both callbacks arrive, in either order.
+                        pageFinished = true
+                        finishLoadingIfReady(view)
                     }
                     if (!documentStart && origin(url ?: "") == initialOrigin) view.evaluateJavascript(script, null)
                 }

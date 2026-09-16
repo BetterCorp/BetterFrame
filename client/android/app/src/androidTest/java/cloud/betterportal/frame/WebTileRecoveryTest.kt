@@ -219,14 +219,15 @@ class WebTileRecoveryTest {
 
     @Test fun invalidAssignedUrlsNeverShowLoadingOrCreateABrowser() {
         instrumentation.runOnMainSync {
-            for (url in listOf("", "not-a-url", "https://", "file:///invalid")) {
+            for (url in listOf("", "not-a-url", "https://", "http:///missing-host", "file:///invalid")) {
+                assertNull("Invalid origin: $url", WebTile.origin(url))
                 val invalid = WebTile(context, JSONObject().put("web", JSONObject().put("url", url))) {}
                 try {
                     repeat(2) {
                         val spinner = findSpinner(invalid)!!
-                        assertEquals(View.GONE, spinner.visibility)
+                        assertEquals("Invalid URL must not load: $url", View.GONE, spinner.visibility)
                         assertEquals(View.VISIBLE, (spinner.parent as View).visibility)
-                        assertNull(findBrowser(invalid))
+                        assertNull("Invalid URL must not create a browser: $url", findBrowser(invalid))
                         invalid.reload()
                     }
                 } finally { invalid.release() }

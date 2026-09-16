@@ -367,7 +367,7 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
         fun origin(url: String): String? = runCatching {
             val uri = Uri.parse(url)
             val scheme = uri.scheme?.lowercase()
-            val host = uri.host?.lowercase() ?: return null
+            val host = uri.host?.lowercase()?.takeUnless { it.isBlank() } ?: return null
             if (scheme != "http" && scheme != "https") return null
             if (uri.userInfo != null) return null
             val defaultPort = if (scheme == "https") 443 else 80

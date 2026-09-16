@@ -254,6 +254,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           "x-betterframe-kiosk-id": String(kiosk.id),
           "x-betterframe-tenant": kiosk.tenant_id,
           "x-betterframe-tenant-slug": kiosk.tenant_slug,
+          ...((event.context as any).displayScope ? { "x-betterframe-display-scope": (event.context as any).displayScope } : {}),
           ...(token && !(event.context as any).displaySession ? { "set-cookie": kioskSessionCookie(token, secure) } : {}),
         },
       });

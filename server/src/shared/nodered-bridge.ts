@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 export interface NoderedConfig {
@@ -34,6 +35,7 @@ export interface NoderedBridge {
     tenant: { tenant_slug: string; tenant_name: string | null; tenant_id?: string | null },
     onSuccess?: () => void,
   ): void;
+  signDisplayScope?(tenantId: string, pageIds: string[]): string;
   listDashboards(tenantId: string): Promise<NoderedDashboard[]>;
   reconcileServerConfigs(
     serverUrl: string,
@@ -49,6 +51,11 @@ export function initNoderedBridge(config: NoderedConfig, log: NoderedLog): Noder
     ?? readSecretFile(process.env["BF_NODERED_MANAGER_SECRET_FILE"]);
 
   return {
+    signDisplayScope(tenantId, pageIds): string {
+      if (managerToken.length < 32) throw new Error("Node-RED manager secret unavailable");
+      const payload = Buffer.from(JSON.stringify({ tenant: tenantId, pages: [...new Set(pageIds)], expires: Date.now() + 60_000 })).toString("base64url");
+      return `${payload}.${createHmac("sha256", managerToken).update(`display-scope-v1:${payload}`).digest("base64url")}`;
+    },
     forward(topic, payload, tenant, onSuccess): void {
       fetch(`${base}/api/internal/${encodeURIComponent(topic)}`, {
         method: "POST",

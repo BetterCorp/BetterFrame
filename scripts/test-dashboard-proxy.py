@@ -41,16 +41,19 @@ class DashboardProxyTests(unittest.TestCase):
                         else:
                             status = 401
                     elif kind == "api":
-                        if cookie == "kiosk-a":
+                        if cookie in ("kiosk-a", "display-a"):
                             headers = {"X-BetterFrame-Tenant": "a", "X-BetterFrame-Kiosk-Id": "kiosk-a",
                                        "Set-Cookie": "dashboard-session=test; Path=/; HttpOnly"}
+                            if cookie == "display-a":
+                                headers["X-BetterFrame-Display-Scope"] = "server-signed-scope"
                             original = self.headers.get("X-Original-URI", "")
-                            if original.startswith("/private") or "socket.io" in original:
+                            if original.startswith("/private") or ("socket.io" in original and cookie != "display-a"):
                                 status = 403
                         else:
                             status = 401
                     body = json.dumps({"path": self.path, "tenant": self.headers.get("X-BetterFrame-Tenant"),
                                        "upgrade": self.headers.get("Upgrade"),
+                                       "scope": self.headers.get("X-BetterFrame-Display-Scope"),
                                        "kiosk": self.headers.get("X-BetterFrame-Kiosk-Id")}).encode()
                     self.send_response(status)
                     for key, value in headers.items():
@@ -136,6 +139,18 @@ class DashboardProxyTests(unittest.TestCase):
         self.assertIn("Set-Cookie", headers)
         self.assertEqual(self.request("/private/page1", "kiosk-a")[0], 403)
         self.assertEqual(self.request("/dashboard/socket.io/", "kiosk-a")[0], 403)
+
+    def test_display_scope_is_forwarded_only_from_auth_response(self):
+        for path in ["/dashboard/_setup", "/dashboard/socket.io/?transport=polling"]:
+            status, _, body = self.request(path, "display-a", {"X-BetterFrame-Display-Scope": "forged"})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["scope"], "server-signed-scope")
+        status, _, body = self.request("/dashboard/socket.io/", "display-a", {"Upgrade": "websocket", "Connection": "upgrade", "X-BetterFrame-Display-Scope": "forged"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["scope"], "server-signed-scope")
+        self.assertEqual(json.loads(body)["upgrade"], "websocket")
+        _, _, body = self.request("/dashboard/page1", "admin-a", {"X-BetterFrame-Display-Scope": "forged"})
+        self.assertIsNone(json.loads(body)["scope"])
 
     def test_desktop_enrollment_check_remains_available_with_credentials(self):
         self.assertEqual(self.request("/api/kiosk/_check")[0], 401)

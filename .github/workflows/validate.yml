@@ -58,6 +58,7 @@ jobs:
           BF_NODERED_MANAGER_SELF_TEST: "1"
         run: |
           node deploy/nodered-manager/manager.mjs
+          node --test deploy/nodered-manager/display-scope.test.cjs
           find deploy scripts -name '*.sh' -print0 | xargs -0 -n1 bash -n
 
   client:

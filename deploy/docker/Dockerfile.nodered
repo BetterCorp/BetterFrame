@@ -17,6 +17,7 @@ COPY LICENSE.md LICENSE-AGPL.txt LICENSE-COMMERCIAL.md /usr/share/licenses/bette
 
 # Root manager creates one UID-separated Node-RED runtime per tenant.
 COPY deploy/nodered-manager/manager.mjs /usr/src/betterframe-manager/manager.mjs
+COPY deploy/nodered-manager/display-scope.cjs /usr/src/betterframe-manager/display-scope.cjs
 
 # Install deps for the nodes + FlowFuse Dashboard 2.0 into user dir
 RUN cd /usr/src/betterframe-nodes && \

@@ -166,3 +166,25 @@ BETTERFRAME_SERVER=http://<pi-ip> /opt/betterframe/kiosk/betterframe-kiosk
 Native server mode is for development only. Run it manually when debugging; do
 not install host daemons for BetterFrame server, Angie, or Node-RED in
 production. The Docker stack owns those services.
+
+### Android display dashboard sessions
+
+Android dashboard initialization uses the assigned page's `/_setup` and
+Socket.IO routes. The API signs a tenant-bound page scope for the manager;
+the proxy overwrites caller-supplied scope headers. The manager validates the
+signature and the tenant before forwarding the scope to the tenant runtime.
+No manager credential is exposed to the browser or tenant process.
+
+The runtime filters dashboard configuration, widget data, broadcasts (including
+binary data), and widget actions to the assigned pages. New configuration on
+redeploy recalculates allowed widget IDs. Unknown custom socket events,
+third-party widgets with custom client modules, UI-wide templates and UI control
+messages are not enabled for Android display sessions. Admin sessions keep the
+normal complete dashboard. Never work around rendering errors by granting an
+Android display the admin or raw kiosk session cookie.
+
+Transport leases expire after 60 seconds. Closing the engine transport causes
+the standard Socket.IO client to reconnect through authentication, so layout
+reassignment, disabled devices and rotated credentials revoke an existing socket
+within 60 seconds. A server/proxy/Node-RED deployment is required together; no
+manual flow migration or device re-pairing is needed.

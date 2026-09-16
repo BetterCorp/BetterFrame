@@ -119,10 +119,15 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
         }
         try {
             val renderers = DefaultRenderersFactory(context)
-                .setEnableDecoderFallback(false)
+                // Some TVs can only allocate a handful of hardware decoder instances.
+                // Keep hardware preferred, but allow Media3 to try platform software
+                // decoders when another hardware instance cannot be initialized.
+                .setEnableDecoderFallback(true)
                 .setMediaCodecSelector(MediaCodecSelector { mimeType, secure, tunneling ->
-                    MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling)
-                        .filter { !mimeType.startsWith("video/") || it.hardwareAccelerated }
+                    CameraDecoderPolicy.candidates(
+                        mimeType,
+                        MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling),
+                    ) { it.hardwareAccelerated }
                 })
             val next = ExoPlayer.Builder(context, renderers)
                 .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(500, 2_000, 250, 500).build())
@@ -155,7 +160,16 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
                         showReady()
                     } else if (state == Player.STATE_ENDED) recover()
                 }
-                override fun onPlayerError(error: PlaybackException) { if (player === next) recover() }
+                override fun onPlayerError(error: PlaybackException) {
+                    if (player !== next) return
+                    val decoderFailure = error.errorCode in setOf(
+                        PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+                        PlaybackException.ERROR_CODE_DECODING_FAILED,
+                        PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
+                        PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+                    )
+                    recover(if (decoderFailure) "Camera decoding unavailable. Reduce camera count or stream quality. Retrying…" else null)
+                }
             })
             val source = RtspMediaSource.Factory().setForceUseRtpTcp(true).setTimeoutMs(10_000)
                 .createMediaSource(MediaItem.fromUri(uri))
@@ -166,7 +180,7 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
         } catch (_: Exception) { recover() }
     }
 
-    private fun recover() {
+    private fun recover(message: String? = null) {
         if (released) return
         handler.removeCallbacksAndMessages(null)
         frameGeneration++
@@ -175,6 +189,11 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
         player = null
         previous?.release()
         showConnecting()
+        if (message != null) {
+            spinner.visibility = View.GONE
+            errorMessage.text = message
+            errorMessage.visibility = View.VISIBLE
+        }
         if (fallbackUri != null && uri != fallbackUri) uri = fallbackUri
         retries = min(retries + 1, 6)
         val delay = min(30_000L, 1_000L shl retries) + Random.nextLong(250, 1_000)

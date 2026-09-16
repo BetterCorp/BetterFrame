@@ -149,6 +149,72 @@ class WebTileRecoveryTest {
         instrumentation.runOnMainSync { assertSame(browser, findBrowser(tile!!)) }
     }
 
+    @Test fun initialLoadingRevealsContentOnCommitAndErrorsRetainRecoveryFeedback() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = page("assigned")
+        }
+        val browser = launchTile()
+        awaitDocument(browser, "assigned")
+        instrumentation.runOnMainSync {
+            val spinner = findSpinner(tile!!)!!
+            val overlay = spinner.parent as ViewGroup
+            browser.webViewClient.onPageStarted(browser, assignedUrl, null)
+            assertEquals(View.VISIBLE, overlay.visibility)
+            assertEquals(View.VISIBLE, spinner.visibility)
+            assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, overlay.layoutParams.height)
+            assertFalse("Feedback must not take remote focus", overlay.isFocusable)
+            assertFalse("Feedback must not consume touch", overlay.isClickable)
+            browser.webViewClient.onPageCommitVisible(browser, assignedUrl)
+            assertEquals(View.GONE, spinner.visibility)
+            assertEquals("Reveal provider cache progress as soon as its page paints",
+                ViewGroup.LayoutParams.WRAP_CONTENT, overlay.layoutParams.height)
+            browser.webViewClient.onPageFinished(browser, assignedUrl)
+            assertEquals(View.GONE, overlay.visibility)
+            deliverHttpError(browser, assignedUrl)
+            assertEquals(View.VISIBLE, overlay.visibility)
+            assertEquals(View.GONE, spinner.visibility)
+            browser.webViewClient.onPageCommitVisible(browser, assignedUrl)
+            browser.webViewClient.onPageFinished(browser, assignedUrl)
+            assertEquals("An error page must not dismiss retry feedback", View.VISIBLE, overlay.visibility)
+        }
+    }
+
+    @Test fun startupTimeoutRetriesOnlyBeforeVisibleContentAndReleaseCancelsTimers() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = page("assigned")
+        }
+        val browser = launchTile()
+        awaitDocument(browser, "assigned")
+        instrumentation.runOnMainSync {
+            fun pending(name: String): Runnable? = WebTile::class.java.getDeclaredField(name)
+                .apply { isAccessible = true }.get(tile) as Runnable?
+            browser.webViewClient.onPageStarted(browser, assignedUrl, null)
+            pending("loadTimeout")!!.run()
+            assertNotNull("A document that never paints must recover", pending("networkRetry"))
+            browser.webViewClient.onPageFinished(browser, assignedUrl)
+            browser.webViewClient.onPageStarted(browser, assignedUrl, null)
+            browser.webViewClient.onPageCommitVisible(browser, assignedUrl)
+            pending("loadTimeout")!!.run()
+            assertEquals("Do not cover provider content indefinitely", View.GONE,
+                (findSpinner(tile!!)!!.parent as View).visibility)
+            // Successful completion cancels the failed attempt's retry.
+            browser.webViewClient.onPageFinished(browser, assignedUrl)
+            assertNull(pending("networkRetry"))
+            browser.webViewClient.onPageStarted(browser, assignedUrl, null)
+            tile!!.release()
+            assertNull(pending("slowLoad"))
+            assertNull(pending("loadTimeout"))
+        }
+    }
+
+    private fun findSpinner(view: View): android.widget.ProgressBar? {
+        if (view is android.widget.ProgressBar) return view
+        if (view is ViewGroup) for (index in 0 until view.childCount) {
+            findSpinner(view.getChildAt(index))?.let { return it }
+        }
+        return null
+    }
+
     private fun deliverHttpError(browser: WebView, target: String) {
         val request = object : WebResourceRequest {
             override fun getUrl(): Uri = Uri.parse(target)
@@ -182,6 +248,9 @@ class WebTileRecoveryTest {
                 override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
                     callbacks.offer("start:${Uri.parse(url ?: "").path}")
                     delegate.onPageStarted(view, url, favicon)
+                }
+                override fun onPageCommitVisible(view: WebView, url: String?) {
+                    delegate.onPageCommitVisible(view, url)
                 }
                 override fun onPageFinished(view: WebView, url: String?) {
                     callbacks.offer("finish:${Uri.parse(url ?: "").path}")

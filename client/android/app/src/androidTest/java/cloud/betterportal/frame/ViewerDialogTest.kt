@@ -248,6 +248,7 @@ class ViewerDialogTest {
     private fun await(message: String, condition: () -> Boolean) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
         while (System.nanoTime() < deadline) { if (condition()) return; Thread.sleep(50) }
+        captureUiFailure(message)
         fail(message)
     }
     private fun clickText(value: String) {

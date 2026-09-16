@@ -315,6 +315,7 @@ class KioskPresentationTest {
             scenario.onActivity { ready = condition(it) }
             if (!ready) Thread.sleep(50)
         }
+        if (!ready) captureUiFailure(message)
         assertTrue(message, ready)
     }
 
@@ -325,6 +326,7 @@ class KioskPresentationTest {
             freshAccessibilityRoot()?.let { ready = condition(it) }
             if (!ready) Thread.sleep(50)
         }
+        if (!ready) captureUiFailure(message)
         assertTrue(message, ready)
     }
 

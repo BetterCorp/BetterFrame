@@ -58,6 +58,7 @@ class ViewerActionsTest {
                     instrumentation.runOnMainSync { satisfied = condition() }
                     if (!satisfied) Thread.sleep(50)
                 }
+                if (!satisfied) captureUiFailure(message)
                 assertTrue(message, satisfied)
             }
             fun webTile(): WebTile? = descendants(activity.window.decorView).filterIsInstance<WebTile>().firstOrNull()
@@ -127,6 +128,7 @@ class ViewerActionsTest {
             }
             Thread.sleep(50)
         }
+        captureUiFailure("Kiosk menu action unavailable: $value")
         fail("Kiosk menu action unavailable: $value")
     }
 

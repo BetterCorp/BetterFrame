@@ -532,6 +532,34 @@ async function handleRequest(req, res) {
   }
 }
 
+async function handleUpgrade(req, socket, head) {
+  let tenant;
+  try {
+    tenant = tenantForRequest(req);
+    if (tenant && await publicDashboardRequest(req, tenant)) { socket.destroy(); return; }
+    if (/^\/api\/internal(?:\/|$)/i.test(decodeURIComponent(new URL(req.url || "/", "http://localhost").pathname))) {
+      socket.destroy(); return;
+    }
+  } catch { socket.destroy(); return; }
+  if (!tenant?.active) { socket.destroy(); return; }
+  const headers = runtimeHeaders(req, tenant);
+  const upstream = httpRequest({ hostname: "127.0.0.1", port: tenant.port, method: "GET", path: req.url, headers });
+  upstream.on("upgrade", (response, upstreamSocket, upstreamHead) => {
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\n${Object.entries(response.headers).map(([key, value]) => `${key}: ${value}`).join("\r\n")}\r\n\r\n`);
+    if (upstreamHead.length) socket.write(upstreamHead);
+    if (head.length) upstreamSocket.write(head);
+    upstreamSocket.pipe(socket).pipe(upstreamSocket);
+  });
+  upstream.on("error", () => socket.destroy());
+  upstream.end();
+}
+
+function attachUpgrades(server) {
+  server.on("upgrade", (req, socket, head) => {
+    void handleUpgrade(req, socket, head).catch(() => socket.destroy());
+  });
+}
+
 if (process.env.BF_NODERED_MANAGER_SELF_TEST === "1") {
   if (!validTenantId("2f1c0b2d-9ad7-4e74-8c2c-4bdcb9f365b0")) throw new Error("UUID validation failed");
   if (validTenantId("../../escape")) throw new Error("path traversal accepted");
@@ -644,6 +672,11 @@ if (process.env.BF_NODERED_MANAGER_SELF_TEST === "1") {
         }
         settings.dashboard.middleware(req, res, () => res.end(slug));
       });
+      fixture.on("upgrade", (req, socket) => {
+        assert.equal(req.headers.cookie, undefined);
+        assert.equal(req.headers["x-betterframe-tenant"], undefined);
+        socket.end(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n${slug}`);
+      });
       await new Promise((resolve) => fixture.listen(0, "127.0.0.1", resolve));
       servers.push(fixture);
       tenant.port = fixture.address().port;
@@ -651,14 +684,35 @@ if (process.env.BF_NODERED_MANAGER_SELF_TEST === "1") {
       runtimes.set(id, { child: {} });
     }
     const gateway = createServer(handleRequest);
+    attachUpgrades(gateway);
     await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
     servers.push(gateway);
     const base = `http://127.0.0.1:${gateway.address().port}`;
     const get = (path, headers = {}) => fetch(base + path, { headers, redirect: "manual" });
+    const upgrade = (path, headers = {}) => new Promise((resolve, reject) => {
+      const request = httpRequest(base + path, { headers: { ...headers, connection: "Upgrade", upgrade: "websocket" } });
+      request.setTimeout(3000, () => { request.destroy(); reject(new Error("upgrade timed out")); });
+      request.on("error", (error) => error.code === "ECONNRESET" ? resolve(null) : reject(error));
+      request.on("response", (response) => { response.resume(); reject(new Error(`unexpected upgrade status ${response.statusCode}`)); });
+      request.on("upgrade", (_response, socket, head) => {
+        const chunks = [head];
+        socket.setTimeout(3000, () => { socket.destroy(); reject(new Error("upgraded socket timed out")); });
+        socket.on("data", (chunk) => chunks.push(chunk));
+        socket.on("error", reject);
+        socket.on("end", () => { socket.destroy(); resolve(Buffer.concat(chunks).toString()); });
+      });
+      request.end();
+    });
     assert.equal((await get("/dashboard/page1")).status, 403);
     assert.equal((await get("/dashboard/page1", { cookie: "bf_tenant=a" })).status, 403);
     for (const tenant of Object.values(state.tenants)) {
       const headers = { "x-betterframe-tenant": tenant.tenant_id };
+      assert.equal(await upgrade(`/${tenant.slug}-custom/socket.io/?transport=websocket`, { ...headers, cookie: "platform-secret" }), tenant.slug);
+      assert.equal(await upgrade(`/in/public/${tenant.slug}/webhook`), tenant.slug);
+      assert.equal(await upgrade(`/in/public/${tenant.slug}/${tenant.slug}-custom/socket.io/?transport=websocket`), null);
+      assert.equal(await upgrade("/api/internal/socket", headers), null);
+      assert.equal(await upgrade("/socket", { "x-betterframe-tenant": "unknown" }), null);
+      assert.equal((await get("/healthz")).status, 200, "rejected upgrades must not stop the manager");
       const response = await get(`/${tenant.slug}-custom/page1`, headers);
       assert.equal(response.status, 200); assert.equal(await response.text(), tenant.slug);
       const alias = await get("/dash/page?theme=dark", headers);
@@ -713,28 +767,6 @@ for (const tenant of Object.values(state.tenants)) if (tenant.active) void start
 
 const server = createServer(handleRequest);
 
-server.on("upgrade", async (req, socket, head) => {
-  let tenant;
-  try {
-    tenant = tenantForRequest(req);
-    if (tenant && await publicDashboardRequest(req, tenant)) { socket.destroy(); return; }
-    if (/^\/api\/internal(?:\/|$)/i.test(decodeURIComponent(new URL(req.url || "/", "http://localhost").pathname))) {
-      socket.destroy(); return;
-    }
-  } catch { socket.destroy(); return; }
-  if (!tenant?.active) { socket.destroy(); return; }
-  const finishChange = /^\/nrdp(?:\/|$)/i.test(decodeURIComponent(path)) && !["GET", "HEAD", "OPTIONS"].includes(req.method)
-    ? changingFlows(tenant) : () => {};
-  const headers = runtimeHeaders(req, tenant);
-  const upstream = httpRequest({ hostname: "127.0.0.1", port: tenant.port, method: "GET", path: req.url, headers });
-  upstream.on("upgrade", (response, upstreamSocket, upstreamHead) => {
-    socket.write(`HTTP/1.1 101 Switching Protocols\r\n${Object.entries(response.headers).map(([key, value]) => `${key}: ${value}`).join("\r\n")}\r\n\r\n`);
-    if (upstreamHead.length) socket.write(upstreamHead);
-    if (head.length) upstreamSocket.write(head);
-    upstreamSocket.pipe(socket).pipe(upstreamSocket);
-  });
-  upstream.on("error", () => socket.destroy());
-  upstream.end();
-});
+attachUpgrades(server);
 
 server.listen(PORT, "0.0.0.0", () => console.log(`BetterFrame Node-RED manager listening on ${PORT}`));

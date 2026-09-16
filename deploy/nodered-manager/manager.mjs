@@ -48,6 +48,21 @@ function dashboardToken(tenant) {
   return createHmac("sha256", tenant.adminToken).update("dashboard-access-v1").digest("hex");
 }
 
+function displayScope(req, tenant) {
+  const token = req.headers["x-betterframe-display-scope"];
+  if (!token) return null;
+  if (req.bfPublic || !req.headers["x-betterframe-tenant"] || typeof token !== "string" || token.length > 12000) throw new Error("invalid display scope");
+  const [payload, signature, extra] = token.split(".");
+  const expected = createHmac("sha256", MANAGER_TOKEN).update(`display-scope-v1:${payload}`).digest();
+  const supplied = Buffer.from(signature || "", "base64url");
+  if (extra || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw new Error("invalid display signature");
+  const scope = JSON.parse(Buffer.from(payload, "base64url").toString());
+  if (scope.tenant !== tenant.tenant_id || !Number.isFinite(scope.expires) || scope.expires <= Date.now()
+      || scope.expires > Date.now() + 60_000 || !Array.isArray(scope.pages) || !scope.pages.length
+      || scope.pages.some((id) => typeof id !== "string" || !/^[\w.-]{1,128}$/.test(id))) throw new Error("invalid display scope claims");
+  return scope;
+}
+
 function settingsSource(tenant) {
   return `module.exports = ${JSON.stringify({
     uiHost: "127.0.0.1",
@@ -76,7 +91,12 @@ module.exports.dashboard = {
     next();
   },
   ioMiddleware(socket, next) {
-    next(dashboardAllowed(socket.request) ? undefined : new Error("forbidden"));
+    if (!dashboardAllowed(socket.request)) return next(new Error("forbidden"));
+    try {
+      const raw = socket.request.headers["x-betterframe-display-scope"];
+      if (raw) require(${JSON.stringify(new URL("./display-scope.cjs", import.meta.url).pathname)}).scopeSocket(socket, JSON.parse(raw));
+      next();
+    } catch { next(new Error("invalid display scope")); }
   },
 };
 module.exports.ui = module.exports.dashboard;
@@ -417,6 +437,13 @@ function runtimeHeaders(req, tenant) {
   delete headers.cookie;
   delete headers["x-betterframe-runtime-token"];
   delete headers["x-betterframe-dashboard-token"];
+  delete headers["x-betterframe-display-scope"];
+  // Signed scope is checked before the tenant runtime sees it. Public routes
+  // cannot carry or mint scope, even with a copied token from another tenant.
+  if (!req.bfPublic) {
+    const scope = displayScope(req, tenant);
+    if (scope) headers["x-betterframe-display-scope"] = JSON.stringify(scope);
+  }
   // Angie overwrites the tenant header after authentication. Public URL routing
   // cannot mint this credential, even if a caller supplies forged headers.
   if (!req.bfPublic && req.headers["x-betterframe-tenant"]) {
@@ -575,6 +602,21 @@ if (process.env.BF_NODERED_MANAGER_SELF_TEST === "1") {
   if (tenantForRequest({ url: "/", headers: { "x-betterframe-tenant": "test" } })?.tenant_id !== testId) throw new Error("tenant slug route failed");
   if (runtimeEnvironment({ userDir: "/tmp/test", uid: 1, port: 1 }).BF_NODERED_MANAGER_SECRET) throw new Error("manager secret leaked to tenant runtime");
   const headerTenant = { port: 19000, adminToken: "test-admin-token" };
+  const scopeTenant = { ...headerTenant, tenant_id: testId };
+  const scopeToken = (claims) => {
+    const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+    return `${payload}.${createHmac("sha256", MANAGER_TOKEN).update(`display-scope-v1:${payload}`).digest("base64url")}`;
+  };
+  const validClaims = { tenant: testId, pages: ["page1.legacy"], expires: Date.now() + 59000 };
+  const scopeReq = (token) => ({ url: "/dashboard/socket.io", headers: { "x-betterframe-tenant": testId, "x-betterframe-display-scope": token } });
+  const scopedHeaders = runtimeHeaders(scopeReq(scopeToken(validClaims)), scopeTenant);
+  if (JSON.parse(scopedHeaders["x-betterframe-display-scope"]).pages[0] !== "page1.legacy") throw new Error("scope not forwarded");
+  for (const token of ["forged", scopeToken({ ...validClaims, tenant: "other" }), scopeToken({ ...validClaims, expires: Date.now() - 1 })]) {
+    let denied = false; try { runtimeHeaders(scopeReq(token), scopeTenant); } catch { denied = true; }
+    if (!denied) throw new Error("invalid display scope accepted");
+  }
+  if (runtimeHeaders({ ...scopeReq(scopeToken(validClaims)), bfPublic: true }, scopeTenant)["x-betterframe-display-scope"]) throw new Error("public scope forwarded");
+
   const publicHeaders = runtimeHeaders({ url: "/echo", headers: {
     "x-betterframe-runtime-token": "caller-forged", authorization: `Bearer ${MANAGER_TOKEN}`, cookie: "betterframe_session=private",
   } }, headerTenant);

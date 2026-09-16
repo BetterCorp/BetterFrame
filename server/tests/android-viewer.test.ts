@@ -80,7 +80,13 @@ test("display cookie authenticates assigned dashboards but never device APIs, ot
   const bundle = await generateBundle(repo as never, secrets as never, "viewer", "cluster");
   assert.equal(bundle?.layouts[0]?.cells[1]?.web_url, cells[1]!.web_url);
   const app = new H3();
-  registerViewerDeviceAuth(app, repo as never, { verifyKioskKey: async (key: string) => key === "device-key" ? { id: "viewer", schema_name: "public", tenant_slug: "default" } : null } as never, secrets as never);
+  registerViewerDeviceAuth(app, repo as never, { verifyKioskKey: async (key: string) => key === "device-key" ? { id: "viewer", schema_name: "public", tenant_slug: "default" } : null } as never, secrets as never, {
+    listDashboards: async () => [
+      { id: "assigned", basePath: "/dashboard", path: "/dashboard/page1" },
+      { id: "reassigned", basePath: "/private", path: "/private/page2" },
+    ],
+    signDisplayScope: (tenant: string, pages: string[]) => { assert.equal(tenant, "tenant"); assert.ok(pages.length); return "signed-scope"; },
+  } as never);
   for (const path of ["/api/kiosk/_check", "/api/kiosk/bundle", "/api/kiosk/cameras/private/stream", "/api/kiosk/firmware/check"]) app.get(path, () => ({ ok: true }));
   const response = await app.request("https://bf.test/api/kiosk/display-session", { method: "POST", headers: { authorization: "Bearer device-key" } });
   assert.equal(response.status, 200);
@@ -97,6 +103,10 @@ test("display cookie authenticates assigned dashboards but never device APIs, ot
   assert.equal((await check("/dash/assigned-other?theme=dark")).status, 403);
   assert.equal((await check("/dash/stale-camera-url")).status, 403);
   assert.equal((await check("/dash/socket.io/?transport=polling")).status, 403);
+  assert.equal((await check("/dashboard/_setup")).status, 200);
+  assert.equal((await check("/dashboard/socket.io/?transport=polling")).status, 200);
+  assert.equal((await check("/private/socket.io/?transport=polling")).status, 403);
+  assert.equal((await check("/dashboard/_debug/datastore/private")).status, 403);
   assert.equal((await check("/in/kiosk/control")).status, 403);
   assert.equal((await check("/dash/assigned", { origin: "https://evil.test" })).status, 403);
   assert.equal((await check("/dash/assigned", { "sec-fetch-site": "cross-site", origin: "https://evil.test" })).status, 403);
@@ -132,7 +142,13 @@ test("dashboard assignments normalize web cells and entities without granting th
 test("viewer cannot use raw kiosk cookies while desktop cookie authentication remains compatible", async () => {
   const { repo, secrets, kiosk } = fixture();
   const app = new H3();
-  registerViewerDeviceAuth(app, repo as never, { verifyKioskKey: async (key: string) => key === "device-key" ? { id: "viewer", schema_name: "public", tenant_slug: "default" } : null } as never, secrets as never);
+  registerViewerDeviceAuth(app, repo as never, { verifyKioskKey: async (key: string) => key === "device-key" ? { id: "viewer", schema_name: "public", tenant_slug: "default" } : null } as never, secrets as never, {
+    listDashboards: async () => [
+      { id: "assigned", basePath: "/dashboard", path: "/dashboard/page1" },
+      { id: "reassigned", basePath: "/private", path: "/private/page2" },
+    ],
+    signDisplayScope: (tenant: string, pages: string[]) => { assert.equal(tenant, "tenant"); assert.ok(pages.length); return "signed-scope"; },
+  } as never);
   app.get("/api/kiosk/bundle", () => ({ ok: true }));
   const headers = { cookie: "betterframe_kiosk_key=device-key" };
   assert.equal((await app.request("https://bf.test/api/kiosk/bundle", { headers })).status, 403);
@@ -329,16 +345,16 @@ test("delayed Android heartbeats cannot overwrite acknowledged power or race a n
 });
 
 
-test("display dashboard access follows assigned IDs through live tenant paths without socket or traversal access", () => {
+test("display dashboard access follows assigned IDs through live tenant paths with scoped transport but without traversal access", () => {
   const pages = [
     { id: "assigned", name: "Page", hidden: false, basePath: "/dashboard", path: "/dashboard/page1" },
     { id: "other", name: "Other", hidden: false, basePath: "/private", path: "/private/page2" },
   ];
   const assigned = new Set(["/dash/assigned"]);
-  for (const uri of ["/dash/assigned", "/dashboard/page1", "/dashboard/page1?theme=dark", "/dashboard/assets/app.js"]) {
+  for (const uri of ["/dash/assigned", "/dashboard/page1", "/dashboard/page1?theme=dark", "/dashboard/assets/app.js", "/dashboard/_setup", "/dashboard/socket.io/?transport=polling"]) {
     assert.equal(displayDashboardRequestAllowed(uri, assigned, pages), true, uri);
   }
-  for (const uri of ["/dashboard", "/dashboard/other", "/private/page2", "/private/assets/app.js", "/dashboard/socket.io/?transport=polling", "/dashboard/_setup", "/dashboard/page1/other", "/dashboard/assets/../other", "/dashboard/assets/%2e%2e/other", "//dashboard/page1"]) {
+  for (const uri of ["/dashboard", "/dashboard/other", "/private/page2", "/private/assets/app.js", "/private/socket.io/?transport=polling", "/private/_setup", "/dashboard/_debug/datastore/private", "/dashboard/page1/other", "/dashboard/assets/../other", "/dashboard/assets/%2e%2e/other", "//dashboard/page1"]) {
     assert.equal(displayDashboardRequestAllowed(uri, assigned, pages), false, uri);
   }
   assert.equal(displayDashboardRequestAllowed("/dashboard/page1", assigned, []), false);

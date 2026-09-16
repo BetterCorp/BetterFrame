@@ -17,6 +17,7 @@ COPY --from=source --chown=node-red:root /tmp/betterframe-source/nodered/ /usr/s
 COPY --from=source --chown=node-red:root /tmp/betterframe-source/node_modules/ /usr/src/betterframe-release/node_modules/
 RUN ln -s /usr/src/betterframe-release/nodered /usr/src/betterframe-nodes
 COPY --from=source --chown=node-red:root /tmp/betterframe-source/deploy/nodered-manager/manager.mjs /usr/src/betterframe-manager/manager.mjs
+COPY --from=source --chown=node-red:root /tmp/betterframe-source/deploy/nodered-manager/display-scope.cjs /usr/src/betterframe-manager/display-scope.cjs
 # Restore the application command instead of the snapshot retention process.
 ENTRYPOINT ["node", "/usr/src/betterframe-manager/manager.mjs"]
 CMD []

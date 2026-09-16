@@ -60,6 +60,7 @@ jobs:
         run: |
           node --check deploy/nodered-manager/manager.mjs
           node deploy/nodered-manager/manager.mjs
+          node --test deploy/nodered-manager/display-scope.test.cjs
       - name: Image and RAUC script syntax
         run: |
           bash -n deploy/x86-image/build-image.sh

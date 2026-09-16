@@ -27,13 +27,11 @@ export function displayDashboardRequestAllowed(uri: string, assignedPaths: Reado
   if (!rawPath.startsWith("/") || rawPath.startsWith("//") || /[\\%\x00-\x20]/.test(rawPath)) return false;
   const requested = new URL(uri, "https://display.invalid").pathname.replace(/\/$/, "");
   if (rawPath.replace(/\/$/, "") !== requested) return false;
-  // The shared Socket.IO setup exposes all pages in a UI base. Display sessions
-  // remain denied until the provider can authorize individual subscriptions.
-  if (requested.split("/").includes("socket.io")) return false;
   if (assignedPaths.has(requested)) return true;
   const assignedPages = pages.filter((page) => assignedPaths.has(`/dash/${page.id}`));
   return assignedPages.some((page) => requested === page.path
     || requested.startsWith(`${page.basePath}/assets/`)
+    || requested === `${page.basePath}/_setup` || requested === `${page.basePath}/socket.io`
     || ["favicon.ico", "apple-touch-icon.png"].some((file) => requested === `${page.basePath}/${file}`));
 }
 
@@ -61,6 +59,9 @@ export function registerViewerDeviceAuth(app: H3, repo: Repository, auth: AuthAp
           const pages = nodered ? await nodered.listDashboards(tenant.id) : [];
           if (!displayDashboardRequestAllowed(uri, dashboardPaths, pages)) return new Response(null, { status: 403 });
           (event.context as any).verifiedKiosk = { id: kiosk.id, tenant_id: tenant.id, tenant_slug: tenant.slug, tenant_name: tenant.name, schema_name: tenant.schema_name };
+          const pageIds = pages.filter((page) => dashboardPaths.has(`/dash/${page.id}`)).map((page) => page.id);
+          if (!nodered?.signDisplayScope || !pageIds.length) return new Response(null, { status: 403 });
+          (event.context as any).displayScope = nodered.signDisplayScope(tenant.id, pageIds);
           (event.context as any).displaySession = true;
           return next();
         });

@@ -2,19 +2,27 @@
 # Executed as root by systemd, independently of the confined kiosk and RAUC
 # bundle mount. D-Bus contract: https://rauc.readthedocs.io/en/latest/reference.html
 set -euo pipefail
-platform="${1:?platform required}"
-target="${2:?target slot required}"
-owner="${3:?RAUC bus owner required}"
-case "$platform:$target" in pi:rootfs.[01]|x86:rootfs.[01]) ;; *) exit 2 ;; esac
 status_file="${BF_REBOOT_STATUS_FILE:-/run/betterframe-rauc/os-reboot-status.txt}"
 install -d -m 755 "$(dirname "$status_file")"
 status() { printf '%s\n' "$1" > "${status_file}.tmp"; chmod 644 "${status_file}.tmp"; mv "${status_file}.tmp" "$status_file"; }
 fail() { status "$1"; echo "$1" >&2; exit 1; }
 trap 'fail "Reboot guard failed; the device has not been rebooted"' ERR
+platform="${1:-}"
+target="${2:-}"
+owner="${3:-}"
+case "$platform:$target" in
+  pi:rootfs.[01]|x86:rootfs.[01]) ;;
+  *) fail 'Invalid reboot platform or target slot; reboot cancelled' ;;
+esac
+[ -n "$owner" ] || fail 'Missing RAUC bus owner; reboot cancelled'
 same_daemon() {
   [ "$(busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus GetNameOwner s de.pengutronix.rauc)" = "$owner" ]
 }
+same_daemon || fail 'RAUC restarted before reboot guard startup; reboot cancelled'
 status 'Waiting for OS installation to finish'
+# The install hook cannot return success until systemd receives this signal.
+# NotifyAccess=all permits this short-lived notifier child of the shell.
+systemd-notify --ready
 deadline=$((SECONDS + ${BF_REBOOT_WAIT_SECONDS:-1800}))
 while :; do
   same_daemon || fail 'RAUC restarted during installation; reboot cancelled'
@@ -42,9 +50,9 @@ fi
 # Copy the legacy state AFTER activation; copying in the slot hook loses the
 # pending/activated status written by RAUC when that hook returns.
 if grep -q '^data-directory=/var/lib/betterframe/rauc$' "${BF_RAUC_SYSTEM_CONF:-/etc/rauc/system.conf}"; then
-  "$(dirname "$0")/state.sh"
+  /bin/bash "$(dirname "$0")/state.sh"
 else
-  "$(dirname "$0")/state.sh" --refresh-legacy
+  /bin/bash "$(dirname "$0")/state.sh" --refresh-legacy
 fi
 same_daemon || fail 'RAUC restarted before reboot; reboot cancelled'
 [ "$(busctl get-property de.pengutronix.rauc / de.pengutronix.rauc.Installer Operation)" = 's "idle"' ] || fail 'Another OS install started; reboot cancelled'

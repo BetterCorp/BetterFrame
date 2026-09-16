@@ -57,7 +57,7 @@ class WebTileRecoveryTest {
         ProtectedStore(context).clear()
     }
 
-    @Test fun failedRedirectRetriesTheAssignedUrlAndReloadKeepsTheBrowser() {
+    @Test fun failedRedirectReplacesFailedBrowserAndManualReloadKeepsRecoveredBrowser() {
         val assignedLoads = AtomicInteger()
         val paths = LinkedBlockingQueue<String>()
         server.dispatcher = object : Dispatcher() {
@@ -74,15 +74,18 @@ class WebTileRecoveryTest {
                 }
             }
         }
-        val browser = launchTile()
+        var browser = launchTile()
+        val failedBrowser = browser
         assertEquals("/assigned", paths.poll(10, TimeUnit.SECONDS))
         assertEquals("/failed", paths.poll(10, TimeUnit.SECONDS))
         val retried = paths.poll(10, TimeUnit.SECONDS)
         assertEquals("The retry must start at the assigned URL; callbacks=$callbacks", "/assigned", retried)
+        instrumentation.runOnMainSync { browser = findBrowser(tile!!)!! }
+        assertNotSame("Automatic recovery isolates old navigation callbacks", failedBrowser, browser)
         awaitDocument(browser, "assigned-2")
         awaitHistorySize(browser, 1)
         instrumentation.runOnMainSync {
-            assertSame("Network recovery retains the browser", browser, findBrowser(tile!!))
+            assertSame("The recovered browser remains active", browser, findBrowser(tile!!))
             browser.loadUrl(otherUrl)
         }
         assertEquals("/other", paths.poll(10, TimeUnit.SECONDS))
@@ -118,6 +121,7 @@ class WebTileRecoveryTest {
             deliverHttpError(browser, assignedUrl)
             browser.webViewClient.onPageFinished(browser, assignedUrl)
             browser.webViewClient.onPageStarted(browser, browser.url, null)
+            browser.webViewClient.onPageCommitVisible(browser, browser.url)
             browser.webViewClient.onPageFinished(browser, browser.url)
         }
         assertNull("Recovered content must not be reloaded by the old two-second retry",
@@ -145,8 +149,156 @@ class WebTileRecoveryTest {
         }
         val retried = paths.poll(10, TimeUnit.SECONDS)
         assertEquals("Late redirect callbacks must retain recovery; callbacks=$callbacks", "/assigned", retried)
+        val recovered = AtomicReference<WebView>()
+        instrumentation.runOnMainSync { recovered.set(findBrowser(tile!!)!!) }
+        assertNotSame(browser, recovered.get())
+        awaitDocument(recovered.get(), "assigned")
+    }
+
+    @Test fun finishedWithoutVisualCommitRetainsWatchdogAndRecovers() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = page("assigned")
+        }
+        val browser = launchTile()
         awaitDocument(browser, "assigned")
-        instrumentation.runOnMainSync { assertSame(browser, findBrowser(tile!!)) }
+        instrumentation.runOnMainSync {
+            fun timeout(): Runnable? = WebTile::class.java.getDeclaredField("loadTimeout")
+                .apply { isAccessible = true }.get(tile) as Runnable?
+            browser.webViewClient.onPageStarted(browser, assignedUrl, null)
+            val watchdog = timeout()!!
+            browser.webViewClient.onPageFinished(browser, assignedUrl)
+            assertSame("Completion without pixels must retain recovery", watchdog, timeout())
+            assertEquals(View.VISIBLE, findSpinner(tile!!)!!.visibility)
+            // The opposite callback order must also complete once pixels arrive.
+            browser.webViewClient.onPageCommitVisible(browser, assignedUrl)
+            assertNull(timeout())
+            assertEquals(View.GONE, (findSpinner(tile!!)!!.parent as View).visibility)
+            browser.webViewClient.onPageStarted(browser, assignedUrl, null)
+            browser.webViewClient.onPageFinished(browser, assignedUrl)
+            val pending = timeout()!!
+            val handler = WebTile::class.java.getDeclaredField("handler")
+                .apply { isAccessible = true }.get(tile) as android.os.Handler
+            handler.removeCallbacks(pending)
+            pending.run()
+            assertNotNull(WebTile::class.java.getDeclaredField("networkRetry")
+                .apply { isAccessible = true }.get(tile))
+        }
+    }
+
+    @Test fun lateFailedBrowserCallbacksCannotCancelRetryWatchdog() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = page("assigned")
+        }
+        val failed = launchTile()
+        awaitDocument(failed, "assigned")
+        instrumentation.runOnMainSync {
+            fun pending(name: String): Runnable? = WebTile::class.java.getDeclaredField(name)
+                .apply { isAccessible = true }.get(tile) as Runnable?
+            val oldCallbacks = failed.webViewClient
+            deliverHttpError(failed, assignedUrl)
+            // Execute the retry in this UI turn so no new page callback can race it.
+            val retry = pending("networkRetry")!!
+            val handler = WebTile::class.java.getDeclaredField("handler")
+                .apply { isAccessible = true }.get(tile) as android.os.Handler
+            handler.removeCallbacks(retry)
+            retry.run()
+            val current = findBrowser(tile!!)!!
+            assertNotSame(failed, current)
+            val watchdog = pending("loadTimeout")!!
+            // Same URL: URL comparison alone cannot distinguish these old callbacks.
+            oldCallbacks.onPageFinished(failed, assignedUrl)
+            oldCallbacks.onPageStarted(failed, assignedUrl, null)
+            oldCallbacks.onPageCommitVisible(failed, assignedUrl)
+            assertSame("Old callbacks must not cancel the active watchdog", watchdog, pending("loadTimeout"))
+            handler.removeCallbacks(watchdog)
+            watchdog.run()
+            assertNotNull("The unpainted retry still schedules recovery", pending("networkRetry"))
+            assertSame(current, findBrowser(tile!!))
+        }
+    }
+
+    @Test fun invalidAssignedUrlsNeverShowLoadingOrCreateABrowser() {
+        instrumentation.runOnMainSync {
+            for (url in listOf("", "not-a-url", "https://", "http:///missing-host", "file:///invalid")) {
+                assertNull("Invalid origin: $url", WebTile.origin(url))
+                val invalid = WebTile(context, JSONObject().put("web", JSONObject().put("url", url))) {}
+                try {
+                    repeat(2) {
+                        val spinner = findSpinner(invalid)!!
+                        assertEquals("Invalid URL must not load: $url", View.GONE, spinner.visibility)
+                        assertEquals(View.VISIBLE, (spinner.parent as View).visibility)
+                        assertNull("Invalid URL must not create a browser: $url", findBrowser(invalid))
+                        invalid.reload()
+                    }
+                } finally { invalid.release() }
+            }
+        }
+    }
+
+    @Test fun initialLoadingRevealsContentOnCommitAndErrorsRetainRecoveryFeedback() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = page("assigned")
+        }
+        val browser = launchTile()
+        awaitDocument(browser, "assigned")
+        instrumentation.runOnMainSync {
+            val spinner = findSpinner(tile!!)!!
+            val overlay = spinner.parent as ViewGroup
+            browser.webViewClient.onPageStarted(browser, assignedUrl, null)
+            assertEquals(View.VISIBLE, overlay.visibility)
+            assertEquals(View.VISIBLE, spinner.visibility)
+            assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, overlay.layoutParams.height)
+            assertFalse("Feedback must not take remote focus", overlay.isFocusable)
+            assertFalse("Feedback must not consume touch", overlay.isClickable)
+            browser.webViewClient.onPageCommitVisible(browser, assignedUrl)
+            assertEquals(View.GONE, spinner.visibility)
+            assertEquals("Reveal provider cache progress as soon as its page paints",
+                ViewGroup.LayoutParams.WRAP_CONTENT, overlay.layoutParams.height)
+            browser.webViewClient.onPageFinished(browser, assignedUrl)
+            assertEquals(View.GONE, overlay.visibility)
+            deliverHttpError(browser, assignedUrl)
+            assertEquals(View.VISIBLE, overlay.visibility)
+            assertEquals(View.GONE, spinner.visibility)
+            browser.webViewClient.onPageCommitVisible(browser, assignedUrl)
+            browser.webViewClient.onPageFinished(browser, assignedUrl)
+            assertEquals("An error page must not dismiss retry feedback", View.VISIBLE, overlay.visibility)
+        }
+    }
+
+    @Test fun startupTimeoutRetriesOnlyBeforeVisibleContentAndReleaseCancelsTimers() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = page("assigned")
+        }
+        val browser = launchTile()
+        awaitDocument(browser, "assigned")
+        instrumentation.runOnMainSync {
+            fun pending(name: String): Runnable? = WebTile::class.java.getDeclaredField(name)
+                .apply { isAccessible = true }.get(tile) as Runnable?
+            browser.webViewClient.onPageStarted(browser, assignedUrl, null)
+            pending("loadTimeout")!!.run()
+            assertNotNull("A document that never paints must recover", pending("networkRetry"))
+            browser.webViewClient.onPageFinished(browser, assignedUrl)
+            browser.webViewClient.onPageStarted(browser, assignedUrl, null)
+            browser.webViewClient.onPageCommitVisible(browser, assignedUrl)
+            pending("loadTimeout")!!.run()
+            assertEquals("Do not cover provider content indefinitely", View.GONE,
+                (findSpinner(tile!!)!!.parent as View).visibility)
+            // Successful completion cancels the failed attempt's retry.
+            browser.webViewClient.onPageFinished(browser, assignedUrl)
+            assertNull(pending("networkRetry"))
+            browser.webViewClient.onPageStarted(browser, assignedUrl, null)
+            tile!!.release()
+            assertNull(pending("slowLoad"))
+            assertNull(pending("loadTimeout"))
+        }
+    }
+
+    private fun findSpinner(view: View): android.widget.ProgressBar? {
+        if (view is android.widget.ProgressBar) return view
+        if (view is ViewGroup) for (index in 0 until view.childCount) {
+            findSpinner(view.getChildAt(index))?.let { return it }
+        }
+        return null
     }
 
     private fun deliverHttpError(browser: WebView, target: String) {
@@ -182,6 +334,9 @@ class WebTileRecoveryTest {
                 override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
                     callbacks.offer("start:${Uri.parse(url ?: "").path}")
                     delegate.onPageStarted(view, url, favicon)
+                }
+                override fun onPageCommitVisible(view: WebView, url: String?) {
+                    delegate.onPageCommitVisible(view, url)
                 }
                 override fun onPageFinished(view: WebView, url: String?) {
                     callbacks.offer("finish:${Uri.parse(url ?: "").path}")

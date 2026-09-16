@@ -185,8 +185,10 @@ rendering. Forcing every page into an additional hardware layer can allocate
 large textures and increase memory pressure, especially with many visible tiles.
 Geometry-only layout changes preserve existing browsers and camera decoders;
 changed URLs, HTML, storage settings or actions still replace their tile.
-Network retries and menu reloads reuse the browser and return to its original
-assigned document; renderer crashes recreate it. A successful page recovery
+Network retries replace the failed browser and return to the original assigned
+page, so stale callbacks cannot cancel the next attempt's watchdog. Menu reloads
+reuse a completed browser, but replace failed or still-loading browsers; renderer
+crashes also recreate it. Persistent cookies and web storage are retained. A successful page recovery
 cancels queued retries, and app-initiated reloads discard obsolete navigation
 history after loading. Normal page navigation keeps its own history.
 Hidden/replaced content is released before replacement content is allocated, and
@@ -282,14 +284,23 @@ and [background activity restrictions](https://developer.android.com/guide/compo
 
 ## Initial limits
 
-- Android 9/API 28 minimum; arm64 and x86_64 only. A working System WebView is
+- Android 9/API 28 minimum; armeabi-v7a, arm64-v8a and x86_64. A working System WebView is
   required for web content. AbleSign storage initialization needs WebView's
-  document-start script feature.
+  document-start script feature. Initial navigation displays a dark loading spinner;
+  after the first page paint it becomes a compact, noninteractive loading note so
+  the provider's own caching progress and controls remain visible. Documents that
+  never paint retry after 90 seconds using network backoff. Visible pages are not
+  restarted while caching; browser page completion cannot identify when a
+  third-party player has finished downloading its media.
 - Up to 32 visible camera streams and 32 web/HTML/signage cells, within the
   64-cell layout limit. Fullscreen expansion releases hidden media. Excess cells
   display a limit message and can be expanded individually. Tune camera count,
   substream resolution, frame rate and bitrate to the device and page workload;
-  32 is the application ceiling, not a guaranteed hardware capacity.
+  32 is the application ceiling, not a guaranteed hardware capacity. Hardware
+  decoders are preferred; when initialization fails, Media3 can try remaining
+  platform decoders, including software. Software fallback costs CPU and cannot
+  guarantee 32 streams. Exhausted/unsupported decoders show a retry message with
+  advice to reduce stream quality or camera count.
 - RTSP H.264 over TCP. Known H.265 streams are rejected; untagged streams are
   attempted and may fail. Expanded cameras prefer main streams and fall back to
   substreams. Camera audio is muted.

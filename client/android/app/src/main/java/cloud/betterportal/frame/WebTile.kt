@@ -9,6 +9,9 @@ import android.os.Looper
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.View
+import android.view.Gravity
+import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
@@ -47,6 +50,75 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
     private var rendererRetry: Runnable? = null
     private val body = android.widget.FrameLayout(context)
     private val status = message("Loading web content…")
+    private val spinner = ProgressBar(context).apply {
+        isIndeterminate = true
+        contentDescription = "Loading web content"
+    }
+    private val loading = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        setBackgroundColor(Color.BLACK)
+        addView(spinner, LinearLayout.LayoutParams(48.dp(), 48.dp()))
+        addView(status, LinearLayout.LayoutParams(-1, -2))
+        // Loading feedback must never capture signage touch or remote input.
+        isFocusable = false
+        isClickable = false
+    }
+    private var pageVisible = false
+    private var pageFinished = false
+    private var slowLoad: Runnable? = null
+    private var loadTimeout: Runnable? = null
+    private fun Int.dp() = (this * resources.displayMetrics.density).toInt()
+
+    private fun stopLoadingFeedback() {
+        slowLoad?.let(handler::removeCallbacks)
+        loadTimeout?.let(handler::removeCallbacks)
+        slowLoad = null
+        loadTimeout = null
+        spinner.visibility = View.GONE
+    }
+
+    private fun finishLoadingIfReady(web: WebView) {
+        if (released || browser !== web || failedNavigation != null || !pageVisible || !pageFinished) return
+        cancelNetworkRetry()
+        if (pruneHistoryOnSuccess) {
+            pruneHistoryOnSuccess = false
+            web.clearHistory()
+        }
+        stopLoadingFeedback()
+        loading.visibility = View.GONE
+        networkRetries = 0
+    }
+
+    private fun beginLoadingFeedback(web: WebView) {
+        stopLoadingFeedback()
+        pageVisible = false
+        pageFinished = false
+        loading.layoutParams = LayoutParams(-1, -1)
+        loading.visibility = View.VISIBLE
+        status.visibility = View.VISIBLE
+        status.text = "Loading web content…"
+        spinner.visibility = View.VISIBLE
+        slowLoad = Runnable {
+            if (!released && browser === web) {
+                status.text = "Still loading · first-time content caching can take longer"
+            }
+        }.also { handler.postDelayed(it, 10_000L) }
+        loadTimeout = Runnable {
+            loadTimeout = null
+            if (!released && browser === web) {
+                if (!pageVisible) {
+                    // A stalled document can retry. Once content is visible, leave its
+                    // own cache/download UI alone rather than restarting its startup.
+                    web.stopLoading()
+                    failedPage(web, web.url ?: url)
+                } else {
+                    stopLoadingFeedback()
+                    loading.visibility = View.GONE
+                }
+            }
+        }.also { handler.postDelayed(it, 90_000L) }
+    }
     val contentLabel: String = cell.optString("label", "Web content")
     val assignedActionLabel: String? = when (cell.optJSONObject("action")?.optString("type")) {
         "restore" -> "Restore layout"
@@ -69,7 +141,8 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
         cancelRendererRetry()
         rendererFailures = 0
         networkRetries = 0
-        browser?.let(::loadAssignedPage) ?: createBrowser()
+        if (failedNavigation != null || loadTimeout != null) createBrowser()
+        else browser?.let(::loadAssignedPage) ?: createBrowser()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -79,10 +152,15 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
         cancelRendererRetry()
         destroyBrowser()
         body.removeAllViews()
-        body.addView(status, LayoutParams(-1, -1))
+        body.addView(loading, LayoutParams(-1, -1))
+        loading.visibility = View.VISIBLE
         status.text = "Loading web content…"
         status.visibility = View.VISIBLE
-        if (initialOrigin == null) { status.text = "Web content needs an HTTP or HTTPS URL"; return }
+        if (initialOrigin == null) {
+            stopLoadingFeedback()
+            status.text = "Web content needs an HTTP or HTTPS URL"
+            return
+        }
         try {
             val web = object : WebView(context) {
                 override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? =
@@ -149,7 +227,7 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
                     if (released || browser !== view) return true
                     if (!request.isForMainFrame) return false
                     val allowed = origin(request.url.toString()) == initialOrigin
-                    if (!allowed) { status.text = "Navigation outside the assigned site was blocked"; status.visibility = View.VISIBLE }
+                    if (!allowed) { stopLoadingFeedback(); loading.visibility = View.VISIBLE; status.text = "Navigation outside the assigned site was blocked"; status.visibility = View.VISIBLE }
                     return !allowed
                 }
                 override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
@@ -161,6 +239,16 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
                     failedNavigation?.let { failure ->
                         if (failure.finished) failedNavigation = null
                     }
+                    if (failedNavigation == null) beginLoadingFeedback(view)
+                }
+                override fun onPageCommitVisible(view: WebView, url: String?) {
+                    if (released || browser !== view || failedNavigation != null) return
+                    pageVisible = true
+                    // A document can paint well before all resources finish. Reveal it
+                    // so provider-specific download progress and controls stay usable.
+                    spinner.visibility = View.GONE
+                    loading.layoutParams = LayoutParams(-1, -2, Gravity.BOTTOM)
+                    finishLoadingIfReady(view)
                 }
                 override fun onPageFinished(view: WebView, url: String?) {
                     if (released || browser !== view) return
@@ -170,15 +258,11 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
                         // A late finish for an earlier redirect URL must not
                         // cancel the retry scheduled for the failed target.
                     } else {
-                        cancelNetworkRetry()
-                        if (pruneHistoryOnSuccess) {
-                            // App reload/recovery returns to the assigned document. Keep
-                            // that page only; ordinary in-page navigation retains history.
-                            pruneHistoryOnSuccess = false
-                            view.clearHistory()
-                        }
-                        status.visibility = View.GONE
-                        networkRetries = 0
+                        // Finished is not evidence of pixels: 204/no-content pages
+                        // can finish without committing a document. Keep the watchdog
+                        // until both callbacks arrive, in either order.
+                        pageFinished = true
+                        finishLoadingIfReady(view)
                     }
                     if (!documentStart && origin(url ?: "") == initialOrigin) view.evaluateJavascript(script, null)
                 }
@@ -190,10 +274,12 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
                 }
                 override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                     if (released || browser !== view) return true
-                    // Renderer death requires a new WebView, unlike ordinary page errors.
+                    // Renderer death also requires a new WebView.
                     cancelNetworkRetry()
                     cancelRendererRetry()
                     destroyBrowser()
+                    loading.visibility = View.VISIBLE
+                    loading.layoutParams = LayoutParams(-1, -1)
                     status.visibility = View.VISIBLE
                     status.text = "Web renderer stopped"
                     rendererFailures++
@@ -219,8 +305,7 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
         cancelNetworkRetry()
         failedNavigation = null
         pruneHistoryOnSuccess = true
-        status.text = "Loading web content…"
-        status.visibility = View.VISIBLE
+        beginLoadingFeedback(web)
         try {
             web.stopLoading()
             // Retry the assigned document, never a redirect target or a page in browser history.
@@ -243,6 +328,9 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
     }
 
     private fun failedPage(web: WebView, failedUrl: String) {
+        stopLoadingFeedback()
+        loading.visibility = View.VISIBLE
+        loading.layoutParams = LayoutParams(-1, -1)
         failedNavigation = FailedNavigation(failedUrl)
         pruneHistoryOnSuccess = false
         status.text = "Web content unavailable · retrying"
@@ -251,11 +339,15 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
         networkRetries = min(networkRetries + 1, 6)
         networkRetry = Runnable {
             networkRetry = null
-            if (!released && browser === web) loadAssignedPage(web)
+            // WebView callbacks carry no navigation ID, including same-URL retries.
+            // Retire the failed browser so its late finish/commit/error callbacks
+            // cannot alter the new attempt or cancel its startup watchdog.
+            if (!released && browser === web) createBrowser()
         }.also { handler.postDelayed(it, min(60_000L, 1_000L shl networkRetries)) }
     }
 
     private fun destroyBrowser() {
+        stopLoadingFeedback()
         val previous = browser ?: return
         browser = null
         body.removeView(previous)
@@ -275,7 +367,7 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
         fun origin(url: String): String? = runCatching {
             val uri = Uri.parse(url)
             val scheme = uri.scheme?.lowercase()
-            val host = uri.host?.lowercase() ?: return null
+            val host = uri.host?.lowercase()?.takeUnless { it.isBlank() } ?: return null
             if (scheme != "http" && scheme != "https") return null
             if (uri.userInfo != null) return null
             val defaultPort = if (scheme == "https") 443 else 80

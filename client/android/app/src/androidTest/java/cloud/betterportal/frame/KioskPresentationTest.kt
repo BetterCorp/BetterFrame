@@ -315,6 +315,7 @@ class KioskPresentationTest {
             scenario.onActivity { ready = condition(it) }
             if (!ready) Thread.sleep(50)
         }
+        if (!ready) captureUiFailure(message)
         assertTrue(message, ready)
     }
 
@@ -325,6 +326,7 @@ class KioskPresentationTest {
             freshAccessibilityRoot()?.let { ready = condition(it) }
             if (!ready) Thread.sleep(50)
         }
+        if (!ready) captureUiFailure(message)
         assertTrue(message, ready)
     }
 
@@ -347,8 +349,11 @@ class KioskPresentationTest {
             val downTime = SystemClock.uptimeMillis()
             for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
                 val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action,
-                    bounds.exactCenterX(), bounds.exactCenterY(), 0)
+                    bounds.exactCenterX(), bounds.exactCenterY(), 0).apply {
+                    source = android.view.InputDevice.SOURCE_TOUCHSCREEN
+                }
                 try { instrumentation.sendPointerSync(event) } finally { event.recycle() }
+                if (action == MotionEvent.ACTION_DOWN) Thread.sleep(50)
             }
             true
         }

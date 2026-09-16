@@ -58,6 +58,7 @@ class ViewerActionsTest {
                     instrumentation.runOnMainSync { satisfied = condition() }
                     if (!satisfied) Thread.sleep(50)
                 }
+                if (!satisfied) captureUiFailure(message)
                 assertTrue(message, satisfied)
             }
             fun webTile(): WebTile? = descendants(activity.window.decorView).filterIsInstance<WebTile>().firstOrNull()
@@ -116,14 +117,18 @@ class ViewerActionsTest {
                     val downTime = SystemClock.uptimeMillis()
                     for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
                         val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action,
-                            bounds.exactCenterX(), bounds.exactCenterY(), 0)
+                            bounds.exactCenterX(), bounds.exactCenterY(), 0).apply {
+                            source = android.view.InputDevice.SOURCE_TOUCHSCREEN
+                        }
                         try { instrumentation.sendPointerSync(event) } finally { event.recycle() }
+                        if (action == MotionEvent.ACTION_DOWN) Thread.sleep(50)
                     }
                     return
                 }
             }
             Thread.sleep(50)
         }
+        captureUiFailure("Kiosk menu action unavailable: $value")
         fail("Kiosk menu action unavailable: $value")
     }
 

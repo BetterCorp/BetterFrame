@@ -1,3 +1,4 @@
+import { parseKioskLogs } from "../../shared/kiosk-logs.js";
 import { reconcileOsUpdateReport } from "../../shared/os-update-status.js";
 /**
  * service-api-http — h3 listener for kiosk-facing REST API.
@@ -44,7 +45,7 @@ import type { SecretsApi } from "../../shared/secrets.js";
 import type { FirmwareChannel, OsUpdateRelease } from "../../shared/types.js";
 import {
   PairInitiateBody, PairClaimBody, HeartbeatBody, EventBody,
-  KioskLogsBody, FirmwareAppliedBody, OsAppliedBody, OsStatusBody,
+  FirmwareAppliedBody, OsAppliedBody, OsStatusBody,
   IoBoxAnnounceBody, IoBoxPairClaimBody, IoBoxHeartbeatBody, IoBoxEventBody,
   validateBody,
 } from "../../shared/api-schemas.js";
@@ -1499,20 +1500,7 @@ export function registerKioskRoutes(
   app.post("/api/kiosk/logs", async (event) => {
     const kiosk = await requireKiosk(event, repo, auth);
 
-    const body = validateBody(KioskLogsBody, await readBody(event));
-    if (body.entries.length === 0) {
-      throw createError({ statusCode: 400, statusMessage: "entries array required" });
-    }
-
-    const validLevels = new Set(["debug", "info", "warn", "error"]);
-    const entries = body.entries
-      .filter((e: any) => e.message.length > 0)
-      .map((e: any) => ({
-        level: (validLevels.has(e.level) ? e.level : "info") as "debug" | "info" | "warn" | "error",
-        message: String(e.message),
-        context: (e.context ?? {}) as Record<string, unknown>,
-        logged_at: e.logged_at as string | undefined,
-      }));
+    const entries = parseKioskLogs(await readBody(event));
 
     const count = await repo.insertKioskLogs(kiosk.id, entries);
     return { ok: true, count };

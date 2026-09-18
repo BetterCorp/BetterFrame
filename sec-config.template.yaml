@@ -32,6 +32,7 @@ default:
         host: 0.0.0.0
         port: 18080
         dataDir: /var/lib/betterframe
+        kioskLogRetentionHours: ${BF_KIOSK_LOG_RETENTION_HOURS}
         sessionIdleSeconds: 43200
         sessionMaxSeconds: 2592000
         loginLockoutThreshold: 8

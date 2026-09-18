@@ -274,6 +274,7 @@ class WebTile(context: Context, cell: JSONObject, private val onActivity: () -> 
                 }
                 override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                     if (released || browser !== view) return true
+                    DiagnosticLogs.record("error", "Web renderer stopped (crashed=${detail.didCrash()})")
                     // Renderer death also requires a new WebView.
                     cancelNetworkRetry()
                     cancelRendererRetry()

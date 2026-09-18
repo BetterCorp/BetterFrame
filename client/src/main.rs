@@ -1,6 +1,10 @@
 pub use betterframe_client_core as core;
 pub use core::bundle;
 mod network;
+mod diagnostic_logs;
+#[cfg(target_os = "linux")]
+#[path = "platform/linux/journal_logs.rs"]
+mod journal_logs;
 
 #[cfg(target_os = "linux")]
 #[path = "platform/linux/at_rest.rs"]
@@ -80,14 +84,25 @@ fn main() {
     use tracing::info;
     use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
+    if std::env::args().any(|arg| arg == "--upload-journal") {
+        journal_logs::run();
+        return;
+    }
+
+    let app_logs = diagnostic_logs::AppLogLayer::start(
+        server::log_destination,
+        || at_rest::read_maybe_encrypted(&server::state_file("app-logs.json")),
+        |bytes| { let _ = at_rest::write_encrypted(&server::state_file("app-logs.json"), bytes); },
+    );
     let env_filter =
         EnvFilter::from_default_env().add_directive("betterframe_client=info".parse().unwrap());
     let registry = tracing_subscriber::registry()
         .with(env_filter)
-        .with(tracing_subscriber::fmt::layer());
+        .with(tracing_subscriber::fmt::layer())
+        .with(app_logs);
     if let Some(axiom_layer) = axiom::AxiomLayer::new() {
-        info!("axiom logging enabled");
         registry.with(axiom_layer).init();
+        info!("axiom logging configured");
     } else {
         registry.init();
     }

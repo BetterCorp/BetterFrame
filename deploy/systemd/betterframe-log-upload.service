@@ -1,0 +1,25 @@
+[Unit]
+Description=BetterFrame OS journal upload
+After=network.target systemd-journal-flush.service
+RequiresMountsFor=/var/lib/betterframe
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=bfkiosk
+Group=bfkiosk
+SupplementaryGroups=systemd-journal
+EnvironmentFile=-/etc/default/betterframe-kiosk
+ExecStart=/opt/betterframe/kiosk/betterframe-kiosk --upload-journal
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/betterframe/kiosk
+PrivateTmp=yes
+UMask=0077
+# Uploader failures must never reboot the kiosk.
+
+[Install]
+WantedBy=multi-user.target

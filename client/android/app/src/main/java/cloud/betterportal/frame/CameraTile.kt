@@ -173,6 +173,7 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
                     } else if (state == Player.STATE_ENDED) recover()
                 }
                 override fun onPlayerError(error: PlaybackException) {
+                    DiagnosticLogs.record("warn", "Camera playback failed (${error.errorCodeName})")
                     if (player !== next) return
                     val decoderFailure = error.errorCode in setOf(
                         PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,

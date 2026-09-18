@@ -18,6 +18,7 @@ import type { Server } from "srvx";
 import type { DbConfig } from "../../shared/db/config.js";
 import { initDb } from "../../shared/db/init.js";
 import type { Repository } from "../../shared/db/repository.js";
+import { purgeTenantKioskLogs } from "../../shared/kiosk-log-retention.js";
 import { initSecrets, type SecretsApi } from "../../shared/secrets.js";
 import { createAuth, type AuthApi } from "../../shared/auth.js";
 import {
@@ -32,6 +33,7 @@ import { serverVersion } from "../../shared/version.js";
 import { registerMiddleware } from "./middleware.js";
 import { registerSetupRoutes } from "./routes-setup.js";
 import { registerAuthRoutes } from "./routes-auth.js";
+import { registerLogRoutes } from "./routes-logs.js";
 import { registerAdminRoutes } from "./routes-admin.js";
 import { registerAccountRoutes } from "./routes-account.js";
 import { registerFirmwareRoutes } from "./routes-firmware.js";
@@ -59,6 +61,7 @@ const ConfigSchema = av.object(
     port: av.int().min(1).max(65535).default(18080),
     dataDir: av.string().minLength(1).default("/var/lib/betterframe"),
     systemdCredsName: av.string().default("betterframe-secret"),
+    kioskLogRetentionHours: av.int().min(1).max(8760).default(24),
     sessionIdleSeconds: av.int().min(60).default(43200),
     sessionMaxSeconds: av.int().min(3600).default(2592000),
     loginLockoutThreshold: av.int().min(1).default(8),
@@ -125,6 +128,8 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
   private server?: Server;
   private dbClose?: () => Promise<void>;
+  private logPurgeTimer?: ReturnType<typeof setInterval>;
+  private logPurgeRunning = false;
   private purgeTimer?: ReturnType<typeof setInterval>;
   private cameraHealthChecker?: { stop: () => void };
   private artifactCleanup?: { stop: () => void };
@@ -251,6 +256,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     registerSetupRoutes(app, deps);
     registerAuthRoutes(app, deps);
     registerAdminRoutes(app, deps);
+    registerLogRoutes(app, deps);
     registerAccountRoutes(app, deps);
     registerFirmwareRoutes(app, deps);
     registerOsUpdateRoutes(app, deps);
@@ -319,22 +325,33 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
     this._repo = repo;
     this._deps = deps;
-    void this.runPurge(obs);
+    void this.runPurge(obs).catch(() => obs.log.warn("log cleanup failed"));
+    void this.runLogPurge(obs);
   }
 
   private async runPurge(obs: Observable): Promise<void> {
     if (!this._repo) return;
     const r = this._repo;
-    const kl = await r.purgeKioskLogs(14);
     const el = await r.purgeEventLog(30, 100_000);
     const al = await r.purgeAuditLog(90);
-    if (kl + el + al > 0) {
-      obs.log.info("purge: {kl} kiosk_logs, {el} event_log, {al} audit_log", { kl, el, al });
+    if (el + al > 0) {
+      obs.log.info("purge: {el} event_log, {al} audit_log", { el, al });
     }
   }
 
+  private async runLogPurge(obs: Observable): Promise<void> {
+    if (!this._repo || this.logPurgeRunning) return;
+    this.logPurgeRunning = true;
+    try {
+      await purgeTenantKioskLogs(this._repo, this.config.kioskLogRetentionHours,
+        (message) => obs.log.warn(message as any, {}));
+    } catch { obs.log.warn("kiosk log cleanup failed"); }
+    finally { this.logPurgeRunning = false; }
+  }
+
   async run(obs: Observable): Promise<void> {
-    this.purgeTimer = setInterval(() => this.runPurge(obs), 6 * 60 * 60 * 1000);
+    this.logPurgeTimer = setInterval(() => { void this.runLogPurge(obs); }, 5 * 60 * 1000);
+    this.purgeTimer = setInterval(() => { void this.runPurge(obs).catch(() => obs.log.warn("log cleanup failed")); }, 6 * 60 * 60 * 1000);
     void this.syncAllAbleSignAccounts(obs);
   }
 
@@ -458,6 +475,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
   async dispose(): Promise<void> {
     if (this.purgeTimer) clearInterval(this.purgeTimer);
+    if (this.logPurgeTimer) clearInterval(this.logPurgeTimer);
     this.cameraHealthChecker?.stop();
     this.artifactCleanup?.stop();
     if (this.server) {

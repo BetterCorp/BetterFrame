@@ -53,6 +53,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DiagnosticLogs.initialize(applicationContext)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         session = ViewerSession(this, this)
         if (savedInstanceState?.getBoolean("standby") == true) session.setStandby(true)

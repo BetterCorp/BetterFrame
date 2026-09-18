@@ -630,12 +630,3 @@ export interface KioskLog {
   logged_at: string;
   received_at: string;
 }
-
-export interface KioskLogQueryFilters {
-  kiosk_id: string;
-  level?: KioskLogLevel;
-  from?: string;
-  to?: string;
-  limit?: number;
-  offset?: number;
-}

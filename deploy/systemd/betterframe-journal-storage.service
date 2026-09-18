@@ -1,0 +1,10 @@
+[Unit]
+Description=Prepare persistent BetterFrame journal storage
+DefaultDependencies=no
+RequiresMountsFor=/var/lib/betterframe
+Before=var-log-journal.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/install -d -m 2755 -o root -g systemd-journal /var/lib/betterframe/journal

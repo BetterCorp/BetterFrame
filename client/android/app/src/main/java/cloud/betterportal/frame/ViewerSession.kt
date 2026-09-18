@@ -190,7 +190,10 @@ class ViewerSession internal constructor(context: Context, private val listener:
     private fun ui(epoch: Int = generation, action: () -> Unit) {
         main.post { if (running && generation == epoch) action() }
     }
-    private fun status(message: String) = ui(activeEpoch) { listener.onStatus(message) }
+    private fun status(message: String) {
+        DiagnosticLogs.record("info", message)
+        ui(activeEpoch) { listener.onStatus(message) }
+    }
     private fun active() = running && generation == activeEpoch && !closed
     private fun ensureActive() { check(active()) { "Session stopped" } }
     private fun persist() {
@@ -501,6 +504,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
             try {
                 val cleared = JSONObject().put(EnrollmentCleanup.MARKER, token).apply { if (target != null) put("server", target) }
                 store.write(cleared)
+                DiagnosticLogs.bind("", "", "")
                 state = cleared; kioskKey = ""; serverUrl = target.orEmpty(); layoutId = null; expandedId = null
                 EnrollmentCleanup.persisted(app, token)
             } catch (error: Exception) {
@@ -525,6 +529,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
     }
 
     private fun tick() {
+        DiagnosticLogs.bind(serverUrl, kioskKey, state.optJSONObject("identity")?.optString("kiosk_id").orEmpty())
         try {
             ensureActive()
             if (!serverResolved) {
@@ -557,6 +562,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
             }
         } catch (error: Exception) {
             if (!active()) return
+            DiagnosticLogs.record("warn", "$operation failed (${error.javaClass.simpleName})")
             failures = (failures + 1).coerceAtMost(6)
             val initialConfiguration = kioskKey.isNotBlank() && (!state.has("bundle") || awaitingAssignment)
             val delay = ((2_000L shl failures) + (0..1000).random())
@@ -937,7 +943,10 @@ class ViewerSession internal constructor(context: Context, private val listener:
             }
         }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = disconnected(webSocket)
-        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = disconnected(webSocket)
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            DiagnosticLogs.record("warn", "Coordinator connection failed (${t.javaClass.simpleName}, HTTP ${response?.code})")
+            disconnected(webSocket)
+        }
         private fun disconnected(webSocket: WebSocket) {
             val current = synchronized(activityLock) {
                 if (epoch == generation && socket === webSocket) { socket = null; true } else false

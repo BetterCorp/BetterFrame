@@ -198,12 +198,25 @@ fn unpaired_state(server_url: &str) -> ClientState {
 }
 
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("info".parse().unwrap()),
-        )
-        .init();
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+    // Agent and renderer are separate processes: use separate protected spools.
+    let mode = if std::env::args().nth(1).as_deref() == Some("agent") { "agent" } else { "app" };
+    let read_path = state_dir().join(format!("logs-{mode}.json"));
+    let write_path = read_path.clone();
+    let app_logs = crate::diagnostic_logs::AppLogLayer::start(
+        || {
+            let state = load_agent_state().ok()?;
+            Some(crate::diagnostic_logs::Destination {
+                server: state.server_url, key: state.kiosk_key?, kiosk_id: state.kiosk_id?,
+            })
+        },
+        move || read_protected(&read_path).ok(),
+        move |bytes| { let _ = write_protected(&write_path, bytes); },
+    );
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
+        .with(tracing_subscriber::fmt::layer())
+        .with(app_logs).init();
 
     let args: Vec<String> = std::env::args().collect();
     info!(

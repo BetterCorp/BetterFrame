@@ -1003,4 +1003,9 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
     PRIMARY KEY(device_id, label_id)
   )`,
+  // Stable event IDs make journal/app retries safe after lost responses or reboots.
+  `ALTER TABLE kiosk_logs ADD COLUMN IF NOT EXISTS event_id TEXT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_kiosk_logs_event ON kiosk_logs(kiosk_id, event_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_kiosk_logs_timeline ON kiosk_logs(received_at DESC, id DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_kiosk_logs_device_timeline ON kiosk_logs(kiosk_id, received_at DESC, id DESC)`,
 ];

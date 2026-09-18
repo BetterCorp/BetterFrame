@@ -95,6 +95,9 @@ mount -t tmpfs tmpfs "${WORK}/root/run"
 cp "$KIOSK_BIN" "${WORK}/root/tmp/betterframe-kiosk"
 mkdir -p "${WORK}/root/tmp/bf-files"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-kiosk.service" "${WORK}/root/tmp/bf-files/"
+cp "${REPO_ROOT}/deploy/systemd/betterframe-log-upload.service" "${WORK}/root/tmp/bf-files/"
+cp "${REPO_ROOT}/deploy/systemd/betterframe-journal-storage.service" "${REPO_ROOT}/deploy/systemd/var-log-journal.mount" "${REPO_ROOT}/deploy/journald/flush-storage.conf" "${WORK}/root/tmp/bf-files/"
+cp "${REPO_ROOT}/deploy/journald/betterframe.conf" "${WORK}/root/tmp/bf-files/betterframe-journald.conf"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-mediamtx.service" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/mediamtx.yml" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/mediamtx.version" "${WORK}/root/tmp/bf-files/"
@@ -184,6 +187,14 @@ printf '%s\n' "@VERSION@" > /etc/betterframe/os-version
 printf '%s\n' "betterframe-x86_64-generic" > /etc/betterframe/os-compatibility
 
 install -m 644 /tmp/bf-files/betterframe-kiosk.service /etc/systemd/system/betterframe-kiosk.service
+install -m 644 /tmp/bf-files/betterframe-log-upload.service /etc/systemd/system/betterframe-log-upload.service
+install -d -m 755 /etc/systemd/journald.conf.d /var/log/journal
+install -m 644 /tmp/bf-files/betterframe-journald.conf /etc/systemd/journald.conf.d/betterframe.conf
+install -m 644 /tmp/bf-files/betterframe-journal-storage.service /tmp/bf-files/var-log-journal.mount /etc/systemd/system/
+install -d -m 755 /etc/systemd/system/systemd-journal-flush.service.d
+install -m 644 /tmp/bf-files/flush-storage.conf /etc/systemd/system/systemd-journal-flush.service.d/betterframe.conf
+systemctl enable var-log-journal.mount betterframe-log-upload.service
+
 install -m 644 /tmp/bf-files/betterframe-mediamtx.service /etc/systemd/system/betterframe-mediamtx.service
 install -m 644 /tmp/bf-files/mediamtx.yml /etc/betterframe/mediamtx.yml
 install -m 644 /tmp/bf-files/cage.pam /etc/pam.d/cage
@@ -202,6 +213,8 @@ cat > /etc/systemd/system/betterframe-kiosk.service.d/tpm-storage.conf <<'TPMUNI
 Requires=betterframe-seal-key.service
 After=betterframe-seal-key.service
 TPMUNIT
+install -d -m 755 /etc/systemd/system/betterframe-log-upload.service.d
+cp /etc/systemd/system/betterframe-kiosk.service.d/tpm-storage.conf /etc/systemd/system/betterframe-log-upload.service.d/tpm-storage.conf
 install -d -m 755 /etc/sway
 cat > /etc/sway/betterframe.conf <<'SWAY'
 default_border none

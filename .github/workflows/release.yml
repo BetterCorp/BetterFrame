@@ -45,6 +45,7 @@ jobs:
         run: |
           python3 scripts/test-release-versions.py
           python3 scripts/test-easy1-deploy.py
+          python3 scripts/test-linux-setup.py
       - run: npm ci
       - name: Dashboard proxy isolation
         run: |

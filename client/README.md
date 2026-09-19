@@ -2,6 +2,10 @@
 
 One Rust client produces the Linux kiosk and Windows desktop artifacts.
 
+For standalone Linux installations, run `sudo ./setup.sh` from the repository
+root. See [Linux installation and repair](../docs/linux-install.md) for desktop
+startup, dedicated kiosk mode, and update prerequisites.
+
 ```text
 core/src/                platform-free bundle, command, layout, protocol, and state logic
 src/platform/linux/      GTK/WebKitGTK, Linux host controls, GPIO, and RAUC

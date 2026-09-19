@@ -13,9 +13,8 @@
 //! `BF_KIOSK_BINARY`.
 //!
 //! Rollback: the previous binary is kept at `<bin>.prev` before the swap.
-//! systemd's StartLimitBurst=10 catches a broken binary; an out-of-band
-//! script (`/usr/local/bin/bf-rollback-firmware`, future) handles the
-//! restore. For now this module only does forward updates.
+//! The service's ExecStartPre rollback helper restores unconfirmed candidates
+//! after repeated failed starts. App updates never reboot the operating system.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -170,11 +169,8 @@ pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
         let _ = fs::rename(&bin, &prev_path);
     }
     fs::rename(&new_path, &bin).map_err(|e| format!("rename: {e}"))?;
-    info!("preboot firmware: updated to {}, rebooting", info.version);
-    let _ = std::process::Command::new("systemctl")
-        .arg("reboot")
-        .status();
-    std::thread::sleep(Duration::from_secs(30));
+    info!("app updated to {}; restarting BetterFrame", info.version);
+    // The service owns process restart. An app update must never reboot the OS.
     std::process::exit(0);
 }
 
@@ -339,21 +335,10 @@ pub fn apply(
         .timeout(Duration::from_secs(5))
         .send();
 
-    on_progress("Rebooting", 100);
-    info!("firmware: swap complete → rebooting to pick up new binary");
-    match std::process::Command::new("systemctl")
-        .arg("reboot")
-        .status()
-    {
-        Ok(_) => {
-            std::thread::sleep(Duration::from_secs(30));
-            std::process::exit(0);
-        }
-        Err(e) => {
-            info!("systemctl reboot failed: {e}, falling back to exit");
-            std::process::exit(0);
-        }
-    }
+    on_progress("Restarting app", 100);
+    info!("app: swap complete; restarting BetterFrame");
+    // Restart=always also covers this successful exit after an atomic swap.
+    std::process::exit(0);
 }
 
 fn newer_update(check: CheckResponse, current_version: &str) -> Option<UpdateInfo> {

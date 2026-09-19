@@ -59,17 +59,24 @@ pub fn scrub_with_truncation(message: &str) -> (String, bool) {
 }
 
 pub fn send(client: &reqwest::blocking::Client, dest: &Destination, entries: &[Value]) -> bool {
-    client
-        .post(format!(
-            "{}/api/kiosk/logs",
-            dest.server.trim_end_matches('/')
-        ))
+    send_with_error(client, dest, entries).is_ok()
+}
+
+/// Safe transport diagnostics: never include request URLs, credentials or response bodies.
+pub fn send_with_error(client: &reqwest::blocking::Client, dest: &Destination, entries: &[Value]) -> Result<(), String> {
+    let response = client
+        .post(format!("{}/api/kiosk/logs", dest.server.trim_end_matches('/')))
         .bearer_auth(&dest.key)
         .json(&json!({"entries": entries}))
         .timeout(Duration::from_secs(10))
         .send()
-        .map(|r| r.status().is_success())
-        .unwrap_or(false)
+        .map_err(|error| {
+            if error.is_timeout() { "log upload timed out" }
+            else if error.is_connect() { "log upload connection failed" }
+            else { "log upload request failed" }.to_string()
+        })?;
+    if response.status().is_success() { Ok(()) }
+    else { Err(format!("log upload rejected: HTTP {}", response.status().as_u16())) }
 }
 
 pub struct AppLogLayer {
@@ -293,8 +300,8 @@ mod tests {
         });
         let client = crate::network::blocking_client();
         let batch = vec![json!({"event_id":"retry-1", "message":"error", "level":"error"})];
-        assert!(!send(&client, &dest, &batch));
-        assert!(!send(&client, &dest, &batch));
+        assert_eq!(send_with_error(&client, &dest, &batch).unwrap_err(), "log upload rejected: HTTP 503");
+        assert_eq!(send_with_error(&client, &dest, &batch).unwrap_err(), "log upload rejected: HTTP 302");
         assert!(send(&client, &dest, &batch));
         let bodies = server.join().unwrap();
         assert_eq!(bodies.len(), 3);

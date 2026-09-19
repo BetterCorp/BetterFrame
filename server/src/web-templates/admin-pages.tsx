@@ -1,3 +1,4 @@
+import { effectiveFirmwareChannel, kioskDebugEnabled, kioskDebugRequirement } from "../shared/kiosk-channels.js";
 /**
  * Admin page templates: overview, cameras, kiosks, account, etc.
  */
@@ -2716,16 +2717,16 @@ export function KioskEditPage(props: KioskEditProps) {
 
         <div class="card" style="margin-bottom:1.5rem">
           <h2 style="margin:0 0 1rem; font-size:1.1rem">Remote Debug</h2>
-          {k.firmware_channel === "dev" && (k as any).os_update_channel === "dev" ? (
+          {kioskDebugEnabled(k) ? (
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
               <a href={`/admin/kiosks/${String(k.id)}/logs`} class="btn btn-sm">Live journal (debug)</a>
               <a href={`/admin/kiosks/${String(k.id)}/terminal`} class="btn btn-sm">Terminal</a>
             </div>
           ) : (
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center">
-              <button type="button" class="btn btn-sm" disabled title="Requires firmware channel set to dev">Journal Logs</button>
-              <button type="button" class="btn btn-sm" disabled title="Requires firmware channel set to dev">Terminal</button>
-              <span style="font-size:0.8rem; color:#999">{"Set firmware channel to 'dev' to enable remote debug"}</span>
+              <button type="button" class="btn btn-sm" disabled title={kioskDebugRequirement(k)}>Journal Logs</button>
+              <button type="button" class="btn btn-sm" disabled title={kioskDebugRequirement(k)}>Terminal</button>
+              <span style="font-size:0.8rem; color:#999">{kioskDebugRequirement(k)}</span>
             </div>
           )}
         </div>
@@ -4306,7 +4307,7 @@ interface KioskFirmwarePanelProps {
 
 export function KioskFirmwarePanel(props: KioskFirmwarePanelProps) {
   const k = props.kiosk;
-  const updatable = parseKioskLogging(k.logging_json).appOtaEnabled;
+  const updatable = !k.managed_image && parseKioskLogging(k.logging_json).appOtaEnabled;
   const current = k.kiosk_app_version ?? "unknown";
   const target = normalizeFirmwareTarget(k.firmware_target);
   const matchingReleases = target
@@ -4329,7 +4330,7 @@ export function KioskFirmwarePanel(props: KioskFirmwarePanelProps) {
         )}
       </div>
       {!updatable ? (
-        <div class="form-hint">App updates are delivered with this kiosk's OS image.</div>
+        <div class="form-hint">App updates are delivered with this kiosk's OS image.{k.managed_image ? <> Channel: <strong>{effectiveFirmwareChannel(k)}</strong> (linked to OS).</> : ""}</div>
       ) : <form
         {...{
           "hx-post": `/admin/kiosks/${String(k.id)}/firmware`,

@@ -2105,6 +2105,7 @@ interface KioskEditProps {
   allLabels: Label[];
   displays?: Display[];
   displayLayouts?: Array<{ display: Display; layouts: LayoutType[] }>;
+  localCameras?: Array<{ name: string; local_short_key?: string }>;
   gpioBindings?: KioskGpioBinding[];
   firmwareReleases?: FirmwareRelease[];
   osReleases?: OsUpdateRelease[];
@@ -2432,6 +2433,10 @@ function OperatorConsoleCard(props: { kiosk: Kiosk }) {
 
 export function KioskEditPage(props: KioskEditProps) {
   const k = props.kiosk;
+  const localLayouts = [...new Map((props.displayLayouts ?? [])
+    .filter(({ display }) => display.is_enabled)
+    .flatMap(({ layouts }) => layouts)
+    .map((layout) => [layout.id, layout])).values()];
   const logging = parseKioskLogging(k.logging_json);
   return (
     <Layout
@@ -2684,7 +2689,7 @@ export function KioskEditPage(props: KioskEditProps) {
           KioskOsUpdatePanel({ kiosk: props.kiosk, releases: props.osReleases })
         )}
 
-        {(props.kiosk.local_key && props.kiosk.local_port) && KioskLocalPanel({ kiosk: props.kiosk })}
+        {(props.kiosk.local_key && props.kiosk.local_port) && KioskLocalPanel({ kiosk: props.kiosk, layouts: localLayouts, cameras: props.localCameras })}
 
         {OperatorConsoleCard({ kiosk: props.kiosk })}
 
@@ -4378,7 +4383,11 @@ export function KioskFirmwarePanel(props: KioskFirmwarePanelProps) {
 
 // ---- Kiosk local-server panel (LAN GET API + admin proxy) ------------------
 
-interface KioskLocalPanelProps { kiosk: Kiosk }
+interface KioskLocalPanelProps {
+  kiosk: Kiosk;
+  layouts?: Array<{ name: string; local_short_key?: string }>;
+  cameras?: Array<{ name: string; local_short_key?: string }>;
+}
 
 interface ReportedNetworkInterface {
   name: string;
@@ -4412,6 +4421,15 @@ function isUsableLanIp(ip: string): boolean {
   return bare !== "::1" && !bare.startsWith("127.") && !bare.startsWith("169.254.");
 }
 
+function localShortLink(url: string) {
+  return <div style="margin:0.25rem 0 0.75rem">
+    <code style="display:block; user-select:all; word-break:break-all">{url}</code>
+    <span style={url.length > 127 ? "color:#b91c1c" : "color:#666"}>
+      {url.length} / 127 characters{url.length > 127 ? " — exceeds the endpoint field limit" : ""}
+    </span>
+  </div>;
+}
+
 export function KioskLocalPanel(props: KioskLocalPanelProps) {
   const k = props.kiosk;
   if (!k.local_key || !k.local_port) return "";
@@ -4420,7 +4438,7 @@ export function KioskLocalPanel(props: KioskLocalPanelProps) {
   const primaryReportedIp = reportedIps.find(isUsableLanIp);
   const hasConcreteIp = Boolean(primaryReportedIp || k.local_last_ip);
   const ip = primaryReportedIp ? ipWithoutCidr(primaryReportedIp) : (k.local_last_ip || "<kiosk-ip>");
-  const base = `http://${ip}:${String(k.local_port)}`;
+  const base = `http://${ip.includes(":") && !ip.startsWith("[") ? `[${ip}]` : ip}:${String(k.local_port)}`;
   const layoutSample = `${base}/local/layout/<layout_id>?key=${k.local_key}`;
   const infoSample = `${base}/local/info?key=${k.local_key}`;
   const snapshotSample = `${base}/local/snapshot/<camera_id>?key=${k.local_key}`;
@@ -4441,6 +4459,28 @@ export function KioskLocalPanel(props: KioskLocalPanelProps) {
         <form method="post" action={`/admin/kiosks/${String(k.id)}/local-key/rotate`} style="margin:0">
           <button type="submit" class="btn btn-sm btn-ghost">Rotate key</button>
         </form>
+      </div>
+      <div style="font-size:0.8rem; margin-bottom:0.75rem">
+        <strong>Layout shortlinks (GET)</strong>
+        <p>Permanent six-character keys. Requires kiosk firmware with shortlink support and a refreshed bundle.</p>
+        {(props.layouts ?? []).filter((layout) => layout.local_short_key).map((layout) => (
+          <div><strong>{layout.name}</strong>{localShortLink(`${base}/lsh/${layout.local_short_key}?key=${k.local_key}`)}</div>
+        ))}
+        {!(props.layouts ?? []).length ? <p>No layouts assigned to enabled displays.</p> : null}
+      </div>
+      <div style="font-size:0.8rem; margin-bottom:0.75rem">
+        <strong>PTZ shortlinks (GET)</strong>
+        <p>Move uses speed 0.5 for one second. Preset examples use token 1; replace it with the camera's preset token. Optional profileToken, speed and timeoutMs parameters can increase URL length.</p>
+        {(props.cameras ?? []).filter((camera) => camera.local_short_key).map((camera) => (
+          <div>
+            <strong>{camera.name} — Stop</strong>
+            {localShortLink(`${base}/lsh/${camera.local_short_key}/s?key=${k.local_key}`)}
+            <strong>Move left</strong>
+            {localShortLink(`${base}/lsh/${camera.local_short_key}/m?key=${k.local_key}&dir=left`)}
+            <strong>Preset token 1 (example)</strong>
+            {localShortLink(`${base}/lsh/${camera.local_short_key}/p/1?key=${k.local_key}`)}
+          </div>
+        ))}
       </div>
       <div style="font-size:0.8rem; margin-bottom:0.5rem">
         <strong>Local info (GET):</strong>

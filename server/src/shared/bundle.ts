@@ -40,6 +40,7 @@ function resolvePlaybackCredentials(
 }
 
 export interface BundleCamera {
+  local_short_key?: string;
   id: string;
   device_id: string | null;
   device_name: string | null;
@@ -111,6 +112,7 @@ export interface BundleCell {
 }
 
 export interface BundleLayout {
+  local_short_key?: string;
   id: string;
   name: string;
   /** Computed from cells: max(col + col_span). 1 if no cells. */
@@ -416,6 +418,7 @@ export async function generateBundle(
       }
       result.push({
         id: l.id,
+        local_short_key: l.local_short_key,
         name: l.name,
         grid_cols: gridCols,
         grid_rows: gridRows,
@@ -566,6 +569,7 @@ export async function generateBundle(
     phase = `build-camera:${cam.id}`;
     bundleCameras.push({
       id: cam.id,
+      local_short_key: cam.local_short_key,
       device_id: cam.device_id,
       device_name: cam.device_id ? deviceNames.get(cam.device_id) ?? null : null,
       name: cam.name,

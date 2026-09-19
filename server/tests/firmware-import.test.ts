@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import test from "node:test";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { initFirmware } from "../src/shared/firmware.js";
 import { H3 } from "h3";
 import { initDb } from "../src/shared/db/init.js";
 import { PgAdapter } from "../src/shared/db/pg-adapter.js";
@@ -8,7 +12,9 @@ import { Repository } from "../src/shared/db/repository.js";
 import { registerFirmwareRoutes } from "../src/plugins/service-admin-http/routes-firmware.js";
 import type { AdminDeps } from "../src/plugins/service-admin-http/index.js";
 
-test("firmware HTTP imports safely retry, reject conflicts and serialize concurrent registration", { skip: !process.env["BF_TEST_PG_URL"] }, async () => {
+test("firmware HTTP imports safely retry, reject conflicts and serialize concurrent registration", { skip: !process.env["BF_TEST_PG_URL"] }, async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), "bf-firmware-import-"));
+  t.after(() => rm(dataDir, {recursive: true, force: true}));
   const admin = new PgAdapter(process.env["BF_TEST_PG_URL"]!);
   const dbName = `bf_firmware_${randomBytes(8).toString("hex")}`;
   await admin.exec(`CREATE DATABASE "${dbName}"`);
@@ -20,11 +26,12 @@ test("firmware HTTP imports safely retry, reject conflicts and serialize concurr
     const notifications: string[] = [];
     const repo = new Repository(handle.repo.adapter, async (table) => { notifications.push(table); });
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const firmware = initFirmware({dataDir, signingKeyPem: privateKey.export({format: "pem", type: "pkcs8"}).toString()}, {info() {}, warn() {}});
     const app = new H3();
     registerFirmwareRoutes(app, {
       repo,
       clientFirmwarePublicKey: publicKey.export({format: "pem", type: "spki"}).toString(),
-      firmware: { storeBlob: async (_bytes: Buffer, hash: string) => `/firmware/${hash}.bin` },
+      firmware,
     } as unknown as AdminDeps);
     const payload = (content = "signed firmware") => {
       const bytes = Buffer.from(content);
@@ -56,6 +63,10 @@ test("firmware HTTP imports safely retry, reject conflicts and serialize concurr
     assert.equal(new Set(ids).size, 1);
     assert.equal((await repo.listFirmwareReleases()).length, 2);
     assert.equal(notifications.filter(table => table === "firmware_releases").length, 2);
+    for (const release of await repo.listFirmwareReleases()) {
+      assert.deepEqual(await firmware.readBlob(release.artifact_path, release.sha256), Buffer.from("signed firmware"));
+    }
+    assert.ok((await readdir(firmware.firmwareDir())).every(name => name.endsWith(".bin")));
 
     await repo.yankFirmwareRelease(original.release_id);
     assert.equal((await request(payload())).status, 409);

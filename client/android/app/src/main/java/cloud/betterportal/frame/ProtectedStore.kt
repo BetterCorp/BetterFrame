@@ -13,8 +13,8 @@ import javax.crypto.spec.GCMParameterSpec
 import org.json.JSONObject
 
 /** One atomic encrypted record keeps identity, pending enrollment and cache consistent. */
-class ProtectedStore(context: Context) {
-    private val file = AtomicFile(File(context.noBackupFilesDir, "viewer-state.enc"))
+class ProtectedStore(context: Context, fileName: String = "viewer-state.enc") {
+    private val file = AtomicFile(File(context.noBackupFilesDir, fileName))
     private val alias = "betterframe-viewer-state-v1"
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

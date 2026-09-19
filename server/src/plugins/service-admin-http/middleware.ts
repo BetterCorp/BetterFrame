@@ -65,6 +65,7 @@ const OPERATOR_MUTATIONS = [
 ];
 
 const OPERATOR_READS = [
+  /^\/admin\/logs(?:\/[^/]+)?$/,
   /^\/admin\/?$/,
   /^\/admin\/account$/,
   /^\/admin\/(?:cameras|displays|entities|health|iobox|kiosks|labels|layouts)(?:\/.*)?$/,

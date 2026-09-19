@@ -315,6 +315,20 @@ pub fn load_cached_bundle() -> Option<KioskBundle> {
     }
 }
 
+/// Read credentials without discovery/network access; logging never drives enrollment.
+pub fn log_destination() -> Option<crate::diagnostic_logs::Destination> {
+    if identity_file().exists() {
+        let identity = load_identity().ok()?;
+        return Some(crate::diagnostic_logs::Destination {
+            server: identity.server_url, key: identity.kiosk_key, kiosk_id: identity.kiosk_id,
+        });
+    }
+    Some(crate::diagnostic_logs::Destination {
+        server: fs::read_to_string(server_file()).ok()?.trim().to_string(),
+        key: load_key().ok()?, kiosk_id: load_kiosk_id()?,
+    })
+}
+
 pub fn load_kiosk_id() -> Option<String> {
     load_identity()
         .ok()
@@ -877,6 +891,12 @@ pub fn report_web_change(
 }
 
 pub fn report_kiosk_log(server: &str, key: &str, level: &str, message: &str, payload: Value) {
+    // Preserve the automation event and also feed first-party diagnostic storage.
+    match level {
+        "error" => tracing::error!("{message}"),
+        "warn" => tracing::warn!("{message}"),
+        _ => tracing::info!("{message}"),
+    }
     let client = crate::network::blocking_client();
     let _ = client
         .post(format!("{server}/api/kiosk/event"))

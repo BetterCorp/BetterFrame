@@ -1,3 +1,4 @@
+import type { LogFilters, LogPage, LogSummary } from "../kiosk-log-view.js";
 /**
  * Repository — typed accessor over the DB adapter.
  *
@@ -50,7 +51,6 @@ import type {
   KioskLabel,
   KioskLog,
   KioskLogLevel,
-  KioskLogQueryFilters,
   Label,
   LabelRole,
   Layout,
@@ -2604,11 +2604,7 @@ export class Repository {
     return Number(r.changes);
   }
 
-  async purgeKioskLogs(days: number = 14): Promise<number> {
-    const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
-    const r = await this._run("DELETE FROM kiosk_logs WHERE received_at < ?", [cutoff]);
-    return Number(r.changes);
-  }
+
 
   async queryEvents(filters: EventQueryFilters): Promise<{ events: EventLog[]; total: number }> {
     const where: string[] = [];
@@ -2663,29 +2659,18 @@ export class Repository {
 
   async insertKioskLogs(
     kioskId: string,
-    entries: Array<{ level: KioskLogLevel; message: string; context?: Record<string, unknown>; logged_at?: string }>,
+    entries: Array<{ level: KioskLogLevel; message: string; context?: Record<string, unknown>; logged_at?: string; event_id?: string }>,
   ): Promise<number> {
+    if (!entries.length) return 0;
     const now = isoNow();
-    let count = 0;
-    for (const e of entries) {
-      await this._run(
-        `INSERT INTO kiosk_logs (kiosk_id, level, message, context, logged_at)
-         VALUES (?, ?, ?, ?, ?)`,
-        [kioskId, e.level, e.message, J(e.context ?? {}), e.logged_at ?? now],
-      );
-      count++;
-    }
-    await this.trimKioskLogs(kioskId, 500);
-    return count;
-  }
-
-  private async trimKioskLogs(kioskId: string, maxRows: number): Promise<void> {
-    await this._run(
-      `DELETE FROM kiosk_logs WHERE kiosk_id = ? AND id NOT IN (
-         SELECT id FROM kiosk_logs WHERE kiosk_id = ? ORDER BY received_at DESC LIMIT ?
-       )`,
-      [kioskId, kioskId, maxRows],
+    const values = entries.map(() => "(?, ?, ?, ?, ?, ?, ?)").join(", ");
+    const params = entries.flatMap(e => [uuidv7(), kioskId, e.level, e.message,
+      J(e.context ?? {}), e.logged_at ?? now, e.event_id ?? null]);
+    const result = await this._run(
+      `INSERT INTO kiosk_logs (id, kiosk_id, level, message, context, logged_at, event_id)
+       VALUES ${values} ON CONFLICT (kiosk_id, event_id) DO NOTHING`, params,
     );
+    return Number(result.changes);
   }
 
   async purgeOldKioskLogs(maxAgeHours: number): Promise<number> {
@@ -2697,39 +2682,52 @@ export class Repository {
     return Number(result.changes);
   }
 
-  async queryKioskLogs(filters: KioskLogQueryFilters): Promise<{ logs: KioskLog[]; total: number }> {
-    const where: string[] = ["kiosk_id = ?"];
-    const params: (string | number)[] = [filters.kiosk_id];
+  async listKioskLogDevices(kioskId?: string): Promise<Array<{ id: string; name: string }>> {
+    return this._all(`SELECT id, name FROM kiosks ${kioskId ? "WHERE id = ?" : ""} ORDER BY name, id`, kioskId ? [kioskId] : []);
+  }
 
-    if (filters.level) {
-      where.push("level = ?");
-      params.push(filters.level);
+  async getKioskLog(id: string): Promise<KioskLog | null> {
+    const row = await this._get("SELECT * FROM kiosk_logs WHERE id = ?", [id]);
+    return row ? rowToKioskLog(row as Row) : null;
+  }
+
+  /** Summary-only, indexed keyset pagination: never count/transfer the entire history. */
+  async queryKioskLogs(filters: LogFilters): Promise<LogPage> {
+    const where = ["l.received_at <= ?"];
+    const params: (string | number)[] = [filters.until];
+    if (filters.kiosk_id) { where.push("l.kiosk_id = ?"); params.push(filters.kiosk_id); }
+    if (filters.level) { where.push("l.level = ?"); params.push(filters.level); }
+    if (filters.source) { where.push("l.context->>'source' = ?"); params.push(filters.source); }
+    if (filters.from) { where.push("l.received_at >= ?"); params.push(filters.from); }
+    if (filters.search) {
+      // Treat %, _ and backslash literally rather than as LIKE wildcards.
+      const search = "%" + filters.search.replace(/[\\%_]/g, "\\$&") + "%";
+      where.push("(l.message ILIKE ? OR l.context::text ILIKE ?)");
+      params.push(search, search);
     }
-    if (filters.from) {
-      where.push("received_at >= ?");
-      params.push(filters.from);
+    if (filters.before) {
+      where.push("(l.received_at, l.id) < (?::timestamptz, ?)");
+      params.push(filters.before.time, filters.before.id);
     }
-    if (filters.to) {
-      where.push("received_at <= ?");
-      params.push(filters.to);
-    }
-
-    const clause = `WHERE ${where.join(" AND ")}`;
-    const limit = filters.limit ?? 50;
-    const offset = filters.offset ?? 0;
-
-    const countRow = await this._get<Record<string, unknown>>(`SELECT COUNT(*) as cnt FROM kiosk_logs ${clause}`, params);
-    const total = Number(countRow?.["cnt"] ?? 0);
-
-    const rs = await this._all(
-      `SELECT * FROM kiosk_logs ${clause} ORDER BY received_at DESC LIMIT ? OFFSET ?`,
-      [...params, limit, offset],
+    const rows = await this._all<Record<string, unknown>>(
+      `SELECT l.id, l.kiosk_id, k.name AS kiosk_name, l.level,
+        left(l.message, 240) AS preview, char_length(l.message) AS characters,
+        1 + char_length(l.message) - char_length(replace(l.message, chr(10), '')) AS lines,
+        left(COALESCE(l.context->>'source', ''), 32) AS source,
+        left(COALESCE(l.context->>'unit', l.context->>'target', ''), 256) AS unit,
+        left(COALESCE(l.context->>'boot_id', ''), 128) AS boot_id,
+        l.logged_at, l.received_at,
+        to_char(l.received_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_time
+       FROM kiosk_logs l JOIN kiosks k ON k.id = l.kiosk_id
+       WHERE ${where.join(" AND ")} ORDER BY l.received_at DESC, l.id DESC LIMIT ?`,
+      [...params, filters.limit + 1],
     );
-
-    return {
-      logs: rs.map((r) => rowToKioskLog(r as Record<string, unknown>)),
-      total,
-    };
+    const logs = rows.slice(0, filters.limit).map(row => ({
+      ...row, logged_at: row.logged_at instanceof Date ? row.logged_at.toISOString() : String(row.logged_at),
+      received_at: row.received_at instanceof Date ? row.received_at.toISOString() : String(row.received_at),
+      characters: Number(row.characters), lines: Number(row.lines),
+    })) as unknown as LogSummary[];
+    return { logs, hasMore: rows.length > filters.limit };
   }
 
   // ===========================================================================

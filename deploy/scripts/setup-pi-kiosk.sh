@@ -359,6 +359,22 @@ EOF
   fi
 
   systemctl daemon-reload
+  install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-log-upload.service" /etc/systemd/system/betterframe-log-upload.service
+  install -d -m 755 /etc/systemd/journald.conf.d /var/log/journal
+  install -m 644 "${REPO_ROOT}/deploy/journald/betterframe.conf" /etc/systemd/journald.conf.d/betterframe.conf
+  usermod -aG systemd-journal bfkiosk
+  systemctl daemon-reload
+  install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-journal-storage.service" "${REPO_ROOT}/deploy/systemd/var-log-journal.mount" /etc/systemd/system/
+  install -d -m 755 /etc/systemd/system/systemd-journal-flush.service.d
+  install -m 644 "${REPO_ROOT}/deploy/journald/flush-storage.conf" /etc/systemd/system/systemd-journal-flush.service.d/betterframe.conf
+  # Preserve existing diagnostics when upgrading a manually installed kiosk.
+  install -d -m 2755 -o root -g systemd-journal /var/lib/betterframe/journal
+  if ! mountpoint -q /var/log/journal; then cp -an /var/log/journal/. /var/lib/betterframe/journal/; fi
+  systemctl daemon-reload
+  systemctl enable --now var-log-journal.mount
+  systemctl restart systemd-journald
+  journalctl --flush
+  systemctl enable --now betterframe-log-upload.service
   systemctl enable betterframe-kiosk.service
   systemctl enable --now betterframe-mediamtx.service
   systemctl enable betterframe-rauc-mark-good.service

@@ -2486,7 +2486,6 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       deps.repo.listFirmwareReleases(),
       deps.repo.listOsUpdateReleases(),
     ]));
-    const logResult = await deps.repo.queryKioskLogs({ kiosk_id: id, limit: 50 });
     return htmlPage(KioskEditPage({
       user: user.username,
       kiosk,
@@ -2497,8 +2496,6 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       gpioBindings,
       firmwareReleases,
       osReleases,
-      kioskLogs: logResult.logs,
-      kioskLogTotal: logResult.total,
     }));
   });
 

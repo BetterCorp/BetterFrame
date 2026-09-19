@@ -16,6 +16,7 @@ gstreamer-video = "0.23"
 reqwest = { version = "0.12", features = ["json", "blocking", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+regex = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs", "net", "sync"] }
 dirs = "6"
 tracing = "0.1"

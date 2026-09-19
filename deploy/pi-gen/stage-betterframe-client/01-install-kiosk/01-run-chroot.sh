@@ -50,6 +50,14 @@ install -d -o bfkiosk -g bfkiosk -m 750 /var/lib/betterframe/recordings
 
 # --- Systemd unit + PAM + rollback hook ---
 install -m 644 /tmp/bf-files/betterframe-kiosk.service /etc/systemd/system/betterframe-kiosk.service
+install -m 644 /tmp/bf-files/betterframe-log-upload.service /etc/systemd/system/betterframe-log-upload.service
+install -d -m 755 /etc/systemd/journald.conf.d /var/log/journal
+install -m 644 /tmp/bf-files/betterframe-journald.conf /etc/systemd/journald.conf.d/betterframe.conf
+install -m 644 /tmp/bf-files/betterframe-journal-storage.service /tmp/bf-files/var-log-journal.mount /etc/systemd/system/
+install -d -m 755 /etc/systemd/system/systemd-journal-flush.service.d
+install -m 644 /tmp/bf-files/flush-storage.conf /etc/systemd/system/systemd-journal-flush.service.d/betterframe.conf
+systemctl enable var-log-journal.mount betterframe-log-upload.service
+
 install -m 644 /tmp/bf-files/betterframe-mediamtx.service /etc/systemd/system/betterframe-mediamtx.service
 install -d -m 755 /etc/betterframe
 install -m 644 /tmp/bf-files/mediamtx.yml /etc/betterframe/mediamtx.yml

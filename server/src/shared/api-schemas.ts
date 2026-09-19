@@ -98,16 +98,17 @@ export const EventBody = av.object(
 const KioskLogEntry = av.object(
   {
     level: av.string().maxLength(16).default("info"),
-    message: av.string().maxLength(4096).default(""),
+    message: av.string().maxLength(16384).default(""),
     context: av.any().default({}),
     logged_at: av.optional(av.string().maxLength(64)),
+    event_id: av.optional(av.string().minLength(1).maxLength(256)),
   },
   { unknownKeys: "strip" },
 );
 
 export const KioskLogsBody = av.object(
   {
-    entries: av.array(KioskLogEntry).default([]),
+    entries: av.array(KioskLogEntry).maxItems(100).default([]),
   },
   { unknownKeys: "strip" },
 );

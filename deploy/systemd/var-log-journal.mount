@@ -1,0 +1,14 @@
+[Unit]
+Description=Keep BetterFrame journal across OS slot changes
+Requires=betterframe-journal-storage.service
+After=betterframe-journal-storage.service
+Before=systemd-journal-flush.service
+
+[Mount]
+What=/var/lib/betterframe/journal
+Where=/var/log/journal
+Type=none
+Options=bind
+
+[Install]
+WantedBy=local-fs.target

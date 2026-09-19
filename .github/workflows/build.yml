@@ -479,6 +479,9 @@ jobs:
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/systemd/betterframe-kiosk.service \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/systemd/betterframe-log-upload.service deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/systemd/betterframe-journal-storage.service deploy/systemd/var-log-journal.mount deploy/journald/flush-storage.conf deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
+          cp deploy/journald/betterframe.conf deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/betterframe-journald.conf
           cp deploy/systemd/betterframe-mediamtx.service deploy/mediamtx.yml deploy/mediamtx.version \
              deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files/
           cp deploy/systemd/betterframe-firmware-rollback.sh \

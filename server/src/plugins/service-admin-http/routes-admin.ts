@@ -1,3 +1,4 @@
+import { kioskDebugEnabled, kioskDebugRequirement } from "../../shared/kiosk-channels.js";
 /**
  * Admin page routes — overview, cameras, kiosks, labels, etc.
  */
@@ -2857,8 +2858,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = (getRouterParam(event, "id") ?? "");
     const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
-    if (kiosk.firmware_channel !== "dev" && kiosk.os_update_channel !== "dev") {
-      return htmlPage(`<html><body style="font-family:sans-serif;padding:2rem"><h2>Journal Logs Unavailable</h2><p>Remote debug requires firmware channel set to <strong>dev</strong>. Current channel: <strong>${escapeHtml(kiosk.firmware_channel)}</strong></p><a href="/admin/kiosks/${encodeURIComponent(kiosk.id)}">Back to kiosk</a></body></html>`);
+    if (!kioskDebugEnabled(kiosk)) {
+      return htmlPage(`<html><body style="font-family:sans-serif;padding:2rem"><h2>Journal Logs Unavailable</h2><p>${escapeHtml(kioskDebugRequirement(kiosk))}</p><a href="/admin/kiosks/${encodeURIComponent(kiosk.id)}">Back to kiosk</a></body></html>`);
     }
     const user = event.context.user!;
     // Get or create an API key for the WS connection.
@@ -2911,8 +2912,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = (getRouterParam(event, "id") ?? "");
     const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
-    if (kiosk.firmware_channel !== "dev" && kiosk.os_update_channel !== "dev") {
-      return htmlPage(`<html><body style="font-family:sans-serif;padding:2rem"><h2>Terminal Unavailable</h2><p>Remote terminal requires firmware channel set to <strong>dev</strong>. Current channel: <strong>${escapeHtml(kiosk.firmware_channel)}</strong></p><a href="/admin/kiosks/${encodeURIComponent(kiosk.id)}">Back to kiosk</a></body></html>`);
+    if (!kioskDebugEnabled(kiosk)) {
+      return htmlPage(`<html><body style="font-family:sans-serif;padding:2rem"><h2>Terminal Unavailable</h2><p>${escapeHtml(kioskDebugRequirement(kiosk))}</p><a href="/admin/kiosks/${encodeURIComponent(kiosk.id)}">Back to kiosk</a></body></html>`);
     }
     // WS auth: browser sends session cookie automatically on WS upgrade.
     // Coordinator WS endpoint validates via resolveSession.

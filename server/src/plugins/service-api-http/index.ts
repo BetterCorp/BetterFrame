@@ -1,3 +1,4 @@
+import { effectiveFirmwareChannel } from "../../shared/kiosk-channels.js";
 import { parseKioskLogs } from "../../shared/kiosk-logs.js";
 import { reconcileOsUpdateReport } from "../../shared/os-update-status.js";
 /**
@@ -1276,7 +1277,7 @@ export function registerKioskRoutes(
     return {
       ok: true,
       now: new Date().toISOString(),
-      firmware_channel: fresh?.firmware_channel ?? "stable",
+      firmware_channel: effectiveFirmwareChannel(fresh),
       firmware_target_version: fresh?.firmware_target_version ?? null,
       os_update_channel: fresh?.os_update_channel ?? "stable",
       os_update_target_version: fresh?.os_update_target_version ?? null,

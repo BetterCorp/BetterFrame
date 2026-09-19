@@ -1,3 +1,4 @@
+import { kioskDebugEnabled } from "../../shared/kiosk-channels.js";
 /**
  * service-coordinator-ws — WebSocket hub for live kiosk channel.
  *
@@ -357,7 +358,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
           if (!authed) throw new Error("unauthorized");
           await repo.adapter.setSearchPath(targetTenant.schema_name);
           const target = await repo.getKioskById(kioskId);
-          if (!target || isAndroidViewer(target)) throw new Error("kiosk does not support debug");
+          if (!target || isAndroidViewer(target) || !kioskDebugEnabled(target)) throw new Error("kiosk does not support debug");
         } catch (authErr) {
           obs.log.warn("admin debug WS auth failed for kiosk {id}: {err} (cookie present: {hasCookie}, cookieName: {cn})", {
             id: kioskId,

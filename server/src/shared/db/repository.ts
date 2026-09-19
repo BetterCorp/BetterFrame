@@ -129,6 +129,8 @@ function userPatchSql(patch: Partial<User>): { columns: string[]; values: unknow
   return { columns, values };
 }
 
+export class FirmwareReleaseConflictError extends Error {}
+
 export class Repository {
   readonly adapter: DbAdapter;
   private readonly notify: NotifyFn;
@@ -2083,7 +2085,8 @@ export class Repository {
       `INSERT INTO firmware_releases
          (id, version, channel, arch, artifact_path, size_bytes, sha256,
           signature, release_notes, uploaded_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (version, arch) DO NOTHING`,
       [
         input.id,
         input.version,
@@ -2097,10 +2100,15 @@ export class Repository {
         input.uploaded_by,
       ],
     );
-    void this.notify("firmware_releases", "create", input.id);
-    const r = await this.getFirmwareRelease(input.id);
-    if (!r) throw new Error("firmware release vanished after insert");
-    return r;
+    const release = await this.getFirmwareReleaseByVersionArch(input.version, input.arch);
+    if (!release) throw new Error("firmware release vanished after insert");
+    // Retries (including concurrent imports) must never replace a published
+    // version or silently restore a release that an administrator yanked.
+    if (release.sha256 !== input.sha256 || release.size_bytes !== input.size_bytes || release.channel !== input.channel || release.yanked_at) {
+      throw new FirmwareReleaseConflictError("firmware version already exists with different content/channel or is yanked");
+    }
+    if (release.id === input.id) void this.notify("firmware_releases", "create", release.id);
+    return release;
   }
 
   async getFirmwareRelease(id: string): Promise<FirmwareRelease | null> {

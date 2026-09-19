@@ -26,7 +26,7 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { writeFile, readFile, unlink, rename } from "node:fs/promises";
+import { writeFile, readFile, unlink, rename, mkdtemp, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 export interface FirmwareKeyPair {
@@ -98,12 +98,18 @@ export function initFirmware(config: FirmwareConfig, log: FirmwareLog): Firmware
 
   async function storeBlob(bytes: Buffer, sha256: string): Promise<string> {
     const path = join(firmwareDir, `${sha256}.bin`);
-    // Atomic write: write to .tmp then rename. Avoids partial files if the
-    // server is killed mid-upload.
-    const tmp = `${path}.tmp`;
-    await writeFile(tmp, bytes, { mode: 0o644 });
-    await rename(tmp, path);
-    return path;
+    // Stage each upload separately on the same filesystem. Concurrent writers
+    // of the same digest can atomically replace the blob without sharing a
+    // temporary file (including across server processes).
+    const stagingDir = await mkdtemp(join(firmwareDir, ".upload-"));
+    try {
+      const tmp = join(stagingDir, "blob");
+      await writeFile(tmp, bytes, { mode: 0o644 });
+      await rename(tmp, path);
+      return path;
+    } finally {
+      await rm(stagingDir, { recursive: true, force: true });
+    }
   }
 
   async function readBlob(path: string, expectedSha256: string): Promise<Buffer> {

@@ -2,6 +2,7 @@
 """Execute the real workflow validation steps without building or publishing."""
 
 import os
+import re
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -119,6 +120,65 @@ class ReleaseVersionTests(unittest.TestCase):
         for validation in (self.android, self.easy1):
             result, _ = self.validate(validation, version)
             self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class FirmwareImportTests(unittest.TestCase):
+    """Run both real retry loops with simulated HTTP failures, without publishing."""
+
+    def test_images_depend_on_builds_not_server_import(self):
+        workflow = (ROOT / ".github/workflows/build.yml").read_text()
+        jobs = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:|\Z)", workflow[workflow.index("jobs:"):], re.M | re.S))
+        self.assertNotIn("/api/admin/firmware/import", jobs["binary"])
+        self.assertIn("actions/upload-artifact@v7", jobs["binary"])
+        self.assertIn("/api/admin/firmware/import", jobs["firmware-import"])
+        self.assertIn("actions/download-artifact@v8", jobs["firmware-import"])
+        for job in ("image", "x86-image", "firmware-import"):
+            self.assertEqual(re.search(r"^    needs: (.+)$", jobs[job], re.M).group(1), "binary")
+
+    def run_import(self, step, failures, shell):
+        script = workflow_script("build.yml", step)
+        script = script[script.index("for attempt in 1 2 3; do"):]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            curl = root / "curl"
+            curl.write_text("""#!/bin/sh
+count=0
+if [ -f "$IMPORT_TEST_COUNT" ]; then count=$(cat "$IMPORT_TEST_COUNT"); fi
+count=$((count + 1))
+echo "$count" > "$IMPORT_TEST_COUNT"
+if [ "$count" -le "$IMPORT_TEST_FAILURES" ]; then
+  echo 'curl: (22) The requested URL returned error: 503' >&2
+  exit 22
+fi
+exit 0
+""")
+            sleep = root / "sleep"
+            sleep.write_text('#!/bin/sh\necho "$1" >> "$IMPORT_TEST_SLEEPS"\n')
+            curl.chmod(0o755)
+            sleep.chmod(0o755)
+            env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                   "IMPORT_TEST_COUNT": str(root / "count"),
+                   "IMPORT_TEST_SLEEPS": str(root / "sleeps"),
+                   "IMPORT_TEST_FAILURES": str(failures),
+                   "BF_AUTOIMPORT_URL": "https://unused.invalid", "BF_AUTOIMPORT_API_KEY": "test-only",
+                   "bin": "unused"}
+            result = subprocess.run([shell, "-e", "-c", script], env=env, text=True, capture_output=True)
+            count = int((root / "count").read_text())
+            sleeps = (root / "sleeps").read_text().splitlines() if (root / "sleeps").exists() else []
+            return result, count, sleeps
+
+    def test_import_failure_is_not_swallowed_and_success_stops_retrying(self):
+        for step in ("Auto-import ioBOX firmware into BF server", "Auto-import into BF server"):
+            for shell in ("sh", "bash"):
+                for failures in (0, 1, 2, 3):
+                    with self.subTest(step=step, shell=shell, failures=failures):
+                        result, count, sleeps = self.run_import(step, failures, shell)
+                        self.assertEqual(result.returncode, 1 if failures == 3 else 0, result.stderr)
+                        self.assertEqual(count, min(failures + 1, 3))
+                        self.assertEqual(sleeps, ["10"] * min(failures, 2))
+                        if failures == 3:
+                            self.assertIn("::error::", result.stdout)
+                            self.assertIn("not registered on the BF server", result.stdout)
 
 
 if __name__ == "__main__":

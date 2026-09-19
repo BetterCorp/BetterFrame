@@ -161,6 +161,7 @@ export function rowToDisplay(r: Row): Display {
 
 export function rowToCamera(r: Row): Camera {
   return {
+    local_short_key: sn(r["local_short_key"]) ?? undefined,
     id: s(r["id"]),
     device_id: sn(r["device_id"]),
     device_channel_id: sn(r["device_channel_id"]),
@@ -239,6 +240,7 @@ export function rowToLayoutTemplate(r: Row): LayoutTemplate {
 
 export function rowToLayout(r: Row): Layout {
   return {
+    local_short_key: sn(r["local_short_key"]) ?? undefined,
     id: s(r["id"]),
     name: s(r["name"]),
     description: sn(r["description"]),

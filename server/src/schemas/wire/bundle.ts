@@ -23,6 +23,7 @@ const cameraStream = av.object(
 const bundleCamera = av.object(
   {
     id,
+    local_short_key: av.optional(av.string().minLength(6).maxLength(6)),
     device_id: av.optional(av.nullable(id)),
     device_name: av.optional(av.nullable(av.string().maxLength(128))),
     name: av.string().minLength(1).maxLength(128),
@@ -96,6 +97,7 @@ const bundleCell = av.object(
 const bundleLayout = av.object(
   {
     id,
+    local_short_key: av.optional(av.string().minLength(6).maxLength(6)),
     name: av.string().minLength(1).maxLength(128),
     grid_cols: av.int().min(1).max(64),
     grid_rows: av.int().min(1).max(64),

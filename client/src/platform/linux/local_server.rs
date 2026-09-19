@@ -174,6 +174,10 @@ pub fn start(state: LocalServerState) {
                 .route("/local/iobox/check", get(local_iobox_check_handler))
                 .route("/local/iobox/event", post(local_iobox_event_handler))
                 .route("/local/layout/:id", get(local_layout_handler))
+                .route("/lsh/:short_key", get(short_layout_handler))
+                .route("/lsh/:short_key/s", get(short_ptz_stop_handler))
+                .route("/lsh/:short_key/m", get(short_ptz_move_handler))
+                .route("/lsh/:short_key/p/:preset_token", get(short_ptz_preset_handler))
                 .route("/local/snapshot/:camera_id", get(local_snapshot_handler))
                 .route("/local/operator-certificate.crt", get(operator_certificate_handler))
                 .route(
@@ -888,6 +892,55 @@ async fn local_iobox_event_handler(
     }
 }
 
+// These aliases are deliberately confined to /lsh; all other APIs use full IDs.
+fn resolve_local_short_key(
+    state: &LocalServerState, auth: &str, key: &str, camera: bool,
+) -> Result<String, Response> {
+    if !local_key_matches(state, auth) {
+        return Err((StatusCode::UNAUTHORIZED, "bad key").into_response());
+    }
+    let bundle = crate::server::load_cached_bundle().ok_or_else(||
+        (StatusCode::SERVICE_UNAVAILABLE, "no bundle cached yet").into_response())?;
+    let id = if camera { bundle.local_camera_id(key) } else { bundle.local_layout_id(key) };
+    id.ok_or_else(|| (StatusCode::NOT_FOUND, "short key not assigned to this kiosk").into_response())
+}
+
+async fn short_layout_handler(
+    State(state): State<LocalServerState>, Path(key): Path<String>, Query(auth): Query<LocalAuth>,
+) -> Response {
+    let id = match resolve_local_short_key(&state, &auth.key, &key, false) {
+        Ok(id) => id, Err(response) => return response,
+    };
+    local_layout_handler(State(state), Path(id), Query(auth)).await
+}
+
+async fn short_ptz_stop_handler(
+    State(state): State<LocalServerState>, Path(key): Path<String>, Query(query): Query<ProfileQuery>,
+) -> Response {
+    let id = match resolve_local_short_key(&state, &query.key, &key, true) {
+        Ok(id) => id, Err(response) => return response,
+    };
+    local_onvif_ptz_stop_handler(State(state), Path(id), Query(query)).await
+}
+
+async fn short_ptz_move_handler(
+    State(state): State<LocalServerState>, Path(key): Path<String>, Query(query): Query<PtzMoveQuery>,
+) -> Response {
+    let id = match resolve_local_short_key(&state, &query.key, &key, true) {
+        Ok(id) => id, Err(response) => return response,
+    };
+    local_onvif_ptz_move_handler(State(state), Path(id), Query(query)).await
+}
+
+async fn short_ptz_preset_handler(
+    State(state): State<LocalServerState>, Path((key, preset)): Path<(String, String)>, Query(query): Query<ProfileQuery>,
+) -> Response {
+    let id = match resolve_local_short_key(&state, &query.key, &key, true) {
+        Ok(id) => id, Err(response) => return response,
+    };
+    local_onvif_ptz_preset_handler(State(state), Path((id, preset)), Query(query)).await
+}
+
 async fn local_layout_handler(
     State(state): State<LocalServerState>,
     Path(id): Path<String>,
@@ -1355,8 +1408,42 @@ fn _request_marker(_: Request) {}
 
 #[cfg(test)]
 mod tests {
-    use super::operator_token;
-    use axum::http::HeaderMap;
+    use super::*;
+
+    #[tokio::test]
+    async fn smart_keys_require_the_full_local_auth_key_before_resolution() {
+        let state = LocalServerState {
+            local_key: Arc::new(Mutex::new("a".repeat(64))),
+            server_url: "http://unused".to_string(), kiosk_key: String::new(),
+            ui_tx: Arc::new(Mutex::new(None)),
+            operator_auth: crate::operator_console::OperatorAuth::load(),
+        };
+        let profile = || Query(ProfileQuery { key: "wrong".into(), profile_token: None });
+        let responses = [
+            short_layout_handler(State(state.clone()), Path("abc123".into()), Query(LocalAuth { key: "wrong".into() })).await,
+            short_ptz_stop_handler(State(state.clone()), Path("abc123".into()), profile()).await,
+            short_ptz_preset_handler(State(state.clone()), Path(("abc123".into(), "1".into())), profile()).await,
+            short_ptz_move_handler(State(state), Path("abc123".into()), Query(PtzMoveQuery {
+                key: "wrong".into(), profile_token: None, dir: "left".into(), speed: None, timeout_ms: None,
+            })).await,
+        ];
+        for response in responses { assert_eq!(response.status(), StatusCode::UNAUTHORIZED); }
+    }
+
+    #[tokio::test]
+    async fn normal_layout_endpoint_still_dispatches_full_ids() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let state = LocalServerState {
+            local_key: Arc::new(Mutex::new("a".repeat(64))),
+            server_url: "http://unused".to_string(), kiosk_key: String::new(),
+            ui_tx: Arc::new(Mutex::new(Some(tx))),
+            operator_auth: crate::operator_console::OperatorAuth::load(),
+        };
+        let id = "01a02aa9-152a-781c-afb3-bb420d3f89ed";
+        let response = local_layout_handler(State(state), Path(id.into()), Query(LocalAuth { key: "a".repeat(64) })).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(matches!(rx.try_recv(), Ok(WorkerMsg::SwitchLayout { layout_id, display_id: None }) if layout_id == id));
+    }
 
     #[test]
     fn operator_token_comes_from_the_http_only_cookie() {

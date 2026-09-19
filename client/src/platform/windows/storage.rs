@@ -530,6 +530,7 @@ fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
                 .layouts
                 .into_iter()
                 .map(|layout| crate::bundle::BundleLayout {
+                    local_short_key: None,
                     is_default: default_layout_id.as_deref() == Some(layout.id.as_str()),
                     id: layout.id,
                     name: layout.name,
@@ -598,6 +599,7 @@ fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
                 })
                 .collect();
             crate::bundle::BundleCamera {
+                local_short_key: None,
                 id: camera.id,
                 device_id: None,
                 device_name: None,

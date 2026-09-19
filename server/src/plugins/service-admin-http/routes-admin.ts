@@ -2474,13 +2474,23 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       name: kl.name,
       role: kl.role,
     }));
-    const displays = await deps.repo.listDisplaysForKiosk(id);
+    let displays = await deps.repo.listDisplaysForKiosk(id);
+    if (!displays.length && kiosk.display_id) {
+      const legacyDisplay = await deps.repo.getDisplayById(kiosk.display_id);
+      if (legacyDisplay) displays = [legacyDisplay];
+    }
     const displayLayouts = [];
     for (const display of displays) {
       displayLayouts.push({
         display,
         layouts: await deps.repo.listLayoutsForDisplay(display.id),
       });
+    }
+    const localLayoutIds = [...new Set(displayLayouts.filter(({ display }) => display.is_enabled)
+      .flatMap(({ layouts }) => layouts.map((layout) => layout.id)))];
+    const localCameras = new Map((await deps.repo.camerasForLayoutIds(localLayoutIds)).map((camera) => [camera.id, camera]));
+    for (const camera of await deps.repo.camerasForLabelIds((await deps.repo.bundleScope(id)).operateLabelIds)) {
+      localCameras.set(camera.id, camera);
     }
     const gpioBindings = await deps.repo.listGpioBindings(id);
     const [firmwareReleases, osReleases] = await withDefaultTenant(deps.repo, currentTenantSchema(event), async () => Promise.all([
@@ -2494,6 +2504,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       allLabels: await deps.repo.listLabels(),
       displays,
       displayLayouts,
+      localCameras: [...localCameras.values()].filter((camera) => camera.type === "onvif"),
       gpioBindings,
       firmwareReleases,
       osReleases,

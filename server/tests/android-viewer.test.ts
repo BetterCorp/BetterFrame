@@ -10,7 +10,7 @@ import { registerViewerDeviceAuth, displayDashboardRequestAllowed } from "../src
 function fixture() {
   const kiosk = { id: "viewer", name: "Viewer", enabled: true, capabilities: ["android-viewer"], key_hash: "hash", encrypt_key_encrypted: Buffer.from("cluster").toString("base64url"), operator_console_enabled: true, simple_vms_enabled: true, operator_tools_json: '[{"label":"secret","url":"https://secret"}]' };
   const display = { id: "display", is_enabled: true, name: "Main", width_px: 1920, height_px: 1080, idle_timeout_seconds: 0, sleep_timeout_seconds: 0, default_layout_id: "layout" };
-  const camera = { id: "camera", name: "Cam", enabled: true, type: "rtsp", rtsp_url: "rtsp://user:password@cam/live", onvif_host: "private", onvif_username: "user", onvif_password: "password", event_source: "auto", event_sink: "both", capabilities: ["ptz"], recording_config_json: { secret: "recording" } };
+  const camera = { local_short_key: "def456", id: "camera", name: "Cam", enabled: true, type: "rtsp", rtsp_url: "rtsp://user:password@cam/live", onvif_host: "private", onvif_username: "user", onvif_password: "password", event_source: "auto", event_sink: "both", capabilities: ["ptz"], recording_config_json: { secret: "recording" } };
   const cells = [
     { id: "cell", entity_id: "entity", content_type: "camera", camera_id: "stale-camera", row: 0, col: 0, row_span: 1, col_span: 1, fit: "contain", options: { smart_url: { steps: [{ type: "fill", value: "secret" }] } } },
     { id: "dash-cell", content_type: "web", web_url: "/dash/assigned", row: 0, col: 1, row_span: 1, col_span: 1 },
@@ -22,7 +22,7 @@ function fixture() {
     getKioskById: async () => kiosk,
     getTenantBySlug: async () => ({ id: "tenant", slug: "default", schema_name: "public", name: "Default", is_active: true }),
     listDisplaysForKiosk: async () => [display, { ...display, id: "hidden" }],
-    layoutsForDisplayId: async (id: string) => [{ id: id === "display" ? "layout" : "unassigned", name: "Layout", preload_camera_ids: ["private"], priority: "normal", resets_idle_timer: true }],
+    layoutsForDisplayId: async (id: string) => [{ local_short_key: "abc123", id: id === "display" ? "layout" : "unassigned", name: "Layout", preload_camera_ids: ["private"], priority: "normal", resets_idle_timer: true }],
     layoutCells: async () => cells,
     getEntityById: async (id: string) => id === "sign" ? ({ id, type: "ablesign", web_url: "https://player.example/", ablesign_screen_id: "screen" }) : ({ id, type: "camera", camera_id: "camera", name: "Cam" }),
     getAbleSignScreen: async () => ({ ablesign_screen_id: "screen-identity", ablesign_screen_token_encrypted: "token" }),
@@ -49,6 +49,8 @@ test("Android bundle follows resolved assigned camera entities and preserves HTM
   const bundle = await generateBundle(repo as never, secrets as never, "viewer", "cluster");
   assert.ok(bundle);
   assert.equal(bundle.displays.length, 1);
+  assert.equal(bundle.displays[0]?.layouts[0]?.local_short_key, "abc123");
+  assert.equal(bundle.cameras[0]?.local_short_key, "def456");
   assert.deepEqual(bundle.cameras.map((c) => c.id), ["camera"]);
   assert.equal(bundle.cameras[0]?.onvif_host, null);
   assert.equal(bundle.cameras[0]?.onvif_password_encrypted, null);

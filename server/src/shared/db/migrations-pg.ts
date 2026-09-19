@@ -1008,4 +1008,39 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_kiosk_logs_event ON kiosk_logs(kiosk_id, event_id)`,
   `CREATE INDEX IF NOT EXISTS idx_kiosk_logs_timeline ON kiosk_logs(received_at DESC, id DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_kiosk_logs_device_timeline ON kiosk_logs(kiosk_id, received_at DESC, id DESC)`,
+  // Local-only aliases are permanent and never recycled, even after deletion.
+  `CREATE TABLE local_short_keys (
+    short_key TEXT PRIMARY KEY CHECK (short_key ~ '^[0-9a-f]{6}$'),
+    resource_type TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    UNIQUE(resource_type, resource_id)
+  )`,
+  `CREATE FUNCTION assign_local_short_key() RETURNS trigger LANGUAGE plpgsql AS $$
+    DECLARE candidate TEXT;
+    BEGIN
+      IF TG_OP = 'UPDATE' AND OLD.local_short_key IS NOT NULL THEN
+        NEW.local_short_key := OLD.local_short_key;
+        RETURN NEW;
+      END IF;
+      LOOP
+        EXECUTE format('SELECT short_key FROM %I.local_short_keys WHERE resource_type = $1 AND resource_id = $2', TG_TABLE_SCHEMA)
+          INTO candidate USING TG_TABLE_NAME, NEW.id;
+        IF candidate IS NOT NULL THEN EXIT; END IF;
+        candidate := substr(replace(gen_random_uuid()::text, '-', ''), 1, 6);
+        EXECUTE format('INSERT INTO %I.local_short_keys(short_key, resource_type, resource_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING short_key', TG_TABLE_SCHEMA)
+          INTO candidate USING candidate, TG_TABLE_NAME, NEW.id;
+        IF candidate IS NOT NULL THEN EXIT; END IF;
+      END LOOP;
+      NEW.local_short_key := candidate;
+      RETURN NEW;
+    END
+  $$`,
+  ...["layouts", "cameras"].flatMap((table) => [
+    `ALTER TABLE ${table} ADD COLUMN local_short_key TEXT`,
+    `CREATE TRIGGER ${table}_local_short_key BEFORE INSERT OR UPDATE OF local_short_key ON ${table}
+      FOR EACH ROW EXECUTE FUNCTION assign_local_short_key()`,
+    `UPDATE ${table} SET local_short_key = NULL WHERE local_short_key IS NULL`,
+    `ALTER TABLE ${table} ALTER COLUMN local_short_key SET NOT NULL`,
+    `CREATE UNIQUE INDEX ${table}_local_short_key_unique ON ${table}(local_short_key)`,
+  ]),
 ];

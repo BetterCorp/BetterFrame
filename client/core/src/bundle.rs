@@ -66,6 +66,21 @@ pub struct KioskBundle {
 }
 
 impl KioskBundle {
+    /// Only resolve local aliases within this kiosk's current assignment.
+    pub fn local_layout_id(&self, key: &str) -> Option<String> {
+        if !valid_local_short_key(key) { return None; }
+        self.normalized_displays().iter().flat_map(|display| &display.layouts)
+            .find(|layout| layout.local_short_key.as_deref() == Some(key))
+            .map(|layout| layout.id.clone())
+    }
+
+    pub fn local_camera_id(&self, key: &str) -> Option<String> {
+        if !valid_local_short_key(key) { return None; }
+        self.cameras.iter()
+            .find(|camera| camera.enabled && camera.local_short_key.as_deref() == Some(key))
+            .map(|camera| camera.id.clone())
+    }
+
     /// Normalize the bundle: if `displays` is empty (old server), synthesize it
     /// from the legacy single `display` + `layouts` fields so the rest of the
     /// kiosk only deals with one shape.
@@ -87,6 +102,10 @@ impl KioskBundle {
         }
         Vec::new()
     }
+}
+
+fn valid_local_short_key(key: &str) -> bool {
+    key.len() == 6 && key.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -119,6 +138,8 @@ pub struct BundleDisplayWithLayouts {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleLayout {
+    #[serde(default)]
+    pub local_short_key: Option<String>,
     #[serde(deserialize_with = "de_flexible_id")]
     pub id: String,
     pub name: String,
@@ -198,6 +219,8 @@ pub struct SmartUrlStep {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleCamera {
+    #[serde(default)]
+    pub local_short_key: Option<String>,
     #[serde(deserialize_with = "de_flexible_id")]
     pub id: String,
     #[serde(default, deserialize_with = "de_flexible_id_opt")]
@@ -399,6 +422,37 @@ mod tests {
         assert_eq!(bundle.kiosk_id, "10");
         assert_eq!(displays[0].id, "20");
         assert_eq!(displays[0].layouts[0].preload_camera_ids, ["40"]);
+    }
+
+    #[test]
+    fn local_short_keys_only_resolve_current_assigned_resources() {
+        let mut bundle: KioskBundle = serde_json::from_value(serde_json::json!({
+            "kiosk_id": "kiosk", "kiosk_name": "Lobby", "version": "1",
+            "displays": [{
+                "id": "display", "name": "Main", "width_px": 1920, "height_px": 1080,
+                "idle_timeout_seconds": 0, "sleep_timeout_seconds": 0,
+                "layouts": [{
+                    "id": "layout-uuid", "local_short_key": "abc123", "name": "Layout",
+                    "grid_cols": 1, "grid_rows": 1, "priority": "normal",
+                    "is_default": true, "resets_idle_timer": true, "cells": []
+                }]
+            }],
+            "cameras": [{
+                "id": "camera-uuid", "local_short_key": "def456", "name": "Camera",
+                "type": "onvif", "enabled": true, "stream_policy": "auto", "streams": []
+            }]
+        })).unwrap();
+        assert_eq!(bundle.local_layout_id("abc123").as_deref(), Some("layout-uuid"));
+        assert_eq!(bundle.local_camera_id("def456").as_deref(), Some("camera-uuid"));
+        for key in ["", "ffffff", "layout-uuid", "ABC123", "abc1234", "../abc"] {
+            assert_eq!(bundle.local_layout_id(key), None);
+        }
+        assert_eq!(bundle.local_layout_id("def456"), None);
+        assert_eq!(bundle.local_camera_id("abc123"), None);
+        bundle.cameras[0].enabled = false;
+        assert_eq!(bundle.local_camera_id("def456"), None);
+        bundle.displays.clear();
+        assert_eq!(bundle.local_layout_id("abc123"), None);
     }
 
     #[test]

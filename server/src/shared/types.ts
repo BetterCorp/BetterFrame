@@ -239,6 +239,7 @@ export type EventSourceMode = "auto" | "server" | string; // string = "kiosk:<id
 export type EventSinkMode = "auto" | "server" | string;
 
 export interface Camera {
+  local_short_key?: string;
   id: string;
   device_id: string | null;
   device_channel_id: string | null;
@@ -321,6 +322,7 @@ export interface LayoutRegion {
 }
 
 export interface Layout {
+  local_short_key?: string;
   id: string;
   name: string;
   description: string | null;

@@ -28,6 +28,7 @@ import {
   FIRMWARE_TARGET_RPI5,
   normalizeFirmwareTarget,
 } from "../../shared/firmware-targets.js";
+import { FirmwareReleaseConflictError } from "../../shared/db/repository.js";
 import { verifyDetached } from "../../shared/firmware.js";
 
 const ALLOWED_CHANNELS: ReadonlySet<FirmwareChannel> = new Set(["stable", "beta", "dev"]);
@@ -153,9 +154,14 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
       signature,
       release_notes: body.release_notes ?? null,
       uploaded_by: null,
-    }));
+    })).catch((error: unknown) => {
+      if (error instanceof FirmwareReleaseConflictError) {
+        throw createError({ statusCode: 409, statusMessage: error.message });
+      }
+      throw error;
+    });
 
-    return { ok: true, release_id: release.id, sha256, signature };
+    return { ok: true, release_id: release.id, sha256: release.sha256, signature: release.signature };
   });
 
   app.post("/api/admin/iobox/firmware/import", async (event) => {

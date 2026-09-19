@@ -2,6 +2,7 @@
 """Execute the real workflow validation steps without building or publishing."""
 
 import os
+import re
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -123,6 +124,16 @@ class ReleaseVersionTests(unittest.TestCase):
 
 class FirmwareImportTests(unittest.TestCase):
     """Run both real retry loops with simulated HTTP failures, without publishing."""
+
+    def test_images_depend_on_builds_not_server_import(self):
+        workflow = (ROOT / ".github/workflows/build.yml").read_text()
+        jobs = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:|\Z)", workflow[workflow.index("jobs:"):], re.M | re.S))
+        self.assertNotIn("/api/admin/firmware/import", jobs["binary"])
+        self.assertIn("actions/upload-artifact@v7", jobs["binary"])
+        self.assertIn("/api/admin/firmware/import", jobs["firmware-import"])
+        self.assertIn("actions/download-artifact@v8", jobs["firmware-import"])
+        for job in ("image", "x86-image", "firmware-import"):
+            self.assertEqual(re.search(r"^    needs: (.+)$", jobs[job], re.M).group(1), "binary")
 
     def run_import(self, step, failures, shell):
         script = workflow_script("build.yml", step)

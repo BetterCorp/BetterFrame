@@ -267,6 +267,43 @@ jobs:
             client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}.sig
             client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}.pub.pem
 
+      - name: Upload artifact (always)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: betterframe-kiosk-${{ matrix.firmware_target }}
+          path: |
+            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
+            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}.sha256
+            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}.sig
+            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}.pub.pem
+          retention-days: 14
+
+  # ---- Kiosk firmware import -----------------------------------------------
+  # Import is independent of image production: a BF outage fails this job,
+  # but cannot prevent the successfully built binaries becoming OS images.
+  firmware-import:
+    needs: binary
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - firmware_target: betterframe-rpi5-aarch64
+            label: Raspberry Pi 5
+          - firmware_target: betterframe-pc-x86_64
+            label: PC x86_64
+    env:
+      BF_AUTOIMPORT_URL: ${{ secrets.BF_AUTOIMPORT_URL }}
+      BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}
+    steps:
+      - name: Pull signed kiosk binary for server import
+        if: env.BF_AUTOIMPORT_URL != '' && env.BF_AUTOIMPORT_API_KEY != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: betterframe-kiosk-${{ matrix.firmware_target }}
+          path: client/
+
       - name: Auto-import into BF server
         if: env.BF_AUTOIMPORT_URL != '' && env.BF_AUTOIMPORT_API_KEY != ''
         env:
@@ -300,18 +337,6 @@ jobs:
             echo "Import attempt $attempt failed, retrying in 10s..."
             sleep 10
           done
-
-      - name: Upload artifact (always)
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: betterframe-kiosk-${{ matrix.firmware_target }}
-          path: |
-            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}
-            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}.sha256
-            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}.sig
-            client/betterframe-kiosk-${{ inputs.version }}-${{ matrix.firmware_target }}.pub.pem
-          retention-days: 14
 
   # ---- Windows client + MSI -------------------------------------------------
   windows-client:

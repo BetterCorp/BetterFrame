@@ -61,3 +61,17 @@ Deploy the server migration first, then updated apps and OS images. Existing OS
 images need the new systemd units/journald configuration (an OS update or the Pi
 setup script); a firmware-only update adds application logs but cannot install the
 independent OS collector. Nothing in this change accesses or deploys to a kiosk.
+
+## Journal collection diagnostics
+
+The OS collector exports journal JSON with `--all` so messages above journalctl's
+4096-byte default are not replaced with null. Byte-array messages (for example,
+text containing terminal control bytes) are decoded before redaction and the
+existing 16,384 UTF-16-unit limit. The 1 MiB input-record bound still applies.
+
+`betterframe-log-upload.service` reports unavailable enrollment, journal read
+failures and failed HTTP uploads in its own journal. Transport diagnostics omit
+URLs, credentials and response bodies. Failed uploads retain their cursor for
+retry. These local diagnostics do not prove that collection/upload is healthy;
+if the uploader is stopped or unreachable, inspect them through live journal.
+A server-only upgrade cannot install or start the OS collector on an older image.

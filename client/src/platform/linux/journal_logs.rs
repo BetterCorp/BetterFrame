@@ -8,9 +8,15 @@ use std::time::Duration;
 
 fn entry(record: &Value) -> Option<Value> {
     let cursor = record["__CURSOR"].as_str()?;
-    let message = record["MESSAGE"]
-        .as_str()
-        .unwrap_or("[Binary journal message]");
+    let message = match &record["MESSAGE"] {
+        Value::String(text) => text.clone(),
+        Value::Array(values) if values.iter().all(|v| v.as_u64().is_some_and(|n| n <= 255)) => {
+            let bytes: Vec<u8> = values.iter().map(|v| v.as_u64().unwrap() as u8).collect();
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+        Value::Array(values) => values.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n"),
+        _ => "[Journal message unavailable]".to_string(),
+    };
     let micros = record["__REALTIME_TIMESTAMP"]
         .as_str()?
         .parse::<i128>()
@@ -29,7 +35,7 @@ fn entry(record: &Value) -> Option<Value> {
         7 => "debug",
         _ => "info",
     };
-    let (message, truncated) = diagnostic_logs::scrub_with_truncation(message);
+    let (message, truncated) = diagnostic_logs::scrub_with_truncation(&message);
     let mut context = serde_json::Map::new();
     context.insert("truncated".into(), json!(truncated));
     context.insert("source".into(), json!("os"));
@@ -58,9 +64,13 @@ fn read_batch(
     cursor: Option<&str>,
     owner_since: Option<i64>,
 ) -> Result<(Vec<Value>, Option<String>), ()> {
+    read_command(journal_command(cursor, owner_since))
+}
+
+fn journal_command(cursor: Option<&str>, owner_since: Option<i64>) -> Command {
     let mut command = Command::new("journalctl");
     // Oldest first, including previous boots. Never use -n here: it skips backlog.
-    command.args(["--output=json", "--no-pager", "--quiet", "--since=-24h", "--priority=info",
+    command.args(["--output=json", "--all", "--no-pager", "--quiet", "--since=-24h", "--priority=info",
         "--output-fields=MESSAGE,PRIORITY,_BOOT_ID,_SYSTEMD_UNIT,_PID,_COMM,_HOSTNAME,SYSLOG_IDENTIFIER"]);
     let cutoff = (time::OffsetDateTime::now_utc().unix_timestamp() - 86400)
         .max(owner_since.unwrap_or(i64::MIN));
@@ -68,7 +78,7 @@ fn read_batch(
     if let Some(cursor) = cursor {
         command.arg(format!("--after-cursor={cursor}"));
     }
-    read_command(command)
+    command
 }
 
 fn read_command(mut command: Command) -> Result<(Vec<Value>, Option<String>), ()> {
@@ -137,11 +147,20 @@ pub fn run() {
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .unwrap_or(json!({}));
     let mut failures = 0u32;
+    let mut waiting_for_identity = false;
     loop {
         let Some(dest) = crate::server::log_destination() else {
+            if !waiting_for_identity {
+                eprintln!("journal-upload: waiting for readable kiosk identity");
+                waiting_for_identity = true;
+            }
             std::thread::sleep(Duration::from_secs(5));
             continue;
         };
+        if waiting_for_identity {
+            eprintln!("journal-upload: kiosk identity available");
+            waiting_for_identity = false;
+        }
         let owner = dest.owner();
         if state["owner"].as_str() != Some(&owner) {
             // Re-pairing must not send the previous owner's journal history to
@@ -180,7 +199,13 @@ pub fn run() {
         }
         match read_batch(state["cursor"].as_str(), state["since"].as_i64()) {
             Ok((entries, cursor)) => {
-                if entries.is_empty() || diagnostic_logs::send(&client, &dest, &entries) {
+                let upload = if entries.is_empty() { Ok(()) }
+                    else { diagnostic_logs::send_with_error(&client, &dest, &entries) };
+                if let Err(error) = &upload {
+                    eprintln!("journal-upload: {error}; retaining batch for retry");
+                }
+                if upload.is_ok() {
+                    if failures > 0 { eprintln!("journal-upload: collection/upload recovered"); }
                     failures = 0;
                     if let Some(cursor) = cursor {
                         state["cursor"] = json!(cursor);
@@ -197,6 +222,7 @@ pub fn run() {
                 }
             }
             Err(()) => {
+                eprintln!("journal-upload: journal read failed; check service journal permissions and journalctl availability");
                 // A cursor may have been vacuumed. Replay the retained window;
                 // the server safely ignores events it already accepted.
                 state.as_object_mut().map(|s| s.remove("cursor"));
@@ -210,6 +236,23 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn journal_export_keeps_long_and_byte_encoded_messages() {
+        let command = journal_command(Some("cursor-1"), None);
+        let args: Vec<_> = command.get_args().map(|s| s.to_str().unwrap()).collect();
+        assert!(args.contains(&"--all")); // Without this journalctl replaces fields >4096 bytes with null.
+        assert!(args.contains(&"--after-cursor=cursor-1"));
+        for message in [json!("x".repeat(6000) + "\nWebKit failure"), json!(b"WebKit error\nsecond line".to_vec())] {
+            let record = json!({"__CURSOR":"cursor-1", "__REALTIME_TIMESTAMP":"1700000000123456",
+                "MESSAGE":message, "PRIORITY":"3", "_SYSTEMD_UNIT":"betterframe-kiosk.service"});
+            let log = entry(&record).unwrap();
+            assert!(log["message"].as_str().unwrap().contains("WebKit"));
+            assert!(log["message"].as_str().unwrap().contains('\n'));
+            assert_eq!(log["context"]["source"], "os");
+            assert_eq!(log["context"]["unit"], "betterframe-kiosk.service");
+            assert_eq!(log["context"]["truncated"], false);
+        }
+    }
     #[test]
     fn preserves_boot_and_kernel_failure_details() {
         let log = entry(&json!({"__CURSOR":"s=abc;i=1", "__REALTIME_TIMESTAMP":"1700000000123456",

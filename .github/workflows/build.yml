@@ -153,13 +153,18 @@ jobs:
               -H "Content-Type: application/json" \
               --data-binary @"${bin}.import.json" \
               "${BF_AUTOIMPORT_URL}/api/admin/iobox/firmware/import"; then
-              break
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::ioBOX firmware import failed after 3 attempts. The release is not registered on the BF server."
+              exit 1
             fi
             echo "ioBOX import attempt $attempt failed, retrying in 10s..."
             sleep 10
           done
 
       - name: Upload artifact (always)
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: betterframe-iobox-${{ matrix.variant }}
@@ -286,13 +291,18 @@ jobs:
               -H "Content-Type: application/json" \
               --data-binary @"${bin}.import.json" \
               "${BF_AUTOIMPORT_URL}/api/admin/firmware/import"; then
-              break
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Kiosk firmware import failed after 3 attempts. The release is not registered on the BF server."
+              exit 1
             fi
             echo "Import attempt $attempt failed, retrying in 10s..."
             sleep 10
           done
 
       - name: Upload artifact (always)
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: betterframe-kiosk-${{ matrix.firmware_target }}

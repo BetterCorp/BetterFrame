@@ -5,7 +5,7 @@ After=systemd-user-sessions.service systemd-logind.service network.target seatd.
 Wants=seatd.service
 Conflicts=getty@tty1.service
 After=getty@tty1.service
-# After 10 fast restarts in 60s, back off so a broken binary doesn't burn CPU.
+# Keep retrying after failures; RestartSec below spaces out attempts.
 StartLimitIntervalSec=0
 
 [Service]

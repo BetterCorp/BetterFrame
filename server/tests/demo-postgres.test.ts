@@ -3,7 +3,7 @@ import test from "node:test";
 import { randomBytes } from "node:crypto";
 import { PgAdapter } from "../src/shared/db/pg-adapter.js";
 import { initDb } from "../src/shared/db/init.js";
-import { prepareDemo, demoTenant, enrollDemo, cleanupDemo } from "../src/shared/demo.js";
+import { prepareDemo, demoTenant, enrollDemo, cleanupDemo, demoAvailable, demoTenantHidden, visibleTenants } from "../src/shared/demo.js";
 import { initiatePairing, confirmPairing, claimPairing } from "../src/shared/pairing.js";
 
 const url = process.env["BF_TEST_PG_URL"];
@@ -22,8 +22,25 @@ test("demo enrollment, display defaults and bounded tenant-only cleanup", { skip
   try {
     assert.equal(await prepareDemo(repo, false), null);
     assert.equal(await demoTenant(repo), null);
+    const legacy = await repo.createTenant({ name: "Existing customer", slug: "demo" });
+    assert.equal(await demoTenantHidden(repo, false, legacy), false);
+    assert.ok((await visibleTenants(repo, false)).some(t => t.id === legacy.id));
+    await assert.rejects(prepareDemo(repo, true), /already in use/);
+    assert.equal(await demoAvailable(repo, true), false);
+    await repo.deleteTenant(legacy.id);
     const [tenant, again] = await Promise.all([prepareDemo(repo, true), prepareDemo(repo, true)]);
     assert.ok(tenant); assert.equal(again?.id, tenant.id);
+    assert.equal(await demoTenantHidden(repo, false, tenant), true);
+    assert.equal(await demoTenantHidden(repo, true, tenant), false);
+    assert.ok(!(await visibleTenants(repo, false)).some(t => t.id === tenant.id));
+    assert.equal(await demoAvailable(repo, false), false);
+    assert.equal(await demoAvailable(repo, true), true);
+    await repo.updateTenant(tenant.id, { is_active: false });
+    assert.equal(await demoAvailable(repo, true), false);
+    const disabled = await initiate();
+    await assert.rejects(enrollDemo(repo, auth as never, secrets as never, true, disabled.code, disabled.pollingSecret), /unavailable/);
+    await repo.updateTenant(tenant.id, { is_active: true });
+    assert.equal(await demoAvailable(repo, true), true);
     const settings = await repo.adapter.withSearchPath(tenant.schema_name, () => repo.getDisplayDefaults());
     assert.equal(settings.layoutIds.length, 1);
     assert.equal(settings.defaultLayoutId, settings.layoutIds[0]);
@@ -90,6 +107,8 @@ test("demo enrollment, display defaults and bounded tenant-only cleanup", { skip
     const counts = await Promise.all([cleanupDemo(repo, now), cleanupDemo(repo, now)]);
     assert.equal(counts.reduce((a, b) => a + b, 0), 1);
     assert.ok(await demoTenant(repo));
+    await repo.deleteTenant(tenant.id);
+    assert.equal(await demoAvailable(repo, true), false);
   } finally {
     await opened.close();
     await admin.exec(`DROP DATABASE "${name}" WITH (FORCE)`);

@@ -263,3 +263,35 @@ test("default-tenant queries use a scoped search path", async () => {
   assert.equal(await withDefaultTenant(repo as never, "tenant_site", async () => "ok"), "ok");
   assert.deepEqual(calls, ["public"]);
 });
+
+test("disabled demo hides only the managed tenant ID, including header and cookie selection", async () => {
+  const customer = { ...tenant, slug: "demo", name: "Existing customer" };
+  let managedId: string | null = null;
+  const app = new H3();
+  registerMiddleware(app, {
+    cookieName: "betterframe_session",
+    enableDemoTenant: false,
+    repo: {
+      adapter: { dialect: () => "postgres", withSearchPath: async (_schema: string, fn: () => unknown) => fn() },
+      getTenantBySlug: async (slug: string) => slug === "demo" ? customer : defaultTenant,
+      getTenantById: async (id: string) => id === customer.id ? customer : null,
+      getSetupExtra: async () => managedId,
+      getUserByUsername: async () => admin,
+      isSetupComplete: async () => true,
+    },
+    auth: { resolveSession: async () => ({ user: admin, session, tenant: defaultTenant }) },
+  } as never);
+  app.get("/admin/demo-test", event => ({ tenantId: event.context.tenant?.id }));
+  for (const viaHeader of [false, true]) {
+    const headers: Record<string, string> = { cookie: `betterframe_session=signed${viaHeader ? "" : "; bf_tenant=demo"}` };
+    if (viaHeader) headers["x-betterframe-tenant"] = "demo";
+    managedId = null;
+    const legacy = await app.request("http://betterframe.test/admin/demo-test", { headers });
+    assert.equal(legacy.status, 200);
+    assert.deepEqual(await legacy.json(), { tenantId: customer.id });
+    managedId = customer.id;
+    const managed = await app.request("http://betterframe.test/admin/demo-test", { headers });
+    assert.equal(managed.status, 200);
+    assert.deepEqual(await managed.json(), { tenantId: defaultTenant.id });
+  }
+});

@@ -1,3 +1,4 @@
+import { demoTenantHidden } from "../../shared/demo.js";
 /**
  * Auth & setup gate middleware for admin-http.
  *
@@ -99,7 +100,7 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
       : (event.req.headers.get("x-betterframe-tenant") ?? "").trim().toLowerCase();
     if (headerSlug) {
       const tenant = await deps.repo.getTenantBySlug(headerSlug);
-      if (tenant?.is_active && (deps.enableDemoTenant || tenant.slug !== "demo")) {
+      if (tenant?.is_active && !await demoTenantHidden(deps.repo, deps.enableDemoTenant, tenant)) {
         event.context.tenant = tenant;
         schema = tenant.schema_name;
         return deps.repo.adapter.withSearchPath(schema, next);
@@ -109,7 +110,7 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
 
     const tenantSlug = loginRequest ? "default" : getCookie(event, "bf_tenant") || "default";
     const tenant = await deps.repo.getTenantBySlug(tenantSlug);
-    if (tenant && tenant.is_active && (deps.enableDemoTenant || tenant.slug !== "demo")) {
+    if (tenant && tenant.is_active && !await demoTenantHidden(deps.repo, deps.enableDemoTenant, tenant)) {
       event.context.tenant = tenant;
       schema = tenant.schema_name;
     } else {

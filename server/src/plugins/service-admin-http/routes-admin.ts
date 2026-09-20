@@ -1,3 +1,4 @@
+import { visibleTenants } from "../../shared/demo.js";
 import { kioskDebugEnabled, kioskDebugRequirement } from "../../shared/kiosk-channels.js";
 /**
  * Admin page routes — overview, cameras, kiosks, labels, etc.
@@ -3294,7 +3295,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Tenant switcher fragment (htmx) ----------------------------------------
   app.get("/admin/_tenant_switcher", async (event) => {
-    const tenants = (await deps.repo.listTenants()).filter(t => deps.enableDemoTenant || t.slug !== "demo");
+    const tenants = await visibleTenants(deps.repo, deps.enableDemoTenant);
     if (tenants.length <= 1) return new Response("", { headers: { "content-type": "text/html" } });
     const current = (event.context as any).tenant?.slug ?? "default";
     const options = tenants.map((t: any) =>

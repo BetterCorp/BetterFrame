@@ -51,7 +51,7 @@ import {
   validateBody,
 } from "../../shared/api-schemas.js";
 
-import { prepareDemo, enrollDemo, cleanupDemo } from "../../shared/demo.js";
+import { prepareDemo, enrollDemo, cleanupDemo, demoAvailable } from "../../shared/demo.js";
 
 // ---- Config -----------------------------------------------------------------
 
@@ -284,8 +284,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     const clientFirmwarePublicKey = this.config.clientFirmwarePublicKey || (this.config.clientFirmwarePublicKeyBase64
       ? Buffer.from(this.config.clientFirmwarePublicKeyBase64, "base64").toString("utf8")
       : "");
-    let demoReady = false;
-    try { demoReady = !!await prepareDemo(repo, this.config.enableDemoTenant); }
+    try { await prepareDemo(repo, this.config.enableDemoTenant); }
     catch (error) { obs.log.warn("Demo provisioning failed: {error}", { error: String(error) }); }
     this.demoTimer = setInterval(() => {
       if (this.demoCleanup) return;
@@ -294,7 +293,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       }).finally(() => { this.demoCleanup = undefined; });
     }, 60_000);
     this.demoTimer.unref();
-    registerPairingRoutes(app, repo, auth, secrets, codeTtl, firmware, osUpdates, clientFirmwarePublicKey, demoReady);
+    registerPairingRoutes(app, repo, auth, secrets, codeTtl, firmware, osUpdates, clientFirmwarePublicKey, this.config.enableDemoTenant);
     registerKioskRoutes(app, repo, auth, secrets, nodered, firmware, osUpdates, mqtt, clientFirmwarePublicKey);
     registerIoBoxRoutes(app, repo, auth, nodered, mqtt, firmware, secrets);
 
@@ -473,11 +472,11 @@ function registerPairingRoutes(
       secureClaim: body.secure_claim,
     });
 
-    return { allowDemo: demoEnabled, code: result.code, expires_at: result.expiresAt, expires_in_seconds: result.expiresInSeconds, poll_after_ms: PAIR_POLL_AFTER_MS, polling_secret: result.pollingSecret };
+    return { allowDemo: await demoAvailable(repo, demoEnabled), code: result.code, expires_at: result.expiresAt, expires_in_seconds: result.expiresInSeconds, poll_after_ms: PAIR_POLL_AFTER_MS, polling_secret: result.pollingSecret };
   });
 
   app.post("/api/pair/demo", async (event) => {
-    if (!demoEnabled) throw createError({ statusCode: 503, statusMessage: "Demo unavailable" });
+    if (!await demoAvailable(repo, demoEnabled)) throw createError({ statusCode: 503, statusMessage: "Demo unavailable" });
     const ip = getRequestHeader(event, "x-real-ip") ?? "anon";
     if (!pairingGuard.take(`demo:${ip}`)) throw createError({ statusCode: 429, statusMessage: "rate limited" });
     const raw = await readBody<Record<string, unknown>>(event);

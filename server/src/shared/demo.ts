@@ -14,6 +14,23 @@ export async function demoTenant(repo: Repository): Promise<Tenant | null> {
   });
 }
 
+/** Legacy customer tenants may also be named demo; only the stored ID is managed. */
+export async function demoTenantHidden(repo: Repository, enabled: boolean | undefined, tenant: Tenant): Promise<boolean> {
+  if (enabled || tenant.slug !== DEMO_SLUG) return false;
+  return (await demoTenant(repo))?.id === tenant.id;
+}
+
+export async function visibleTenants(repo: Repository, enabled: boolean | undefined): Promise<Tenant[]> {
+  const tenants = await repo.listTenants();
+  if (enabled || !tenants.some(t => t.slug === DEMO_SLUG)) return tenants;
+  const hidden = await demoTenant(repo);
+  return tenants.filter(t => t.id !== hidden?.id);
+}
+
+export async function demoAvailable(repo: Repository, enabled: boolean): Promise<boolean> {
+  return enabled && (await demoTenant(repo))?.is_active === true;
+}
+
 export async function prepareDemo(repo: Repository, enabled: boolean): Promise<Tenant | null> {
   if (!enabled) return null;
   if (repo.adapter.dialect() !== "postgres") throw Error("Demo requires PostgreSQL tenant isolation");
@@ -42,12 +59,14 @@ export async function enrollDemo(repo: Repository, auth: AuthApi, secrets: Secre
   if (!tenant?.is_active) throw Error("Demo unavailable");
   await repo.adapter.withSearchPath(tenant.schema_name, () => repo.transact(async () => {
     // Serialize capacity checks across API instances; pairing itself locks its code.
-    await repo.adapter.get("SELECT id FROM public.tenants WHERE id = ? FOR UPDATE", [tenant.id]);
+    const current = await repo.adapter.get<{ is_active: boolean; max_kiosks: number | null }>(
+      "SELECT is_active, max_kiosks FROM public.tenants WHERE id = ? FOR UPDATE", [tenant.id]);
+    if (!current?.is_active) throw Error("Demo unavailable");
     const pc = await repo.getPairingCode(code, true);
     if (!pc || !matchesSecret(pollingSecret, pc.extras["polling_secret_hash"])) throw Error("Invalid demo pairing session");
-    if (!pc.consumed_at && tenant.max_kiosks != null) {
+    if (!pc.consumed_at && current.max_kiosks != null) {
       const count = await repo.adapter.get<{ count: string }>("SELECT count(*) FROM kiosks");
-      if (Number(count?.count) >= tenant.max_kiosks) throw Error("Demo capacity reached");
+      if (Number(count?.count) >= current.max_kiosks) throw Error("Demo capacity reached");
     }
     await confirmPairing(repo, auth, secrets, {
       code, demo: true, tenant: { id: tenant.id, slug: tenant.slug, schemaName: tenant.schema_name },

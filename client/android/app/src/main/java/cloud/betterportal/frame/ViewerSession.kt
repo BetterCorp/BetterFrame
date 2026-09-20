@@ -641,10 +641,9 @@ class ViewerSession internal constructor(context: Context, private val listener:
             request("/api/pair/demo", claimBody(pending), false).use { requireSuccessful(it) }
             nextPairPoll = 0L
         } catch (_: Exception) {
-            allowDemo = false
-            pending.put("allowDemo", false); persist()
-            ui(activeEpoch) { listener.onPairing(pending.getString("code")) }
-            status("Demo unavailable. Continue with normal pairing or reconnect to retry.")
+            // A failed POST does not change the server's advertised availability.
+            // Keep the same device-bound session retryable (including lost replies).
+            status("Demo enrollment failed. Choose Demo to retry, or continue normal pairing.")
         }
     }
 

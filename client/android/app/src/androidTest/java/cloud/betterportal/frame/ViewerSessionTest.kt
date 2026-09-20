@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -26,7 +27,9 @@ class ViewerSessionTest {
     @Test fun secureEnrollmentDisplaysHtmlAndClearsUnassignedCache() = exerciseEnrollment(false)
     @Test fun demoUsesNormalPlaybackAndExitsWithoutServerDeletion() = exerciseEnrollment(true)
 
-    private fun exerciseEnrollment(demo: Boolean) {
+    @Test fun demoRetriesAfterTemporaryEnrollmentFailure() = exerciseEnrollment(true, true)
+
+    private fun exerciseEnrollment(demo: Boolean, retryDemo: Boolean = false) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         val directory = File(context.cacheDir, "session-test-${System.nanoTime()}").apply { mkdirs() }
@@ -36,6 +39,7 @@ class ViewerSessionTest {
         }
         val demoRequested = AtomicBoolean(false)
         val demoConfirmed = AtomicBoolean(false)
+        val demoAttempts = AtomicInteger()
         val unassigned = AtomicBoolean(false)
         val profile = AtomicReference<String?>(null)
         val profileRejected = LinkedBlockingQueue<JSONObject>()
@@ -75,8 +79,11 @@ class ViewerSessionTest {
                             check(demo)
                             val body = JSONObject(request.body.readUtf8())
                             check(body.getString("code") == "ABCD12" && body.getString("polling_secret") == "test-poll-secret")
-                            demoConfirmed.set(true)
-                            json("{}")
+                            if (demoAttempts.incrementAndGet() == 1 && retryDemo) json("{}", 503)
+                            else {
+                                demoConfirmed.set(true)
+                                json("{}")
+                            }
                         }
                         "/api/pair/claim", "/api/pair/ack" -> {
                             val body = JSONObject(request.body.readUtf8())
@@ -122,6 +129,12 @@ class ViewerSessionTest {
                 session.set(ViewerSession(isolated, object : ViewerSession.Listener {
                     override fun onStatus(message: String) {
                         statuses.add(message)
+                        if (retryDemo && message.startsWith("Demo enrollment failed")) {
+                            if (!session.get().allowDemo || !ProtectedStore(isolated).read().getJSONObject("pending").optBoolean("allowDemo")) {
+                                failures.add("Transient failure disabled the pending demo session")
+                            }
+                            session.get().enterDemo()
+                        }
                         if (message.contains("connection unavailable")) offlineRetained.countDown()
                     }
                     override fun onPairing(code: String) {
@@ -162,7 +175,7 @@ class ViewerSessionTest {
             assertTrue(requests.contains("/api/pair/ack"))
             assertEquals(demo, session.get().isDemo)
             assertEquals(demo, ProtectedStore(isolated).read().getJSONObject("identity").optBoolean("demo"))
-            assertEquals(if (demo) 1 else 0, requests.count { it == "/api/pair/demo" })
+            assertEquals(if (retryDemo) 2 else if (demo) 1 else 0, requests.count { it == "/api/pair/demo" })
             val fetchedBeforeDowngrade = requests.count { it == "/api/kiosk/bundle" }
             interruptHeartbeat.set(true)
             instrumentation.runOnMainSync { session.get().refresh() }

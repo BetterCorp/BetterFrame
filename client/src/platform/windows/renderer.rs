@@ -142,11 +142,9 @@ unsafe extern "system" fn window_proc(
                         let response = crate::network::client().post(format!("{}/api/pair/demo", state.server_url))
                             .json(&crate::core::protocol::claim_body(code, state.pairing_secret.as_deref())).send().await;
                         if !response.is_ok_and(|r| r.status().is_success()) {
-                            warn!("Demo unavailable; continue normal pairing or restart to retry");
-                            let _ = update_state(|latest| {
-                                if latest.pairing_code == state.pairing_code { latest.allow_demo = false; }
-                                Ok(())
-                            });
+                            // Preserve the pending session and control after a failed
+                            // request; the server still enforces enrollment availability.
+                            warn!("Demo enrollment failed; choose Demo to retry or continue normal pairing");
                         }
                     });
                 });

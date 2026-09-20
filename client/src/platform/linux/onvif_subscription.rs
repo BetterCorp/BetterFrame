@@ -49,6 +49,16 @@ impl Subscription {
         Instant::now() >= self.renew_at
     }
 
+    pub fn poll_delay(&self, interval: Duration) -> Duration {
+        self.poll_delay_at(Instant::now(), interval)
+    }
+
+    fn poll_delay_at(&self, now: Instant, interval: Duration) -> Duration {
+        // A blocking pull may have used the entire renewal budget. In that
+        // case immediately return to the loop's renewal check.
+        interval.min(self.renew_at.saturating_duration_since(now))
+    }
+
     pub fn update_deadline(&mut self, xml: &str, fallback: Duration) {
         self.renew_at = Instant::now() + renew_delay(lease_duration(xml).unwrap_or(fallback));
     }
@@ -184,6 +194,45 @@ mod tests {
                 .any(|n| n.has_tag_name(("urn:inner", "Part")))
         );
     }
+    #[test]
+    fn qualified_references_and_lease_times_are_matched_by_local_name() {
+        let xml = r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+            xmlns:tev="http://www.onvif.org/ver10/events/wsdl"
+            xmlns:wsa="http://www.w3.org/2005/08/addressing"
+            xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2" xmlns:v="urn:camera">
+          <s:Body><tev:CreatePullPointSubscriptionResponse>
+            <tev:SubscriptionReference><wsa:Address>http://camera/sub?token=1&amp;mode=2</wsa:Address>
+              <wsa:ReferenceParameters><v:Id>42</v:Id></wsa:ReferenceParameters>
+            </tev:SubscriptionReference>
+            <wsnt:CurrentTime>2001-01-01T00:00:00Z</wsnt:CurrentTime>
+            <wsnt:TerminationTime>2001-01-01T00:00:10Z</wsnt:TerminationTime>
+          </tev:CreatePullPointSubscriptionResponse></s:Body></s:Envelope>"#;
+        let before = Instant::now();
+        let sub = Subscription::parse(xml, Duration::from_secs(600)).unwrap();
+        assert_eq!(sub.address, "http://camera/sub?token=1&mode=2");
+        assert!(sub.reference_headers.contains(">42</v:Id>"));
+        assert_eq!(lease_duration(xml), Some(Duration::from_secs(10)));
+        assert!(sub.renew_at >= before + Duration::from_secs(5));
+        assert!(sub.renew_at <= Instant::now() + Duration::from_secs(5));
+        let default_namespace = r#"<Response xmlns="http://docs.oasis-open.org/wsn/b-2">
+          <CurrentTime>2001-01-01T00:00:00Z</CurrentTime>
+          <TerminationTime>2001-01-01T00:00:10Z</TerminationTime></Response>"#;
+        assert_eq!(lease_duration(default_namespace), Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn polling_pause_cannot_delay_short_lease_renewal() {
+        let created = Instant::now();
+        let sub = Subscription {
+            address: "http://camera/sub".into(), reference_headers: String::new(),
+            renew_at: created + renew_delay(Duration::from_secs(10)),
+        };
+        let interval = Duration::from_secs(5);
+        assert_eq!(sub.poll_delay_at(created + Duration::from_secs(3), interval), Duration::from_secs(2));
+        assert_eq!(sub.poll_delay_at(created + Duration::from_secs(5), interval), Duration::ZERO);
+        assert_eq!(sub.poll_delay_at(created + Duration::from_secs(6), interval), Duration::ZERO);
+    }
+
     #[test]
     fn missing_reference_does_not_pick_an_unrelated_address() {
         assert!(

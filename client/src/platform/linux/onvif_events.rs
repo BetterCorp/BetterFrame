@@ -575,12 +575,12 @@ fn run_subscription(
                         std::thread::sleep(poll_interval);
                         break; // An invalid/expired endpoint needs a new subscription.
                     }
-                    std::thread::sleep(Duration::from_secs(error_backoff));
+                    std::thread::sleep(sub.poll_delay(Duration::from_secs(error_backoff)));
                     continue;
                 }
             }
 
-            std::thread::sleep(poll_interval);
+            std::thread::sleep(sub.poll_delay(poll_interval));
         }
         let _ = unsubscribe(&sub, user, pass);
     }

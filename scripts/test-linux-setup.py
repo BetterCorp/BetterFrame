@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class SetupTests(unittest.TestCase):
     def shell(self, body, check=True):
-        return subprocess.run(['bash', '-c', f'source {shlex.quote(str(ROOT / "setup.sh"))}\n{body}'],
+        return subprocess.run(['bash', '-c', f'source {shlex.quote(str(ROOT / "setup.sh"))}\nBACKUP_ID=test\n{body}'],
                               text=True, capture_output=True, check=check)
 
     def test_arguments(self):
@@ -84,8 +84,6 @@ def CDLL(name):
             # An inactive app without a pending/failed candidate is still the rollback.
             self.shell(f'''BIN={p}/app; STATE={p}; STAGING={p}; INSTALL_USER={os.getuid()}; USER_GROUP={os.getgid()}; BACKUP_ID=test
                 install_app_binary
-                clear_interrupted_update
-                arm_setup_candidate
             ''')
             marker = p / 'firmware-applying.json'
             payload = json.loads(marker.read_text())
@@ -103,6 +101,52 @@ def CDLL(name):
             subprocess.run(['bash', str(p/'rollback.sh')], check=True, capture_output=True)
             self.assertEqual((p/'app').read_text(), 'working current app')
             self.assertFalse(marker.exists())
+
+    def test_install_failures_keep_old_binary_and_pending_protection(self):
+        for failure in ['cleanup', 'marker', 'rename']:
+            with tempfile.TemporaryDirectory() as tmp:
+                p = Path(tmp)
+                (p/'app').write_text('old candidate')
+                (p/'app.prev').write_text('known good')
+                (p/'candidate').write_text('new candidate')
+                (p/'firmware-applying.json').write_text('{"version":"old"}')
+                injected = {
+                    'cleanup': 'clear_interrupted_update() { return 1; }',
+                    'marker': 'arm_setup_candidate() { return 1; }',
+                    'rename': 'runtime_command() { if [[ $1 == mv && $4 == "$BIN.new" ]]; then return 1; fi; "$@"; }',
+                }[failure]
+                result = self.shell(f'''BIN={p}/app; STATE={p}; STAGING={p}; INSTALL_USER={os.getuid()}; USER_GROUP={os.getgid()}
+                    {injected}
+                    install_app_binary
+                ''', check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual((p/'app').read_text(), 'old candidate')
+                self.assertEqual((p/'app.prev').read_text(), 'known good')
+                self.assertTrue((p/'firmware-applying.json').exists())
+                if failure == 'rename':
+                    import json
+                    marker = json.loads((p/'firmware-applying.json').read_text())
+                    self.assertEqual(marker['sha256'], hashlib.sha256(b'new candidate').hexdigest())
+                else:
+                    self.assertEqual((p/'firmware-applying.json').read_text(), '{"version":"old"}')
+
+    @unittest.skipUnless(os.environ.get('BF_TEST_ISOLATED_SYSTEMD') == '1', 'requires disposable container')
+    def test_disable_user_service_without_running_user_manager(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            units = home/'.config/systemd/user'
+            wants = units/'default.target.wants'
+            wants.mkdir(parents=True)
+            (units/'betterframe.service').write_text('[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n')
+            (wants/'betterframe.service').symlink_to('../betterframe.service')
+            result = self.shell(f'USER_HOME={home}; INSTALL_USER={os.getuid()}; unset DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR; disable_user_app_offline', check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse((wants/'betterframe.service').is_symlink())
+            self.assertTrue((units/'betterframe.service').exists())
+            # Fresh installation without any existing user unit is harmless too.
+            (units/'betterframe.service').unlink()
+            result = self.shell(f'USER_HOME={home}; INSTALL_USER={os.getuid()}; unset DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR; disable_user_app_offline', check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_alpha_releases_are_dev_for_discovery_and_saved_inference(self):
         import json
@@ -158,7 +202,7 @@ def CDLL(name):
             (p / 'candidate').write_bytes(b'new')
             user = pwd.getpwuid(os.getuid()).pw_name
             group = grp.getgrgid(os.getgid()).gr_name
-            cmd = f'BIN={tmp}/app; STAGING={tmp}; INSTALL_USER={shlex.quote(user)}; USER_GROUP={shlex.quote(group)}; install_app_binary'
+            cmd = f'BIN={tmp}/app; STATE={tmp}; STAGING={tmp}; INSTALL_USER={shlex.quote(user)}; USER_GROUP={shlex.quote(group)}; install_app_binary'
             self.shell(cmd)
             self.assertEqual((p / 'app').read_bytes(), b'new')
             self.assertEqual((p / 'app.prev').read_bytes(), b'old')

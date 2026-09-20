@@ -180,7 +180,7 @@ fn wait_for_regional_origin(origin: &str, tx: &mpsc::Sender<WorkerMsg>) -> Strin
             Ok(resolved) => return resolved,
             Err(error) => {
                 warn!("regional discovery: {error}; retaining saved enrollment and cache");
-                let _ = tx.send(WorkerMsg::StartupStatus("Regional server unavailable — retrying with saved enrollment".into()));
+                let _ = tx.send(WorkerMsg::ReadyStartupStatus("Regional server unavailable — retrying with saved enrollment".into()));
                 std::thread::sleep(Duration::from_secs(10));
             }
         }
@@ -601,6 +601,9 @@ fn activate(app: &Application) {
                 WorkerMsg::StartupStatus(action) => {
                     show_startup_status(&pairing_window_clone, &action)
                 }
+                WorkerMsg::ReadyStartupStatus(action) => {
+                    show_ready_startup_status(&pairing_window_clone, &action)
+                }
                 WorkerMsg::ShowPairingCode(code) => show_pairing_code(
                     &pairing_window_clone,
                     &code,
@@ -646,6 +649,7 @@ fn activate(app: &Application) {
 
 pub enum WorkerMsg {
     StartupStatus(String),
+    ReadyStartupStatus(String),
     ShowPairingCode(String),
     PairingStatus(String, String),
     ShowPairingProgress,
@@ -3168,11 +3172,21 @@ mod display_tests {
         let app = Application::builder().application_id("cloud.betterframe.PairingHealthTest").build();
         app.register(None::<&gtk::gio::Cancellable>).unwrap();
         let window = ApplicationWindow::builder().application(&app).build();
-        show_startup_status(&window, "Regional server unavailable — retrying with saved enrollment");
         let confirmations = std::rc::Rc::new(std::cell::Cell::new(0));
         let observed = confirmations.clone();
-        after_rendered_frame(&window, move || observed.set(observed.get() + 1));
+        render_startup_status(&window, "Starting kiosk", false, move || observed.set(observed.get() + 1));
         let context = gtk::glib::MainContext::default();
+        window.present();
+        let until = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < until {
+            while context.pending() { context.iteration(false); }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(confirmations.get(), 0, "a rendered logo cannot confirm worker initialization");
+        window.set_visible(false);
+        let observed = confirmations.clone();
+        render_startup_status(&window, "Regional server unavailable — retrying with saved enrollment", true,
+            move || observed.set(observed.get() + 1));
         let until = Instant::now() + Duration::from_millis(100);
         while Instant::now() < until {
             while context.pending() { context.iteration(false); }
@@ -3378,10 +3392,25 @@ fn show_logo(window: &ApplicationWindow) {
 }
 
 fn show_startup_status(window: &ApplicationWindow, action: &str) {
+    render_startup_status(window, action, false, firmware::mark_firmware_applied);
+}
+
+fn show_ready_startup_status(window: &ApplicationWindow, action: &str) {
+    render_startup_status(window, action, true, firmware::mark_firmware_applied);
+}
+
+fn render_startup_status(
+    window: &ApplicationWindow,
+    action: &str,
+    worker_ready: bool,
+    confirm: impl Fn() + 'static,
+) {
     window.set_child(Some(&build_logo_content(action)));
-    // Discovery/pairing can remain offline indefinitely. A mapped native
-    // startup screen proves app startup without requiring server reachability.
-    confirm_rendered_app(window);
+    // Only the worker can report a known-live retry state. The initial logo and
+    // generic progress messages do not prove initialization succeeded.
+    if worker_ready {
+        after_rendered_frame(window, confirm);
+    }
 }
 
 fn build_empty_display_reference(

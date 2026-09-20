@@ -70,6 +70,16 @@ user_systemctl() {
     timeout 30 runuser -u "$INSTALL_USER" -- env XDG_RUNTIME_DIR="/run/user/$USER_ID" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$USER_ID/bus" systemctl --user "$@"
 }
+disable_user_app_offline() {
+    # Enablement is filesystem state; --no-reload works without a user bus.
+    local units
+    units=$(runtime_command env XDG_CONFIG_HOME="$USER_HOME/.config" \
+        systemctl --user --no-reload list-unit-files --no-legend --no-pager)
+    if [[ $'\n'$units == *$'\nbetterframe.service '* ]]; then
+        runtime_command env XDG_CONFIG_HOME="$USER_HOME/.config" \
+            systemctl --user --no-reload disable betterframe.service
+    fi
+}
 load_distribution() {
     local distribution
     # os-release also defines VERSION and other names used by this installer.
@@ -228,7 +238,9 @@ clear_interrupted_update() {
     local file
     for file in firmware-applying.json firmware-applying.attempts; do
         runtime_backup "$STATE/$file"
-        runtime_command rm -f -- "$STATE/$file"
+        if [[ $file != firmware-applying.json || ${1:-} != keep-marker ]]; then
+            runtime_command rm -f -- "$STATE/$file"
+        fi
     done
     runtime_command rm -f -- "$BIN.new"
     if [[ -f $STATE/update-attempts.json ]]; then
@@ -260,10 +272,10 @@ PYGUARD
     fi
 }
 arm_setup_candidate() {
-    runtime_command python3 - "$STATE/firmware-applying.json" "$BIN" "$RELEASE_VERSION" <<'PYMARKER'
+    runtime_command python3 - "$STATE/firmware-applying.json" "$BIN" "$RELEASE_VERSION" "${1:-$BIN}" <<'PYMARKER'
 import hashlib, json, os, pathlib, sys, tempfile, time
-marker, binary, version = sys.argv[1:]
-with open(binary, 'rb') as stream:
+marker, binary, version, candidate = sys.argv[1:]
+with open(candidate, 'rb') as stream:
     digest = hashlib.file_digest(stream, 'sha256').hexdigest()
 fd, temporary = tempfile.mkstemp(prefix='.bf-app-marker-', dir=pathlib.Path(marker).parent)
 try:
@@ -410,10 +422,15 @@ install_app_binary() {
         runtime_command install -m 755 "$BIN" "$BIN.prev.new"
         runtime_command mv -f -- "$BIN.prev.new" "$BIN.prev"
     fi
+    clear_interrupted_update keep-marker
     # The validated staging file is private to root. Stream it to an
     # unprivileged writer instead of granting access to the staging directory.
     # shellcheck disable=SC2016 # Positional parameters belong to the child shell.
-    runtime_command sh -c 'set -eu; umask 077; cat > "$1"; chmod 755 "$1"; mv -f -- "$1" "$2"' sh "$BIN.new" "$BIN" < "$STAGING/candidate"
+    runtime_command sh -c 'set -eu; umask 077; cat > "$1"; chmod 755 "$1"' sh "$BIN.new" < "$STAGING/candidate"
+    # Publish protection before replacing the executable. Failures/interruption
+    # up to the final rename leave the existing app in place.
+    arm_setup_candidate "$BIN.new"
+    runtime_command mv -f -- "$BIN.new" "$BIN"
 }
 # Embedded for single-file installation. Keep identical to the deployment helper;
 # scripts/test-linux-setup.py checks that the two copies cannot drift.
@@ -706,7 +723,7 @@ EOF
 }
 main() {
     parse_args "$@"
-    printf 'BetterFrame setup revision 2026-09-20.5\n'
+    printf 'BetterFrame setup revision 2026-09-20.6\n'
     [[ $(uname -s) == Linux ]] || fail 'This installer requires Linux'
     [[ $EUID == 0 ]] || fail 'Run with sudo (or root and --user USER)'
     [[ -d /run/systemd/system ]] || fail 'This installer requires systemd'
@@ -843,10 +860,10 @@ PYENV
         elif user_systemctl is-active --quiet betterframe.service; then
             fail '--no-start requires the existing BF service to be stopped; rerun without it to repair a running app'
         fi
-        user_systemctl disable betterframe.service 2>/dev/null || true
         user_systemctl unmask betterframe.service
         user_systemctl unmask --runtime betterframe.service
     fi
+    disable_user_app_offline
     if ((START)); then
         stop_app_service system betterframe-kiosk.service
     elif systemctl is-active --quiet betterframe-kiosk.service; then
@@ -856,8 +873,6 @@ PYENV
     systemctl unmask betterframe-kiosk.service
     systemctl unmask --runtime betterframe-kiosk.service
     install_app_binary
-    clear_interrupted_update
-    arm_setup_candidate
     if command -v restorecon >/dev/null; then restorecon -RF /opt/betterframe /usr/local/libexec/betterframe-rollback; fi
     printf '%s %s %s %s\n' "$INSTALL_USER" "$MODE" "$CHANNEL" "$MEDIA_GATEWAY" | reconcile_file "$CONFIG" 644 root root
     if [[ $MODE == desktop ]]; then

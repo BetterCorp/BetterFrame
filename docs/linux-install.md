@@ -160,8 +160,10 @@ Check `sudo systemctl status betterframe-mediamtx.service` or
 `127.0.0.1:9997`. `--no-start` requires an existing gateway service to be stopped
 and defers its readiness check until you start it.
 
-App rollback stays armed when startup is deferred until login/boot. The health
-deadline starts with the first actual launch, and a rendered startup/pairing screen or
-cached layout can confirm the running candidate without waiting for enrollment
-or server connectivity. A late frame/heartbeat from the old app cannot confirm
-the new candidate. Saved alpha releases use the dev channel.
+App rollback is armed before replacing the executable and stays armed when
+startup is deferred until login/boot. The health deadline starts with the first
+actual launch. A rendered pairing screen, cached layout, or worker-reported
+offline discovery screen can confirm the running candidate without enrollment
+or server connectivity. The initial logo and initialization progress alone do
+not confirm startup. A late frame/heartbeat from the old app cannot confirm the
+new candidate. Saved alpha releases use the dev channel.

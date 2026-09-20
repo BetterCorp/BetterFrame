@@ -2,8 +2,8 @@
 # Roll back the kiosk binary if an app OTA candidate never confirms healthy.
 #
 # The kiosk writes MARKER just before swapping in a new binary and removes it
-# only after a successful post-boot heartbeat. This script runs as root from
-# betterframe-kiosk.service ExecStartPre, so it can recover even when the new
+# after a healthy UI frame or successful post-boot heartbeat. This script runs
+# from the app service ExecStartPre, so it can recover even when the new
 # kiosk binary exits before Rust code can run.
 
 set -euo pipefail
@@ -33,10 +33,6 @@ rollback() {
   fi
 }
 
-marker_mtime=$(stat -c %Y "$MARKER" 2>/dev/null || stat -f %m "$MARKER" 2>/dev/null || echo 0)
-now=$(date +%s)
-age=$(( now - marker_mtime ))
-
 attempts=0
 if [ -f "$ATTEMPTS" ]; then
   attempts=$(cat "$ATTEMPTS" 2>/dev/null || echo 0)
@@ -44,6 +40,16 @@ fi
 case "$attempts" in
   ''|*[!0-9]*) attempts=0 ;;
 esac
+
+# Start the health deadline when the candidate is actually launched. Setup may
+# install it hours before the next desktop login or dedicated-kiosk boot.
+if [ "$attempts" -eq 0 ]; then
+  touch "$MARKER"
+fi
+
+marker_mtime=$(stat -c %Y "$MARKER" 2>/dev/null || stat -f %m "$MARKER" 2>/dev/null || echo 0)
+now=$(date +%s)
+age=$(( now - marker_mtime ))
 
 if [ "$age" -ge "$MAX_AGE_SECONDS" ]; then
   rollback "apply marker is stale (${age}s old)"

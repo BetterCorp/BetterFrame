@@ -95,7 +95,12 @@ sudo ./setup.sh --yes --user kiosk --mode desktop --version 1.0.14-dev.gf0075a9
 Use `--no-start` to install/configure without starting the app; existing BF
 services must already be stopped to avoid racing an in-flight app update. Package availability and binary compatibility are checked;
 a release built against a newer glibc/GTK/WebKit than your distribution provides
-cannot be installed. New PC releases use the Ubuntu 24.04 build baseline; older
+cannot be installed. The installer requires Ubuntu 24.04+, Debian 13+, or a Fedora-family system
+providing GTK 4.14+ and WebKitGTK 6.0. Older Ubuntu/Debian releases are rejected
+with an explanation; the loaded runtime libraries are also checked before any
+app service is stopped or executable replaced. Setup does not upgrade the OS.
+
+New PC releases use the Ubuntu 24.04 build baseline; older
 releases built on Debian Trixie may require a newer distribution. Setup fails before stopping/replacing the existing app in
 that case. Supported release targets are PC x86_64 and Raspberry Pi 5 aarch64.
 Fedora's available media codecs depend on its distribution packages.
@@ -154,3 +159,9 @@ Check `sudo systemctl status betterframe-mediamtx.service` or
 `sudo journalctl -u betterframe-mediamtx.service -n 100`. Its API listens only on
 `127.0.0.1:9997`. `--no-start` requires an existing gateway service to be stopped
 and defers its readiness check until you start it.
+
+App rollback stays armed when startup is deferred until login/boot. The health
+deadline starts with the first actual launch, and a rendered pairing screen or
+cached layout can confirm the running candidate without waiting for enrollment
+or server connectivity. A late frame/heartbeat from the old app cannot confirm
+the new candidate. Saved alpha releases use the dev channel.

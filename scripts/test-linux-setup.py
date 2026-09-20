@@ -34,6 +34,88 @@ class SetupTests(unittest.TestCase):
                                     'printf "%s\\n%s\\n%s\\n" "$VERSION" "$DISTRO_ID" "$DISTRO_LIKE"')
                 self.assertEqual(result.stdout.splitlines(), [version, 'ubuntu', 'debian'])
 
+    def test_distribution_and_runtime_baseline(self):
+        for distro, version, supported in [('ubuntu','22.04',False), ('ubuntu','24.04',True),
+                                           ('ubuntu','26.04',True), ('debian','12',False), ('debian','13',True)]:
+            result = self.shell(f'DISTRO_ID={distro}; DISTRO_VERSION={version}; validate_distribution', check=False)
+            self.assertEqual(result.returncode == 0, supported)
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / 'ctypes.py'
+            for minor, webkit, supported in [(8, True, False), (14, False, False), (14, True, True), (18, True, True)]:
+                p.write_text(f'''class Library:
+    def gtk_get_major_version(self): return 4
+    def gtk_get_minor_version(self): return {minor}
+def CDLL(name):
+    if name.startswith('libwebkit') and not {webkit!r}: raise OSError('missing WebKitGTK')
+    return Library()
+''')
+                result = self.shell(f'export PYTHONPATH={tmp}; check_runtime_libraries', check=False)
+                self.assertEqual(result.returncode == 0, supported, result.stderr)
+
+    def test_alternate_failed_scope_does_not_replace_healthy_rollback_choice(self):
+        for mode, selected, alternate in [('desktop', 'user', 'system'), ('dedicated', 'system', 'user')]:
+            with tempfile.TemporaryDirectory() as tmp:
+                p = Path(tmp)
+                (p / 'app').write_text('working current app')
+                (p / 'app.prev').write_text('older rollback')
+                (p / 'candidate').write_text('new candidate')
+                result = self.shell(f'''
+                    MODE={mode}; BIN={p}/app; STATE={p}; STAGING={p}; INSTALL_USER={os.getuid()}; USER_GROUP={os.getgid()}
+                    service_command() {{
+                        case "$2" in
+                            show) if [[ $* == *LoadState* ]]; then echo loaded; else echo inactive; fi;;
+                            is-active) [[ $1 == {selected} ]];;
+                            is-failed) [[ $1 == {alternate} ]];;
+                            *) return 0;;
+                        esac
+                    }}
+                    stop_app_service {selected} app.service
+                    stop_app_service {alternate} stale.service
+                    install_app_binary
+                ''')
+                self.assertEqual((p / 'app.prev').read_text(), 'working current app')
+
+    def test_deferred_candidate_gets_first_start_before_age_deadline(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / 'app').write_text('working current app')
+            (p / 'candidate').write_text('new untested candidate')
+            # An inactive app without a pending/failed candidate is still the rollback.
+            self.shell(f'''BIN={p}/app; STATE={p}; STAGING={p}; INSTALL_USER={os.getuid()}; USER_GROUP={os.getgid()}; BACKUP_ID=test
+                install_app_binary
+                clear_interrupted_update
+                arm_setup_candidate
+            ''')
+            marker = p / 'firmware-applying.json'
+            payload = json.loads(marker.read_text())
+            self.assertEqual(payload['sha256'], hashlib.sha256((p / 'app').read_bytes()).hexdigest())
+            self.assertEqual((p / 'app.prev').read_text(), 'working current app')
+            os.utime(marker, (1, 1)) # Candidate installed long before the next login.
+            script = (ROOT / 'deploy/systemd/betterframe-firmware-rollback.sh').read_text()
+            script = script.replace('/opt/betterframe/kiosk/betterframe-kiosk', str(p/'app')).replace('/var/lib/betterframe/kiosk', str(p))
+            (p / 'rollback.sh').write_text(script)
+            subprocess.run(['bash', str(p/'rollback.sh')], check=True, capture_output=True)
+            self.assertEqual((p/'app').read_text(), 'new untested candidate')
+            self.assertEqual((p/'firmware-applying.attempts').read_text().strip(), '1')
+            # An old marker after a real start does still roll back.
+            os.utime(marker, (1, 1))
+            subprocess.run(['bash', str(p/'rollback.sh')], check=True, capture_output=True)
+            self.assertEqual((p/'app').read_text(), 'working current app')
+            self.assertFalse(marker.exists())
+
+    def test_alpha_releases_are_dev_for_discovery_and_saved_inference(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            version = '2.0.0-alpha.2'
+            artifact = f'betterframe-kiosk-{version}-betterframe-pc-x86_64'
+            (p/'releases.json').write_text(json.dumps([{'tag_name':'v'+version, 'published_at':'2026-09-20',
+                'assets':[{'name':artifact+suffix} for suffix in ['', '.sha256', '.sig']]}]))
+            self.assertEqual(self.shell(f'CHANNEL=dev; TARGET=betterframe-pc-x86_64; select_channel_release {p}/releases.json').stdout.strip(), 'v'+version)
+            self.assertEqual(self.shell(f'CHANNEL=beta; TARGET=betterframe-pc-x86_64; select_channel_release {p}/releases.json').stdout.strip(), '')
+            self.assertEqual(self.shell(f'CONFIG={p}/config; parse_args --version {version}; load_settings; echo "$CHANNEL"').stdout.strip(), 'dev')
+
     def test_distro_packages(self):
         for distro, like, manager, package in [('ubuntu', 'debian', 'apt-get', 'libwebkitgtk-6.0-4'),
                                                ('fedora', '', 'dnf', 'webkitgtk6.0')]:
@@ -221,7 +303,7 @@ class SetupTests(unittest.TestCase):
             p = Path(tmp)
             (p / 'app').write_text('broken')
             (p / 'app.prev').write_text('previous')
-            cmd = f'''BIN={p}/app; INSTALL_USER={os.getuid()}; USER_GROUP={os.getgid()}
+            cmd = f'''BIN={p}/app; STATE={p}; INSTALL_USER={os.getuid()}; USER_GROUP={os.getgid()}
             sleep() {{ :; }}
             service_command() {{
                 echo "$*" >> {p}/calls

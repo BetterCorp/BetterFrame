@@ -145,6 +145,11 @@ sudo ./setup.sh --yes --user kiosk --mode desktop --version latest
 Use an existing regular account in place of `kiosk`. `latest` selects the latest release in the saved channel (initially stable).
 Use `--channel beta` or `--channel dev` to select another channel, or
 `--version VERSION` for a particular release.
+The installer requires Ubuntu 24.04+, Debian 13+, or a Fedora-family system
+providing GTK 4.14+ and WebKitGTK 6.0. Older Ubuntu/Debian releases are rejected
+with an explanation; the loaded runtime libraries are also checked before any
+app service is stopped or executable replaced. Setup does not upgrade the OS.
+
 New PC releases use the Ubuntu 24.04 library baseline. Older releases and older
 distributions can have incompatible libraries, which setup detects and reports.
 ARM release downloads currently target Raspberry Pi 5 specifically.

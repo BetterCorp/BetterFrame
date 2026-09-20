@@ -823,6 +823,23 @@ fn send_heartbeat_now(server_url: &str, kiosk_key: &str) -> bool {
     )
 }
 
+// Two mapped frame ticks put at least one paint between rendering healthy UI
+// and acknowledging the app candidate. This also works before enrollment.
+fn confirm_rendered_app(window: &ApplicationWindow) {
+    after_rendered_frame(window, firmware::mark_firmware_applied);
+}
+
+fn after_rendered_frame(window: &ApplicationWindow, confirm: impl Fn() + 'static) {
+    let first_frame = std::cell::Cell::new(true);
+    window.add_tick_callback(move |_, _| {
+        if first_frame.replace(false) {
+            return gtk::glib::ControlFlow::Continue;
+        }
+        confirm();
+        gtk::glib::ControlFlow::Break
+    });
+}
+
 fn mark_kiosk_healthy() {
     let _ = fs::create_dir_all("/run/betterframe");
     if let Err(err) = fs::write("/run/betterframe/kiosk-healthy", b"ok\n") {
@@ -1366,6 +1383,7 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str, status: &str) {
     window.queue_resize();
     window.queue_draw();
     mark_kiosk_healthy();
+    confirm_rendered_app(window);
     info!("pairing display updated to {code}");
 }
 
@@ -1474,6 +1492,7 @@ fn render_bundle(
         pairing_window.present();
         recompute_global_state();
         mark_kiosk_healthy();
+        confirm_rendered_app(pairing_window);
         return;
     }
 
@@ -1577,6 +1596,11 @@ fn render_bundle(
     // A rendered cached bundle is healthy even when the server is offline.
     // RAUC rollback protects app startup, not server reachability.
     mark_kiosk_healthy();
+    DISPLAYS.with(|ds| {
+        for state in ds.borrow().values() {
+            confirm_rendered_app(&state.window);
+        }
+    });
 }
 
 /// Find which display owns a given layout_id and render it there.
@@ -3136,6 +3160,35 @@ fn ensure_web(
 
 #[cfg(test)]
 mod display_tests {
+    #[test]
+    #[ignore = "requires a graphical session; CI runs with xvfb-run"]
+    fn pairing_health_confirmation_waits_for_a_mapped_frame() {
+        use super::*;
+        gtk::init().unwrap();
+        let app = Application::builder().application_id("cloud.betterframe.PairingHealthTest").build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+        let window = ApplicationWindow::builder().application(&app).build();
+        window.set_child(Some(&Label::new(Some("Pairing code: 123456"))));
+        let confirmations = std::rc::Rc::new(std::cell::Cell::new(0));
+        let observed = confirmations.clone();
+        after_rendered_frame(&window, move || observed.set(observed.get() + 1));
+        let context = gtk::glib::MainContext::default();
+        let until = Instant::now() + Duration::from_millis(100);
+        while Instant::now() < until {
+            while context.pending() { context.iteration(false); }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(confirmations.get(), 0, "an unmapped pairing UI is not healthy yet");
+        window.present();
+        let until = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < until {
+            while context.pending() { context.iteration(false); }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(confirmations.get(), 1);
+        window.close();
+    }
+
     use super::{FocusOverride, operator_target_cell, parse_drm_mode};
     use std::collections::HashMap;
 

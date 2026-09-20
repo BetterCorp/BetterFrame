@@ -19,7 +19,10 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+static MARKER_LOCK: Mutex<()> = Mutex::new(());
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -353,28 +356,53 @@ fn write_pending_marker(
     marker: &Path,
     attempts: &Path,
 ) -> Result<(), String> {
-    match fs::remove_file(attempts) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(format!("reset app startup attempts: {err}")),
-    }
     let payload = serde_json::json!({
-        "version": version,
-        "attempt_at": chrono_now_iso(),
-        "confirmed": false,
-        "bin": bin.to_string_lossy(),
-        "prev": prev.to_string_lossy(),
+        "version": version, "attempt_at": chrono_now_iso(), "confirmed": false,
+        "bin": bin.to_string_lossy(), "prev": prev.to_string_lossy(),
     });
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .mode_for_unix(0o600)
-        .open(marker)
-        .map_err(|e| format!("create app rollback marker: {e}"))?;
-    file.write_all(payload.to_string().as_bytes())
-        .and_then(|_| file.sync_all())
-        .map_err(|e| format!("persist app rollback marker: {e}"))
+    persist_pending_marker(
+        marker,
+        attempts,
+        payload.to_string().as_bytes(),
+        |file, bytes| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        },
+    )
+}
+
+fn persist_pending_marker(
+    marker: &Path,
+    attempts: &Path,
+    payload: &[u8],
+    write_and_sync: impl FnOnce(&mut fs::File, &[u8]) -> std::io::Result<()>,
+) -> Result<(), String> {
+    let _guard = MARKER_LOCK.lock().unwrap();
+    let temporary = marker.with_file_name(format!(
+        ".bf-app-marker-{}-{:016x}.tmp",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode_for_unix(0o600)
+            .open(&temporary)
+            .map_err(|e| format!("create temporary app rollback marker: {e}"))?;
+        write_and_sync(&mut file, payload)
+            .map_err(|e| format!("persist app rollback marker: {e}"))?;
+        match fs::remove_file(attempts) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(format!("reset app startup attempts: {err}")),
+        }
+        fs::rename(&temporary, marker).map_err(|e| format!("publish app rollback marker: {e}"))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn newer_update(check: CheckResponse, current_version: &str) -> Option<UpdateInfo> {
@@ -466,21 +494,52 @@ fn verify_signature_with_key(
 /// Clear the in-progress marker. Call after the kiosk has booted cleanly and
 /// reported back to the server — proves the new binary survives startup.
 pub fn mark_firmware_applied() {
-    let marker = PathBuf::from(FIRMWARE_MARKER);
-    if marker.exists() {
-        if let Ok(raw) = fs::read_to_string(&marker) {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
-                if let Some(version) = value.get("version").and_then(|v| v.as_str()) {
-                    crate::update_guard::record_success("firmware", version);
-                }
-            }
+    if let Some(version) = confirm_pending_marker(
+        Path::new(FIRMWARE_MARKER),
+        Path::new(FIRMWARE_ATTEMPTS),
+        crate::server::kiosk_app_version(),
+        Path::new("/proc/self/exe"),
+    ) {
+        if !version.is_empty() {
+            crate::update_guard::record_success("firmware", &version);
         }
-        let _ = fs::remove_file(marker);
     }
-    let attempts = PathBuf::from(FIRMWARE_ATTEMPTS);
-    if attempts.exists() {
-        let _ = fs::remove_file(attempts);
+}
+
+// Never let a final heartbeat/UI frame from the old process confirm an update
+// which has been staged on disk but has not run yet. Setup also supports trusted
+// local builds with the same version, so its marker uses the executable hash.
+fn confirm_pending_marker(
+    marker: &Path,
+    attempts: &Path,
+    running_version: &str,
+    executable: &Path,
+) -> Option<String> {
+    let _guard = MARKER_LOCK.lock().unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(marker).ok()?).ok()?;
+    let version = value.get("version")?.as_str()?;
+    if let Some(expected) = value.get("sha256").and_then(|value| value.as_str()) {
+        let mut file = fs::File::open(executable).ok()?;
+        let mut digest = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let size = file.read(&mut buffer).ok()?;
+            if size == 0 {
+                break;
+            }
+            digest.update(&buffer[..size]);
+        }
+        if hex_lower(&digest.finalize()) != expected {
+            return None;
+        }
+    } else if version.is_empty()
+        || version.trim_start_matches('v') != running_version.trim_start_matches('v')
+    {
+        return None;
     }
+    fs::remove_file(marker).ok()?;
+    let _ = fs::remove_file(attempts);
+    Some(version.to_owned())
 }
 
 fn chrono_now_iso() -> String {
@@ -530,7 +589,9 @@ mod tests {
     use super::{read_firmware_body, verify_signature_with_key};
     use base64::Engine as _;
     use ed25519_dalek::{Signer, SigningKey, pkcs8::EncodePublicKey};
-    use std::io::Cursor;
+    use sha2::{Digest, Sha256};
+    use std::fs;
+    use std::io::{Cursor, Write};
 
     #[test]
     fn pending_marker_arms_rollback_and_resets_stale_attempts() {
@@ -550,11 +611,79 @@ mod tests {
         assert_eq!(payload["prev"], prev.to_string_lossy().as_ref());
         assert!(!attempts.exists());
         assert_eq!(std::fs::read(&bin).unwrap(), b"existing app");
-        assert!(super::write_pending_marker(
-            "1.2.4", &bin, &prev, &root.join("missing/marker"), &attempts
-        ).is_err());
+        assert!(
+            super::write_pending_marker(
+                "1.2.4",
+                &bin,
+                &prev,
+                &root.join("missing/marker"),
+                &attempts
+            )
+            .is_err()
+        );
         assert_eq!(std::fs::read(&bin).unwrap(), b"existing app");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn partial_marker_write_preserves_existing_marker_and_attempts() {
+        let root = std::env::temp_dir().join(format!("bf-marker-atomic-{}", rand::random::<u64>()));
+        fs::create_dir_all(&root).unwrap();
+        let marker = root.join("marker");
+        let attempts = root.join("attempts");
+        fs::write(&marker, b"existing valid marker").unwrap();
+        fs::write(&attempts, b"2").unwrap();
+        let result =
+            super::persist_pending_marker(&marker, &attempts, b"new payload", |file, _| {
+                file.write_all(b"partial")?;
+                Err(std::io::Error::from_raw_os_error(28)) // ENOSPC after a partial write.
+            });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&marker).unwrap(), b"existing valid marker");
+        assert_eq!(fs::read(&attempts).unwrap(), b"2");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        fs::remove_file(&marker).unwrap();
+        assert!(
+            super::persist_pending_marker(&marker, &attempts, b"new", |_, _| Err(
+                std::io::Error::from_raw_os_error(5)
+            ))
+            .is_err()
+        );
+        assert!(!marker.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn healthy_unpaired_candidate_confirms_only_its_own_marker() {
+        let root =
+            std::env::temp_dir().join(format!("bf-marker-confirm-{}", rand::random::<u64>()));
+        fs::create_dir_all(&root).unwrap();
+        let marker = root.join("marker");
+        let attempts = root.join("attempts");
+        let binary = root.join("running");
+        fs::write(&binary, b"running candidate").unwrap();
+        fs::write(&attempts, b"1").unwrap();
+        fs::write(&marker, r#"{"version":"1.2.3"}"#).unwrap();
+        assert!(super::confirm_pending_marker(&marker, &attempts, "1.2.2", &binary).is_none());
+        assert!(marker.exists());
+        assert_eq!(
+            super::confirm_pending_marker(&marker, &attempts, "1.2.3", &binary).as_deref(),
+            Some("1.2.3")
+        );
+        assert!(!marker.exists());
+        assert!(!attempts.exists());
+        let payload = serde_json::json!({"version":"", "sha256":super::hex_lower(&Sha256::digest(b"running candidate"))});
+        fs::write(&marker, payload.to_string()).unwrap();
+        fs::write(&binary, b"old running process").unwrap();
+        assert!(super::confirm_pending_marker(&marker, &attempts, "1.2.3", &binary).is_none());
+        assert!(marker.exists());
+        fs::write(&binary, b"running candidate").unwrap();
+        assert_eq!(
+            super::confirm_pending_marker(&marker, &attempts, "local", &binary).as_deref(),
+            Some("")
+        );
+        assert!(!marker.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

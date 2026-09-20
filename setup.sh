@@ -20,7 +20,7 @@ MEDIA_SET=0
 MEDIA_SAVED=0
 CONFIG=/etc/betterframe/linux-install
 PREVIOUS_INSTALL=0
-PRESERVE_PREVIOUS=1
+PRESERVE_PREVIOUS=0
 RELEASE_VERSION=
 
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -77,9 +77,32 @@ load_distribution() {
     distribution=$(
         # shellcheck disable=SC1090,SC1091
         . "${1:-/etc/os-release}" || exit
-        printf '%s|%s' "$ID" "${ID_LIKE:-}"
+        printf '%s|%s|%s' "$ID" "${ID_LIKE:-}" "${VERSION_ID:-}"
     ) || return
-    IFS='|' read -r DISTRO_ID DISTRO_LIKE <<< "$distribution"
+    IFS='|' read -r DISTRO_ID DISTRO_LIKE DISTRO_VERSION <<< "$distribution"
+}
+
+validate_distribution() {
+    local minimum=
+    case "$DISTRO_ID" in ubuntu) minimum=24;; debian) minimum=13;; esac
+    if [[ -n $minimum ]]; then
+        [[ ${DISTRO_VERSION:-} =~ ^[0-9]+([.][0-9]+)*$ ]] || fail "Cannot determine $DISTRO_ID release; BF needs GTK 4.14+ and WebKitGTK 6.0"
+        local major=${DISTRO_VERSION%%.*}
+        ((10#$major >= minimum)) || fail "Unsupported $DISTRO_ID $DISTRO_VERSION: use Ubuntu 24.04+ or Debian 13+ (GTK 4.14+ and WebKitGTK 6.0 required)"
+    fi
+}
+check_runtime_libraries() {
+    python3 - <<'PYRUNTIME'
+import ctypes
+try:
+    gtk = ctypes.CDLL('libgtk-4.so.1')
+    version = (gtk.gtk_get_major_version(), gtk.gtk_get_minor_version())
+    if version < (4, 14):
+        raise RuntimeError(f'installed GTK is {version[0]}.{version[1]}')
+    ctypes.CDLL('libwebkitgtk-6.0.so.4')
+except (OSError, RuntimeError) as error:
+    raise SystemExit(f'Unsupported runtime: BF requires GTK 4.14+ and WebKitGTK 6.0 ({error}). Existing app was not replaced.')
+PYRUNTIME
 }
 
 select_packages() {
@@ -133,7 +156,7 @@ load_settings() {
         PREVIOUS_INSTALL=1
     fi
     if ((CHANNEL_SET == 0)) && [[ -n $VERSION && $VERSION != latest ]]; then
-        case "$VERSION" in *-dev*) CHANNEL=dev;; *-beta*) CHANNEL=beta;; *) CHANNEL=stable;; esac
+        case "$VERSION" in *-dev*|*-alpha*) CHANNEL=dev;; *-beta*) CHANNEL=beta;; *) CHANNEL=stable;; esac
     fi
     [[ $CHANNEL == stable || $CHANNEL == beta || $CHANNEL == dev ]] || fail 'Channel must be stable, beta, or dev'
     [[ $MEDIA_GATEWAY == on || $MEDIA_GATEWAY == off ]] || fail 'Media gateway must be on or off'
@@ -183,14 +206,15 @@ service_command() {
     if [[ $scope == user ]]; then user_systemctl "$@"; else timeout 30 systemctl "$@"; fi
 }
 stop_app_service() {
-    local scope=$1 unit=$2
+    local scope=$1 unit=$2 selected=0
+    if [[ ( $MODE == desktop && $scope == user ) || ( $MODE == dedicated && $scope == system ) ]]; then selected=1; fi
     if [[ $(service_command "$scope" show "$unit" -p LoadState --value) == not-found ]]; then return; fi
-    if [[ ( $MODE == desktop && $scope == user ) || ( $MODE == dedicated && $scope == system ) ]]; then
+    if ((selected)); then
         if service_command "$scope" is-active --quiet "$unit"; then PRESERVE_PREVIOUS=0; fi
+        if service_command "$scope" is-failed --quiet "$unit"; then PRESERVE_PREVIOUS=1; fi
     fi
-    if service_command "$scope" is-failed --quiet "$unit"; then PRESERVE_PREVIOUS=1; fi
     if ! service_command "$scope" stop "$unit"; then
-        PRESERVE_PREVIOUS=1
+        if ((selected)); then PRESERVE_PREVIOUS=1; fi
         service_command "$scope" kill --kill-whom=all --signal=KILL "$unit" || true
         service_command "$scope" stop "$unit" || fail "Cannot stop $unit; app was not replaced"
     fi
@@ -235,6 +259,24 @@ else:
 PYGUARD
     fi
 }
+arm_setup_candidate() {
+    runtime_command python3 - "$STATE/firmware-applying.json" "$BIN" "$RELEASE_VERSION" <<'PYMARKER'
+import hashlib, json, os, pathlib, sys, tempfile, time
+marker, binary, version = sys.argv[1:]
+with open(binary, 'rb') as stream:
+    digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+fd, temporary = tempfile.mkstemp(prefix='.bf-app-marker-', dir=pathlib.Path(marker).parent)
+try:
+    with os.fdopen(fd, 'w') as stream:
+        json.dump(dict(version=version, sha256=digest, attempt_at=str(int(time.time())),
+                       confirmed=False, bin=binary, prev=binary + '.prev'), stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, marker)
+finally:
+    if os.path.exists(temporary): os.unlink(temporary)
+PYMARKER
+}
 start_app_service() {
     local scope=$1 unit=$2 initial_pid current_pid
     if service_command "$scope" is-failed --quiet "$unit"; then
@@ -252,6 +294,7 @@ start_app_service() {
         runtime_command rm -f -- "$BIN.new"
         runtime_command install -m 755 "$BIN.prev" "$BIN.new"
         runtime_command mv -f -- "$BIN.new" "$BIN"
+        runtime_command rm -f -- "$STATE/firmware-applying.json" "$STATE/firmware-applying.attempts"
         service_command "$scope" reset-failed "$unit" || printf 'Could not clear failed state for %s; attempting startup.\n' "$unit" >&2
         service_command "$scope" start "$unit" || true
     fi
@@ -286,7 +329,8 @@ if not isinstance(releases, list):
 choices = []
 for release in releases:
     tag = release.get('tag_name', '')
-    if release.get('draft') or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+-' + sys.argv[2] + r'(?:[.-][a-zA-Z0-9.-]+)?', tag):
+    channel_pattern = '(?:dev|alpha)' if sys.argv[2] == 'dev' else re.escape(sys.argv[2])
+    if release.get('draft') or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+-' + channel_pattern + r'(?:[.-][a-zA-Z0-9.-]+)?', tag):
         continue
     artifact = f'betterframe-kiosk-{tag[1:]}-{sys.argv[3]}'
     names = {a.get('name') for a in release.get('assets', [])}
@@ -379,8 +423,8 @@ write_rollback_helper() {
 # Roll back the kiosk binary if an app OTA candidate never confirms healthy.
 #
 # The kiosk writes MARKER just before swapping in a new binary and removes it
-# only after a successful post-boot heartbeat. This script runs as root from
-# betterframe-kiosk.service ExecStartPre, so it can recover even when the new
+# after a healthy UI frame or successful post-boot heartbeat. This script runs
+# from the app service ExecStartPre, so it can recover even when the new
 # kiosk binary exits before Rust code can run.
 
 set -euo pipefail
@@ -410,10 +454,6 @@ rollback() {
   fi
 }
 
-marker_mtime=$(stat -c %Y "$MARKER" 2>/dev/null || stat -f %m "$MARKER" 2>/dev/null || echo 0)
-now=$(date +%s)
-age=$(( now - marker_mtime ))
-
 attempts=0
 if [ -f "$ATTEMPTS" ]; then
   attempts=$(cat "$ATTEMPTS" 2>/dev/null || echo 0)
@@ -421,6 +461,16 @@ fi
 case "$attempts" in
   ''|*[!0-9]*) attempts=0 ;;
 esac
+
+# Start the health deadline when the candidate is actually launched. Setup may
+# install it hours before the next desktop login or dedicated-kiosk boot.
+if [ "$attempts" -eq 0 ]; then
+  touch "$MARKER"
+fi
+
+marker_mtime=$(stat -c %Y "$MARKER" 2>/dev/null || stat -f %m "$MARKER" 2>/dev/null || echo 0)
+now=$(date +%s)
+age=$(( now - marker_mtime ))
 
 if [ "$age" -ge "$MAX_AGE_SECONDS" ]; then
   rollback "apply marker is stale (${age}s old)"
@@ -656,7 +706,7 @@ EOF
 }
 main() {
     parse_args "$@"
-    printf 'BetterFrame setup revision 2026-09-20.4\n'
+    printf 'BetterFrame setup revision 2026-09-20.5\n'
     [[ $(uname -s) == Linux ]] || fail 'This installer requires Linux'
     [[ $EUID == 0 ]] || fail 'Run with sudo (or root and --user USER)'
     [[ -d /run/systemd/system ]] || fail 'This installer requires systemd'
@@ -700,6 +750,7 @@ main() {
         fi
     done
     load_distribution /etc/os-release
+    validate_distribution
     select_packages
     model=
     if [[ -r /proc/device-tree/model ]]; then model=$(tr -d '\0' < /proc/device-tree/model); fi
@@ -711,6 +762,7 @@ main() {
     else
         dnf install -y "${PACKAGES[@]}"
     fi
+    check_runtime_libraries
     STAGING=$(mktemp -d)
     trap 'rm -rf -- "$STAGING"' EXIT
     prepare_candidate
@@ -805,6 +857,7 @@ PYENV
     systemctl unmask --runtime betterframe-kiosk.service
     install_app_binary
     clear_interrupted_update
+    arm_setup_candidate
     if command -v restorecon >/dev/null; then restorecon -RF /opt/betterframe /usr/local/libexec/betterframe-rollback; fi
     printf '%s %s %s %s\n' "$INSTALL_USER" "$MODE" "$CHANNEL" "$MEDIA_GATEWAY" | reconcile_file "$CONFIG" 644 root root
     if [[ $MODE == desktop ]]; then

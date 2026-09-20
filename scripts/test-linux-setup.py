@@ -233,7 +233,7 @@ class SetupTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual((p / 'app').read_text(), 'previous')
             calls = (p / 'calls').read_text().splitlines()
-            self.assertEqual(calls[0], 'user reset-failed betterframe.service')
+            self.assertEqual(calls[:2], ['user is-failed --quiet betterframe.service', 'user reset-failed betterframe.service'])
             self.assertEqual(calls[-1], 'user start betterframe.service')
 
     def test_channel_selection_excludes_drafts_and_incomplete_or_other_target_assets(self):
@@ -274,6 +274,34 @@ class SetupTests(unittest.TestCase):
             self.assertEqual((p / 'app').read_text(), 'current app')
             self.assertEqual((p / 'firmware-applying.json').read_text(), 'pending')
             self.assertFalse((p / 'candidate').exists())
+
+    def test_fresh_service_starts_without_resetting_unloaded_unit(self):
+        self.shell('''
+            sleep() { :; }
+            service_command() {
+                case "$2" in
+                    is-failed) return 1;;
+                    reset-failed) echo "Unit not loaded" >&2; return 1;;
+                    show) echo 1234;;
+                    *) return 0;;
+                esac
+            }
+            start_app_service user betterframe.service
+        ''')
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            launcher = p / 'launcher'
+            launcher.write_text(self.shell('write_launcher').stdout)
+            systemctl = p / 'systemctl'
+            systemctl.write_text('#!/bin/bash\ncase "$2" in\n'
+                                 'is-failed) exit 1;;\n'
+                                 'reset-failed) exit 1;;\n'
+                                 'restart) echo started;;\nesac\n')
+            systemctl.chmod(0o755)
+            env = dict(os.environ, PATH=f'{p}:{os.environ["PATH"]}')
+            result = subprocess.run(['bash', str(launcher)], env=env, text=True,
+                                    capture_output=True, check=True)
+            self.assertIn('started', result.stdout)
 
     def test_start_success_requires_a_stable_process_after_reset(self):
         self.shell('''

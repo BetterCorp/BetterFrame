@@ -237,7 +237,9 @@ PYGUARD
 }
 start_app_service() {
     local scope=$1 unit=$2 initial_pid current_pid
-    service_command "$scope" reset-failed "$unit"
+    if service_command "$scope" is-failed --quiet "$unit"; then
+        service_command "$scope" reset-failed "$unit"
+    fi
     if service_command "$scope" start "$unit"; then
         initial_pid=$(service_command "$scope" show "$unit" -p MainPID --value)
         sleep 3
@@ -613,7 +615,9 @@ for name in DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_SESSION_TYPE XDG_CURRENT_DESK
 done
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
 if ((${#variables[@]})); then systemctl --user import-environment "${variables[@]}"; fi
-systemctl --user reset-failed betterframe.service
+if systemctl --user is-failed --quiet betterframe.service; then
+    systemctl --user reset-failed betterframe.service
+fi
 exec systemctl --user restart betterframe.service
 EOF
 }

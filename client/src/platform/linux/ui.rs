@@ -1291,7 +1291,7 @@ fn install_idle_watchdog() {
                 else {
                     continue;
                 };
-                if st.is_asleep {
+                if st.is_asleep || terminal_prompt_on_display(display_id) {
                     continue;
                 }
                 let sleep_to = d.sleep_timeout_seconds;
@@ -3356,6 +3356,36 @@ mod display_tests {
             );
             assert!(ds["one"].last_activity.elapsed() < Duration::from_secs(2));
         });
+        // Terminal authorization must remain visible even on a sleeping kiosk
+        // whose configured sleep timeout is shorter than the prompt lifetime.
+        standby_display(None);
+        show_terminal_code_overlay("123456");
+        let prompt_display = TERMINAL_CODE_DISPLAY.with(|id| id.borrow().clone().unwrap());
+        let saved_child = TERMINAL_CODE_SAVED_CHILD.with(|saved| saved.borrow().as_ref().unwrap().1.clone());
+        DISPLAYS.with(|ds| {
+            let mut ds = ds.borrow_mut();
+            for (id, st) in ds.iter_mut() {
+                if *id == prompt_display {
+                    assert!(!st.is_asleep);
+                    assert_eq!(st.window.child().unwrap(), st.content_overlay.clone().upcast::<gtk::Widget>());
+                    TERMINAL_CODE_WIDGET.with(|code| {
+                        assert_eq!(code.borrow().as_ref().unwrap().parent().unwrap(), st.content_overlay.clone().upcast::<gtk::Widget>());
+                    });
+                    st.last_activity = Instant::now() - Duration::from_secs(61);
+                } else {
+                    assert!(st.is_asleep, "only the authorization display should wake");
+                }
+            }
+        });
+        let deadline = Instant::now() + Duration::from_millis(1200);
+        while Instant::now() < deadline {
+            while context.pending() { context.iteration(false); }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        DISPLAYS.with(|ds| assert!(!ds.borrow()[&prompt_display].is_asleep));
+        dismiss_terminal_code_overlay();
+        assert!(!terminal_prompt_on_display(&prompt_display));
+        DISPLAYS.with(|ds| assert_eq!(ds.borrow()[&prompt_display].content_overlay.child().unwrap(), saved_child));
         DISPLAYS.with(|ds| {
             for (_, state) in ds.borrow_mut().drain() {
                 state.window.close();
@@ -3893,10 +3923,15 @@ thread_local! {
     static TERMINAL_CODE_WIDGET: RefCell<Option<gtk::Widget>> = const { RefCell::new(None) };
     static TERMINAL_CODE_SAVED_CHILD: RefCell<Option<(String, gtk::Widget)>> = const { RefCell::new(None) };
     static TERMINAL_OVERLAY_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static TERMINAL_CODE_DISPLAY: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 fn is_terminal_overlay_active() -> bool {
     TERMINAL_OVERLAY_ACTIVE.with(|a| a.get())
+}
+
+fn terminal_prompt_on_display(display_id: &str) -> bool {
+    TERMINAL_CODE_DISPLAY.with(|id| id.borrow().as_deref() == Some(display_id))
 }
 
 fn show_terminal_code_overlay(code: &str) {
@@ -3905,6 +3940,9 @@ fn show_terminal_code_overlay(code: &str) {
     let display_id = DISPLAYS.with(|ds| ds.borrow().keys().next().cloned());
     let Some(display_id) = display_id else { return };
 
+    // Physical-presence authorization must be visible even from standby.
+    wake_display(Some(&display_id));
+    TERMINAL_CODE_DISPLAY.with(|id| *id.borrow_mut() = Some(display_id.clone()));
     DISPLAYS.with(|ds| {
         let ds = ds.borrow();
         let Some(st) = ds.get(&display_id) else { return };
@@ -3973,6 +4011,7 @@ fn show_terminal_code_overlay(code: &str) {
 }
 
 fn dismiss_terminal_code_overlay() {
+    TERMINAL_CODE_DISPLAY.with(|id| *id.borrow_mut() = None);
     TERMINAL_OVERLAY_ACTIVE.with(|a| a.set(false));
     TERMINAL_CODE_WIDGET.with(|w| {
         if w.borrow().is_none() {

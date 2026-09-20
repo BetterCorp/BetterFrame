@@ -3073,7 +3073,14 @@ fn ensure_web(
         return wv;
     }
 
-    let wv = webkit6::WebView::new();
+    // Demo pages never retain browser cookies/storage after local exit or reboot.
+    let wv = if server::demo_mode() {
+        webkit6::WebView::builder()
+            .network_session(&webkit6::NetworkSession::new_ephemeral())
+            .build()
+    } else {
+        webkit6::WebView::new()
+    };
     wv.set_vexpand(true);
     wv.set_hexpand(true);
     #[cfg(all(target_arch = "x86_64", target_os = "linux"))]

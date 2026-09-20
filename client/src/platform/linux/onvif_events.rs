@@ -956,7 +956,10 @@ fn operation_fault(status: reqwest::StatusCode, xml: &str) -> bool {
         return false;
     }
     let lower = xml.to_ascii_lowercase();
-    ![
+    if [
+        "failedcheck",
+        "unsupportedalgorithm",
+        "messageexpired",
         "notauthorized",
         "not authorized",
         "unauthorized",
@@ -966,7 +969,17 @@ fn operation_fault(status: reqwest::StatusCode, xml: &str) -> bool {
         "unauthenticated",
     ]
     .iter()
-    .any(|value| lower.contains(value))
+    .any(|value| lower.contains(value)) {
+        return false;
+    }
+    // A SOAP fault does not prove authentication succeeded. Only known
+    // operation failures can stop probing; unknown/vendor security faults must
+    // still reach WSSE-Text, Basic and HTTP Digest fallback methods.
+    [
+        "invalidargs", "invalid args", "invalidargval", "resourceunknown",
+        "actionnotsupported", "unabletorenew", "unacceptableterminationtime",
+        "invalidfilter",
+    ].iter().any(|value| lower.contains(value))
 }
 
 fn build_auth_attempt(
@@ -1579,6 +1592,66 @@ mod tests {
             reqwest::StatusCode::OK,
             &fault.replace("Invalid Args", "NotAuthorized")
         ));
+    }
+
+    #[test]
+    fn security_and_unknown_faults_do_not_prove_authentication() {
+        for code in ["FailedCheck", "UnsupportedAlgorithm", "MessageExpired",
+            "InvalidSecurity", "InvalidSecurityToken", "SecurityTokenUnavailable",
+            "FailedAuthentication", "UnsupportedSecurityToken", "VendorSecurityFailure"] {
+            let xml = format!("<s:Fault><s:Code><s:Value>wsse:{code}</s:Value></s:Code><s:Reason><s:Text>Security check failed</s:Text></s:Reason></s:Fault>");
+            for status in [reqwest::StatusCode::OK, reqwest::StatusCode::INTERNAL_SERVER_ERROR] {
+                assert!(!operation_fault(status, &xml), "{status}: {code}");
+            }
+        }
+    }
+
+    #[test]
+    fn security_fault_reaches_fallback_and_caches_successful_auth() {
+        use std::io::{Read, Write};
+        use std::time::Instant;
+        for status in ["200 OK", "500 Internal Server Error"] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}/events", listener.local_addr().unwrap());
+            let worker = std::thread::spawn(move || {
+                for (index, method) in ["PasswordDigest", "PasswordText", "PasswordText"].iter().enumerate() {
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    let mut socket = loop {
+                        match listener.accept() {
+                            Ok((socket, _)) => break socket,
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                assert!(Instant::now() < deadline, "missing auth attempt {method}");
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            Err(error) => panic!("{error}"),
+                        }
+                    };
+                    socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut header = Vec::new();
+                    while !header.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        socket.read_exact(&mut byte).unwrap();
+                        header.push(byte[0]);
+                    }
+                    let header = String::from_utf8(header).unwrap().to_ascii_lowercase();
+                    let length: usize = header.lines().find_map(|line| line.strip_prefix("content-length:"))
+                        .unwrap().trim().parse().unwrap();
+                    let mut body = vec![0; length];
+                    socket.read_exact(&mut body).unwrap();
+                    assert!(String::from_utf8(body).unwrap().contains(method));
+                    let (response_status, response) = if index == 0 {
+                        (status, r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"><s:Body><s:Fault><s:Code><s:Value>wsse:FailedCheck</s:Value></s:Code><s:Reason><s:Text>Security check failed</s:Text></s:Reason></s:Fault></s:Body></s:Envelope>"#)
+                    } else {
+                        ("200 OK", "<Response/>")
+                    };
+                    write!(socket, "HTTP/1.1 {response_status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+                }
+            });
+            assert!(soap_post_authed(&url, "urn:test", "<Request/>", "user", "pass").is_ok());
+            assert!(soap_post_authed(&url, "urn:test", "<Request/>", "user", "pass").is_ok());
+            worker.join().unwrap();
+        }
     }
 
     #[test]

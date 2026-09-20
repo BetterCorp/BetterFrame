@@ -500,8 +500,7 @@ write_mediamtx_unit() {
 Description=BetterFrame local media gateway and recorder
 After=network.target
 Before=betterframe-kiosk.service
-StartLimitIntervalSec=120
-StartLimitBurst=10
+StartLimitIntervalSec=0
 
 [Service]
 User=$INSTALL_USER
@@ -561,8 +560,7 @@ write_desktop_unit() {
 [Unit]
 Description=BetterFrame app
 PartOf=graphical-session.target
-StartLimitIntervalSec=120
-StartLimitBurst=10
+StartLimitIntervalSec=0
 
 [Service]
 ExecStartPre=/usr/local/libexec/betterframe-rollback
@@ -583,8 +581,7 @@ write_repair_override() {
 [Unit]
 FailureAction=none
 StartLimitAction=none
-StartLimitIntervalSec=120
-StartLimitBurst=10
+StartLimitIntervalSec=0
 
 [Service]
 ExecStart=
@@ -628,8 +625,7 @@ Description=BetterFrame dedicated app kiosk
 After=systemd-user-sessions.service systemd-logind.service network-online.target
 Wants=network-online.target
 Conflicts=getty@tty1.service display-manager.service
-StartLimitIntervalSec=120
-StartLimitBurst=10
+StartLimitIntervalSec=0
 
 [Service]
 User=$INSTALL_USER

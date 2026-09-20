@@ -94,9 +94,11 @@ class SetupTests(unittest.TestCase):
             self.assertNotEqual(self.shell(f'TARGET=betterframe-pc-x86_64; ldd() {{ echo "libmissing.so => not found"; }}; check_binary {p}', check=False).returncode, 0)
 
     def test_service_restart_contract(self):
-        for command in ['write_desktop_unit', 'INSTALL_USER=kiosk; USER_ID=1000; write_dedicated_unit']:
+        for command in ['write_desktop_unit', 'INSTALL_USER=kiosk; USER_ID=1000; write_dedicated_unit',
+                        'write_repair_override']:
             unit = self.shell(command).stdout
             self.assertIn('Restart=always', unit)
+            self.assertIn('StartLimitIntervalSec=0', unit)
             self.assertIn('BF_ENABLE_OS_OTA=0', unit)
             self.assertIn('/opt/betterframe/kiosk/betterframe-kiosk', unit)
             self.assertNotIn('reboot', unit)
@@ -106,6 +108,7 @@ class SetupTests(unittest.TestCase):
         self.assertIn('on_progress("Restarting app", 100)', updater)
         unit = (ROOT / 'deploy/systemd/betterframe-kiosk.service').read_text()
         self.assertNotIn('Action=reboot', unit)
+        self.assertIn('StartLimitIntervalSec=0', unit)
         self.assertIn('Restart=always', unit)
 
     def test_rollback_after_failed_candidate_starts(self):

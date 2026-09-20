@@ -25,7 +25,8 @@ using apt on Ubuntu/Debian or dnf on Fedora-family distributions. It requires
 systemd and a regular user account with a home directory.
 
 Desktop mode is the default: BetterFrame starts on graphical login and systemd
-restarts it after an app update. It does not enable automatic OS login. Dedicated
+restarts it after a crash or app update. Automatic retries continue with a short
+delay between attempts, without rebooting the OS. It does not enable automatic OS login. Dedicated
 mode replaces graphical login with a fullscreen Cage session;
 select it explicitly at the prompt or with `--mode dedicated`. The installer
 never reboots the machine or disables SSH. An existing dedicated kiosk restarts

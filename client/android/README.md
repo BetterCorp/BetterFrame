@@ -336,3 +336,16 @@ experimental until these checks pass on named devices.
 ## Google Play
 
 See [publishing setup](../../docs/android-play-publishing.md) and the [store kit](play/README.md) for AAB delivery, testing/production tracks, languages and listing assets.
+
+### Camera failure diagnostics
+
+Retained app diagnostics include the camera ID, primary/fallback selection, TCP
+transport, retry count and whether a first frame was rendered. Playback errors
+include the Media3 code and up to eight nested exception types with their first
+stack location. Known network exception categories and exact RTSP method/status
+messages (for example `DESCRIBE 401`) are retained. Arbitrary exception messages,
+stream URLs and camera labels are omitted to avoid exposing credentials or server
+response contents. Startup failures, stalled/ended streams, reconnect delays and
+recovery after retry are also recorded. Retry entries describe the next stream.
+These diagnostics identify failure categories; device logcat may still be needed
+for failures whose details cannot safely be included in retained logs.

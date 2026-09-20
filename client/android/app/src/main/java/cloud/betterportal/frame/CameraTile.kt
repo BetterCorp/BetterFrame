@@ -31,6 +31,7 @@ import kotlin.random.Random
 class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : ViewerTile(context) {
     private val handler = Handler(Looper.getMainLooper())
     private val camera = cell.getJSONObject("camera")
+    private val diagnosticId = CameraDiagnostics.identifier(camera.optString("id"))
     private var uri = camera.optString("uri")
     private val fallbackUri = camera.optString("fallbackUri").takeUnless { it.isBlank() || it == "null" }
     private var player: ExoPlayer? = null
@@ -82,6 +83,7 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
             val lastFrame = lastVideoFrameAt
             val quietFor = SystemClock.elapsedRealtime() - if (lastFrame > 0L) lastFrame else connectionStartedAt
             if (quietFor >= if (firstFrame) 15_000L else 20_000L) {
+                logDiagnostic("warn", "Playback stalled quietMs=$quietFor")
                 recover()
                 return
             }
@@ -124,6 +126,7 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
         lastPresentationTimeUs = Long.MIN_VALUE
         val frameEpoch = ++frameGeneration
         if (!uri.startsWith("rtsp://", ignoreCase = true)) {
+            logDiagnostic("warn", "Unsupported stream scheme")
             spinner.visibility = View.GONE
             errorMessage.text = "Camera requires a supported RTSP stream"
             errorMessage.visibility = View.VISIBLE
@@ -162,6 +165,7 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
                     if (player !== next) return
                     firstFrame = true
                     showReady()
+                    if (retries > 0) logDiagnostic("info", "Playback recovered")
                     retries = 0
                 }
                 override fun onPlaybackStateChanged(state: Int) {
@@ -170,11 +174,14 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
                         showConnecting()
                     } else if (state == Player.STATE_READY && firstFrame) {
                         showReady()
-                    } else if (state == Player.STATE_ENDED) recover()
+                    } else if (state == Player.STATE_ENDED) {
+                        logDiagnostic("warn", "Stream ended")
+                        recover()
+                    }
                 }
                 override fun onPlayerError(error: PlaybackException) {
-                    DiagnosticLogs.record("warn", "Camera playback failed (${error.errorCodeName})")
                     if (player !== next) return
+                    logDiagnostic("warn", "Camera playback failed (${error.errorCodeName}, code=${error.errorCode}) causes=${CameraDiagnostics.causes(error)}")
                     val decoderFailure = error.errorCode in setOf(
                         PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
                         PlaybackException.ERROR_CODE_DECODING_FAILED,
@@ -190,7 +197,15 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
             next.prepare()
             next.playWhenReady = true
             handler.postDelayed(watchdog, 5_000)
-        } catch (_: Exception) { recover() }
+        } catch (error: Exception) {
+            logDiagnostic("warn", "Camera startup failed causes=${CameraDiagnostics.causes(error)}")
+            recover()
+        }
+    }
+
+    private fun logDiagnostic(level: String, detail: String) {
+        val stream = if (fallbackUri != null && uri == fallbackUri) "fallback" else "primary"
+        DiagnosticLogs.record(level, "Camera id=$diagnosticId stream=$stream transport=tcp retry=$retries firstFrame=$firstFrame: $detail")
     }
 
     private fun recover(message: String? = null) {
@@ -210,6 +225,7 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
         if (fallbackUri != null && uri != fallbackUri) uri = fallbackUri
         retries = min(retries + 1, 6)
         val delay = min(30_000L, 1_000L shl retries) + Random.nextLong(250, 1_000)
+        logDiagnostic("info", "Reconnect scheduled delayMs=$delay")
         handler.postDelayed({ connect() }, delay)
     }
 

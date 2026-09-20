@@ -21,6 +21,8 @@ jobs:
           node-version: 24
       - run: python3 scripts/test-release-versions.py
       - run: python3 scripts/test-easy1-deploy.py
+      - run: python3 scripts/test-linux-setup.py
+      - run: sudo python3 scripts/test-linux-setup.py SetupTests.test_root_installer_writes_runtime_files_without_root_privileges
       - name: Dashboard proxy isolation
         run: |
           sudo apt-get update
@@ -73,8 +75,10 @@ jobs:
       - name: Install native client dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwebkitgtk-6.0-dev libssl-dev
+          sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwebkitgtk-6.0-dev libssl-dev xvfb xauth dbus-x11
       - run: cargo test --manifest-path client/Cargo.toml --workspace --locked
+      - name: Confirm healthy pairing UI before enrollment
+        run: xvfb-run -a dbus-run-session -- cargo test --manifest-path client/Cargo.toml pairing_health_confirmation -- --ignored --test-threads=1
 
   windows-client:
     runs-on: windows-latest

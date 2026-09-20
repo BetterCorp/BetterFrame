@@ -183,15 +183,18 @@ jobs:
           - rust_target: aarch64-unknown-linux-gnu
             firmware_target: betterframe-rpi5-aarch64
             label: Raspberry Pi 5
+            container: debian:trixie-slim
             runs-on: blacksmith-8vcpu-ubuntu-2404-arm
           - rust_target: x86_64-unknown-linux-gnu
             firmware_target: betterframe-pc-x86_64
             label: PC x86_64
+            container: ubuntu:24.04
             runs-on: blacksmith-8vcpu-ubuntu-2404
     runs-on: ${{ matrix.runs-on }}
-    # Trixie container matches Pi OS Trixie's glibc + apt packages.
+    # PC releases use the Ubuntu 24.04 library baseline for desktop installs.
+    # Pi releases retain the Pi OS Trixie baseline.
     container:
-      image: debian:trixie-slim
+      image: ${{ matrix.container }}
     steps:
       - name: Bootstrap apt + git (container has none preinstalled)
         run: |

@@ -4192,9 +4192,9 @@ interface FirmwarePageProps {
 
 export function FirmwarePage(props: FirmwarePageProps) {
   return (
-    <Layout title="Firmware" user={props.user} activeNav="firmware">
+    <Layout title="App" user={props.user} activeNav="firmware">
       <p style="color:#666; margin-bottom:1rem">
-        Kiosk firmware must be signed by the vendor release key before upload.
+        Kiosk app releases must be signed by the vendor release key before upload.
         <a href="/admin/firmware/rollouts" style="margin-left:0.5rem">Rollouts →</a>
       </p>
 
@@ -4258,7 +4258,7 @@ export function FirmwarePage(props: FirmwarePageProps) {
           </thead>
           <tbody>
             {props.releases.length === 0 ? (
-              <tr><td colspan="7" style="text-align:center; color:#999; padding:2rem">No firmware releases yet.</td></tr>
+              <tr><td colspan="7" style="text-align:center; color:#999; padding:2rem">No app releases yet.</td></tr>
             ) : (
               props.releases.map((r) => (
                 <tr style={r.yanked_at ? "opacity:0.4" : ""}>
@@ -4320,7 +4320,7 @@ export function KioskFirmwarePanel(props: KioskFirmwarePanelProps) {
     : [];
   return (
     <div id={`kiosk-firmware-${String(k.id)}`} class="card" style="margin-bottom:1.5rem">
-      <h3 style="margin:0 0 0.75rem; font-size:1rem">Firmware</h3>
+      <h3 style="margin:0 0 0.75rem; font-size:1rem">App</h3>
       <div style="font-size:0.85rem; color:#666; margin-bottom:0.75rem">
         <div>Running: <code>{current}</code></div>
         <div>
@@ -4462,7 +4462,7 @@ export function KioskLocalPanel(props: KioskLocalPanelProps) {
       </div>
       <div style="font-size:0.8rem; margin-bottom:0.75rem">
         <strong>Layout shortlinks (GET)</strong>
-        <p>Permanent six-character keys. Requires kiosk firmware with shortlink support and a refreshed bundle.</p>
+        <p>Permanent six-character keys. Requires a kiosk app with shortlink support and a refreshed bundle.</p>
         {(props.layouts ?? []).filter((layout) => layout.local_short_key).map((layout) => (
           <div><strong>{layout.name}</strong>{localShortLink(`${base}/lsh/${layout.local_short_key}?key=${k.local_key}`)}</div>
         ))}
@@ -4560,7 +4560,7 @@ export function FirmwareRolloutsPage(props: FirmwareRolloutsPageProps) {
   const releaseById = new Map(props.releases.map((r) => [r.id, r]));
   const kioskById = new Map(props.kiosks.map((k) => [k.id, k]));
   return (
-    <Layout title="Firmware rollouts" user={props.user} activeNav="kiosks">
+    <Layout title="App rollouts" user={props.user} activeNav="kiosks">
       <p style="color:#666; margin-bottom:1rem">
         Push a specific release to a slice of the fleet. <code>percentage</code>
         buckets kiosks deterministically by id, so re-running a 50% rollout

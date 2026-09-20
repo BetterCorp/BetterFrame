@@ -1,8 +1,9 @@
 # BetterFrame architecture
 
-BetterFrame is a live-only video-wall system. The server coordinates layouts,
-events, and fleet state; kiosks fetch RTSP directly from cameras or NVRs. There
-is no recording path.
+BetterFrame is a camera-wall and mixed-content display system. The server
+coordinates layouts, events, and fleet state; kiosks fetch RTSP directly from
+cameras or NVRs. Managed Linux images also include a local MediaMTX gateway
+for Operator Console preview and optional SimpleVMS recording/playback.
 
 ## Components
 

@@ -161,7 +161,7 @@ Check `sudo systemctl status betterframe-mediamtx.service` or
 and defers its readiness check until you start it.
 
 App rollback stays armed when startup is deferred until login/boot. The health
-deadline starts with the first actual launch, and a rendered pairing screen or
+deadline starts with the first actual launch, and a rendered startup/pairing screen or
 cached layout can confirm the running candidate without waiting for enrollment
 or server connectivity. A late frame/heartbeat from the old app cannot confirm
 the new candidate. Saved alpha releases use the dev channel.

@@ -3168,7 +3168,7 @@ mod display_tests {
         let app = Application::builder().application_id("cloud.betterframe.PairingHealthTest").build();
         app.register(None::<&gtk::gio::Cancellable>).unwrap();
         let window = ApplicationWindow::builder().application(&app).build();
-        window.set_child(Some(&Label::new(Some("Pairing code: 123456"))));
+        show_startup_status(&window, "Regional server unavailable — retrying with saved enrollment");
         let confirmations = std::rc::Rc::new(std::cell::Cell::new(0));
         let observed = confirmations.clone();
         after_rendered_frame(&window, move || observed.set(observed.get() + 1));
@@ -3178,7 +3178,7 @@ mod display_tests {
             while context.pending() { context.iteration(false); }
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert_eq!(confirmations.get(), 0, "an unmapped pairing UI is not healthy yet");
+        assert_eq!(confirmations.get(), 0, "an unmapped startup/pairing UI is not healthy yet");
         window.present();
         let until = Instant::now() + Duration::from_secs(2);
         while Instant::now() < until {
@@ -3379,6 +3379,9 @@ fn show_logo(window: &ApplicationWindow) {
 
 fn show_startup_status(window: &ApplicationWindow, action: &str) {
     window.set_child(Some(&build_logo_content(action)));
+    // Discovery/pairing can remain offline indefinitely. A mapped native
+    // startup screen proves app startup without requiring server reachability.
+    confirm_rendered_app(window);
 }
 
 fn build_empty_display_reference(

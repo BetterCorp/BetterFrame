@@ -51,6 +51,8 @@ import {
   validateBody,
 } from "../../shared/api-schemas.js";
 
+import { prepareDemo, enrollDemo, cleanupDemo, demoAvailable } from "../../shared/demo.js";
+
 // ---- Config -----------------------------------------------------------------
 
 const ConfigSchema = av.object(
@@ -69,6 +71,7 @@ const ConfigSchema = av.object(
     ),
     host: av.string().default("127.0.0.1"),
     port: av.int().min(1).max(65535).default(18081),
+    enableDemoTenant: av.bool().default(false),
     codeTtlSeconds: av.int().min(60).max(3600).default(600),
     // Secrets + auth config (shared with admin-http for now)
     dataDir: av.string().minLength(1).default("/var/lib/betterframe"),
@@ -126,6 +129,8 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
 
   private server?: Server;
   private dbClose?: () => Promise<void>;
+  private demoTimer?: ReturnType<typeof setInterval>;
+  private demoCleanup?: Promise<unknown>;
 
   constructor(cfg: BSBServiceConstructor<InstanceType<typeof Config>, typeof EventSchemas>) {
     super(cfg);
@@ -279,7 +284,16 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     const clientFirmwarePublicKey = this.config.clientFirmwarePublicKey || (this.config.clientFirmwarePublicKeyBase64
       ? Buffer.from(this.config.clientFirmwarePublicKeyBase64, "base64").toString("utf8")
       : "");
-    registerPairingRoutes(app, repo, auth, secrets, codeTtl, firmware, osUpdates, clientFirmwarePublicKey);
+    try { await prepareDemo(repo, this.config.enableDemoTenant); }
+    catch (error) { obs.log.warn("Demo provisioning failed: {error}", { error: String(error) }); }
+    this.demoTimer = setInterval(() => {
+      if (this.demoCleanup) return;
+      this.demoCleanup = cleanupDemo(repo).catch(error => {
+        obs.log.warn("Demo cleanup failed: {error}", { error: String(error) });
+      }).finally(() => { this.demoCleanup = undefined; });
+    }, 60_000);
+    this.demoTimer.unref();
+    registerPairingRoutes(app, repo, auth, secrets, codeTtl, firmware, osUpdates, clientFirmwarePublicKey, this.config.enableDemoTenant);
     registerKioskRoutes(app, repo, auth, secrets, nodered, firmware, osUpdates, mqtt, clientFirmwarePublicKey);
     registerIoBoxRoutes(app, repo, auth, nodered, mqtt, firmware, secrets);
 
@@ -300,6 +314,8 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     if (this.server) {
       await this.server.close();
     }
+    clearInterval(this.demoTimer);
+    await this.demoCleanup;
     await this.dbClose?.();
   }
 }
@@ -428,6 +444,7 @@ function registerPairingRoutes(
   firmware: FirmwareApi,
   osUpdates: OsUpdateApi,
   clientFirmwarePublicKey: string,
+  demoEnabled = false,
 ): void {
   // Constructed in-function so the BSB schema extractor (which evaluates the
   // module statically) doesn't see a top-level createRateLimiter call.
@@ -455,7 +472,23 @@ function registerPairingRoutes(
       secureClaim: body.secure_claim,
     });
 
-    return { code: result.code, expires_at: result.expiresAt, expires_in_seconds: result.expiresInSeconds, poll_after_ms: PAIR_POLL_AFTER_MS, polling_secret: result.pollingSecret };
+    return { allowDemo: await demoAvailable(repo, demoEnabled), code: result.code, expires_at: result.expiresAt, expires_in_seconds: result.expiresInSeconds, poll_after_ms: PAIR_POLL_AFTER_MS, polling_secret: result.pollingSecret };
+  });
+
+  app.post("/api/pair/demo", async (event) => {
+    // Capacity is enforced under the enrollment lock. An already confirmed
+    // session must remain retryable even if its kiosk filled the final slot.
+    if (!demoEnabled) throw createError({ statusCode: 503, statusMessage: "Demo unavailable" });
+    const ip = getRequestHeader(event, "x-real-ip") ?? "anon";
+    if (!pairingGuard.take(`demo:${ip}`)) throw createError({ statusCode: 429, statusMessage: "rate limited" });
+    const raw = await readBody<Record<string, unknown>>(event);
+    if (!raw || Object.keys(raw).some(key => key !== "code" && key !== "polling_secret")) {
+      throw createError({ statusCode: 400, statusMessage: "Only the pairing code and polling secret are accepted" });
+    }
+    const body = validateBody(PairClaimBody, raw);
+    try { await enrollDemo(repo, auth, secrets, demoEnabled, body.code.trim().toUpperCase(), body.polling_secret); }
+    catch { throw createError({ statusCode: 409, statusMessage: "Demo enrollment unavailable; refresh pairing and retry" }); }
+    return { status: "confirmed" };
   });
 
   // Kiosk polls for claim result — no auth required
@@ -479,6 +512,7 @@ function registerPairingRoutes(
     }
     return {
       status: "claimed",
+      demo: result.demo === true,
       expires_in_seconds: result.expiresInSeconds,
       kiosk_id: result.kioskId,
       kiosk_name: result.kioskName,

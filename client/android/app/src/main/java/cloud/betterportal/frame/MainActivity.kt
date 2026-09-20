@@ -150,7 +150,25 @@ class MainActivity : Activity(), ViewerSession.Listener {
 
     private fun kioskRoot() = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
 
+    private fun updateDemoButton() {
+        val existing = root.findViewWithTag<Button>("demo-control")
+        val exit = session.isDemo
+        val visible = exit || (session.allowDemo && pairingCode.isNotBlank())
+        val label = if (exit) "Exit demo" else "Demo"
+        // Pairing polls update this screen repeatedly; retain remote focus.
+        if (visible && existing?.text?.toString() == label) return
+        existing?.let { root.removeView(it) }
+        if (!visible) return
+        val control = button(label) {
+            if (exit) resetEnrollment(session.serverUrl) else session.enterDemo()
+        }.apply { tag = "demo-control" }
+        root.addView(control, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply {
+            topMargin = dp(8); marginStart = dp(8)
+        })
+    }
+
     private fun addMenu() {
+        updateDemoButton()
         val menu = button("⋮") { showKioskMenu() }.apply {
             contentDescription = getString(R.string.kiosk_menu)
             textSize = 24f
@@ -420,6 +438,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
         if (displayVisible || setupView == null) showSetup(code)
         else setupView?.showPairing(code)
         pairingCode = code
+        updateDemoButton()
         if (code.isBlank()) resetRequested = false
     }
 

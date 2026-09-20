@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ClientState {
+    #[serde(default)]
+    pub demo: bool,
+    #[serde(default)]
+    pub allow_demo: bool,
     pub server_url: String,
     pub kiosk_key: Option<String>,
     #[serde(default)]

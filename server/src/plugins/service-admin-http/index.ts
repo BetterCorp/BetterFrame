@@ -59,6 +59,7 @@ const ConfigSchema = av.object(
     ),
     host: av.string().default("127.0.0.1"),
     port: av.int().min(1).max(65535).default(18080),
+    enableDemoTenant: av.bool().default(false),
     dataDir: av.string().minLength(1).default("/var/lib/betterframe"),
     systemdCredsName: av.string().default("betterframe-secret"),
     kioskLogRetentionHours: av.int().min(1).max(8760).default(24),
@@ -103,6 +104,7 @@ export const EventSchemas = createEventSchemas({
 });
 
 export interface AdminDeps {
+  enableDemoTenant?: boolean;
   repo: Repository;
   auth: AuthApi;
   secrets: SecretsApi;
@@ -208,6 +210,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
         : undefined),
       firmwareImportApiKey: this.config.firmwareImportApiKey || undefined,
       otaImportApiKey: this.config.otaImportApiKey || undefined,
+      enableDemoTenant: this.config.enableDemoTenant,
       scheduleNoderedReconcile: () => {
         void this.scheduleNoderedReconcile(repo, secrets, auth, nodered, selfUrl, obs);
       },

@@ -82,6 +82,8 @@ pub fn validate_discovery_redirect(
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct PairInitiateResponse {
+    #[serde(default, rename = "allowDemo")]
+    pub allow_demo: bool,
     pub code: String,
     pub expires_at: String,
     pub expires_in_seconds: Option<u64>,
@@ -115,6 +117,8 @@ pub fn poll_delay(milliseconds: Option<u64>) -> Duration {
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct DeviceIdentity {
+    #[serde(default)]
+    pub demo: bool,
     pub version: u32,
     pub server_url: String,
     pub kiosk_id: String,
@@ -134,6 +138,7 @@ impl DeviceIdentity {
     ) -> Result<Self, String> {
         let identity = Self {
             version: 1,
+            demo: claim.demo,
             server_url: server.to_string(),
             kiosk_id: match claim.kiosk_id {
                 Some(Value::String(id)) => id,
@@ -174,6 +179,8 @@ impl DeviceIdentity {
 
 #[derive(Deserialize)]
 pub struct PairClaimResponse {
+    #[serde(default)]
+    pub demo: bool,
     pub status: String,
     pub expires_in_seconds: Option<u64>,
     pub poll_after_ms: Option<u64>,
@@ -225,6 +232,20 @@ mod tests {
         let modern: PairInitiateResponse = serde_json::from_str(r#"{"code":"ABC123","expires_at":"invalid","expires_in_seconds":18446744073709551615,"poll_after_ms":0}"#).unwrap();
         assert_eq!(modern.lifetime(), Duration::from_secs(1800));
         assert_eq!(modern.poll_delay(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn demo_availability_requires_explicit_true_and_identity_survives_restart() {
+        for (field, expected) in [("", false), (",\"allowDemo\":false", false), (",\"allowDemo\":true", true)] {
+            let session: PairInitiateResponse = serde_json::from_str(&format!(r#"{{"code":"ABC123","expires_at":"invalid"{field}}}"#)).unwrap();
+            assert_eq!(session.allow_demo, expected);
+            let claim: PairClaimResponse = serde_json::from_str(r#"{"status":"claimed","demo":true,"kiosk_id":"demo-kiosk","kiosk_key":"unique-device-key","encrypt_key":"encryption-material"}"#).unwrap();
+            let identity = DeviceIdentity::from_claim("https://example.com", &session, claim).unwrap();
+            let restored: DeviceIdentity = serde_json::from_slice(&serde_json::to_vec(&identity).unwrap()).unwrap();
+            assert!(restored.demo);
+        }
+        let old: crate::state::ClientState = serde_json::from_str(r#"{"server_url":"https://example.com"}"#).unwrap();
+        assert!(!old.demo && !old.allow_demo);
     }
 
     #[test]

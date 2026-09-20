@@ -5371,6 +5371,8 @@ export function TenantEditPage(props: TenantEditPageProps) {
 // ---- Settings Page ----------------------------------------------------------
 
 interface SettingsPageProps {
+  layouts?: Array<{ id: string; name: string }>;
+  displayDefaults?: { layoutIds: string[]; defaultLayoutId: string | null };
   cloudAccounts: any[];
   ablesignAccounts: any[];
   updateSchedule: UpdateSchedule;
@@ -5395,6 +5397,27 @@ export function SettingsPage(props: SettingsPageProps) {
 
       {props.error ? <div class="alert alert-error" style="margin-bottom:1rem">{props.error}</div> : ""}
 
+      <div class="card" style="margin-bottom:1.5rem">
+        <h2>New display layouts</h2>
+        <p>Automatically assign these layouts when a display is created. Existing displays keep their assignments.</p>
+        <form method="POST" action="/admin/settings/display-defaults">
+          {(props.layouts ?? []).map(layout => (
+            <label style="display:block;margin-bottom:0.5rem">
+              <input type="checkbox" name="layout_ids" value={layout.id} checked={props.displayDefaults?.layoutIds.includes(layout.id) ?? false} /> {layout.name}
+            </label>
+          ))}
+          <label>Default active layout
+            <select name="default_layout_id" class="form-input">
+              <option value="">None</option>
+              {(props.layouts ?? []).map(layout => (
+                <option value={layout.id} selected={props.displayDefaults?.defaultLayoutId === layout.id}>{layout.name}</option>
+              ))}
+            </select>
+          </label>
+          <p>Choose a default from the layouts selected above.</p>
+          <button type="submit" class="btn btn-primary btn-sm">Save Display Defaults</button>
+        </form>
+      </div>
       <div class="card" style="margin-bottom:1.5rem">
         <h2 style="font-size:1.1rem; margin:0 0 1rem">Automatic Updates</h2>
         <form method="POST" action="/admin/settings/update-schedule">

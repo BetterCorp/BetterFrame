@@ -1386,7 +1386,68 @@ fn parse_drm_mode(mode: &str) -> Option<(u32, u32)> {
     (dimensions.0 > 0 && dimensions.1 > 0).then_some(dimensions)
 }
 
+fn add_demo_control(overlay: &gtk::Overlay) {
+    let exit = server::demo_mode();
+    let visible = exit || server::demo_session().is_some();
+    let label = if exit { "Exit demo" } else { "Demo" };
+    // Playback overlays survive bundle reloads. Keep a single control and its
+    // focus/signal handler instead of stacking another button on every refresh.
+    let mut child = overlay.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if widget.widget_name() != "betterframe-demo-control" { continue; }
+        if visible && widget.downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.label().as_deref() == Some(label)) {
+            return;
+        }
+        overlay.remove_overlay(&widget);
+    }
+    if !visible { return; }
+    let button = gtk::Button::with_label(label);
+    button.set_widget_name("betterframe-demo-control");
+    button.set_halign(gtk::Align::Start);
+    button.set_valign(gtk::Align::Start);
+    button.set_margin_top(12);
+    button.set_margin_start(12);
+    button.connect_clicked(move |button| {
+        if exit { server::reset_pairing_and_restart("Exit demo"); }
+        button.set_sensitive(false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || { let _ = tx.send(server::enter_demo()); });
+        let button = button.clone();
+        gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
+            match rx.try_recv() {
+                Ok(Ok(())) => { button.set_label("Starting demo…"); gtk::glib::ControlFlow::Break }
+                Ok(Err(_)) => { button.set_label("Demo unavailable — retry"); button.set_sensitive(true); gtk::glib::ControlFlow::Break }
+                Err(std::sync::mpsc::TryRecvError::Empty) => gtk::glib::ControlFlow::Continue,
+                Err(_) => { button.set_sensitive(true); gtk::glib::ControlFlow::Break }
+            }
+        });
+    });
+    overlay.add_overlay(&button);
+}
+
 fn show_pairing_code(window: &ApplicationWindow, code: &str, status: &str) {
+    // Polling updates text in place so the Demo control retains keyboard focus.
+    if let Some(overlay) = window.child().and_downcast::<gtk::Overlay>() {
+        if overlay.widget_name() == "betterframe-pairing-screen" {
+            if let Some(vbox) = overlay.child().and_downcast::<GtkBox>() {
+                let mut child = vbox.first_child();
+                while let Some(widget) = child {
+                    child = widget.next_sibling();
+                    if let Some(label) = widget.downcast_ref::<Label>() {
+                        match widget.widget_name().as_str() {
+                            "betterframe-pairing-code" => label.set_text(code),
+                            "betterframe-pairing-status" => label.set_text(status),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            add_demo_control(&overlay);
+            return;
+        }
+    }
     let vbox = GtkBox::new(Orientation::Vertical, 20);
     vbox.set_valign(gtk::Align::Center);
     vbox.set_halign(gtk::Align::Center);
@@ -1395,6 +1456,7 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str, status: &str) {
     let title = logo_picture(BETTERFRAME_LOGO_PNG, 360, 88, "pairing-logo");
 
     let code_label = Label::new(Some(code));
+    code_label.set_widget_name("betterframe-pairing-code");
     add_css(
         &code_label,
         ".code { font-size: 72px; color: #fff; font-weight: 700; letter-spacing: 12px; font-family: monospace; }",
@@ -1402,6 +1464,7 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str, status: &str) {
     code_label.add_css_class("code");
 
     let hint = Label::new(Some(status));
+    hint.set_widget_name("betterframe-pairing-status");
     add_css(&hint, ".hint { font-size: 14px; color: #666; }");
     hint.add_css_class("hint");
 
@@ -1429,8 +1492,10 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str, status: &str) {
     ver_label.set_valign(gtk::Align::End);
 
     let overlay = gtk::Overlay::new();
+    overlay.set_widget_name("betterframe-pairing-screen");
     overlay.set_child(Some(&vbox));
     overlay.add_overlay(&ver_label);
+    add_demo_control(&overlay);
     window.set_child(Some(&overlay));
     window.queue_resize();
     window.queue_draw();
@@ -1540,7 +1605,10 @@ fn render_bundle(
     if displays.is_empty() {
         // A valid bundle without assignments is a settled configuration state,
         // including when the last display was removed from an active kiosk.
-        pairing_window.set_child(Some(&build_empty_display_reference(&bundle, None)));
+        let overlay = gtk::Overlay::new();
+        overlay.set_child(Some(&build_empty_display_reference(&bundle, None)));
+        add_demo_control(&overlay);
+        pairing_window.set_child(Some(&overlay));
         pairing_window.present();
         recompute_global_state();
         mark_kiosk_healthy();
@@ -1628,6 +1696,7 @@ fn render_bundle(
             content_overlay.add_overlay(&wl);
             wl
         });
+        add_demo_control(&content_overlay);
         if was_asleep {
             window.set_child(Some(&build_sleep_screen(&bd.id)));
         } else {
@@ -3159,7 +3228,14 @@ fn ensure_web(
         return wv;
     }
 
-    let wv = webkit6::WebView::new();
+    // Demo pages never retain browser cookies/storage after local exit or reboot.
+    let wv = if server::demo_mode() {
+        webkit6::WebView::builder()
+            .network_session(&webkit6::NetworkSession::new_ephemeral())
+            .build()
+    } else {
+        webkit6::WebView::new()
+    };
     wv.set_vexpand(true);
     wv.set_hexpand(true);
     #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
@@ -3614,6 +3690,7 @@ fn build_logo_content(action: &str) -> gtk::Widget {
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&vbox));
     overlay.add_overlay(&ver_label);
+    add_demo_control(&overlay);
     overlay.upcast()
 }
 

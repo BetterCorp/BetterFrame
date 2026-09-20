@@ -58,8 +58,9 @@ fn binary_path() -> PathBuf {
 }
 
 pub fn request_cancel() {
+    // Only the update worker owns download cleanup. A cancel message may arrive
+    // with no download active, while the running candidate still needs rollback.
     CANCEL_REQUESTED.store(true, Ordering::SeqCst);
-    cleanup_partial_update();
 }
 
 pub fn clear_cancel() {
@@ -70,11 +71,10 @@ fn cancel_requested() -> bool {
     CANCEL_REQUESTED.load(Ordering::SeqCst)
 }
 
-fn cleanup_partial_update() {
-    let bin = binary_path();
+fn cleanup_partial_update(bin: &Path) {
     let _ = fs::remove_file(bin.with_extension("new"));
-    let _ = fs::remove_file(FIRMWARE_MARKER);
-    let _ = fs::remove_file(FIRMWARE_ATTEMPTS);
+    // This may belong to an already-running candidate, not this download.
+    // Its rollback marker/attempts are cleared only by health confirmation.
 }
 
 #[derive(Debug, Deserialize)]
@@ -251,12 +251,12 @@ pub fn apply(
     }
     let bytes = read_firmware_body(resp, info.size_bytes, cancel_requested).map_err(|err| {
         if cancel_requested() {
-            cleanup_partial_update();
+            cleanup_partial_update(&binary_path());
         }
         err
     })?;
     if cancel_requested() {
-        cleanup_partial_update();
+        cleanup_partial_update(&binary_path());
         return Err("firmware update canceled after channel change".to_string());
     }
 
@@ -277,7 +277,7 @@ pub fn apply(
     verify_signature(&info.sha256, &info.signature)
         .map_err(|e| format!("signature verify: {e}"))?;
     if cancel_requested() {
-        cleanup_partial_update();
+        cleanup_partial_update(&binary_path());
         return Err("firmware update canceled after channel change".to_string());
     }
 
@@ -300,14 +300,14 @@ pub fn apply(
         f.sync_all().ok();
     }
     if cancel_requested() {
-        cleanup_partial_update();
+        cleanup_partial_update(&binary_path());
         return Err("firmware update canceled after channel change".to_string());
     }
 
-    // Drop a marker file the systemd ExecStartPre script reads to detect a
-    // failed first boot of the new binary. We delete it after a clean boot
-    // (see `mark_firmware_applied()`). If we crash before that, next start
-    // sees a stale marker → restores .prev.
+    // Commit point: after the final cancellation check, finish the protected
+    // swap even if a cancel message arrives. Cancellation must never disarm
+    // rollback for a published candidate or remove its staged executable.
+    // The next process clears this marker only after a healthy startup.
     write_pending_marker(
         &info.version,
         &bin,
@@ -315,10 +315,6 @@ pub fn apply(
         Path::new(FIRMWARE_MARKER),
         Path::new(FIRMWARE_ATTEMPTS),
     )?;
-    if cancel_requested() {
-        cleanup_partial_update();
-        return Err("firmware update canceled after channel change".to_string());
-    }
 
     fs::rename(&new_path, &bin).map_err(|e| format!("rename → {}: {e}", bin.display()))?;
 
@@ -634,6 +630,30 @@ mod tests {
         );
         assert_eq!(std::fs::read(&bin).unwrap(), b"existing app");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancel_and_download_cleanup_preserve_pending_boot_state() {
+        let root = std::env::temp_dir().join(format!("bf-cancel-{}", rand::random::<u64>()));
+        fs::create_dir_all(&root).unwrap();
+        let bin = root.join("app");
+        let pending = root.join("firmware-applying.json");
+        let attempts = root.join("firmware-applying.attempts");
+        fs::write(&bin, b"running candidate").unwrap();
+        fs::write(&pending, b"pending running candidate").unwrap();
+        fs::write(&attempts, b"1").unwrap();
+        fs::write(bin.with_extension("new"), b"partial future download").unwrap();
+        super::request_cancel();
+        assert!(super::cancel_requested());
+        // The signaling thread cannot delete a worker-owned staged file, either.
+        assert!(bin.with_extension("new").exists());
+        super::cleanup_partial_update(&bin);
+        assert!(!bin.with_extension("new").exists());
+        assert_eq!(fs::read(&bin).unwrap(), b"running candidate");
+        assert_eq!(fs::read(&pending).unwrap(), b"pending running candidate");
+        assert_eq!(fs::read(&attempts).unwrap(), b"1");
+        super::clear_cancel();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -113,6 +113,206 @@ class SetupTests(unittest.TestCase):
             self.assertEqual((p / 'app').read_text(), 'working')
             self.assertFalse((p / 'firmware-applying.json').exists())
 
+    def test_saved_choices_survive_root_reruns_and_legacy_format(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'install'
+            config.write_text('kiosk dedicated dev\n')
+            cmd = f'CONFIG={config}; INSTALL_USER=; load_settings; echo "$INSTALL_USER $MODE $CHANNEL $PREVIOUS_INSTALL"'
+            self.assertEqual(self.shell(cmd).stdout.strip(), 'kiosk dedicated dev 1')
+            config.write_text('kiosk dedicated\n')
+            self.assertEqual(self.shell(cmd).stdout.strip(), 'kiosk dedicated stable 1')
+            self.assertNotEqual(self.shell(f'CONFIG={config}; parse_args --user someone; load_settings', check=False).returncode, 0)
+            self.assertEqual(self.shell(f'CONFIG={config}; parse_args --channel beta; load_settings; echo "$CHANNEL"').stdout.strip(), 'beta')
+            self.assertEqual(self.shell(f'CONFIG={config}; parse_args --version 1.2.3-dev.gabcd; load_settings; echo "$CHANNEL"').stdout.strip(), 'dev')
+
+    def test_managed_configuration_converges_and_only_backs_up_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'unit'
+            path.write_text('drifted')
+            cmd = f'BACKUP_ID=first; printf canonical | reconcile_file {path} 600 {os.getuid()} {os.getgid()}'
+            self.shell(cmd)
+            self.assertEqual(path.read_text(), 'canonical')
+            self.assertEqual((Path(tmp) / 'unit.before-setup.first').read_text(), 'drifted')
+            path.chmod(0o777)
+            self.shell(cmd.replace('first', 'second'))
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertFalse((Path(tmp) / 'unit.before-setup.second').exists())
+            # A persistent systemd mask must be replaced, not followed.
+            path.unlink()
+            path.symlink_to('/dev/null')
+            self.shell(cmd.replace('first', 'mask'))
+            self.assertFalse(path.is_symlink())
+            self.assertEqual(path.read_text(), 'canonical')
+
+    def test_pending_candidate_does_not_overwrite_good_rollback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / 'app').write_text('broken pending candidate')
+            (p / 'app.prev').write_text('known previous app')
+            (p / 'candidate').write_text('new repair app')
+            (p / 'firmware-applying.json').write_text('{}')
+            (p / 'identity.json').write_text('pairing identity')
+            (p / 'app.new').symlink_to(p / 'identity.json')
+            cmd = f'BIN={p}/app; STATE={p}; STAGING={p}; INSTALL_USER={os.getuid()}; USER_GROUP={os.getgid()}; install_app_binary'
+            self.shell(cmd)
+            self.assertEqual((p / 'app.prev').read_text(), 'known previous app')
+            self.assertEqual((p / 'app').read_text(), 'new repair app')
+            self.assertEqual((p / 'identity.json').read_text(), 'pairing identity')
+            # A service already failed without a pending marker also retains rollback.
+            (p / 'firmware-applying.json').unlink()
+            (p / 'candidate').write_text('another repair app')
+            self.shell('PRESERVE_PREVIOUS=1; ' + cmd)
+            self.assertEqual((p / 'app.prev').read_text(), 'known previous app')
+
+    def test_recovery_clears_only_app_update_state(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            for name in ['identity.json', 'bundle.json', 'kiosk.key', 'os-applying.json']:
+                (p / name).write_text('preserve me')
+            for name in ['firmware-applying.json', 'firmware-applying.attempts', 'app.new']:
+                (p / name).write_text('stale')
+            history = {'entries': {'firmware:1.2.3': {'failures': 9}, 'os:1.2.3': {'failures': 2}}}
+            (p / 'update-attempts.json').write_text(json.dumps(history))
+            cmd = f'STATE={p}; BIN={p}/app; INSTALL_USER={os.getuid()}; BACKUP_ID=repair; clear_interrupted_update'
+            self.shell(cmd)
+            for name in ['identity.json', 'bundle.json', 'kiosk.key', 'os-applying.json']:
+                self.assertEqual((p / name).read_text(), 'preserve me')
+            self.assertEqual(json.loads((p / 'update-attempts.json').read_text()), {'entries': {'os:1.2.3': {'failures': 2}}})
+            for name in ['firmware-applying.json', 'firmware-applying.attempts', 'app.new']:
+                self.assertFalse((p / name).exists())
+            self.shell(cmd.replace('BACKUP_ID=repair', 'BACKUP_ID=again'))
+            self.assertFalse(list(p.glob('*.before-setup.again')))
+
+    def test_stuck_stop_escalates_before_install_is_allowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = f'''service_command() {{
+                echo "$*" >> {tmp}/calls
+                case "$2" in
+                  show) if [[ $* == *LoadState* ]]; then echo loaded; else echo inactive; fi;;
+                  is-failed) return 0;;
+                  stop) [[ -e {tmp}/killed ]];;
+                  kill) touch {tmp}/killed;;
+                esac
+            }}
+            stop_app_service user betterframe.service
+            echo "$PRESERVE_PREVIOUS"'''
+            self.assertEqual(self.shell(cmd).stdout.strip(), '1')
+            calls = (Path(tmp) / 'calls').read_text()
+            self.assertIn('kill --kill-whom=all --signal=KILL', calls)
+            self.assertEqual(calls.count('stop betterframe.service'), 2)
+            bad = self.shell('service_command() { case "$2" in show) echo active;; is-failed) return 1;; *) return 0;; esac; }; stop_app_service user betterframe.service', check=False)
+            self.assertNotEqual(bad.returncode, 0)
+
+    def test_failed_start_restores_previous_and_reports_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / 'app').write_text('broken')
+            (p / 'app.prev').write_text('previous')
+            cmd = f'''BIN={p}/app; INSTALL_USER={os.getuid()}; USER_GROUP={os.getgid()}
+            sleep() {{ :; }}
+            service_command() {{
+                echo "$*" >> {p}/calls
+                case "$2" in
+                    show) if [[ $* == *LoadState* ]]; then echo loaded; else echo inactive; fi;;
+                    is-active) return 1;;
+                    *) return 0;;
+                esac
+            }}
+            start_app_service user betterframe.service'''
+            result = self.shell(cmd, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((p / 'app').read_text(), 'previous')
+            calls = (p / 'calls').read_text().splitlines()
+            self.assertEqual(calls[0], 'user reset-failed betterframe.service')
+            self.assertEqual(calls[-1], 'user start betterframe.service')
+
+    def test_channel_selection_excludes_drafts_and_incomplete_or_other_target_assets(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / 'releases.json'
+            def release(version, published, target='betterframe-pc-x86_64'):
+                name = f'betterframe-kiosk-{version}-{target}'
+                return {'tag_name': f'v{version}', 'published_at': published, 'assets': [{'name': name+s} for s in ['', '.sig', '.sha256']]}
+            releases = [release('1.2.3-dev.g1', '2026-09-01'), release('1.2.4-dev.g2', '2026-09-02'),
+                        release('1.2.5-beta.1', '2026-09-03'), release('1.2.6-dev.g3', '2026-09-04')]
+            releases[-1]['assets'].pop()
+            releases.append(release('1.2.7-dev.g4', '2026-09-05', 'betterframe-rpi5-aarch64'))
+            releases.append(dict(release('1.2.8-dev.g5', '2026-09-06'), draft=True))
+            p.write_text(json.dumps(releases))
+            cmd = f'CHANNEL=dev; TARGET=betterframe-pc-x86_64; select_channel_release {p}'
+            self.assertEqual(self.shell(cmd).stdout.strip(), 'v1.2.4-dev.g2')
+
+
+    def test_normal_repair_downloads_even_with_a_broken_existing_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / 'app').write_text('broken installed executable')
+            cmd = f'''BIN={p}/app; STAGING={p}; TARGET=betterframe-pc-x86_64
+            download_release() {{ cp /bin/true {p}/download; SOURCE_BINARY={p}/download; }}
+            prepare_candidate'''
+            self.shell(cmd)
+            self.assertEqual((p / 'candidate').read_bytes(), Path('/bin/true').read_bytes())
+            self.assertEqual((p / 'app').read_text(), 'broken installed executable')
+
+    def test_download_failure_leaves_current_app_and_recovery_state_intact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / 'app').write_text('current app')
+            (p / 'firmware-applying.json').write_text('pending')
+            result = self.shell(f'BIN={p}/app; STATE={p}; STAGING={p}; download_release() {{ return 1; }}; prepare_candidate', check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((p / 'app').read_text(), 'current app')
+            self.assertEqual((p / 'firmware-applying.json').read_text(), 'pending')
+            self.assertFalse((p / 'candidate').exists())
+
+    def test_start_success_requires_a_stable_process_after_reset(self):
+        self.shell('''
+            sleep() { :; }
+            service_command() {
+                case "$2" in
+                    show) echo 1234;;
+                    *) return 0;;
+                esac
+            }
+            start_app_service system betterframe-kiosk.service
+        ''')
+
+
+    @unittest.skipUnless(os.geteuid() == 0 and shutil.which('runuser'), 'requires root in a disposable container')
+    def test_root_installer_writes_runtime_files_without_root_privileges(self):
+        account = pwd.getpwnam('nobody')
+        group = grp.getgrgid(account.pw_gid).gr_name
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            p.chmod(0o755)
+            private = p / 'root-private'
+            private.mkdir(mode=0o700)
+            protected = private / 'protected'
+            protected.write_text('must not change')
+            runtime = p / 'runtime'
+            runtime.mkdir()
+            os.chown(runtime, account.pw_uid, account.pw_gid)
+            unit = runtime / 'betterframe.service'
+            unit.symlink_to(protected)
+            cmd = f'BACKUP_ID=test; printf canonical | reconcile_file {unit} 644 nobody {group}'
+            self.shell(cmd)
+            self.assertEqual(protected.read_text(), 'must not change')
+            self.assertEqual(unit.read_text(), 'canonical')
+            self.assertEqual(unit.stat().st_uid, account.pw_uid)
+            # A redirected parent must also fail without writing a root file.
+            (runtime / 'redirect').symlink_to(private, target_is_directory=True)
+            self.assertNotEqual(self.shell(cmd.replace(str(unit), str(runtime / 'redirect/protected')), check=False).returncode, 0)
+            self.assertEqual(protected.read_text(), 'must not change')
+            (runtime / 'app').write_text('old app')
+            (runtime / 'app.prev').symlink_to(protected)
+            (runtime / 'app.new').symlink_to(protected)
+            (p / 'candidate').write_text('verified replacement')
+            self.shell(f'INSTALL_USER=nobody; USER_GROUP={group}; BIN={runtime}/app; STATE={runtime}; STAGING={p}; PRESERVE_PREVIOUS=0; install_app_binary')
+            self.assertEqual(protected.read_text(), 'must not change')
+            self.assertEqual((runtime / 'app').read_text(), 'verified replacement')
+            self.assertEqual((runtime / 'app.prev').read_text(), 'old app')
+
 
 if __name__ == '__main__':
     unittest.main()

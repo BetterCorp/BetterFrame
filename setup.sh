@@ -12,33 +12,42 @@ SOURCE_BINARY=
 ASSUME_YES=0
 START=1
 MODE_SET=0
+USER_SET=0
+CHANNEL=stable
+CHANNEL_SET=0
+CONFIG=/etc/betterframe/linux-install
+PREVIOUS_INSTALL=0
+PRESERVE_PREVIOUS=1
+RELEASE_VERSION=
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 usage() {
     cat <<'EOF'
-Install or repair the BetterFrame Linux app (systemd required).
+Install, update, or repair the BetterFrame Linux app (systemd required).
   sudo ./setup.sh [options]
   --user USER       Desktop/runtime user (defaults to sudo caller)
   --mode desktop    Start on graphical login (default)
   --mode dedicated  Replace graphical login with a Cage fullscreen kiosk
+  --channel CHANNEL stable (default), beta, or dev; remembered for reruns
   --version VERSION Download a signed GitHub release (e.g. 1.0.14 or latest)
   --binary FILE     Install an existing, trusted local BF executable
-  --yes             Use defaults without prompting (desktop unless specified)
+  --yes             Reuse saved choices without prompting (desktop on first run)
   --no-start        Configure startup but do not start/restart BF now
   --help            Show this help
-Without a binary/version, reuse the installed/running BF executable if found;
-otherwise download the latest stable release. Existing pairing is preserved.
-Dedicated mode takes effect on reboot; this script never reboots the machine.
+Every normal run downloads the latest signed release for the saved channel.
+--version and --binary override the release for this run only. Pairing is preserved.
+Dedicated mode starts immediately when no display manager is active. No OS reboot.
 EOF
 }
 parse_args() {
     while (($#)); do
         case "$1" in
-            --user|--mode|--version|--binary)
+            --user|--mode|--version|--binary|--channel)
                 (($# >= 2)) || fail "$1 requires a value"
                 case "$1" in
-                    --user) INSTALL_USER=$2;;
+                    --user) INSTALL_USER=$2; USER_SET=1;;
+                    --channel) CHANNEL=$2; CHANNEL_SET=1;;
                     --mode) MODE=$2; MODE_SET=1;;
                     --version) VERSION=$2;;
                     --binary) SOURCE_BINARY=$2;;
@@ -54,7 +63,7 @@ parse_args() {
     [[ $MODE == desktop || $MODE == dedicated ]] || fail 'Mode must be desktop or dedicated'
 }
 user_systemctl() {
-    runuser -u "$INSTALL_USER" -- env XDG_RUNTIME_DIR="/run/user/$USER_ID" \
+    timeout 30 runuser -u "$INSTALL_USER" -- env XDG_RUNTIME_DIR="/run/user/$USER_ID" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$USER_ID/bus" systemctl --user "$@"
 }
 select_packages() {
@@ -86,7 +95,145 @@ select_target() {
     esac
 }
 backup() {
-    if [[ -e $1 ]]; then cp -a -- "$1" "$1.before-setup.$BACKUP_ID"; fi
+    if [[ -e $1 ]]; then cp -a --remove-destination -- "$1" "$1.before-setup.$BACKUP_ID"; fi
+}
+load_settings() {
+    local saved_user saved_mode saved_channel extra
+    if [[ -f $CONFIG ]]; then
+        read -r saved_user saved_mode saved_channel extra < "$CONFIG"
+        [[ -z $extra && $saved_user =~ ^[a-zA-Z_][a-zA-Z0-9_-]*\$?$ && $saved_user != root ]] || fail 'Invalid saved installer user'
+        [[ $saved_mode == desktop || $saved_mode == dedicated ]] || fail 'Invalid saved installer mode'
+        saved_channel=${saved_channel:-stable} # Migrate the original two-field format.
+        [[ $saved_channel == stable || $saved_channel == beta || $saved_channel == dev ]] || fail 'Invalid saved installer channel'
+        if ((USER_SET == 0)); then INSTALL_USER=$saved_user; fi
+        if ((MODE_SET == 0)); then MODE=$saved_mode; fi
+        if ((CHANNEL_SET == 0)); then CHANNEL=$saved_channel; fi
+        [[ $INSTALL_USER == "$saved_user" && $MODE == "$saved_mode" ]] || fail 'Changing the runtime user/mode requires restoring the old startup configuration first'
+        PREVIOUS_INSTALL=1
+    fi
+    if ((CHANNEL_SET == 0)) && [[ -n $VERSION && $VERSION != latest ]]; then
+        case "$VERSION" in *-dev*) CHANNEL=dev;; *-beta*) CHANNEL=beta;; *) CHANNEL=stable;; esac
+    fi
+    [[ $CHANNEL == stable || $CHANNEL == beta || $CHANNEL == dev ]] || fail 'Channel must be stable, beta, or dev'
+}
+# Write canonical managed files atomically. Identical reruns do not create backups.
+reconcile_file() {
+    local owner=$3
+    if [[ $EUID == 0 && $owner != root && $owner != 0 ]]; then
+        # Everything beneath a runtime user's home is written with that user's
+        # privileges, including temporary files and permission repairs.
+        runuser -u "$owner" -- bash -c "$(declare -f backup reconcile_file_local)
+set -euo pipefail
+BACKUP_ID=\$1; shift
+reconcile_file_local \"\$@\"" -- "$BACKUP_ID" "$@"
+    else
+        reconcile_file_local "$@"
+    fi
+}
+runtime_command() {
+    if [[ $INSTALL_USER == "$EUID" || $(id -u "$INSTALL_USER") == "$EUID" ]]; then
+        "$@"
+    else
+        runuser -u "$INSTALL_USER" -- "$@"
+    fi
+}
+runtime_backup() {
+    if [[ -e $1 || -L $1 ]]; then
+        runtime_command cp -a --remove-destination -- "$1" "$1.before-setup.$BACKUP_ID"
+    fi
+}
+reconcile_file_local() {
+    local destination=$1 mode=$2 owner=$3 group=$4 candidate
+    candidate=$(mktemp "$(dirname "$destination")/.bf-setup.XXXXXX")
+    cat > "$candidate"
+    chmod "$mode" "$candidate"
+    chown "$owner:$group" "$candidate"
+    if [[ ! -L $destination && -f $destination ]] && cmp -s "$candidate" "$destination" &&
+        [[ $(stat -c '%a %u %g' "$candidate") == "$(stat -c '%a %u %g' "$destination")" ]]; then
+        rm -f -- "$candidate"
+    else
+        if [[ -L $destination ]] || ! cmp -s "$candidate" "$destination"; then backup "$destination"; fi
+        mv -fT -- "$candidate" "$destination"
+    fi
+}
+service_command() {
+    local scope=$1; shift
+    if [[ $scope == user ]]; then user_systemctl "$@"; else timeout 30 systemctl "$@"; fi
+}
+stop_app_service() {
+    local scope=$1 unit=$2
+    if [[ $(service_command "$scope" show "$unit" -p LoadState --value) == not-found ]]; then return; fi
+    if [[ ( $MODE == desktop && $scope == user ) || ( $MODE == dedicated && $scope == system ) ]]; then
+        if service_command "$scope" is-active --quiet "$unit"; then PRESERVE_PREVIOUS=0; fi
+    fi
+    if service_command "$scope" is-failed --quiet "$unit"; then PRESERVE_PREVIOUS=1; fi
+    if ! service_command "$scope" stop "$unit"; then
+        PRESERVE_PREVIOUS=1
+        service_command "$scope" kill --kill-whom=all --signal=KILL "$unit" || true
+        service_command "$scope" stop "$unit" || fail "Cannot stop $unit; app was not replaced"
+    fi
+    local state
+    state=$(service_command "$scope" show "$unit" -p ActiveState --value)
+    [[ $state == inactive || $state == failed ]] || fail "$unit is still $state; app was not replaced"
+}
+clear_interrupted_update() {
+    # Called only after the managed processes are stopped and the candidate is
+    # validated. Preserve identity, bundle, keys and OS-update state.
+    local file
+    for file in firmware-applying.json firmware-applying.attempts; do
+        runtime_backup "$STATE/$file"
+        runtime_command rm -f -- "$STATE/$file"
+    done
+    runtime_command rm -f -- "$BIN.new"
+    if [[ -f $STATE/update-attempts.json ]]; then
+        runtime_command python3 - "$STATE/update-attempts.json" "$BACKUP_ID" <<'PYGUARD'
+import json, os, pathlib, shutil, sys
+p = pathlib.Path(sys.argv[1])
+try:
+    state = json.loads(p.read_text())
+    entries = state['entries']
+    if not isinstance(entries, dict):
+        raise ValueError('invalid entries')
+except (ValueError, KeyError, TypeError):
+    # The app already treats malformed history as empty. Preserve it for diagnosis.
+    print('Preserving unreadable update history; app retry counters will start empty.', file=sys.stderr)
+else:
+    app_keys = [key for key in entries if key.startswith('firmware:')]
+    if app_keys:
+        shutil.copy2(p, str(p) + '.before-setup.' + sys.argv[2])
+        for key in app_keys:
+            del entries[key]
+        temporary = p.with_name(p.name + '.setup-new')
+        temporary.unlink(missing_ok=True)
+        temporary.write_text(json.dumps(state))
+        info = p.stat()
+        os.chmod(temporary, info.st_mode & 0o777)
+        os.chown(temporary, info.st_uid, info.st_gid)
+        os.replace(temporary, p)
+PYGUARD
+    fi
+}
+start_app_service() {
+    local scope=$1 unit=$2 initial_pid current_pid
+    service_command "$scope" reset-failed "$unit"
+    if service_command "$scope" start "$unit"; then
+        initial_pid=$(service_command "$scope" show "$unit" -p MainPID --value)
+        sleep 3
+        current_pid=$(service_command "$scope" show "$unit" -p MainPID --value)
+        if [[ $initial_pid =~ ^[1-9][0-9]*$ && $initial_pid == "$current_pid" ]] && service_command "$scope" is-active --quiet "$unit"; then return; fi
+    fi
+    printf 'App did not stay running; restoring the previous executable if available.\n' >&2
+    stop_app_service "$scope" "$unit"
+    if [[ -f $BIN.prev ]]; then
+        runtime_command rm -f -- "$BIN.new"
+        runtime_command install -m 755 "$BIN.prev" "$BIN.new"
+        runtime_command mv -f -- "$BIN.new" "$BIN"
+        service_command "$scope" reset-failed "$unit"
+        service_command "$scope" start "$unit" || true
+    fi
+    local option=
+    if [[ $scope == user ]]; then option=--user; fi
+    fail "App startup failed. Inspect journalctl $option -u $unit"
 }
 verify_download() {
     local artifact=$1 expected actual
@@ -106,21 +253,56 @@ PY
     openssl pkeyutl -verify -pubin -inkey "$TRUST_KEY" -rawin \
         -in "$artifact.digest" -sigfile "$artifact.signature" >/dev/null || fail 'Release signature is not trusted'
 }
+select_channel_release() {
+    python3 - "$1" "$CHANNEL" "$TARGET" <<'PYRELEASE'
+import json, re, sys
+releases = json.load(open(sys.argv[1]))
+if not isinstance(releases, list):
+    raise SystemExit('Invalid release response')
+choices = []
+for release in releases:
+    tag = release.get('tag_name', '')
+    if release.get('draft') or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+-' + sys.argv[2] + r'(?:[.-][a-zA-Z0-9.-]+)?', tag):
+        continue
+    artifact = f'betterframe-kiosk-{tag[1:]}-{sys.argv[3]}'
+    names = {a.get('name') for a in release.get('assets', [])}
+    if all(artifact + suffix in names for suffix in ('', '.sha256', '.sig')):
+        choices.append(release)
+if choices:
+    print(max(choices, key=lambda r: r.get('published_at') or '')['tag_name'])
+PYRELEASE
+}
 download_release() {
     local base='https://github.com/BetterCorp/BetterFrame' tag asset
-    if [[ $VERSION == latest || -z $VERSION ]]; then
+    if [[ ( $VERSION == latest || -z $VERSION ) && $CHANNEL == stable ]]; then
         tag=$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-            --output /dev/null --write-out '%{url_effective}' "$base/releases/latest")
+            --connect-timeout 15 --max-time 120 --output /dev/null --write-out '%{url_effective}' "$base/releases/latest")
         tag=${tag##*/}
+    elif [[ $VERSION == latest || -z $VERSION ]]; then
+        # Public release metadata; downloads still require the embedded vendor key.
+        # Page through recent releases rather than silently falling back to stable.
+        local page
+        tag=
+        for page in {1..10}; do
+            curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 120 \
+                --proto '=https' --proto-redir '=https' \
+                "https://api.github.com/repos/BetterCorp/BetterFrame/releases?per_page=100&page=$page" \
+                --output "$STAGING/releases.json"
+            tag=$(select_channel_release "$STAGING/releases.json")
+            [[ -z $tag ]] || break
+            [[ $(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$STAGING/releases.json") == 100 ]] || break
+        done
+        [[ -n $tag ]] || fail "No downloadable $CHANNEL release found; specify --version VERSION"
     else
         tag=v${VERSION#v}
     fi
     [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?$ ]] || fail "Invalid release tag: $tag"
-    asset="betterframe-kiosk-${tag#v}-$TARGET"
+    RELEASE_VERSION=${tag#v}
+    asset="betterframe-kiosk-$RELEASE_VERSION-$TARGET"
     SOURCE_BINARY="$STAGING/$asset"
     local suffix
     for suffix in '' .sha256 .sig; do
-        curl --fail --silent --show-error --location --retry 3 --proto '=https' --proto-redir '=https' \
+        curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 600 --proto '=https' --proto-redir '=https' \
             "$base/releases/download/$tag/$asset$suffix" --output "$SOURCE_BINARY$suffix"
     done
     TRUST_KEY="$STAGING/vendor.pem"
@@ -130,6 +312,12 @@ MCowBQYDK2VwAyEA7cIx3FC6w7AS/NAdCzO6DpX1Rz1TtpGhEpSRATqa0Y4=
 -----END PUBLIC KEY-----
 PEM
     verify_download "$SOURCE_BINARY"
+}
+prepare_candidate() {
+    if [[ -z $SOURCE_BINARY ]]; then download_release; fi
+    [[ -f $SOURCE_BINARY ]] || fail "Missing app binary: $SOURCE_BINARY"
+    cp -- "$SOURCE_BINARY" "$STAGING/candidate"
+    check_binary "$STAGING/candidate"
 }
 check_binary() {
     local candidate=$1 dependencies
@@ -149,12 +337,15 @@ PY
     fi
 }
 install_app_binary() {
-    if [[ -f $BIN ]] && ! cmp -s "$BIN" "$STAGING/candidate"; then
-        cp -- "$BIN" "$BIN.prev"
-        chown "$INSTALL_USER:$USER_GROUP" "$BIN.prev"
+    runtime_command rm -f -- "$BIN.new" "$BIN.prev.new"
+    if [[ -f $BIN && ! -f $STATE/firmware-applying.json && ( $PRESERVE_PREVIOUS == 0 || ! -f $BIN.prev ) ]] && ! cmp -s "$BIN" "$STAGING/candidate"; then
+        runtime_command install -m 755 "$BIN" "$BIN.prev.new"
+        runtime_command mv -f -- "$BIN.prev.new" "$BIN.prev"
     fi
-    install -o "$INSTALL_USER" -g "$USER_GROUP" -m 755 "$STAGING/candidate" "$BIN.new"
-    mv -f -- "$BIN.new" "$BIN"
+    # The validated staging file is private to root. Stream it to an
+    # unprivileged writer instead of granting access to the staging directory.
+    # shellcheck disable=SC2016 # Positional parameters belong to the child shell.
+    runtime_command sh -c 'set -eu; umask 077; cat > "$1"; chmod 755 "$1"; mv -f -- "$1" "$2"' sh "$BIN.new" "$BIN" < "$STAGING/candidate"
 }
 write_desktop_unit() {
     cat <<'EOF'
@@ -172,7 +363,36 @@ Environment=BF_ENABLE_APP_OTA=1
 Environment=BF_ENABLE_OS_OTA=0
 Restart=always
 RestartSec=3
+TimeoutStopSec=15
+KillMode=control-group
 UMask=0077
+EOF
+}
+write_repair_override() {
+    cat <<'EOF'
+# Managed by setup.sh; custom server settings belong in override.conf.
+[Unit]
+FailureAction=none
+StartLimitAction=none
+StartLimitIntervalSec=120
+StartLimitBurst=10
+
+[Service]
+ExecStart=
+EOF
+    if [[ $MODE == desktop ]]; then
+        printf 'ExecStart=/usr/bin/env BF_KIOSK_BINARY=%s BF_ENABLE_APP_OTA=1 BF_ENABLE_OS_OTA=0 %s\n' "$BIN" "$BIN"
+    else
+        printf 'ExecStart=/usr/bin/env BF_KIOSK_BINARY=%s BF_ENABLE_APP_OTA=1 BF_ENABLE_OS_OTA=0 /usr/bin/cage -s -- %s\n' "$BIN" "$BIN"
+    fi
+    cat <<'EOF'
+ExecStartPre=
+ExecStartPre=/usr/local/libexec/betterframe-rollback
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+KillMode=control-group
+SendSIGKILL=yes
 EOF
 }
 write_launcher() {
@@ -186,6 +406,7 @@ for name in DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_SESSION_TYPE XDG_CURRENT_DESK
 done
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
 if ((${#variables[@]})); then systemctl --user import-environment "${variables[@]}"; fi
+systemctl --user reset-failed betterframe.service
 exec systemctl --user restart betterframe.service
 EOF
 }
@@ -218,6 +439,8 @@ ExecStartPre=/usr/local/libexec/betterframe-rollback
 ExecStart=/usr/bin/cage -s -- $BIN
 Restart=always
 RestartSec=3
+TimeoutStopSec=15
+KillMode=control-group
 UMask=0077
 
 [Install]
@@ -231,7 +454,11 @@ main() {
     [[ -d /run/systemd/system ]] || fail 'This installer requires systemd'
     [[ ! -e /etc/betterframe/managed-image ]] || fail 'Use the managed-image updater on this device'
     [[ -f $SCRIPT_DIR/deploy/systemd/betterframe-firmware-rollback.sh ]] || fail 'Run setup.sh from a BetterFrame checkout (rollback helper missing)'
-    if [[ -t 0 && $ASSUME_YES == 0 ]]; then
+    command -v flock >/dev/null || fail 'Install util-linux (flock) before running setup'
+    exec 9>/run/lock/betterframe-setup.lock
+    flock -n 9 || fail 'Another BetterFrame setup is already running'
+    load_settings
+    if [[ -t 0 && $ASSUME_YES == 0 && $PREVIOUS_INSTALL == 0 ]]; then
         read -r -p "Run BetterFrame as user [${INSTALL_USER:-required}]: " answer
         INSTALL_USER=${answer:-$INSTALL_USER}
         if ((MODE_SET == 0)); then
@@ -239,20 +466,17 @@ main() {
             MODE=${answer:-desktop}
         fi
         if [[ -z $VERSION && -z $SOURCE_BINARY ]]; then
-            read -r -p 'Release: keep installed app, latest, or a version [keep]: ' answer
-            if [[ -n $answer && $answer != keep ]]; then VERSION=$answer; fi
+            read -r -p "Release channel: stable, beta, or dev [$CHANNEL]: " answer
+            CHANNEL=${answer:-$CHANNEL}
         fi
     fi
     [[ $MODE == desktop || $MODE == dedicated ]] || fail 'Mode must be desktop or dedicated'
     [[ -n $INSTALL_USER && $INSTALL_USER != root && $INSTALL_USER =~ ^[a-zA-Z_][a-zA-Z0-9_-]*\$?$ ]] || fail 'Specify a non-root runtime user with --user'
+    [[ $CHANNEL == stable || $CHANNEL == beta || $CHANNEL == dev ]] || fail 'Channel must be stable, beta, or dev'
     USER_ID=$(id -u "$INSTALL_USER")
     USER_GROUP=$(id -gn "$INSTALL_USER")
     USER_HOME=$(getent passwd "$INSTALL_USER" | cut -d: -f6)
     [[ $USER_HOME == /* && -d $USER_HOME && $USER_HOME != / ]] || fail 'Runtime user needs an existing home directory'
-    if [[ -f /etc/betterframe/linux-install ]]; then
-        previous=$(cat /etc/betterframe/linux-install)
-        [[ $previous == "$INSTALL_USER $MODE" ]] || fail "Existing setup uses '$previous'; restore its startup configuration before changing user/mode"
-    fi
     for directory in /opt/betterframe/kiosk "$STATE"; do
         [[ ! -L $directory ]] || fail "Refusing symlink: $directory"
         if [[ -d $directory ]]; then
@@ -267,20 +491,6 @@ main() {
     model=
     if [[ -r /proc/device-tree/model ]]; then model=$(tr -d '\0' < /proc/device-tree/model); fi
     select_target "$(uname -m)" "$model"
-    if [[ -z $VERSION && -z $SOURCE_BINARY ]]; then
-        if [[ -f $BIN ]]; then
-            SOURCE_BINARY=$BIN
-        else
-            pid=$(user_systemctl show betterframe.service --property MainPID --value 2>/dev/null || true)
-            if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
-                running=$(readlink -f "/proc/$pid/exe" || true)
-                if [[ ${running##*/} == betterframe-kiosk* && -f $running ]]; then SOURCE_BINARY=$running; fi
-            fi
-        fi
-    fi
-    if [[ -z $VERSION && -z $SOURCE_BINARY && -f $USER_HOME/.config/systemd/user/betterframe.service ]]; then
-        fail 'Existing BF service is stopped or its binary could not be located. Rerun with --binary /path/to/your/app or --version VERSION'
-    fi
     printf 'Installing prerequisites with %s for %s (%s).\n' "$PACKAGE_MANAGER" "$INSTALL_USER" "$MODE"
     if [[ $PACKAGE_MANAGER == apt-get ]]; then
         apt-get update
@@ -290,22 +500,47 @@ main() {
     fi
     STAGING=$(mktemp -d)
     trap 'rm -rf -- "$STAGING"' EXIT
-    if [[ -z $SOURCE_BINARY ]]; then download_release; fi
-    [[ -f $SOURCE_BINARY ]] || fail "Missing app binary: $SOURCE_BINARY"
-    cp -- "$SOURCE_BINARY" "$STAGING/candidate"
-    check_binary "$STAGING/candidate"
+    prepare_candidate
     # Do not stop or replace a working app until validation has passed.
     BACKUP_ID=$(date +%Y%m%dT%H%M%S)-$$
     unit_dir="$USER_HOME/.config/systemd/user"
     autostart_dir="$USER_HOME/.config/autostart"
-    install -d -m 755 /etc/betterframe /usr/local/libexec
+    # Secure BF's parent directories before touching runtime-writable children.
+    # Users can replace entries inside their directories, but cannot redirect
+    # these root-owned parent entries while reconciliation is in progress.
+    for directory in /opt/betterframe /var/lib/betterframe /etc/betterframe /usr/local/libexec; do
+        [[ ! -L $directory ]] || fail "Refusing symlink parent: $directory"
+        install -d -o root -g root -m 755 "$directory"
+    done
+    for directory in /opt/betterframe/kiosk "$STATE"; do
+        [[ ! -L $directory ]] || fail "Refusing symlink: $directory"
+    done
     install -d -o "$INSTALL_USER" -g "$USER_GROUP" -m 755 /opt/betterframe/kiosk
     install -d -o "$INSTALL_USER" -g "$USER_GROUP" -m 700 "$STATE"
     # Repair root-owned state from manual installs, without following symlinks.
-    find "$STATE" -xdev \( -type f -o -type d \) -exec chown "$INSTALL_USER:$USER_GROUP" {} +
-    install -m 755 "$SCRIPT_DIR/deploy/systemd/betterframe-firmware-rollback.sh" /usr/local/libexec/betterframe-rollback
+    python3 - "$STATE" "$USER_ID" "$(id -g "$INSTALL_USER")" <<'PYOWN'
+import os, stat, sys
+uid, gid = map(int, sys.argv[2:])
+root = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    device = os.fstat(root).st_dev
+    for _, dirs, files, fd in os.fwalk('.', dir_fd=root, follow_symlinks=False):
+        if os.fstat(fd).st_dev != device:
+            dirs[:] = []
+            continue
+        os.fchown(fd, uid, gid)
+        for name in files:
+            try:
+                info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if stat.S_ISREG(info.st_mode):
+                    os.chown(name, uid, gid, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass # An active app may atomically replace its state files.
+finally:
+    os.close(root)
+PYOWN
+    reconcile_file /usr/local/libexec/betterframe-rollback 755 root root < "$SCRIPT_DIR/deploy/systemd/betterframe-firmware-rollback.sh"
     runuser -u "$INSTALL_USER" -- mkdir -p -- "$unit_dir" "$autostart_dir"
-    for file in "$unit_dir/betterframe.service" "$autostart_dir/betterframe.desktop"; do backup "$file"; done
     if [[ -S /run/user/$USER_ID/bus ]]; then
         # Existing manual units often set DISPLAY locally rather than importing
         # it into the manager. Preserve that real session before replacing them.
@@ -326,21 +561,33 @@ PYENV
 )
             if ((${#session_environment[@]})); then user_systemctl set-environment "${session_environment[@]}"; fi
         fi
-        if ((START)) && [[ $MODE == desktop ]]; then user_systemctl stop betterframe.service || true; fi
+        if ((START)); then
+            stop_app_service user betterframe.service
+        elif user_systemctl is-active --quiet betterframe.service; then
+            fail '--no-start requires the existing BF service to be stopped; rerun without it to repair a running app'
+        fi
         user_systemctl disable betterframe.service 2>/dev/null || true
+        user_systemctl unmask betterframe.service
+        user_systemctl unmask --runtime betterframe.service
     fi
-    if [[ -f /etc/systemd/system/betterframe-kiosk.service ]]; then
-        backup /etc/systemd/system/betterframe-kiosk.service
-        systemctl disable betterframe-kiosk.service
-        if ((START)) && [[ $MODE == desktop ]]; then systemctl stop betterframe-kiosk.service; fi
+    if ((START)); then
+        stop_app_service system betterframe-kiosk.service
+    elif systemctl is-active --quiet betterframe-kiosk.service; then
+        fail '--no-start requires the existing BF service to be stopped'
     fi
+    systemctl disable betterframe-kiosk.service 2>/dev/null || true
+    systemctl unmask betterframe-kiosk.service
+    systemctl unmask --runtime betterframe-kiosk.service
     install_app_binary
+    clear_interrupted_update
     if command -v restorecon >/dev/null; then restorecon -RF /opt/betterframe /usr/local/libexec/betterframe-rollback; fi
+    printf '%s %s %s\n' "$INSTALL_USER" "$MODE" "$CHANNEL" | reconcile_file "$CONFIG" 644 root root
     if [[ $MODE == desktop ]]; then
-        write_desktop_unit > "$unit_dir/betterframe.service"
-        write_launcher > /usr/local/libexec/betterframe-desktop
-        chmod 755 /usr/local/libexec/betterframe-desktop
-        cat > "$autostart_dir/betterframe.desktop" <<'EOF'
+        write_desktop_unit | reconcile_file "$unit_dir/betterframe.service" 644 "$INSTALL_USER" "$USER_GROUP"
+        runuser -u "$INSTALL_USER" -- mkdir -p "$unit_dir/betterframe.service.d"
+        write_repair_override | reconcile_file "$unit_dir/betterframe.service.d/zz-betterframe-setup.conf" 644 "$INSTALL_USER" "$USER_GROUP"
+        write_launcher | reconcile_file /usr/local/libexec/betterframe-desktop 755 root root
+        reconcile_file "$autostart_dir/betterframe.desktop" 644 "$INSTALL_USER" "$USER_GROUP" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=BetterFrame
@@ -348,19 +595,21 @@ Exec=/usr/local/libexec/betterframe-desktop
 Terminal=false
 X-GNOME-Autostart-enabled=true
 EOF
-        chown "$INSTALL_USER:$USER_GROUP" "$unit_dir/betterframe.service" "$autostart_dir/betterframe.desktop"
         if [[ -S /run/user/$USER_ID/bus ]]; then
             user_systemctl daemon-reload
             if ((START)) && user_systemctl show-environment | grep -Eq '^(DISPLAY|WAYLAND_DISPLAY)=.'; then
-                user_systemctl start betterframe.service
+                start_app_service user betterframe.service
             fi
         fi
         printf 'BetterFrame starts at the next graphical login (or now if the user manager has a display).\n'
     else
-        rm -f -- "$autostart_dir/betterframe.desktop"
-        write_dedicated_unit > /etc/systemd/system/betterframe-kiosk.service
-        backup /etc/pam.d/betterframe-kiosk
-        cat > /etc/pam.d/betterframe-kiosk <<'EOF'
+        runtime_backup "$autostart_dir/betterframe.desktop"
+        runtime_command rm -f -- "$autostart_dir/betterframe.desktop"
+        write_dedicated_unit | reconcile_file /etc/systemd/system/betterframe-kiosk.service 644 root root
+        [[ ! -L /etc/systemd/system/betterframe-kiosk.service.d ]] || fail 'Refusing symlink service override directory'
+        install -d -o root -g root -m 755 /etc/systemd/system/betterframe-kiosk.service.d
+        write_repair_override | reconcile_file /etc/systemd/system/betterframe-kiosk.service.d/zz-betterframe-setup.conf 644 root root
+        reconcile_file /etc/pam.d/betterframe-kiosk 644 root root <<'EOF'
 auth required pam_permit.so
 account required pam_permit.so
 session required pam_loginuid.so
@@ -372,9 +621,13 @@ EOF
         systemctl daemon-reload
         systemctl enable betterframe-kiosk.service
         systemctl set-default multi-user.target
-        printf 'Dedicated kiosk enabled for next boot. Reboot when ready; your current desktop remains running.\n'
+        if ((START)) && ! systemctl is-active --quiet display-manager.service; then
+            start_app_service system betterframe-kiosk.service
+        else
+            printf 'Dedicated startup configured. Current graphical login is preserved; BF starts on the next boot.\n'
+        fi
     fi
-    printf '%s %s\n' "$INSTALL_USER" "$MODE" > /etc/betterframe/linux-install
+    printf 'Release: %s (channel %s)\n' "${RELEASE_VERSION:-trusted local binary}" "$CHANNEL"
     printf 'Installed app: %s\nPairing/state preserved: %s\nOS updates are disabled for this standalone installation.\n' "$BIN" "$STATE"
 }
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

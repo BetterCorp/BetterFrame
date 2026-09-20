@@ -46,6 +46,7 @@ jobs:
           python3 scripts/test-release-versions.py
           python3 scripts/test-easy1-deploy.py
           python3 scripts/test-linux-setup.py
+          sudo python3 scripts/test-linux-setup.py SetupTests.test_root_installer_writes_runtime_files_without_root_privileges
       - run: npm ci
       - name: Dashboard proxy isolation
         run: |

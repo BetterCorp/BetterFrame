@@ -109,7 +109,8 @@ The installer:
 1. Asks which existing user will run BF and which startup mode to use.
 2. Installs runtime prerequisites using apt on Ubuntu/Debian or dnf on
    Fedora-family distributions.
-3. Keeps a detected installed app, or downloads a selected signed release.
+3. Downloads the latest signed app in the chosen stable/beta/dev channel, or
+   installs a release/executable explicitly selected for this run.
 4. Checks the executable architecture and required libraries before replacing
    a working installation.
 5. Installs the app at a stable path with the permissions needed for app updates,
@@ -120,7 +121,8 @@ existing graphical desktop. It does not configure automatic login. The service
 restarts the app after a successful update or a process failure.
 
 **Dedicated mode is optional.** Select it at the prompt to replace graphical
-login with a fullscreen Cage kiosk at the next boot. Setup does not reboot the
+login with a fullscreen Cage kiosk. If a desktop is active, this takes effect on
+the next boot; reruns on a dedicated kiosk restart the app immediately. Setup does not reboot the
 machine or disable SSH. This remains a standalone app installation; it does not
 convert the existing OS into a managed BF image.
 
@@ -130,24 +132,45 @@ For an unattended desktop installation:
 sudo ./setup.sh --yes --user kiosk --mode desktop --version latest
 ```
 
-Use an existing regular account in place of `kiosk`. `latest` selects the latest
-stable GitHub release; provide a version to choose a specific beta/dev release.
+Use an existing regular account in place of `kiosk`. `latest` selects the latest release in the saved channel (initially stable).
+Use `--channel beta` or `--channel dev` to select another channel, or
+`--version VERSION` for a particular release.
 New PC releases use the Ubuntu 24.04 library baseline. Older releases and older
 distributions can have incompatible libraries, which setup detects and reports.
 ARM release downloads currently target Raspberry Pi 5 specifically.
 
+### Repeatable repair and updates
+
+Rerun setup to bring BF back to its expected configuration and update the app:
+
+```sh
+sudo ./setup.sh --yes
+```
+
+Setup remembers the runtime user, startup mode, and release channel. It repairs
+managed startup files and permissions, handles masked/stopped/failed services,
+clears stale app-update state, and restarts the app. It preserves pairing, keys,
+and OS-update state. A concurrent setup run is rejected; unchanged configuration
+creates no additional backups. Download or verification failures leave the
+existing app in place. Immediate startup failure attempts restoration of the
+previous executable and reports failure instead of claiming success.
+
+Use `sudo ./setup.sh --yes --channel dev` to switch future updates to the dev
+channel. Update the repository checkout to obtain newer setup script logic.
+
 ### Repair a manual installation
 
-If a versioned executable was copied into a home directory, pass that executable
-explicitly to setup:
+The normal setup command downloads a replacement even when the existing binary
+is missing or broken. To use a particular trusted executable instead, pass it
+explicitly:
 
 ```sh
 sudo ./setup.sh --user YOUR_USER --binary /absolute/path/to/betterframe-kiosk-VERSION-betterframe-pc-x86_64
 ```
 
 `--binary` trusts the local executable you supply. Downloaded releases require a
-valid vendor signature and matching checksum. Use `--no-start` to defer the app
-restart. Existing pairing and keys stay in `/var/lib/betterframe/kiosk`.
+valid vendor signature and matching checksum. `--no-start` defers app startup
+and requires existing BF services to be stopped. Existing pairing and keys stay in `/var/lib/betterframe/kiosk`.
 
 See [Linux installation and repair](docs/linux-install.md) for all options,
 startup behavior, paths, and restoring graphical login after dedicated mode.

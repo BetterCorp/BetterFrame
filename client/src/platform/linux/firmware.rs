@@ -18,7 +18,7 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -163,7 +163,15 @@ pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
             .map_err(|e| format!("open {}: {e}", new_path.display()))?;
         use std::io::Write;
         f.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
+        f.sync_all().map_err(|e| format!("sync app: {e}"))?;
     }
+    write_pending_marker(
+        &info.version,
+        &bin,
+        &prev_path,
+        Path::new(FIRMWARE_MARKER),
+        Path::new(FIRMWARE_ATTEMPTS),
+    )?;
     if bin.exists() {
         let _ = fs::remove_file(&prev_path);
         let _ = fs::rename(&bin, &prev_path);
@@ -301,18 +309,13 @@ pub fn apply(
     // failed first boot of the new binary. We delete it after a clean boot
     // (see `mark_firmware_applied()`). If we crash before that, next start
     // sees a stale marker → restores .prev.
-    {
-        let marker = PathBuf::from(FIRMWARE_MARKER);
-        let payload = serde_json::json!({
-            "version": info.version,
-            "attempt_at": chrono_now_iso(),
-            "confirmed": false,
-            "bin": bin.to_string_lossy(),
-            "prev": prev_path.to_string_lossy(),
-        });
-        let _ = fs::write(&marker, payload.to_string());
-        let _ = fs::remove_file(FIRMWARE_ATTEMPTS);
-    }
+    write_pending_marker(
+        &info.version,
+        &bin,
+        &prev_path,
+        Path::new(FIRMWARE_MARKER),
+        Path::new(FIRMWARE_ATTEMPTS),
+    )?;
     if cancel_requested() {
         cleanup_partial_update();
         return Err("firmware update canceled after channel change".to_string());
@@ -339,6 +342,39 @@ pub fn apply(
     info!("app: swap complete; restarting BetterFrame");
     // Restart=always also covers this successful exit after an atomic swap.
     std::process::exit(0);
+}
+
+// Both enrolled and pre-pairing updates must arm rollback before swapping.
+// Failure to persist this marker aborts the update while the old binary remains.
+fn write_pending_marker(
+    version: &str,
+    bin: &Path,
+    prev: &Path,
+    marker: &Path,
+    attempts: &Path,
+) -> Result<(), String> {
+    match fs::remove_file(attempts) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(format!("reset app startup attempts: {err}")),
+    }
+    let payload = serde_json::json!({
+        "version": version,
+        "attempt_at": chrono_now_iso(),
+        "confirmed": false,
+        "bin": bin.to_string_lossy(),
+        "prev": prev.to_string_lossy(),
+    });
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode_for_unix(0o600)
+        .open(marker)
+        .map_err(|e| format!("create app rollback marker: {e}"))?;
+    file.write_all(payload.to_string().as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("persist app rollback marker: {e}"))
 }
 
 fn newer_update(check: CheckResponse, current_version: &str) -> Option<UpdateInfo> {
@@ -495,6 +531,31 @@ mod tests {
     use base64::Engine as _;
     use ed25519_dalek::{Signer, SigningKey, pkcs8::EncodePublicKey};
     use std::io::Cursor;
+
+    #[test]
+    fn pending_marker_arms_rollback_and_resets_stale_attempts() {
+        let root = std::env::temp_dir().join(format!("bf-app-marker-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let marker = root.join("applying.json");
+        let attempts = root.join("attempts");
+        let bin = root.join("app");
+        let prev = root.join("app.prev");
+        std::fs::write(&bin, b"existing app").unwrap();
+        std::fs::write(&attempts, b"99").unwrap();
+        super::write_pending_marker("1.2.3", &bin, &prev, &marker, &attempts).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&marker).unwrap()).unwrap();
+        assert_eq!(payload["version"], "1.2.3");
+        assert_eq!(payload["confirmed"], false);
+        assert_eq!(payload["prev"], prev.to_string_lossy().as_ref());
+        assert!(!attempts.exists());
+        assert_eq!(std::fs::read(&bin).unwrap(), b"existing app");
+        assert!(super::write_pending_marker(
+            "1.2.4", &bin, &prev, &root.join("missing/marker"), &attempts
+        ).is_err());
+        assert_eq!(std::fs::read(&bin).unwrap(), b"existing app");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn firmware_body_is_bounded_by_declared_size() {

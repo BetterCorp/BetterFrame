@@ -22,6 +22,7 @@ jobs:
       - run: python3 scripts/test-release-versions.py
       - run: python3 scripts/test-easy1-deploy.py
       - run: python3 scripts/test-linux-setup.py
+      - run: sudo python3 scripts/test-linux-setup.py SetupTests.test_root_installer_writes_runtime_files_without_root_privileges
       - name: Dashboard proxy isolation
         run: |
           sudo apt-get update

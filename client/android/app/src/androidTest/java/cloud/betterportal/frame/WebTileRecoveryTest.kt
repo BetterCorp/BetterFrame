@@ -368,7 +368,17 @@ class WebTileRecoveryTest {
                 }
             }
             assertTrue("Browser JavaScript callback completed", complete.await(2, TimeUnit.SECONDS))
-            if (result.get() == "true") return
+            if (result.get() == "true") {
+                // JS completion can precede onPageCommitVisible/onPageFinished.
+                // Reload deliberately replaces a browser while its native load
+                // watchdog is active, so wait for both before asserting reuse.
+                var nativeLoadComplete = false
+                instrumentation.runOnMainSync {
+                    assertSame("The expected browser remains active", browser, findBrowser(tile!!))
+                    nativeLoadComplete = (findSpinner(tile!!)?.parent as? View)?.visibility == View.GONE
+                }
+                if (nativeLoadComplete) return
+            }
             Thread.sleep(50)
         }
         fail("Expected document did not load: $name")

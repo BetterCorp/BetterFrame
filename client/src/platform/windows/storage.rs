@@ -172,6 +172,26 @@ fn update_state_file(
     Ok(state)
 }
 
+pub(super) fn complete_demo_exit() -> Result<(), String> {
+    ensure_secure_state_dir()?;
+    complete_demo_exit_at(&state_dir(), &webview_data_dir())
+}
+
+fn complete_demo_exit_at(directory: &std::path::Path, browser: &std::path::Path) -> Result<(), String> {
+    let marker = directory.join("exit-demo");
+    if !marker.exists() { return Ok(()); }
+    update_state_file(&directory.join("state.json"), |latest| {
+        *latest = ClientState::unpaired(&latest.server_url);
+        Ok(())
+    })?;
+    let bundle = directory.join("bundle.json");
+    if bundle.exists() { fs::remove_file(bundle).map_err(|error| error.to_string())?; }
+    if browser.exists() { fs::remove_dir_all(browser).map_err(|error| error.to_string())?; }
+    // Commit the exit last. A crash or cleanup error leaves a retryable journal,
+    // regardless of whether the credentials have already been cleared.
+    fs::remove_file(marker).map_err(|error| error.to_string())
+}
+
 pub(super) fn load_bundle() -> Option<KioskBundle> {
     ensure_secure_state_dir()
         .and_then(|()| read_protected_or_plain(&bundle_path()))
@@ -727,6 +747,47 @@ mod tests {
             assert_eq!(fs::read(&path).unwrap(), before);
             fs::remove_dir_all(directory).unwrap();
         }
+    }
+
+    #[test]
+    fn interrupted_demo_exit_finishes_before_a_fresh_enrollment() {
+        let directory = std::env::temp_dir().join(format!("bf-demo-exit-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let state = directory.join("state.json");
+        let marker = directory.join("exit-demo");
+        let browser = directory.join("browser");
+        update_state_file(&state, |latest| {
+            *latest = ClientState::unpaired("https://frame.example");
+            latest.demo = true;
+            latest.kiosk_key = Some("old-demo-key".into());
+            Ok(())
+        }).unwrap();
+        fs::write(&marker, b"exit").unwrap();
+        fs::write(directory.join("bundle.json"), b"cached-demo-content").unwrap();
+        // A non-directory browser path injects a cleanup error after state reset.
+        fs::write(&browser, b"blocked-browser-cleanup").unwrap();
+        assert!(complete_demo_exit_at(&directory, &browser).is_err());
+        assert!(marker.exists());
+        let cleared = load_state_file(&state).unwrap();
+        assert!(!cleared.demo);
+        assert!(cleared.kiosk_key.is_none());
+        assert_eq!(cleared.server_url, "https://frame.example");
+        fs::remove_file(&browser).unwrap();
+        fs::create_dir(&browser).unwrap();
+        fs::write(browser.join("cookies"), b"old-session").unwrap();
+        // Restart resumes the journal even though demo is already false.
+        complete_demo_exit_at(&directory, &browser).unwrap();
+        assert!(!marker.exists());
+        assert!(!browser.exists());
+        assert!(!directory.join("bundle.json").exists());
+        update_state_file(&state, |latest| {
+            latest.demo = true;
+            latest.kiosk_key = Some("new-demo-key".into());
+            Ok(())
+        }).unwrap();
+        complete_demo_exit_at(&directory, &browser).unwrap();
+        assert_eq!(load_state_file(&state).unwrap().kiosk_key.as_deref(), Some("new-demo-key"));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

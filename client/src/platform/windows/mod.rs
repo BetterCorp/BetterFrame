@@ -286,6 +286,9 @@ fn self_test() -> Result<(), String> {
 
 fn run_agent_cli(args: &[String]) -> Result<(), String> {
     loop {
+        // Finish a persisted local exit before discovery, pairing or rendering.
+        // The marker can outlive demo=true if a previous cleanup was interrupted.
+        complete_demo_exit()?;
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -306,12 +309,7 @@ fn run_agent_cli(args: &[String]) -> Result<(), String> {
         // Drop the runtime first: old heartbeat/bundle tasks must never restore cleared state.
         drop(rt);
         result?;
-        let origin = load_agent_state()?.server_url;
-        update_state(|latest| { *latest = unpaired_state(&origin); Ok(()) })?;
-        for path in [bundle_path(), state_dir().join("exit-demo")] {
-            if path.exists() { fs::remove_file(path).map_err(|e| e.to_string())?; }
-        }
-        if webview_data_dir().exists() { fs::remove_dir_all(webview_data_dir()).map_err(|e| e.to_string())?; }
+
     }
 }
 
@@ -473,7 +471,7 @@ async fn run_agent(server_url: String) -> Result<(), String> {
                 }
             }
             _ = tokio::time::sleep(Duration::from_secs(2)) => {
-                if state_dir().join("exit-demo").exists() && state.lock().unwrap().demo {
+                if state_dir().join("exit-demo").exists() {
                     if let Some(mut child) = app.lock().unwrap().take() {
                         let _ = child.kill(); let _ = child.wait();
                     }

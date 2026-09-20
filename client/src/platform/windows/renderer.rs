@@ -8,6 +8,8 @@ use windows_sys::Win32::Graphics::Gdi::DT_WORDBREAK;
 use super::*;
 
 pub(super) fn run_app() -> Result<(), String> {
+    // The agent owns cleanup; do not reopen the browser profile during recovery.
+    if state_dir().join("exit-demo").exists() { return Ok(()); }
     let Some(_instance) = acquire_app_instance()? else {
         info!("BetterFrame renderer is already running");
         return Ok(());

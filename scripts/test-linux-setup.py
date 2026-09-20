@@ -25,6 +25,15 @@ class SetupTests(unittest.TestCase):
         for args in ['--mode invalid', '--binary', '--version 1.0.1 --binary /tmp/app']:
             self.assertNotEqual(self.shell(f'parse_args {args}', check=False).returncode, 0)
 
+    def test_os_release_does_not_overwrite_app_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / 'os-release'
+            release.write_text('ID=ubuntu\nID_LIKE=debian\nVERSION="26.04.1 LTS (Resolute Raccoon)"\n')
+            for version in ['', 'latest', '1.0.14-dev.gf0075a9']:
+                result = self.shell(f'VERSION={shlex.quote(version)}; load_distribution {shlex.quote(str(release))}; '
+                                    'printf "%s\\n%s\\n%s\\n" "$VERSION" "$DISTRO_ID" "$DISTRO_LIKE"')
+                self.assertEqual(result.stdout.splitlines(), [version, 'ubuntu', 'debian'])
+
     def test_distro_packages(self):
         for distro, like, manager, package in [('ubuntu', 'debian', 'apt-get', 'libwebkitgtk-6.0-4'),
                                                ('fedora', '', 'dnf', 'webkitgtk6.0')]:

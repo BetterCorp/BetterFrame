@@ -70,6 +70,18 @@ user_systemctl() {
     timeout 30 runuser -u "$INSTALL_USER" -- env XDG_RUNTIME_DIR="/run/user/$USER_ID" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$USER_ID/bus" systemctl --user "$@"
 }
+load_distribution() {
+    local distribution
+    # os-release also defines VERSION and other names used by this installer.
+    # Read it in a subshell so only the distribution identifiers escape.
+    distribution=$(
+        # shellcheck disable=SC1090,SC1091
+        . "${1:-/etc/os-release}" || exit
+        printf '%s|%s' "$ID" "${ID_LIKE:-}"
+    ) || return
+    IFS='|' read -r DISTRO_ID DISTRO_LIKE <<< "$distribution"
+}
+
 select_packages() {
     case " $DISTRO_ID $DISTRO_LIKE " in
         *' debian '*|*' ubuntu '*)
@@ -686,9 +698,7 @@ main() {
             [[ $owner == 0 || $owner == "$USER_ID" ]] || fail "$directory belongs to another user; specify that runtime user"
         fi
     done
-    # shellcheck disable=SC1091
-    . /etc/os-release
-    DISTRO_ID=$ID; DISTRO_LIKE=${ID_LIKE:-}
+    load_distribution /etc/os-release
     select_packages
     model=
     if [[ -r /proc/device-tree/model ]]; then model=$(tr -d '\0' < /proc/device-tree/model); fi

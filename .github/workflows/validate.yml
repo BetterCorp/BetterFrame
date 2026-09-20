@@ -73,8 +73,10 @@ jobs:
       - name: Install native client dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwebkitgtk-6.0-dev libssl-dev
+          sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwebkitgtk-6.0-dev libssl-dev xvfb xauth dbus-x11
       - run: cargo test --manifest-path client/Cargo.toml --workspace --locked
+      - name: Linux sleep screen and activity regression
+        run: xvfb-run -a dbus-run-session -- cargo test --manifest-path client/Cargo.toml sleep_integration -- --ignored --test-threads=1
 
   windows-client:
     runs-on: windows-latest

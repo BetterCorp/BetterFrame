@@ -684,26 +684,63 @@ fn output_name_for_display(display_id: &str) -> Option<String> {
 }
 
 fn standby_display(display_id: Option<&str>) {
-    if let Some(display_id) = display_id {
-        if let Some(output_name) = output_name_for_display(display_id) {
-            cec::standby_output(&output_name);
-        } else {
-            cec::standby();
-        }
-        DISPLAYS.with(|ds| {
-            if let Some(st) = ds.borrow_mut().get_mut(display_id) {
+    DISPLAYS.with(|ds| {
+        for (id, st) in ds.borrow_mut().iter_mut() {
+            if display_id.is_none_or(|wanted| wanted == id) {
                 st.is_asleep = true;
+                st.window.set_child(Some(&build_sleep_screen(id)));
             }
-        });
+        }
+    });
+    recompute_global_state();
+    if let Some(output) = display_id.and_then(output_name_for_display) {
+        cec::standby_output(&output);
     } else {
         cec::standby();
-        DISPLAYS.with(|ds| {
-            for st in ds.borrow_mut().values_mut() {
-                st.is_asleep = true;
-            }
-        });
     }
-    recompute_global_state();
+}
+
+/// Replace the whole layout, including webviews and labels. The tick callback is
+/// owned by this widget and stops when the sleep screen is detached on wake.
+fn build_sleep_screen(display_id: &str) -> gtk::Widget {
+    let surface = gtk::Fixed::new();
+    surface.set_hexpand(true);
+    surface.set_vexpand(true);
+    surface.set_overflow(gtk::Overflow::Hidden);
+    surface.add_css_class("bf-sleep-screen");
+    add_css(&surface, ".bf-sleep-screen { background-color: #000; }");
+    let logo = logo_picture(BETTERFRAME_LOGO_PNG, 240, 59, "sleep-logo");
+    logo.set_opacity(0.07);
+    surface.put(&logo, 0.0, 0.0);
+    let started = Instant::now();
+    surface.add_tick_callback(move |surface, _| {
+        let elapsed = started.elapsed().as_secs_f64();
+        // Keep the logo below half the available area, even during a mode
+        // change when GTK may briefly allocate a very small surface.
+        let scale = (surface.width() as f32 / 480.0)
+            .min(surface.height() as f32 / 118.0)
+            .clamp(0.0, 1.0);
+        let x = crate::core::display_power::bounce_position(
+            elapsed,
+            17.0,
+            f64::from((surface.width() as f32 - logo.width() as f32 * scale).max(0.0)),
+        );
+        let y = crate::core::display_power::bounce_position(
+            elapsed,
+            11.0,
+            f64::from((surface.height() as f32 - logo.height() as f32 * scale).max(0.0)),
+        );
+        let transform = gtk::gsk::Transform::new()
+            .translate(&gtk::graphene::Point::new(x as f32, y as f32))
+            .scale(scale, scale);
+        surface.set_child_transform(&logo, Some(&transform));
+        gtk::glib::ControlFlow::Continue
+    });
+    let click = gtk::GestureClick::new();
+    let id = display_id.to_owned();
+    click.connect_pressed(move |_, _, _, _| wake_display(Some(&id)));
+    surface.add_controller(click);
+    surface.upcast()
 }
 
 fn wake_display(display_id: Option<&str>) {
@@ -716,6 +753,7 @@ fn wake_display(display_id: Option<&str>) {
         DISPLAYS.with(|ds| {
             if let Some(st) = ds.borrow_mut().get_mut(display_id) {
                 st.is_asleep = false;
+                st.window.set_child(Some(&st.content_overlay));
                 st.last_activity = Instant::now();
             }
         });
@@ -724,6 +762,7 @@ fn wake_display(display_id: Option<&str>) {
         DISPLAYS.with(|ds| {
             for st in ds.borrow_mut().values_mut() {
                 st.is_asleep = false;
+                st.window.set_child(Some(&st.content_overlay));
                 st.last_activity = Instant::now();
             }
         });
@@ -748,7 +787,7 @@ fn render_current_layouts(display_id: Option<&str>) {
     });
 
     for (display_id, layout_id) in layouts {
-        render_layout(&display_id, &layout_id);
+        render_layout_inner(&display_id, &layout_id, true);
     }
 }
 
@@ -765,6 +804,7 @@ fn mark_activity(display_id: &str) {
                     cec::wake();
                 }
                 st.is_asleep = false;
+                st.window.set_child(Some(&st.content_overlay));
             }
         }
     });
@@ -1230,7 +1270,10 @@ fn install_idle_watchdog() {
                 else {
                     continue;
                 };
-                let sleep_to = d.sleep_timeout_seconds as u64;
+                if st.is_asleep {
+                    continue;
+                }
+                let sleep_to = d.sleep_timeout_seconds;
                 let elapsed = st.last_activity.elapsed();
                 let default_id = d.default_layout_id.clone();
                 let current_layout = st
@@ -1239,7 +1282,7 @@ fn install_idle_watchdog() {
                     .and_then(|cur_id| d.layouts.iter().find(|l| l.id == *cur_id));
                 let idle_to = current_layout
                     .and_then(|l| l.idle_timeout_seconds)
-                    .unwrap_or(d.idle_timeout_seconds) as u64;
+                    .unwrap_or(d.idle_timeout_seconds);
 
                 let mut act = Action {
                     display_id: display_id.clone(),
@@ -1247,17 +1290,22 @@ fn install_idle_watchdog() {
                     sleep: false,
                 };
 
-                if idle_to > 0 && elapsed >= Duration::from_secs(idle_to) {
-                    let cur_resets_idle =
-                        current_layout.map(|l| l.resets_idle_timer).unwrap_or(false);
-                    if let (Some(cur_id), Some(def_id)) = (&st.current_layout_id, &default_id) {
-                        if cur_id != def_id && cur_resets_idle {
-                            act.revert_to = Some(def_id.clone());
-                        }
+                let can_return = current_layout.is_some_and(|layout| layout.resets_idle_timer)
+                    && st.current_layout_id.is_some()
+                    && default_id.is_some()
+                    && st.current_layout_id != default_id;
+                match crate::core::display_power::idle_decision(
+                    elapsed,
+                    st.is_asleep,
+                    sleep_to,
+                    idle_to,
+                    can_return,
+                ) {
+                    crate::core::display_power::IdleDecision::Sleep => act.sleep = true,
+                    crate::core::display_power::IdleDecision::ReturnToDefault => {
+                        act.revert_to = default_id
                     }
-                }
-                if sleep_to > 0 && elapsed >= Duration::from_secs(sleep_to) && !st.is_asleep {
-                    act.sleep = true;
+                    crate::core::display_power::IdleDecision::None => {}
                 }
                 if act.revert_to.is_some() || act.sleep {
                     actions.push(act);
@@ -1271,7 +1319,7 @@ fn install_idle_watchdog() {
                     "idle timeout reached → reverting display {} to default",
                     a.display_id
                 );
-                render_layout(&a.display_id, &layout_id);
+                render_layout_inner(&a.display_id, &layout_id, false);
             }
             if a.sleep {
                 info!("sleep timeout reached on display {}", a.display_id);
@@ -1486,10 +1534,19 @@ fn render_bundle(
     let mut new_state: HashMap<String, DisplayState> = HashMap::new();
     for (i, bd) in displays.iter().enumerate() {
         let existing = DISPLAYS.with(|ds| ds.borrow_mut().remove(&bd.id));
-        let (window, was_asleep, existing_overlay, existing_web_layer) = match existing {
+        let (
+            window,
+            was_asleep,
+            last_activity,
+            previous_layout,
+            existing_overlay,
+            existing_web_layer,
+        ) = match existing {
             Some(st) => (
                 st.window,
                 st.is_asleep,
+                st.last_activity,
+                st.current_layout_id,
                 Some(st.content_overlay),
                 Some(st.web_layer),
             ),
@@ -1507,11 +1564,33 @@ fn render_bundle(
                     gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
                 );
                 hide_cursor_on(&w);
+                let input = gtk::EventControllerLegacy::new();
+                input.set_propagation_phase(gtk::PropagationPhase::Capture);
+                let id = bd.id.clone();
+                input.connect_event(move |_, event| {
+                    if matches!(
+                        event.event_type(),
+                        gtk::gdk::EventType::ButtonPress
+                            | gtk::gdk::EventType::KeyPress
+                            | gtk::gdk::EventType::TouchBegin
+                            | gtk::gdk::EventType::Scroll
+                    ) {
+                        let asleep =
+                            DISPLAYS.with(|ds| ds.borrow().get(&id).is_some_and(|st| st.is_asleep));
+                        if asleep {
+                            wake_display(Some(&id));
+                            return gtk::glib::Propagation::Stop;
+                        }
+                        mark_activity(&id);
+                    }
+                    gtk::glib::Propagation::Proceed
+                });
+                w.add_controller(input);
                 w.present();
                 if let Some(monitor) = gdk_monitors.get(i) {
                     w.fullscreen_on_monitor(monitor);
                 }
-                (w, false, None, None)
+                (w, false, Instant::now(), None, None, None)
             }
         };
         let content_overlay = existing_overlay.unwrap_or_else(|| {
@@ -1526,14 +1605,18 @@ fn render_bundle(
             content_overlay.add_overlay(&wl);
             wl
         });
-        window.set_child(Some(&content_overlay));
+        if was_asleep {
+            window.set_child(Some(&build_sleep_screen(&bd.id)));
+        } else {
+            window.set_child(Some(&content_overlay));
+        }
 
         new_state.insert(
             bd.id.clone(),
             DisplayState {
                 window,
-                current_layout_id: None,
-                last_activity: Instant::now(),
+                current_layout_id: previous_layout,
+                last_activity,
                 is_asleep: was_asleep,
                 content_overlay,
                 web_layer,
@@ -1555,9 +1638,16 @@ fn render_bundle(
 
     // Now render each display's initial layout.
     for bd in &displays {
-        let target = crate::core::layout::initial_layout_id(bd);
+        let previous = DISPLAYS.with(|ds| {
+            ds.borrow()
+                .get(&bd.id)
+                .and_then(|st| st.current_layout_id.clone())
+        });
+        let target = previous
+            .filter(|id| bd.layouts.iter().any(|layout| layout.id == *id))
+            .or_else(|| crate::core::layout::initial_layout_id(bd));
         if let Some(layout_id) = target {
-            render_layout(&bd.id, &layout_id);
+            render_layout_inner(&bd.id, &layout_id, true);
         } else {
             info!("display {} has no assigned layouts", bd.id);
             DISPLAYS.with(|ds| {
@@ -1594,6 +1684,7 @@ fn switch_layout_anywhere(layout_id: &str) {
 
 /// Render a specific layout id on a specific display.
 fn render_layout(display_id: &str, layout_id: &str) {
+    mark_activity(display_id);
     render_layout_inner(display_id, layout_id, false);
 }
 
@@ -1602,8 +1693,6 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
         info!("render_layout: deferred — terminal auth overlay active");
         return;
     }
-    mark_activity(display_id);
-
     let snapshot: Option<(KioskBundle, String, String)> = CURRENT_BUNDLE.with(|b| {
         let bundle = b.borrow();
         let bundle = bundle.as_ref()?.clone();
@@ -1649,33 +1738,26 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
 
     // Update per-display layout id BEFORE recomputing warm-cameras so the
     // union across displays is correct.
-    let (previous_layout_id, had_override) = DISPLAYS.with(|ds| {
+    let layout_changed = DISPLAYS.with(|ds| {
         let mut displays = ds.borrow_mut();
-        let Some(st) = displays.get_mut(display_id) else {
-            return (None, false);
-        };
-        let prev = st.current_layout_id.clone();
-        let had_override = !st.focus_overrides.is_empty()
-            || st.fullscreen_override.is_some()
-            || st.display_cleared;
-        st.current_layout_id = Some(base_layout.id.clone());
-        if !preserve_override {
-            st.focus_overrides.clear();
-            st.fullscreen_override = None;
-            st.display_cleared = false;
+        if let Some(st) = displays.get_mut(display_id) {
+            let changed = st.current_layout_id.as_deref() != Some(base_layout.id.as_str());
+            st.current_layout_id = Some(base_layout.id.clone());
+            if !preserve_override {
+                st.focus_overrides.clear();
+                st.fullscreen_override = None;
+                st.display_cleared = false;
+            }
+            changed
+        } else {
+            false
         }
-        (prev, had_override)
     });
 
-    let layout_changed = previous_layout_id.as_deref() != Some(base_layout.id.as_str());
-    if !layout_changed && !preserve_override && !had_override {
-        info!(
-            "layout '{}' already active on display {}; reset idle timer",
-            base_layout.name, display_id
-        );
+    if DISPLAYS.with(|ds| ds.borrow().get(display_id).is_some_and(|st| st.is_asleep)) {
+        recompute_global_state();
         return;
     }
-
     let mut layout = base_layout.clone();
     apply_operator_overrides(display_id, &mut layout);
 
@@ -1713,11 +1795,12 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
         recompute_global_state();
         DISPLAYS.with(|ds| {
             if let Some(st) = ds.borrow_mut().get_mut(display_id) {
-                st.content_overlay.set_child(Some(&build_empty_display_message(
-                    &bundle,
-                    Some(bd),
-                    "This layout is empty. Add content to it in BetterFrame.",
-                )));
+                st.content_overlay
+                    .set_child(Some(&build_empty_display_message(
+                        &bundle,
+                        Some(bd),
+                        "This layout is empty. Add content to it in BetterFrame.",
+                    )));
                 hide_all_webviews(&st.web_layer);
                 st.web_positions.clear();
             }
@@ -2133,6 +2216,7 @@ fn operator_focus(request: OperatorFocusRequest) -> Result<serde_json::Value, St
         Ok::<u64, String>(generation)
     })?;
 
+    mark_activity(&request.display_id);
     render_layout_inner(&request.display_id, &active_layout_id, true);
     if let Some(seconds) = request.duration_seconds {
         let display_id = request.display_id.clone();
@@ -2180,6 +2264,7 @@ fn operator_clear(display_id: &str) -> Result<serde_json::Value, String> {
             .clone()
             .ok_or_else(|| "display has no active layout".to_string())
     })?;
+    mark_activity(display_id);
     render_layout_inner(display_id, &layout_id, true);
     Ok(serde_json::json!({ "ok": true }))
 }
@@ -2199,6 +2284,7 @@ fn operator_restore(display_id: &str) -> Result<serde_json::Value, String> {
             .clone()
             .ok_or_else(|| "display has no active layout".to_string())
     })?;
+    mark_activity(display_id);
     render_layout_inner(display_id, &layout_id, true);
     Ok(serde_json::json!({ "ok": true }))
 }
@@ -2722,6 +2808,9 @@ fn heal_stalled_streams() {
         ds.borrow()
             .iter()
             .filter_map(|(id, st)| {
+                if st.is_asleep {
+                    return None;
+                }
                 let layout_id = st.current_layout_id.as_ref()?;
                 let bd = displays.iter().find(|d| d.id == *id)?;
                 let layout = bd.layouts.iter().find(|l| l.id == *layout_id)?;
@@ -2741,7 +2830,7 @@ fn heal_stalled_streams() {
 
     for (display_id, layout_id) in to_render {
         info!("auto-heal: re-rendering layout {layout_id} on display {display_id}");
-        render_layout(&display_id, &layout_id);
+        render_layout_inner(&display_id, &layout_id, true);
     }
 }
 
@@ -3136,6 +3225,117 @@ fn ensure_web(
 
 #[cfg(test)]
 mod display_tests {
+    #[test]
+    #[ignore = "requires a graphical session; CI runs with xvfb-run"]
+    fn sleep_integration_preserves_deadline_and_hides_layout_until_explicit_wake() {
+        use super::*;
+        gtk::init().unwrap();
+        gstreamer::init().unwrap();
+        let app = Application::builder()
+            .application_id("cloud.betterframe.SleepTest")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+        let pairing = ApplicationWindow::builder().application(&app).build();
+        let display = |id: &str| {
+            serde_json::json!({
+                "id":id, "name":id, "width_px":800, "height_px":600,
+                "idle_timeout_seconds":30, "sleep_timeout_seconds":60, "default_layout_id":"layout",
+                "layouts":[{"id":"layout", "name":"Layout", "grid_cols":1, "grid_rows":1,
+                    "priority":"normal", "is_default":true, "resets_idle_timer":true, "cells":[]}]
+            })
+        };
+        let bundle: KioskBundle = serde_json::from_value(serde_json::json!({
+            "kiosk_id":"sleep-test", "kiosk_name":"Sleep test", "version":"test", "cameras":[],
+            "displays":[display("one"),display("two")]
+        }))
+        .unwrap();
+        render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "test");
+        // Xvfb has no window manager to apply the fullscreen request.
+        DISPLAYS.with(|ds| {
+            for state in ds.borrow().values() {
+                state.window.set_default_size(800, 600);
+            }
+        });
+        let deadline_origin = Instant::now() - Duration::from_secs(61);
+        DISPLAYS.with(|ds| ds.borrow_mut().get_mut("one").unwrap().last_activity = deadline_origin);
+        render_layout_inner("one", "layout", true);
+        render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "test");
+        DISPLAYS.with(|ds| assert_eq!(ds.borrow()["one"].last_activity, deadline_origin));
+        install_idle_watchdog();
+        let context = gtk::glib::MainContext::default();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            while context.pending() {
+                context.iteration(false);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        DISPLAYS.with(|ds| {
+            let ds = ds.borrow();
+            assert!(ds["one"].is_asleep);
+            assert!(!ds["two"].is_asleep);
+            let screen = ds["one"].window.child().unwrap();
+            assert!(screen.has_css_class("bf-sleep-screen"));
+            assert!(ds["one"].content_overlay.parent().is_none());
+            let logo = screen.first_child().unwrap();
+            assert!(logo.opacity() > 0.0 && logo.opacity() < 0.1);
+            let fixed = screen.downcast::<gtk::Fixed>().unwrap();
+            let (x, y) = fixed.child_position(&logo);
+            assert!(
+                x > 0.0 && y > 0.0,
+                "the dim logo must move while visible: x={x}, y={y}, size={}x{}, logo={}x{}",
+                fixed.width(),
+                fixed.height(),
+                logo.width(),
+                logo.height()
+            );
+            let bounds =
+                fixed
+                    .child_transform(&logo)
+                    .unwrap()
+                    .transform_bounds(&gtk::graphene::Rect::new(
+                        0.0,
+                        0.0,
+                        logo.width() as f32,
+                        logo.height() as f32,
+                    ));
+            assert!(bounds.x() >= 0.0 && bounds.y() >= 0.0);
+            assert!(bounds.x() + bounds.width() <= fixed.width() as f32);
+            assert!(bounds.y() + bounds.height() <= fixed.height() as f32);
+        });
+        render_bundle(&app, &pairing, bundle, "http://127.0.0.1:1", "test");
+        render_layout_inner("one", "layout", true);
+        DISPLAYS.with(|ds| {
+            let ds = ds.borrow();
+            assert!(ds["one"].is_asleep);
+            assert!(
+                ds["one"]
+                    .window
+                    .child()
+                    .unwrap()
+                    .has_css_class("bf-sleep-screen")
+            );
+            assert_eq!(ds["one"].last_activity, deadline_origin);
+        });
+        // A same-layout command is real activity and must restore visible content.
+        render_layout("one", "layout");
+        DISPLAYS.with(|ds| {
+            let ds = ds.borrow();
+            assert!(!ds["one"].is_asleep);
+            assert_eq!(
+                ds["one"].window.child().unwrap(),
+                ds["one"].content_overlay.clone().upcast::<gtk::Widget>()
+            );
+            assert!(ds["one"].last_activity.elapsed() < Duration::from_secs(2));
+        });
+        DISPLAYS.with(|ds| {
+            for (_, state) in ds.borrow_mut().drain() {
+                state.window.close();
+            }
+        });
+        pairing.close();
+    }
+
     use super::{FocusOverride, operator_target_cell, parse_drm_mode};
     use std::collections::HashMap;
 

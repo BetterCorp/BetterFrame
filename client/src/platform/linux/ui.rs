@@ -1319,8 +1319,23 @@ fn parse_drm_mode(mode: &str) -> Option<(u32, u32)> {
 
 fn add_demo_control(overlay: &gtk::Overlay) {
     let exit = server::demo_mode();
-    if !exit && server::demo_session().is_none() { return; }
-    let button = gtk::Button::with_label(if exit { "Exit demo" } else { "Demo" });
+    let visible = exit || server::demo_session().is_some();
+    let label = if exit { "Exit demo" } else { "Demo" };
+    // Playback overlays survive bundle reloads. Keep a single control and its
+    // focus/signal handler instead of stacking another button on every refresh.
+    let mut child = overlay.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if widget.widget_name() != "betterframe-demo-control" { continue; }
+        if visible && widget.downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.label().as_deref() == Some(label)) {
+            return;
+        }
+        overlay.remove_overlay(&widget);
+    }
+    if !visible { return; }
+    let button = gtk::Button::with_label(label);
+    button.set_widget_name("betterframe-demo-control");
     button.set_halign(gtk::Align::Start);
     button.set_valign(gtk::Align::Start);
     button.set_margin_top(12);

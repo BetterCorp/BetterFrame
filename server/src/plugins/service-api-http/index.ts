@@ -476,7 +476,9 @@ function registerPairingRoutes(
   });
 
   app.post("/api/pair/demo", async (event) => {
-    if (!await demoAvailable(repo, demoEnabled)) throw createError({ statusCode: 503, statusMessage: "Demo unavailable" });
+    // Capacity is enforced under the enrollment lock. An already confirmed
+    // session must remain retryable even if its kiosk filled the final slot.
+    if (!demoEnabled) throw createError({ statusCode: 503, statusMessage: "Demo unavailable" });
     const ip = getRequestHeader(event, "x-real-ip") ?? "anon";
     if (!pairingGuard.take(`demo:${ip}`)) throw createError({ statusCode: 429, statusMessage: "rate limited" });
     const raw = await readBody<Record<string, unknown>>(event);

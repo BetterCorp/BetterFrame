@@ -28,7 +28,13 @@ export async function visibleTenants(repo: Repository, enabled: boolean | undefi
 }
 
 export async function demoAvailable(repo: Repository, enabled: boolean): Promise<boolean> {
-  return enabled && (await demoTenant(repo))?.is_active === true;
+  if (!enabled) return false;
+  const tenant = await demoTenant(repo);
+  if (!tenant?.is_active) return false;
+  if (tenant.max_kiosks == null) return true;
+  const count = await repo.adapter.withSearchPath(tenant.schema_name, () =>
+    repo.adapter.get<{ count: string }>("SELECT count(*) FROM kiosks"));
+  return Number(count?.count) < tenant.max_kiosks;
 }
 
 export async function prepareDemo(repo: Repository, enabled: boolean): Promise<Tenant | null> {

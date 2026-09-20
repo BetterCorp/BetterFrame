@@ -54,7 +54,15 @@ test("demo enrollment, display defaults and bounded tenant-only cleanup", { skip
     const enroll = (enabled = true, secret = session.pollingSecret) => enrollDemo(repo, auth as never, secrets as never, enabled, session.code, secret);
     await assert.rejects(enroll(false), /unavailable/);
     await assert.rejects(enroll(true, "forged-secret"), /Invalid/);
+    await repo.updateTenant(tenant.id, { max_kiosks: 1 });
+    assert.equal(await demoAvailable(repo, true), true);
     await Promise.all([enroll(), enroll()]);
+    assert.equal(await demoAvailable(repo, true), false);
+    await enroll(); // A lost response can be retried even at capacity.
+    const overflow = await initiate();
+    await assert.rejects(enrollDemo(repo, auth as never, secrets as never, true, overflow.code, overflow.pollingSecret), /capacity/);
+    await repo.updateTenant(tenant.id, { max_kiosks: null });
+    assert.equal(await demoAvailable(repo, true), true);
     const claim = await claimPairing(repo, session.code, secrets as never, undefined, session.pollingSecret);
     assert.equal(claim.demo, true); assert.ok(claim.kioskId);
     assert.equal((await claimPairing(repo, session.code, secrets as never)).status, "failed");
@@ -91,7 +99,10 @@ test("demo enrollment, display defaults and bounded tenant-only cleanup", { skip
     await stamp(claim.kioskId!, 299999, null);
     assert.equal(await cleanupDemo(repo, now), 0);
     await stamp(claim.kioskId!, 300000, null);
+    await repo.updateTenant(tenant.id, { max_kiosks: 1 });
+    assert.equal(await demoAvailable(repo, true), false);
     assert.equal(await cleanupDemo(repo, now), 1);
+    assert.equal(await demoAvailable(repo, true), true);
     assert.equal((await claimPairing(repo, session.code, secrets as never, undefined, session.pollingSecret)).status, "revoked");
     assert.ok(await repo.getKioskById(normal.kioskId));
     await repo.adapter.withSearchPath(tenant.schema_name, async () => {

@@ -31,6 +31,7 @@ default:
           poolMax: ${BF_PG_POOL_MAX}
         host: 0.0.0.0
         port: 18080
+        enableDemoTenant: ${BF_ENABLE_DEMO_TENANT}
         dataDir: /var/lib/betterframe
         kioskLogRetentionHours: ${BF_KIOSK_LOG_RETENTION_HOURS}
         sessionIdleSeconds: 43200
@@ -65,6 +66,7 @@ default:
         host: 0.0.0.0
         port: 18081
         codeTtlSeconds: 600
+        enableDemoTenant: ${BF_ENABLE_DEMO_TENANT}
         dataDir: /var/lib/betterframe
         argon2Memory: 65536
         argon2TimeCost: 3

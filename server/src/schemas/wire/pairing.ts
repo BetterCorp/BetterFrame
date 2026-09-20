@@ -44,6 +44,7 @@ export const pairInitiateResponse = av.object(
   {
     code: av.string().pattern("^[A-HJ-NP-Z2-9]{8}$"), // 0/O/1/I excluded
     expires_at: av.string().format("date-time"),
+    allowDemo: av.optional(av.bool()),
     expires_in_seconds: av.optional(av.int().min(0)),
     poll_after_ms: av.optional(av.int().min(0)),
     polling_secret: av.optional(av.string().minLength(32)),
@@ -72,6 +73,7 @@ export const pairClaimRequest = av.object(
 export const pairClaimResponse = av.object(
   {
     status: av.literal("claimed"),
+    demo: av.optional(av.bool()),
     kiosk_id: av.string().minLength(1),
     kiosk_name: av.string().minLength(1).maxLength(128),
     encrypt_key: av.optional(av.string().minLength(32)),

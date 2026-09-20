@@ -93,6 +93,7 @@ export interface PairingClaimResult {
   clusterKey?: string;
   encryptKey?: string;
   bundleUrl?: string;
+  demo?: boolean;
 }
 
 export async function claimPairing(
@@ -157,10 +158,12 @@ export async function claimPairing(
     clusterKey: isAndroidViewer(kiosk) ? undefined : claim.clusterKey,
     encryptKey: claim.encryptKey,
     bundleUrl: "/api/kiosk/bundle",
+    demo: extras["demo"] === true,
   };
 }
 
 export interface PairingConfirmInput {
+  demo?: boolean;
   code: string;
   nameOverride?: string;
   initialLabels?: string[];
@@ -189,7 +192,7 @@ export async function confirmPairing(
     if (pc.consumed_at) {
       // Retry only the same operation in the same tenant. Never leak another
       // tenant's claimed kiosk through an operator's repeated submission.
-      if (pc.extras["tenant_schema"] !== (input.tenant?.schemaName ?? "public")
+      if ((pc.extras["demo"] === true) !== (input.demo === true) || pc.extras["tenant_schema"] !== (input.tenant?.schemaName ?? "public")
         || pc.extras["confirmation_request"] !== JSON.stringify({
           replaceKioskId: input.replaceKioskId ?? null,
           nameOverride: input.nameOverride ?? null,
@@ -317,6 +320,7 @@ export async function confirmPairing(
     await repo.markPairingCodeClaimed(input.code, kioskId, {
       ...pc.extras,
       pairing_claim_encrypted: pairingClaimEncrypted,
+      demo: input.demo === true,
       claim_expires_at: new Date(Date.now() + DELIVERY_GRACE_MS).toISOString(),
       confirmation_request: JSON.stringify({
         replaceKioskId: input.replaceKioskId ?? null,

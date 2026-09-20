@@ -605,25 +605,42 @@ export class Repository {
     width_px?: number;
     height_px?: number;
   }): Promise<Display> {
-    const idx = input.index ?? await this.nextDisplayIndexForKiosk(kioskId);
-    const id = uuidv7();
-    await this._run(
-      `INSERT INTO displays (id, name, "index", is_primary, kiosk_id, width_px, height_px)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        input.name,
-        idx,
-        false,
-        kioskId,
-        input.width_px ?? 1920,
-        input.height_px ?? 1080,
-      ],
-    );
-    void this.notify("displays", "create", id);
-    const d = await this.getDisplayById(id);
-    if (!d) throw new Error("display vanished after insert");
-    return d;
+    return this.transact(async () => {
+      const idx = input.index ?? await this.nextDisplayIndexForKiosk(kioskId);
+      const id = uuidv7();
+      await this._run(
+        `INSERT INTO displays (id, name, "index", is_primary, kiosk_id, width_px, height_px)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          input.name,
+          idx,
+          false,
+          kioskId,
+          input.width_px ?? 1920,
+          input.height_px ?? 1080,
+        ],
+      );
+      const defaults = await this.getDisplayDefaults();
+      for (const layoutId of defaults.layoutIds) await this.attachLayoutToDisplay(id, layoutId);
+      if (defaults.defaultLayoutId) await this.updateDisplay(id, {
+        default_layout_id: defaults.defaultLayoutId, active_layout_id: defaults.defaultLayoutId,
+      });
+      void this.notify("displays", "create", id);
+      const d = await this.getDisplayById(id);
+      if (!d) throw new Error("display vanished after insert");
+      return d;
+    });
+  }
+
+  /** Defaults apply once, when a display is created. Deleted layouts are ignored. */
+  async getDisplayDefaults(): Promise<{ layoutIds: string[]; defaultLayoutId: string | null }> {
+    const raw = await this.getSetupExtra("display_defaults") as { layoutIds?: unknown; defaultLayoutId?: unknown } | null;
+    const existing = new Set((await this.listLayouts()).map(l => l.id));
+    const layoutIds = Array.isArray(raw?.layoutIds)
+      ? [...new Set(raw.layoutIds.filter((id): id is string => typeof id === "string" && existing.has(id)))] : [];
+    const defaultLayoutId = typeof raw?.defaultLayoutId === "string" && layoutIds.includes(raw.defaultLayoutId) ? raw.defaultLayoutId : null;
+    return { layoutIds, defaultLayoutId };
   }
 
   async listDisplaysForKiosk(kioskId: string): Promise<Display[]> {

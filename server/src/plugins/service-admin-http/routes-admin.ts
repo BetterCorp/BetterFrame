@@ -3269,7 +3269,20 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const cloudAccounts = await deps.repo.listCloudAccounts();
     const ablesignAccounts = await deps.repo.listAbleSignAccounts();
     const updateSchedule = normalizeUpdateSchedule(await deps.repo.getSetupExtra("update_schedule"));
-    return htmlPage(SettingsPage({ cloudAccounts, ablesignAccounts, updateSchedule }));
+    return htmlPage(SettingsPage({ cloudAccounts, ablesignAccounts, updateSchedule, layouts: await deps.repo.listLayouts(), displayDefaults: await deps.repo.getDisplayDefaults() }));
+  });
+
+  app.post("/admin/settings/display-defaults", async (event) => {
+    const body = await readBody<Record<string, FormValue>>(event);
+    const raw = body?.["layout_ids"];
+    const layoutIds = [...new Set((Array.isArray(raw) ? raw : raw ? [raw] : []).map(String))];
+    const defaultLayoutId = String(body?.["default_layout_id"] ?? "") || null;
+    const existing = new Set((await deps.repo.listLayouts()).map(l => l.id));
+    if (layoutIds.some(id => !existing.has(id)) || (defaultLayoutId && !layoutIds.includes(defaultLayoutId))) {
+      return new Response("Default layout must be selected from the assigned layouts", { status: 400 });
+    }
+    await deps.repo.setSetupExtra("display_defaults", { layoutIds, defaultLayoutId });
+    return new Response(null, { status: 302, headers: { location: "/admin/settings" } });
   });
 
   app.post("/admin/settings/update-schedule", async (event) => {
@@ -3281,7 +3294,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Tenant switcher fragment (htmx) ----------------------------------------
   app.get("/admin/_tenant_switcher", async (event) => {
-    const tenants = await deps.repo.listTenants();
+    const tenants = (await deps.repo.listTenants()).filter(t => deps.enableDemoTenant || t.slug !== "demo");
     if (tenants.length <= 1) return new Response("", { headers: { "content-type": "text/html" } });
     const current = (event.context as any).tenant?.slug ?? "default";
     const options = tenants.map((t: any) =>

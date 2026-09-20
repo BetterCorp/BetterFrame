@@ -1,5 +1,7 @@
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DI_NORMAL, DrawIconEx, IMAGE_ICON, LR_SHARED, LoadImageW,
+    WM_COMMAND, WM_KEYDOWN, GetDlgItem, IsWindowVisible, SetWindowTextW, SetWindowPos,
+    HWND_TOP, SWP_NOACTIVATE, WS_CHILD, WS_VISIBLE, WS_TABSTOP, SW_SHOW, SW_HIDE,
 };
 use windows_sys::Win32::Graphics::Gdi::DT_WORDBREAK;
 
@@ -126,6 +128,34 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        WM_COMMAND if (wparam & 0xffff) == 1601 => {
+            let state = load_state();
+            if state.demo {
+                if write_protected(&state_dir().join("exit-demo"), b"exit").is_ok() { PostQuitMessage(0); }
+            } else if state.allow_demo && state.kiosk_key.is_none() {
+                std::thread::spawn(move || {
+                    let Ok(rt) = tokio::runtime::Runtime::new() else { return; };
+                    rt.block_on(async {
+                        let Some(code) = state.pairing_code.as_deref() else { return; };
+                        let response = crate::network::client().post(format!("{}/api/pair/demo", state.server_url))
+                            .json(&crate::core::protocol::claim_body(code, state.pairing_secret.as_deref())).send().await;
+                        if !response.is_ok_and(|r| r.status().is_success()) {
+                            warn!("Demo unavailable; continue normal pairing or restart to retry");
+                            let _ = update_state(|latest| {
+                                if latest.pairing_code == state.pairing_code { latest.allow_demo = false; }
+                                Ok(())
+                            });
+                        }
+                    });
+                });
+            }
+            0
+        }
+        WM_KEYDOWN if wparam == 0x09 => {
+            let control = GetDlgItem(hwnd, 1601);
+            if control != 0 && IsWindowVisible(control) != 0 { windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(control); }
+            0
+        }
         WM_PAINT => {
             paint_window(hwnd);
             0
@@ -193,6 +223,19 @@ pub(super) fn paint_window(hwnd: HWND) {
             paint_layout(hwnd, hdc, client_rect, &display_id);
         } else {
             draw_centered(hdc, ps.rcPaint, "BetterFrame Windows Kiosk");
+        }
+        let state = load_state();
+        let show_demo = state.demo || (state.allow_demo && state.kiosk_key.is_none());
+        let mut control = GetDlgItem(hwnd, 1601);
+        if control == 0 && show_demo {
+            control = CreateWindowExW(0, wide("BUTTON").as_ptr(), wide("Demo").as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP, 12, 12, 140, 44, hwnd, 1601 as HMENU,
+                GetModuleHandleW(null()), null_mut());
+        }
+        if control != 0 {
+            SetWindowTextW(control, wide(if state.demo { "Exit demo" } else { "Demo" }).as_ptr());
+            ShowWindow(control, if show_demo { SW_SHOW } else { SW_HIDE });
+            if show_demo { SetWindowPos(control, HWND_TOP, 12, 12, 140, 44, SWP_NOACTIVATE); }
         }
         EndPaint(hwnd, &ps);
     }

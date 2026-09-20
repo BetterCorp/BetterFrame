@@ -500,6 +500,23 @@ fn remove_pairing_state_files(dir: &PathBuf) {
 
 /// Wipe all kiosk state and exit. Systemd restarts the service,
 /// kiosk boots fresh with a new pairing code.
+pub fn demo_mode() -> bool { load_identity().map(|identity| identity.demo).unwrap_or(false) }
+
+pub fn demo_session() -> Option<(String, PairInitiateResponse)> {
+    let bytes = crate::at_rest::read_maybe_encrypted(&state_dir().join("pairing.json"))?;
+    let pending: (String, PairInitiateResponse) = serde_json::from_slice(&bytes).ok()?;
+    (pending.1.allow_demo && !is_paired()).then_some(pending)
+}
+
+pub fn enter_demo() -> Result<(), String> {
+    let (origin, session) = demo_session().ok_or("Demo unavailable")?;
+    let response = pairing_client()?.post(format!("{origin}/api/pair/demo"))
+        .json(&crate::core::protocol::claim_body(&session.code, session.polling_secret.as_deref()))
+        .send().map_err(|error| error.to_string())?;
+    if !response.status().is_success() { return Err("Demo unavailable; continue normal pairing or restart to retry".into()); }
+    Ok(())
+}
+
 pub fn reset_pairing_and_restart(reason: &str) -> ! {
     tracing::warn!("{reason}; wiping kiosk pairing state and restarting");
 

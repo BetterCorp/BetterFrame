@@ -23,7 +23,10 @@ import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(AndroidJUnit4::class)
 class ViewerSessionTest {
-    @Test fun secureEnrollmentDisplaysHtmlAndClearsUnassignedCache() {
+    @Test fun secureEnrollmentDisplaysHtmlAndClearsUnassignedCache() = exerciseEnrollment(false)
+    @Test fun demoUsesNormalPlaybackAndExitsWithoutServerDeletion() = exerciseEnrollment(true)
+
+    private fun exerciseEnrollment(demo: Boolean) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         val directory = File(context.cacheDir, "session-test-${System.nanoTime()}").apply { mkdirs() }
@@ -31,6 +34,8 @@ class ViewerSessionTest {
             override fun getNoBackupFilesDir(): File = directory
             override fun getApplicationContext(): Context = this
         }
+        val demoRequested = AtomicBoolean(false)
+        val demoConfirmed = AtomicBoolean(false)
         val unassigned = AtomicBoolean(false)
         val profile = AtomicReference<String?>(null)
         val profileRejected = LinkedBlockingQueue<JSONObject>()
@@ -64,12 +69,20 @@ class ViewerSessionTest {
                             val body = JSONObject(request.body.readUtf8())
                             check(body.getBoolean("secure_claim")) { "Secure enrollment was not requested" }
                             check(body.getJSONArray("capabilities").toString().contains("android-viewer")) { "Android capabilities missing" }
-                            json("""{"code":"ABCD12","polling_secret":"test-poll-secret","poll_after_ms":1000}""")
+                            json("""{"code":"ABCD12","polling_secret":"test-poll-secret","poll_after_ms":1000,"allowDemo":$demo}""")
+                        }
+                        "/api/pair/demo" -> {
+                            check(demo)
+                            val body = JSONObject(request.body.readUtf8())
+                            check(body.getString("code") == "ABCD12" && body.getString("polling_secret") == "test-poll-secret")
+                            demoConfirmed.set(true)
+                            json("{}")
                         }
                         "/api/pair/claim", "/api/pair/ack" -> {
                             val body = JSONObject(request.body.readUtf8())
                             check(body.getString("code") == "ABCD12" && body.getString("polling_secret") == "test-poll-secret") { "Enrollment polling secret was not preserved" }
-                            if (path.endsWith("claim")) json("""{"status":"claimed","kiosk_id":"1","kiosk_key":"test-device-key","encrypt_key":"0000000000000000000000000000000000000000000000000000000000000000"}""")
+                            if (path.endsWith("claim") && demo && !demoConfirmed.get()) json("""{"status":"pending"}""", 202)
+                            else if (path.endsWith("claim")) json("""{"status":"claimed","demo":$demo,"kiosk_id":"1","kiosk_key":"test-device-key","encrypt_key":"0000000000000000000000000000000000000000000000000000000000000000"}""")
                             else {
                                 // The secure device identity must already be durable before acknowledging.
                                 check(ProtectedStore(isolated).read().getJSONObject("identity").getString("kiosk_key") == "test-device-key") { "Acknowledged before saving identity" }
@@ -112,6 +125,7 @@ class ViewerSessionTest {
                         if (message.contains("connection unavailable")) offlineRetained.countDown()
                     }
                     override fun onPairing(code: String) {
+                        if (code.isNotBlank() && demo && session.get().allowDemo && demoRequested.compareAndSet(false, true)) session.get().enterDemo()
                         if (code.isBlank() && clearing.get()) enrollmentCleared.countDown()
                     }
                     override fun onPlan(plan: JSONObject) {
@@ -146,6 +160,9 @@ class ViewerSessionTest {
             assertTrue(ProtectedStore(isolated).read().has("bundle"))
             assertEquals("android-viewer-v1", ProtectedStore(isolated).read().getString("bundle_profile"))
             assertTrue(requests.contains("/api/pair/ack"))
+            assertEquals(demo, session.get().isDemo)
+            assertEquals(demo, ProtectedStore(isolated).read().getJSONObject("identity").optBoolean("demo"))
+            assertEquals(if (demo) 1 else 0, requests.count { it == "/api/pair/demo" })
             val fetchedBeforeDowngrade = requests.count { it == "/api/kiosk/bundle" }
             interruptHeartbeat.set(true)
             instrumentation.runOnMainSync { session.get().refresh() }
@@ -169,6 +186,8 @@ class ViewerSessionTest {
             instrumentation.runOnMainSync { session.get().unpair() }
             assertTrue("Unpair did not finish browser/cache cleanup", enrollmentCleared.await(10, TimeUnit.SECONDS))
             assertEquals(0, ProtectedStore(isolated).read().length())
+            assertFalse(session.get().isDemo)
+            assertFalse(requests.any { it.contains("delete") || it.contains("unpair") })
         } finally {
             instrumentation.runOnMainSync { session.get()?.close() }
             server.shutdown()

@@ -20,6 +20,7 @@ export BF_PG_DB="${BF_PG_DB:-betterframe}"
 export BF_PG_USER="${BF_PG_USER:-betterframe}"
 : "${BF_PG_PASSWORD:?BF_PG_PASSWORD is required}"
 export BF_PG_PASSWORD
+export BF_ENABLE_DEMO_TENANT="${BF_ENABLE_DEMO_TENANT:-false}"
 export BF_KIOSK_LOG_RETENTION_HOURS="${BF_KIOSK_LOG_RETENTION_HOURS:-24}"
 export BF_PG_POOL_MAX="${BF_PG_POOL_MAX:-10}"
 export BF_NODERED_URL="${BF_NODERED_URL:-http://nodered:1880}"

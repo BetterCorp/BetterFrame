@@ -1317,6 +1317,32 @@ fn parse_drm_mode(mode: &str) -> Option<(u32, u32)> {
     (dimensions.0 > 0 && dimensions.1 > 0).then_some(dimensions)
 }
 
+fn add_demo_control(overlay: &gtk::Overlay) {
+    let exit = server::demo_mode();
+    if !exit && server::demo_session().is_none() { return; }
+    let button = gtk::Button::with_label(if exit { "Exit demo" } else { "Demo" });
+    button.set_halign(gtk::Align::Start);
+    button.set_valign(gtk::Align::Start);
+    button.set_margin_top(12);
+    button.set_margin_start(12);
+    button.connect_clicked(move |button| {
+        if exit { server::reset_pairing_and_restart("Exit demo"); }
+        button.set_sensitive(false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || { let _ = tx.send(server::enter_demo()); });
+        let button = button.clone();
+        gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
+            match rx.try_recv() {
+                Ok(Ok(())) => { button.set_label("Starting demo…"); gtk::glib::ControlFlow::Break }
+                Ok(Err(_)) => { button.set_label("Demo unavailable — retry"); button.set_sensitive(true); gtk::glib::ControlFlow::Break }
+                Err(std::sync::mpsc::TryRecvError::Empty) => gtk::glib::ControlFlow::Continue,
+                Err(_) => { button.set_sensitive(true); gtk::glib::ControlFlow::Break }
+            }
+        });
+    });
+    overlay.add_overlay(&button);
+}
+
 fn show_pairing_code(window: &ApplicationWindow, code: &str, status: &str) {
     let vbox = GtkBox::new(Orientation::Vertical, 20);
     vbox.set_valign(gtk::Align::Center);
@@ -1362,6 +1388,7 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str, status: &str) {
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&vbox));
     overlay.add_overlay(&ver_label);
+    add_demo_control(&overlay);
     window.set_child(Some(&overlay));
     window.queue_resize();
     window.queue_draw();
@@ -1470,7 +1497,10 @@ fn render_bundle(
     if displays.is_empty() {
         // A valid bundle without assignments is a settled configuration state,
         // including when the last display was removed from an active kiosk.
-        pairing_window.set_child(Some(&build_empty_display_reference(&bundle, None)));
+        let overlay = gtk::Overlay::new();
+        overlay.set_child(Some(&build_empty_display_reference(&bundle, None)));
+        add_demo_control(&overlay);
+        pairing_window.set_child(Some(&overlay));
         pairing_window.present();
         recompute_global_state();
         mark_kiosk_healthy();
@@ -1526,6 +1556,7 @@ fn render_bundle(
             content_overlay.add_overlay(&wl);
             wl
         });
+        add_demo_control(&content_overlay);
         window.set_child(Some(&content_overlay));
 
         new_state.insert(
@@ -3317,6 +3348,7 @@ fn build_logo_content(action: &str) -> gtk::Widget {
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&vbox));
     overlay.add_overlay(&ver_label);
+    add_demo_control(&overlay);
     overlay.upcast()
 }
 

@@ -487,6 +487,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
     }
 
     fun unpair(nextServer: String? = null) {
+        allowDemo = false
         if (closed || clearingEnrollment) return
         // Validate before changing enrollment; retain the choice through activity recreation.
         val target = try { nextServer?.let { ServerAddress.parse(it).toString().trimEnd('/') } }
@@ -629,6 +630,24 @@ class ViewerSession internal constructor(context: Context, private val listener:
         return JSONObject(String(bytes, Charsets.UTF_8))
     }
 
+    @Volatile var allowDemo = false
+        private set
+    val isDemo: Boolean get() = state.optJSONObject("identity")?.optBoolean("demo", false) == true
+
+    fun enterDemo() = enqueue {
+        val pending = state.optJSONObject("pending") ?: return@enqueue
+        if (kioskKey.isNotBlank() || !allowDemo) return@enqueue
+        try {
+            request("/api/pair/demo", claimBody(pending), false).use { requireSuccessful(it) }
+            nextPairPoll = 0L
+        } catch (_: Exception) {
+            allowDemo = false
+            pending.put("allowDemo", false); persist()
+            ui(activeEpoch) { listener.onPairing(pending.getString("code")) }
+            status("Demo unavailable. Continue with normal pairing or reconnect to retry.")
+        }
+    }
+
     private fun pair() {
         val now = System.currentTimeMillis()
         if (now < nextPairPoll) return
@@ -644,6 +663,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
             }
         }
         val session = pending!!
+        allowDemo = session.optBoolean("allowDemo", false)
         ui(activeEpoch) { listener.onPairing(session.getString("code")) }
         nextPairPoll = now + session.optLong("poll_after_ms", 2000).coerceIn(1000, 60_000)
         request("/api/pair/claim", claimBody(session), false).use {
@@ -657,6 +677,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
                     state.put("identity", claim).put("blocked", false)
                     persist() // Durable identity BEFORE acknowledgement or first bundle fetch.
                     kioskKey = claim.getString("kiosk_key")
+                    allowDemo = false
                     nextSync = 0L
                     ui(activeEpoch) { listener.onPairing("") }
                     status("Paired — loading assigned display")

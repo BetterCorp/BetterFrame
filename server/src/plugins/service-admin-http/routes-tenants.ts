@@ -20,7 +20,7 @@ export function registerTenantRoutes(app: H3, deps: AdminDeps): void {
   app.get("/admin/tenants", async (event) => {
     if (!isPg()) return new Response("multi-tenant requires postgres", { status: 404 });
     const user = event.context.user!;
-    const tenants = await deps.repo.listTenants();
+    const tenants = (await deps.repo.listTenants()).filter(t => deps.enableDemoTenant || t.slug !== "demo");
     const currentTenant = event.context.tenant ?? null;
     return htmlPage(TenantsPage({
       user: user.username,
@@ -40,8 +40,8 @@ export function registerTenantRoutes(app: H3, deps: AdminDeps): void {
     const maxCameras = body?.["max_cameras"] ? parseInt(body["max_cameras"], 10) : null;
     const maxUsers = body?.["max_users"] ? parseInt(body["max_users"], 10) : null;
 
-    if (!name || !slug || !/^[a-z0-9][a-z0-9_-]{0,127}$/.test(slug)) {
-      const tenants = await deps.repo.listTenants();
+    if (slug === "demo" || !name || !slug || !/^[a-z0-9][a-z0-9_-]{0,127}$/.test(slug)) {
+      const tenants = (await deps.repo.listTenants()).filter(t => deps.enableDemoTenant || t.slug !== "demo");
       return htmlPage(TenantsPage({
         user: event.context.user!.username,
         tenants,
@@ -53,7 +53,7 @@ export function registerTenantRoutes(app: H3, deps: AdminDeps): void {
     // Check for duplicate slug.
     const existing = await deps.repo.getTenantBySlug(slug);
     if (existing) {
-      const tenants = await deps.repo.listTenants();
+      const tenants = (await deps.repo.listTenants()).filter(t => deps.enableDemoTenant || t.slug !== "demo");
       return htmlPage(TenantsPage({
         user: event.context.user!.username,
         tenants,
@@ -93,7 +93,7 @@ export function registerTenantRoutes(app: H3, deps: AdminDeps): void {
     if (!isPg()) return new Response("multi-tenant requires postgres", { status: 404 });
     const id = getRouterParam(event, "id") ?? "";
     const tenant = await deps.repo.getTenantById(id);
-    if (!tenant) return new Response(null, { status: 302, headers: { location: "/admin/tenants" } });
+    if (!tenant || (!deps.enableDemoTenant && tenant.slug === "demo")) return new Response(null, { status: 302, headers: { location: "/admin/tenants" } });
     return htmlPage(TenantEditPage({
       user: event.context.user!.username,
       tenant,
@@ -114,7 +114,7 @@ export function registerTenantRoutes(app: H3, deps: AdminDeps): void {
 
     if (!name) {
       const tenant = await deps.repo.getTenantById(id);
-      if (!tenant) return new Response(null, { status: 302, headers: { location: "/admin/tenants" } });
+      if (!tenant || (!deps.enableDemoTenant && tenant.slug === "demo")) return new Response(null, { status: 302, headers: { location: "/admin/tenants" } });
       return htmlPage(TenantEditPage({
         user: event.context.user!.username,
         tenant,
@@ -139,7 +139,7 @@ export function registerTenantRoutes(app: H3, deps: AdminDeps): void {
     if (!isPg()) return new Response("multi-tenant requires postgres", { status: 404 });
     const id = getRouterParam(event, "id") ?? "";
     const tenant = await deps.repo.getTenantById(id);
-    if (!tenant) return new Response(null, { status: 302, headers: { location: "/admin/tenants" } });
+    if (!tenant || (!deps.enableDemoTenant && tenant.slug === "demo")) return new Response(null, { status: 302, headers: { location: "/admin/tenants" } });
     // Prevent deleting the default tenant.
     if (tenant.slug === "default") {
       return new Response(null, { status: 302, headers: { location: "/admin/tenants" } });
@@ -162,7 +162,7 @@ export function registerTenantRoutes(app: H3, deps: AdminDeps): void {
 
     // Validate the tenant exists and is active.
     const tenant = await deps.repo.getTenantBySlug(slug);
-    const targetSlug = tenant?.is_active ? tenant.slug : "default";
+    const targetSlug = tenant?.is_active && (deps.enableDemoTenant || tenant.slug !== "demo") ? tenant.slug : "default";
 
     // Set the bf_tenant cookie. MaxAge = 1 year (long-lived, session-like).
     return redirectWithCookie(

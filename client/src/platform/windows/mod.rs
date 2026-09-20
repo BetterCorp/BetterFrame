@@ -285,23 +285,34 @@ fn self_test() -> Result<(), String> {
 }
 
 fn run_agent_cli(args: &[String]) -> Result<(), String> {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("tokio runtime: {e}"))?;
-    let override_url = arg_value(args, "--server");
-    rt.block_on(async {
-        let server = loop {
-            match discover_server(override_url.as_deref(), &load_agent_state()?).await {
-                Ok(server) => break server,
-                Err(error) => {
-                    warn!("server discovery: {error}; retrying");
-                    tokio::time::sleep(Duration::from_secs(10)).await;
+    loop {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("tokio runtime: {e}"))?;
+        let override_url = arg_value(args, "--server");
+        let result = rt.block_on(async {
+            let server = loop {
+                match discover_server(override_url.as_deref(), &load_agent_state()?).await {
+                    Ok(server) => break server,
+                    Err(error) => {
+                        warn!("server discovery: {error}; retrying");
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                    }
                 }
-            }
-        };
-        run_agent(server).await
-    })
+            };
+            run_agent(server).await
+        });
+        // Drop the runtime first: old heartbeat/bundle tasks must never restore cleared state.
+        drop(rt);
+        result?;
+        let origin = load_agent_state()?.server_url;
+        update_state(|latest| { *latest = unpaired_state(&origin); Ok(()) })?;
+        for path in [bundle_path(), state_dir().join("exit-demo")] {
+            if path.exists() { fs::remove_file(path).map_err(|e| e.to_string())?; }
+        }
+        if webview_data_dir().exists() { fs::remove_dir_all(webview_data_dir()).map_err(|e| e.to_string())?; }
+    }
 }
 
 async fn discover_server(
@@ -342,7 +353,7 @@ async fn run_agent(server_url: String) -> Result<(), String> {
     let app = Arc::new(Mutex::new(None::<Child>));
     // The renderer reads protected cached state independently. Start it before
     // regional discovery so an offline upgrade keeps showing the saved display.
-    if state.kiosk_key.is_some() { start_app(&app)?; }
+    start_app(&app)?;
     while crate::core::protocol::needs_regional_migration(&state.server_url) {
         match migrate_canonical_state(&mut state).await {
             Ok(()) => break,
@@ -462,6 +473,12 @@ async fn run_agent(server_url: String) -> Result<(), String> {
                 }
             }
             _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                if state_dir().join("exit-demo").exists() && state.lock().unwrap().demo {
+                    if let Some(mut child) = app.lock().unwrap().take() {
+                        let _ = child.kill(); let _ = child.wait();
+                    }
+                    return Ok(());
+                }
                 if last_supervise.elapsed() >= Duration::from_secs(10) {
                     if let Err(err) = supervise_app(&app) {
                         warn!("app supervision failed: {err}");
@@ -510,6 +527,7 @@ async fn pair(server_url: &str) -> Result<ClientState, String> {
         let saved = load_agent_state()?;
         let resume = if saved.server_url == server_url && saved.kiosk_key.is_none() {
             saved.pairing_code.map(|code| PairInitiateResponse {
+                allow_demo: saved.allow_demo,
                 code,
                 expires_at: saved.pairing_expires_at.unwrap_or_default(),
                 polling_secret: saved.pairing_secret,
@@ -544,6 +562,7 @@ async fn pair(server_url: &str) -> Result<ClientState, String> {
         };
         println!("BetterFrame Windows pairing code: {}", init.code);
         let mut pending = unpaired_state(server_url);
+        pending.allow_demo = init.allow_demo;
         pending.pairing_code = Some(init.code.clone());
         pending.pairing_expires_at = Some(init.expires_at.clone());
         pending.pairing_secret = init.polling_secret.clone();
@@ -597,6 +616,7 @@ async fn pair(server_url: &str) -> Result<ClientState, String> {
                     ) {
                         Ok(identity) => {
                             let mut state = ClientState {
+                                demo: identity.demo,
                                 server_url: identity.server_url,
                                 kiosk_key: Some(identity.kiosk_key),
                                 encrypt_key: identity.encrypt_key.or(identity.cluster_key),

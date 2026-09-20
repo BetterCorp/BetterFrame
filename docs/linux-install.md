@@ -1,10 +1,22 @@
 # Standalone Linux app installation
 
-From a BetterFrame checkout, run:
+## One-line installation
+
+Run this as a regular desktop user with sudo access. It installs the download
+tools and BF prerequisites and fetches the self-contained installer automatically:
 
 ```sh
-sudo ./setup.sh
+sudo bash -c 'set -eu; if command -v apt-get >/dev/null; then apt-get update; apt-get install -y ca-certificates curl util-linux; elif command -v dnf >/dev/null; then dnf install -y ca-certificates curl util-linux; else echo "Ubuntu/Debian or Fedora required" >&2; exit 1; fi; f=$(mktemp /tmp/bf-setup.XXXXXXXX); trap "rm -f -- $f" EXIT; curl -fsSL --retry 3 --connect-timeout 15 --max-time 120 --proto =https --proto-redir =https https://raw.githubusercontent.com/BetterCorp/BetterFrame/master/setup.sh -o "$f"; bash "$f" "$@"' bf-setup
 ```
+
+No Git checkout, manual dependency installation, or manual download is required.
+The installer runs from a private temporary file only after curl succeeds, keeps
+standard input available for prompts, and removes the file when finished. The
+same command repairs and updates an existing installation. Append options after
+`bf-setup`, for example `--yes --channel dev`.
+
+The commands below use `sudo ./setup.sh` for people who already have a local copy;
+all those options also work with the one-line installer.
 
 On the first run, the installer asks for the runtime user, desktop/dedicated
 startup, and stable/beta/dev release channel. Subsequent runs reuse these saved
@@ -58,8 +70,8 @@ sudo ./setup.sh --yes --channel dev
 
 An explicit `--version VERSION` or `--binary FILE` selects the executable for
 that run only. A named release also remembers its stable/beta/dev channel unless
-`--channel` explicitly overrides it. The script itself is not modified by setup;
-update your checkout to obtain newer installer logic.
+`--channel` explicitly overrides it. The script itself is not modified by setup. The one-line command fetches current
+installer logic each time; update your checkout if using a local copy instead.
 
 For a manual installation, the normal command downloads a fresh replacement.
 Alternatively, repair using a specific trusted local executable:

@@ -96,13 +96,22 @@ flows. Back them up together; see [backup and recovery](docs/backup-recovery.md)
 
 ## Install the Linux app
 
-Use the root installer on an existing Linux installation:
+Copy and paste this **one-line install** into a terminal on Ubuntu/Debian or
+Fedora. It installs download tools and all BF prerequisites automatically;
+no Git checkout or manual download is needed:
 
 ```sh
-git clone https://github.com/BetterCorp/BetterFrame.git
-cd BetterFrame
-sudo ./setup.sh
+sudo bash -c 'set -eu; if command -v apt-get >/dev/null; then apt-get update; apt-get install -y ca-certificates curl util-linux; elif command -v dnf >/dev/null; then dnf install -y ca-certificates curl util-linux; else echo "Ubuntu/Debian or Fedora required" >&2; exit 1; fi; f=$(mktemp /tmp/bf-setup.XXXXXXXX); trap "rm -f -- $f" EXIT; curl -fsSL --retry 3 --connect-timeout 15 --max-time 120 --proto =https --proto-redir =https https://raw.githubusercontent.com/BetterCorp/BetterFrame/master/setup.sh -o "$f"; bash "$f" "$@"' bf-setup
 ```
+
+Run it as your normal desktop user with sudo access. The installer downloads to
+a private temporary file, runs only after a successful HTTPS download, and is
+removed afterward. Prompts remain interactive. Repeat the same command to repair
+and update BF using the saved settings; append `--yes` after `bf-setup` to run
+without prompts, or `--channel dev` to choose the dev channel.
+
+If you already have a checkout, `sudo ./setup.sh` works too. The commands below
+show this local-file form; the one-line command accepts the same options.
 
 The installer:
 
@@ -156,7 +165,8 @@ existing app in place. Immediate startup failure attempts restoration of the
 previous executable and reports failure instead of claiming success.
 
 Use `sudo ./setup.sh --yes --channel dev` to switch future updates to the dev
-channel. Update the repository checkout to obtain newer setup script logic.
+channel. The one-line install fetches current setup logic on every run. If using
+a local checkout instead, update it before running setup.
 
 ### Repair a manual installation
 

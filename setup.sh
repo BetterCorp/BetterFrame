@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# BetterFrame standalone Linux app installer. Run from a downloaded checkout:
-# sudo ./setup.sh   (or see --help for unattended installation)
+# BetterFrame standalone Linux app installer. No checkout or companion files required.
+# See README.md for the one-line bootstrap, or run sudo bash setup.sh --help.
 set -euo pipefail
 
 BIN=/opt/betterframe/kiosk/betterframe-kiosk
@@ -19,7 +19,6 @@ CONFIG=/etc/betterframe/linux-install
 PREVIOUS_INSTALL=0
 PRESERVE_PREVIOUS=1
 RELEASE_VERSION=
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 usage() {
@@ -347,6 +346,72 @@ install_app_binary() {
     # shellcheck disable=SC2016 # Positional parameters belong to the child shell.
     runtime_command sh -c 'set -eu; umask 077; cat > "$1"; chmod 755 "$1"; mv -f -- "$1" "$2"' sh "$BIN.new" "$BIN" < "$STAGING/candidate"
 }
+# Embedded for single-file installation. Keep identical to the deployment helper;
+# scripts/test-linux-setup.py checks that the two copies cannot drift.
+write_rollback_helper() {
+    cat <<'BF_ROLLBACK_HELPER'
+#!/usr/bin/env bash
+# Roll back the kiosk binary if an app OTA candidate never confirms healthy.
+#
+# The kiosk writes MARKER just before swapping in a new binary and removes it
+# only after a successful post-boot heartbeat. This script runs as root from
+# betterframe-kiosk.service ExecStartPre, so it can recover even when the new
+# kiosk binary exits before Rust code can run.
+
+set -euo pipefail
+
+BIN="/opt/betterframe/kiosk/betterframe-kiosk"
+PREV="${BIN}.prev"
+MARKER="/var/lib/betterframe/kiosk/firmware-applying.json"
+ATTEMPTS="/var/lib/betterframe/kiosk/firmware-applying.attempts"
+MAX_ATTEMPTS=3
+MAX_AGE_SECONDS=120
+
+if [ ! -f "$MARKER" ]; then
+  rm -f "$ATTEMPTS"
+  exit 0
+fi
+
+rollback() {
+  local reason="$1"
+  if [ -f "$PREV" ]; then
+    echo "[bf-firmware-rollback] ${reason}; .prev exists, rolling back" >&2
+    cp -f "$PREV" "$BIN"
+    chmod +x "$BIN"
+    rm -f "$MARKER" "$ATTEMPTS"
+  else
+    echo "[bf-firmware-rollback] ${reason}; no .prev, clearing marker and leaving current binary" >&2
+    rm -f "$MARKER" "$ATTEMPTS"
+  fi
+}
+
+marker_mtime=$(stat -c %Y "$MARKER" 2>/dev/null || stat -f %m "$MARKER" 2>/dev/null || echo 0)
+now=$(date +%s)
+age=$(( now - marker_mtime ))
+
+attempts=0
+if [ -f "$ATTEMPTS" ]; then
+  attempts=$(cat "$ATTEMPTS" 2>/dev/null || echo 0)
+fi
+case "$attempts" in
+  ''|*[!0-9]*) attempts=0 ;;
+esac
+
+if [ "$age" -ge "$MAX_AGE_SECONDS" ]; then
+  rollback "apply marker is stale (${age}s old)"
+  exit 0
+fi
+
+if [ "$attempts" -ge "$MAX_ATTEMPTS" ]; then
+  rollback "candidate failed to confirm after ${attempts} start attempts"
+  exit 0
+fi
+
+attempts=$((attempts + 1))
+printf '%s\n' "$attempts" > "$ATTEMPTS"
+echo "[bf-firmware-rollback] pending firmware candidate start attempt ${attempts}/${MAX_ATTEMPTS}" >&2
+BF_ROLLBACK_HELPER
+}
 write_desktop_unit() {
     cat <<'EOF'
 [Unit]
@@ -453,7 +518,6 @@ main() {
     [[ $EUID == 0 ]] || fail 'Run with sudo (or root and --user USER)'
     [[ -d /run/systemd/system ]] || fail 'This installer requires systemd'
     [[ ! -e /etc/betterframe/managed-image ]] || fail 'Use the managed-image updater on this device'
-    [[ -f $SCRIPT_DIR/deploy/systemd/betterframe-firmware-rollback.sh ]] || fail 'Run setup.sh from a BetterFrame checkout (rollback helper missing)'
     command -v flock >/dev/null || fail 'Install util-linux (flock) before running setup'
     exec 9>/run/lock/betterframe-setup.lock
     flock -n 9 || fail 'Another BetterFrame setup is already running'
@@ -539,7 +603,7 @@ try:
 finally:
     os.close(root)
 PYOWN
-    reconcile_file /usr/local/libexec/betterframe-rollback 755 root root < "$SCRIPT_DIR/deploy/systemd/betterframe-firmware-rollback.sh"
+    write_rollback_helper | reconcile_file /usr/local/libexec/betterframe-rollback 755 root root
     runuser -u "$INSTALL_USER" -- mkdir -p -- "$unit_dir" "$autostart_dir"
     if [[ -S /run/user/$USER_ID/bus ]]; then
         # Existing manual units often set DISPLAY locally rather than importing

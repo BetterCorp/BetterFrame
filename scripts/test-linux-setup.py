@@ -314,5 +314,74 @@ class SetupTests(unittest.TestCase):
             self.assertEqual((runtime / 'app.prev').read_text(), 'old app')
 
 
+    def one_line_install(self):
+        import re
+        readme = (ROOT / 'README.md').read_text().split('## Install the Linux app', 1)[1]
+        command = re.search(r'```sh\n([^\n]+)\n```', readme).group(1)
+        self.assertIn(command, (ROOT / 'docs/linux-install.md').read_text())
+        return command
+
+    def test_one_line_bootstraps_apt_and_dnf_without_existing_curl(self):
+        for manager in ['apt-get', 'dnf']:
+            with self.subTest(manager=manager), tempfile.TemporaryDirectory() as tmp:
+                p = Path(tmp)
+                tools = p / 'bin'
+                tools.mkdir()
+                for tool in ['bash', 'mktemp', 'rm']:
+                    (tools / tool).symlink_to(shutil.which(tool))
+                scripts = {
+                    'sudo': '#!/bin/bash\nexec "$@"\n',
+                    manager: '#!/bin/bash\nprintf "%s\\n" "$*" >> "$TEST_PACKAGES"\nif [[ $1 == install ]]; then /bin/cp "$TEST_CURL_STUB" "$TEST_BIN/curl"; /bin/chmod 755 "$TEST_BIN/curl"; fi\n',
+                }
+                for name, content in scripts.items():
+                    (tools / name).write_text(content)
+                    (tools / name).chmod(0o755)
+                curl = p / 'curl-stub'
+                curl.write_text('''#!/bin/bash
+set -eu
+while (($#)); do
+    if [[ $1 == -o ]]; then output=$2; shift; fi
+    shift
+done
+printf '%s' "$output" > "$TEST_DOWNLOAD_PATH"
+/bin/cat "$TEST_PAYLOAD" > "$output"
+''')
+                payload = p / 'payload'
+                payload.write_text('''#!/bin/bash
+printf '%s\\n' "$@" > "$TEST_ARGS"
+read -r answer
+printf '%s' "$answer" > "$TEST_INPUT"
+''')
+                env = dict(os.environ, PATH=str(tools), TEST_BIN=str(tools), TEST_CURL_STUB=str(curl),
+                           TEST_PACKAGES=str(p/'packages'), TEST_DOWNLOAD_PATH=str(p/'download'),
+                           TEST_PAYLOAD=str(payload), TEST_ARGS=str(p/'args'), TEST_INPUT=str(p/'input'))
+                command = self.one_line_install()
+                subprocess.run([str(tools/'bash'), '-c', command+' --yes --channel dev'], env=env,
+                               input='desktop-choice\n', text=True, capture_output=True, check=True)
+                self.assertIn('install -y ca-certificates curl util-linux', (p/'packages').read_text())
+                self.assertEqual((p/'args').read_text().splitlines(), ['--yes', '--channel', 'dev'])
+                self.assertEqual((p/'input').read_text(), 'desktop-choice')
+                self.assertFalse(Path((p/'download').read_text()).exists())
+                # A truncated/error response must never be executed, and is cleaned up.
+                (p/'args').unlink()
+                curl.write_text(curl.read_text()+'exit 22\n')
+                result = subprocess.run([str(tools/'bash'), '-c', command], env=env, input='',
+                                        text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((p/'args').exists())
+                self.assertFalse(Path((p/'download').read_text()).exists())
+
+    def test_downloaded_setup_needs_no_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / 'setup.sh'
+            shutil.copy(ROOT/'setup.sh', script)
+            result = subprocess.run(['bash', '-c', f'source {shlex.quote(str(script))}; write_rollback_helper'],
+                                    text=True, capture_output=True, check=True)
+            self.assertEqual(result.stdout, (ROOT/'deploy/systemd/betterframe-firmware-rollback.sh').read_text())
+            subprocess.run(['bash', '-n'], input=result.stdout, text=True, check=True)
+            help_result = subprocess.run(['bash', str(script), '--help'], text=True, capture_output=True, check=True)
+            self.assertIn('Install, update, or repair', help_result.stdout)
+
+
 if __name__ == '__main__':
     unittest.main()

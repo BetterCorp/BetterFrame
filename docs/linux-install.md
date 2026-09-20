@@ -104,7 +104,7 @@ the runtime user along with its containing directory so app updates can atomical
 replace it. State stays in `/var/lib/betterframe/kiosk`; pairing and keys are
 preserved. The app also imports its existing `~/.betterframe-kiosk` state when
 needed. Changed startup files are backed up with `.before-setup.TIMESTAMP-PID`.
-The saved runtime user, mode, and channel are in `/etc/betterframe/linux-install`.
+The saved runtime user, mode, channel, and media gateway choice are in `/etc/betterframe/linux-install`.
 Remove other custom BF startup commands if your manual install used different
 service/autostart names; setup manages `betterframe.service`,
 `betterframe-kiosk.service`, and `betterframe.desktop`.
@@ -129,3 +129,27 @@ Your previous default target is saved in `/etc/betterframe/previous-default-targ
 Reboot when convenient or start your display manager manually. To change setup
 mode/user, restore the old startup configuration first, then remove
 `/etc/betterframe/linux-install` and rerun setup with the appropriate user.
+
+## MediaMTX gateway
+
+Setup asks whether to install MediaMTX for Operator Console preview and optional
+SimpleVMS recording, recommends yes, and remembers your choice. `--yes` defaults
+to on for new installs and reuses the saved choice for existing installs. Use
+`--media-gateway on` to enable/repair it or `--media-gateway off` to disable it
+while preserving recordings. Older installations without a saved choice are
+prompted once when running interactively.
+
+When enabled, setup installs the same pinned version and configuration as the
+managed images. It verifies the published archive checksum, installs a system
+service running as the selected user, preserves recordings in
+`/var/lib/betterframe/recordings`, and checks the local gateway API before
+reporting it ready. Reruns repair missing, masked, stopped, or failed services.
+This supplies Operator Console preview and SimpleVMS's gateway dependency;
+enabling recording remains a BF configuration choice. Setup prepares the existing
+recording directory and its permissions; it never formats a disk, mounts a new
+partition, or automatically starts recording.
+
+Check `sudo systemctl status betterframe-mediamtx.service` or
+`sudo journalctl -u betterframe-mediamtx.service -n 100`. Its API listens only on
+`127.0.0.1:9997`. `--no-start` requires an existing gateway service to be stopped
+and defers its readiness check until you start it.

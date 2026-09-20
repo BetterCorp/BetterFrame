@@ -15,6 +15,9 @@ MODE_SET=0
 USER_SET=0
 CHANNEL=stable
 CHANNEL_SET=0
+MEDIA_GATEWAY=on
+MEDIA_SET=0
+MEDIA_SAVED=0
 CONFIG=/etc/betterframe/linux-install
 PREVIOUS_INSTALL=0
 PRESERVE_PREVIOUS=1
@@ -29,6 +32,7 @@ Install, update, or repair the BetterFrame Linux app (systemd required).
   --mode desktop    Start on graphical login (default)
   --mode dedicated  Replace graphical login with a Cage fullscreen kiosk
   --channel CHANNEL stable (default), beta, or dev; remembered for reruns
+  --media-gateway on|off Install MediaMTX for preview/recording (default: on)
   --version VERSION Download a signed GitHub release (e.g. 1.0.14 or latest)
   --binary FILE     Install an existing, trusted local BF executable
   --yes             Reuse saved choices without prompting (desktop on first run)
@@ -42,11 +46,12 @@ EOF
 parse_args() {
     while (($#)); do
         case "$1" in
-            --user|--mode|--version|--binary|--channel)
+            --user|--mode|--version|--binary|--channel|--media-gateway)
                 (($# >= 2)) || fail "$1 requires a value"
                 case "$1" in
                     --user) INSTALL_USER=$2; USER_SET=1;;
                     --channel) CHANNEL=$2; CHANNEL_SET=1;;
+                    --media-gateway) MEDIA_GATEWAY=$2; MEDIA_SET=1;;
                     --mode) MODE=$2; MODE_SET=1;;
                     --version) VERSION=$2;;
                     --binary) SOURCE_BINARY=$2;;
@@ -97,13 +102,18 @@ backup() {
     if [[ -e $1 ]]; then cp -a --remove-destination -- "$1" "$1.before-setup.$BACKUP_ID"; fi
 }
 load_settings() {
-    local saved_user saved_mode saved_channel extra
+    local saved_user saved_mode saved_channel saved_media extra
     if [[ -f $CONFIG ]]; then
-        read -r saved_user saved_mode saved_channel extra < "$CONFIG"
+        read -r saved_user saved_mode saved_channel saved_media extra < "$CONFIG"
         [[ -z $extra && $saved_user =~ ^[a-zA-Z_][a-zA-Z0-9_-]*\$?$ && $saved_user != root ]] || fail 'Invalid saved installer user'
         [[ $saved_mode == desktop || $saved_mode == dedicated ]] || fail 'Invalid saved installer mode'
         saved_channel=${saved_channel:-stable} # Migrate the original two-field format.
         [[ $saved_channel == stable || $saved_channel == beta || $saved_channel == dev ]] || fail 'Invalid saved installer channel'
+        if [[ -n $saved_media ]]; then
+            [[ $saved_media == on || $saved_media == off ]] || fail 'Invalid saved media gateway option'
+            MEDIA_SAVED=1
+            if ((MEDIA_SET == 0)); then MEDIA_GATEWAY=$saved_media; fi
+        fi
         if ((USER_SET == 0)); then INSTALL_USER=$saved_user; fi
         if ((MODE_SET == 0)); then MODE=$saved_mode; fi
         if ((CHANNEL_SET == 0)); then CHANNEL=$saved_channel; fi
@@ -114,6 +124,7 @@ load_settings() {
         case "$VERSION" in *-dev*) CHANNEL=dev;; *-beta*) CHANNEL=beta;; *) CHANNEL=stable;; esac
     fi
     [[ $CHANNEL == stable || $CHANNEL == beta || $CHANNEL == dev ]] || fail 'Channel must be stable, beta, or dev'
+    [[ $MEDIA_GATEWAY == on || $MEDIA_GATEWAY == off ]] || fail 'Media gateway must be on or off'
 }
 # Write canonical managed files atomically. Identical reruns do not create backups.
 reconcile_file() {
@@ -412,6 +423,125 @@ printf '%s\n' "$attempts" > "$ATTEMPTS"
 echo "[bf-firmware-rollback] pending firmware candidate start attempt ${attempts}/${MAX_ATTEMPTS}" >&2
 BF_ROLLBACK_HELPER
 }
+# Keep the bundled gateway version/config aligned with managed images.
+MEDIAMTX_VERSION=1.19.3
+verify_mediamtx_archive() {
+    python3 - "$STAGING/$MEDIAMTX_ARCHIVE" "$STAGING/mediamtx-checksums" "$STAGING/mediamtx" <<'PYMTX'
+import hashlib, pathlib, sys, tarfile
+archive, checksums, output = map(pathlib.Path, sys.argv[1:])
+entries = [line.split() for line in checksums.read_text().splitlines()]
+expected = [parts[0] for parts in entries if len(parts) == 2 and parts[1].lstrip('*') == archive.name]
+if len(expected) != 1 or hashlib.sha256(archive.read_bytes()).hexdigest() != expected[0].lower():
+    raise SystemExit('MediaMTX checksum mismatch or missing checksum')
+with tarfile.open(archive, 'r:gz') as bundle:
+    members = [member for member in bundle.getmembers() if member.name == 'mediamtx']
+    if len(members) != 1 or not members[0].isfile():
+        raise SystemExit('MediaMTX archive must contain one regular executable')
+    with bundle.extractfile(members[0]) as source, output.open('wb') as dest:
+        import shutil
+        shutil.copyfileobj(source, dest)
+PYMTX
+    chmod 755 "$STAGING/mediamtx"
+}
+download_mediamtx() {
+    local arch=amd64 base
+    if [[ $TARGET == betterframe-rpi5-aarch64 ]]; then arch=arm64; fi
+    MEDIAMTX_ARCHIVE="mediamtx_v${MEDIAMTX_VERSION}_linux_${arch}.tar.gz"
+    base="https://github.com/bluenviron/mediamtx/releases/download/v$MEDIAMTX_VERSION"
+    curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 600 \
+        --proto '=https' --proto-redir '=https' "$base/$MEDIAMTX_ARCHIVE" -o "$STAGING/$MEDIAMTX_ARCHIVE"
+    curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 120 \
+        --proto '=https' --proto-redir '=https' "$base/checksums.sha256" -o "$STAGING/mediamtx-checksums"
+    verify_mediamtx_archive
+    "$STAGING/mediamtx" --version
+}
+write_mediamtx_config() {
+    cat <<'BF_MEDIAMTX_CONFIG'
+logLevel: warn
+api: true
+apiAddress: 127.0.0.1:9997
+metrics: false
+pprof: false
+rtsp: false
+rtmp: false
+hls: false
+webrtc: true
+webrtcAddress: 127.0.0.1:8889
+webrtcAllowOrigins: ["*"]
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+srt: false
+moq: false
+playback: true
+playbackAddress: 127.0.0.1:9996
+pathDefaults:
+  sourceOnDemand: true
+  sourceOnDemandCloseAfter: 10s
+paths: {}
+BF_MEDIAMTX_CONFIG
+}
+write_mediamtx_unit() {
+    cat <<EOF
+[Unit]
+Description=BetterFrame local media gateway and recorder
+After=network.target
+Before=betterframe-kiosk.service
+StartLimitIntervalSec=120
+StartLimitBurst=10
+
+[Service]
+User=$INSTALL_USER
+Group=$USER_GROUP
+ExecStart=/opt/betterframe/mediamtx/mediamtx /etc/betterframe/mediamtx.yml
+Restart=always
+RestartSec=2
+TimeoutStopSec=15
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/betterframe/recordings
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+install_mediamtx() {
+    local directory
+    for directory in /opt/betterframe/mediamtx /var/lib/betterframe/recordings; do
+        [[ ! -L $directory ]] || fail "Refusing symlink: $directory"
+    done
+    if ((START)); then
+        # Do not let gateway failure alter the app's rollback selection.
+        (stop_app_service system betterframe-mediamtx.service)
+    elif systemctl is-active --quiet betterframe-mediamtx.service; then
+        fail '--no-start requires MediaMTX to be stopped as well'
+    fi
+    systemctl unmask betterframe-mediamtx.service
+    systemctl unmask --runtime betterframe-mediamtx.service
+    install -d -o root -g root -m 755 /opt/betterframe/mediamtx
+    install -d -o "$INSTALL_USER" -g "$USER_GROUP" -m 750 /var/lib/betterframe/recordings
+    reconcile_file /opt/betterframe/mediamtx/mediamtx 755 root root < "$STAGING/mediamtx"
+    write_mediamtx_config | reconcile_file /etc/betterframe/mediamtx.yml 644 root root
+    write_mediamtx_unit | reconcile_file /etc/systemd/system/betterframe-mediamtx.service 644 root root
+    systemctl daemon-reload
+    systemctl enable betterframe-mediamtx.service
+    if ((START)); then
+        systemctl reset-failed betterframe-mediamtx.service
+        systemctl start betterframe-mediamtx.service
+        # Service activation alone does not prove the gateway API is reachable.
+        local _attempt
+        for _attempt in {1..10}; do
+            if systemctl is-active --quiet betterframe-mediamtx.service &&
+                curl --fail --silent --max-time 2 http://127.0.0.1:9997/v3/config/global/get >/dev/null; then
+                printf 'MediaMTX %s is ready.\n' "$MEDIAMTX_VERSION"
+                return
+            fi
+            sleep 1
+        done
+        fail 'MediaMTX API is unavailable; inspect journalctl -u betterframe-mediamtx.service'
+    fi
+}
+
 write_desktop_unit() {
     cat <<'EOF'
 [Unit]
@@ -534,6 +664,14 @@ main() {
             CHANNEL=${answer:-$CHANNEL}
         fi
     fi
+    if [[ -t 0 && $ASSUME_YES == 0 && $MEDIA_SET == 0 && $MEDIA_SAVED == 0 ]]; then
+        read -r -p 'Install MediaMTX for Operator Console preview and optional recording? [Y/n]: ' answer
+        case "$answer" in
+            ''|y|Y|yes|YES) MEDIA_GATEWAY=on;;
+            n|N|no|NO) MEDIA_GATEWAY=off;;
+            *) fail 'Answer yes or no, or pass --media-gateway on|off';;
+        esac
+    fi
     [[ $MODE == desktop || $MODE == dedicated ]] || fail 'Mode must be desktop or dedicated'
     [[ -n $INSTALL_USER && $INSTALL_USER != root && $INSTALL_USER =~ ^[a-zA-Z_][a-zA-Z0-9_-]*\$?$ ]] || fail 'Specify a non-root runtime user with --user'
     [[ $CHANNEL == stable || $CHANNEL == beta || $CHANNEL == dev ]] || fail 'Channel must be stable, beta, or dev'
@@ -565,6 +703,7 @@ main() {
     STAGING=$(mktemp -d)
     trap 'rm -rf -- "$STAGING"' EXIT
     prepare_candidate
+    if [[ $MEDIA_GATEWAY == on ]]; then download_mediamtx; fi
     # Do not stop or replace a working app until validation has passed.
     BACKUP_ID=$(date +%Y%m%dT%H%M%S)-$$
     unit_dir="$USER_HOME/.config/systemd/user"
@@ -605,6 +744,17 @@ finally:
 PYOWN
     write_rollback_helper | reconcile_file /usr/local/libexec/betterframe-rollback 755 root root
     runuser -u "$INSTALL_USER" -- mkdir -p -- "$unit_dir" "$autostart_dir"
+    if [[ $MEDIA_GATEWAY == on ]]; then
+        install_mediamtx
+    elif [[ $(systemctl show betterframe-mediamtx.service -p LoadState --value) != not-found ]]; then
+        if ((START)); then
+            (stop_app_service system betterframe-mediamtx.service)
+        elif systemctl is-active --quiet betterframe-mediamtx.service; then
+            fail '--no-start requires MediaMTX to be stopped before disabling it'
+        fi
+        systemctl disable betterframe-mediamtx.service
+        printf 'Media gateway disabled; existing recordings are preserved.\n'
+    fi
     if [[ -S /run/user/$USER_ID/bus ]]; then
         # Existing manual units often set DISPLAY locally rather than importing
         # it into the manager. Preserve that real session before replacing them.
@@ -645,7 +795,7 @@ PYENV
     install_app_binary
     clear_interrupted_update
     if command -v restorecon >/dev/null; then restorecon -RF /opt/betterframe /usr/local/libexec/betterframe-rollback; fi
-    printf '%s %s %s\n' "$INSTALL_USER" "$MODE" "$CHANNEL" | reconcile_file "$CONFIG" 644 root root
+    printf '%s %s %s %s\n' "$INSTALL_USER" "$MODE" "$CHANNEL" "$MEDIA_GATEWAY" | reconcile_file "$CONFIG" 644 root root
     if [[ $MODE == desktop ]]; then
         write_desktop_unit | reconcile_file "$unit_dir/betterframe.service" 644 "$INSTALL_USER" "$USER_GROUP"
         runuser -u "$INSTALL_USER" -- mkdir -p "$unit_dir/betterframe.service.d"

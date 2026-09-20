@@ -41,8 +41,8 @@ hardware, stream resolution, codecs, and available decoders.
 Linux supports ONVIF camera integration, PTZ controls, multiple display windows,
 and local hardware integration where the device provides it. Managed images also
 include the MediaMTX gateway for Operator Console live preview and optional
-SimpleVMS recording/playback. Those gateway services are separate from the
-standalone desktop app installer.
+SimpleVMS recording/playback. The standalone Linux installer asks whether to install MediaMTX (recommended)
+and remembers that choice for future repairs.
 
 Run the server separately from displays for a multi-device installation. A
 combined server/client host is possible, but restarting or losing that host
@@ -117,7 +117,8 @@ The installer:
 
 1. Asks which existing user will run BF and which startup mode to use.
 2. Installs runtime prerequisites using apt on Ubuntu/Debian or dnf on
-   Fedora-family distributions.
+   Fedora-family distributions, plus the checksum-verified MediaMTX gateway
+   when selected (recommended by default).
 3. Downloads the latest signed app in the chosen stable/beta/dev channel, or
    installs a release/executable explicitly selected for this run.
 4. Checks the executable architecture and required libraries before replacing
@@ -331,6 +332,7 @@ commands. Each tenant has an isolated runtime. Public HTTP-in endpoints use
 | Manual install cannot update | Rerun `setup.sh --binary …`; check the stable executable path, writable parent directory, and state ownership |
 | Installer rejects a release | Check target architecture and missing library/ABI errors; use a compatible release/OS |
 | App version is missing from the server | Check release import job results and the server's vendor public PEM, including line breaks |
+| MediaMTX is unavailable | Rerun the one-line installer; inspect `sudo journalctl -u betterframe-mediamtx.service -n 100` |
 | Camera tile is blank | Check camera credentials, reachability from the client, stream URL, installed GStreamer codecs, and decoder telemetry |
 | Local link returns 404 | Confirm the resource is assigned/enabled and the kiosk has refreshed its bundle |
 | Pairing/reconnection fails | Check the proxy URL and client logs; use the recovery guide before discarding identity files |

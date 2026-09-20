@@ -383,5 +383,54 @@ printf '%s' "$answer" > "$TEST_INPUT"
             self.assertIn('Install, update, or repair', help_result.stdout)
 
 
+    def test_media_gateway_choice_is_remembered_and_can_be_changed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp)/'install'
+            config.write_text('kiosk desktop dev off\n')
+            cmd = f'CONFIG={config}; load_settings; echo "$MEDIA_GATEWAY $MEDIA_SAVED"'
+            self.assertEqual(self.shell(cmd).stdout.strip(), 'off 1')
+            self.assertEqual(self.shell(f'CONFIG={config}; parse_args --media-gateway on; load_settings; echo "$MEDIA_GATEWAY"').stdout.strip(), 'on')
+            config.write_text('kiosk desktop dev\n')
+            self.assertEqual(self.shell(cmd).stdout.strip(), 'on 0')
+            self.assertNotEqual(self.shell(f'CONFIG={config}; parse_args --media-gateway invalid; load_settings', check=False).returncode, 0)
+
+    def test_mediamtx_bundle_matches_managed_images(self):
+        self.assertEqual(self.shell('echo "$MEDIAMTX_VERSION"').stdout.strip(), (ROOT/'deploy/mediamtx.version').read_text().strip())
+        self.assertEqual(self.shell('write_mediamtx_config').stdout, (ROOT/'deploy/mediamtx.yml').read_text())
+        unit = self.shell('INSTALL_USER=kiosk; USER_GROUP=kiosk; write_mediamtx_unit').stdout
+        self.assertIn('User=kiosk', unit)
+        self.assertIn('Restart=always', unit)
+        self.assertIn('ReadWritePaths=/var/lib/betterframe/recordings', unit)
+
+    def test_mediamtx_archive_integrity_and_member_safety(self):
+        import io
+        import tarfile
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            archive = p/'gateway.tar.gz'
+            def make_archive(symlink=False):
+                with tarfile.open(archive, 'w:gz') as bundle:
+                    member = tarfile.TarInfo('mediamtx')
+                    if symlink:
+                        member.type = tarfile.SYMTYPE
+                        member.linkname = '/etc/passwd'
+                        bundle.addfile(member)
+                    else:
+                        data = b'gateway executable'
+                        member.size = len(data)
+                        bundle.addfile(member, io.BytesIO(data))
+                (p/'mediamtx-checksums').write_text(hashlib.sha256(archive.read_bytes()).hexdigest()+'  gateway.tar.gz\n')
+            cmd = f'STAGING={p}; MEDIAMTX_ARCHIVE=gateway.tar.gz; verify_mediamtx_archive'
+            make_archive()
+            self.shell(cmd)
+            self.assertEqual((p/'mediamtx').read_bytes(), b'gateway executable')
+            archive.write_bytes(b'corrupted')
+            self.assertNotEqual(self.shell(cmd, check=False).returncode, 0)
+            (p/'mediamtx').unlink()
+            make_archive(symlink=True)
+            self.assertNotEqual(self.shell(cmd, check=False).returncode, 0)
+            self.assertFalse((p/'mediamtx').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -30,7 +30,9 @@ also carries the action.
 
 Renewal uses the difference between the camera's `CurrentTime` and
 `TerminationTime`, so clock skew and shorter granted leases do not cause BF to
-wait for the wrong deadline. A SOAP operation fault is not retried as a succession
+wait for the wrong deadline. Pull responses can bring renewal forward but cannot
+postpone it; only creation or successful renewal establishes a later deadline.
+A SOAP operation fault is not retried as a succession
 of authentication methods. Invalid/expired pull subscriptions are recreated and
 old subscriptions are unsubscribed when possible.
 

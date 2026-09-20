@@ -55,9 +55,15 @@ impl Subscription {
 
     pub fn observe_deadline(&mut self, xml: &str) {
         if let Some(lease) = lease_duration(xml) {
-            self.renew_at = Instant::now() + renew_delay(lease);
+            self.renew_at = pull_renew_deadline(self.renew_at, Instant::now(), lease);
         }
     }
+}
+
+fn pull_renew_deadline(existing: Instant, observed_at: Instant, remaining: Duration) -> Instant {
+    // Pull responses report remaining lifetime, not a newly granted lease.
+    // Only creation or a successful Renew may move the deadline later.
+    existing.min(observed_at + renew_delay(remaining))
 }
 
 fn renew_delay(lease: Duration) -> Duration {
@@ -188,6 +194,42 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn repeated_long_polls_cannot_postpone_renewal_until_expiry() {
+        let created = Instant::now();
+        let original = created + renew_delay(Duration::from_secs(60));
+        let mut deadline = original;
+        // Five seconds in PullMessages, then five seconds between pulls.
+        for elapsed in [5, 15, 25] {
+            deadline = pull_renew_deadline(
+                deadline,
+                created + Duration::from_secs(elapsed),
+                Duration::from_secs(60 - elapsed),
+            );
+            assert_eq!(deadline, original);
+        }
+        assert!(created + Duration::from_secs(30) >= deadline);
+        assert!(deadline < created + Duration::from_secs(60));
+        // An unexpectedly shorter remaining lease can still bring renewal forward.
+        assert_eq!(
+            pull_renew_deadline(
+                original,
+                created + Duration::from_secs(10),
+                Duration::from_secs(10)
+            ),
+            created + Duration::from_secs(15)
+        );
+        // Cameras that extend their lease on pull do not postpone explicit renewal.
+        assert_eq!(
+            pull_renew_deadline(
+                original,
+                created + Duration::from_secs(20),
+                Duration::from_secs(60)
+            ),
+            original
+        );
+    }
+
     #[test]
     fn renewal_uses_camera_lifetime_even_with_different_wall_clock() {
         let xml = "<Response><CurrentTime>2001-01-01T00:00:00Z</CurrentTime><TerminationTime>2001-01-01T00:00:20Z</TerminationTime></Response>";

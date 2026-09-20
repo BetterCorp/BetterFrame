@@ -13,14 +13,16 @@
 //! `BF_KIOSK_BINARY`.
 //!
 //! Rollback: the previous binary is kept at `<bin>.prev` before the swap.
-//! systemd's StartLimitBurst=10 catches a broken binary; an out-of-band
-//! script (`/usr/local/bin/bf-rollback-firmware`, future) handles the
-//! restore. For now this module only does forward updates.
+//! The service's ExecStartPre rollback helper restores unconfirmed candidates
+//! after repeated failed starts. App updates never reboot the operating system.
 
 use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+static MARKER_LOCK: Mutex<()> = Mutex::new(());
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -56,8 +58,9 @@ fn binary_path() -> PathBuf {
 }
 
 pub fn request_cancel() {
+    // Only the update worker owns download cleanup. A cancel message may arrive
+    // with no download active, while the running candidate still needs rollback.
     CANCEL_REQUESTED.store(true, Ordering::SeqCst);
-    cleanup_partial_update();
 }
 
 pub fn clear_cancel() {
@@ -68,11 +71,10 @@ fn cancel_requested() -> bool {
     CANCEL_REQUESTED.load(Ordering::SeqCst)
 }
 
-fn cleanup_partial_update() {
-    let bin = binary_path();
+fn cleanup_partial_update(bin: &Path) {
     let _ = fs::remove_file(bin.with_extension("new"));
-    let _ = fs::remove_file(FIRMWARE_MARKER);
-    let _ = fs::remove_file(FIRMWARE_ATTEMPTS);
+    // This may belong to an already-running candidate, not this download.
+    // Its rollback marker/attempts are cleared only by health confirmation.
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,17 +166,18 @@ pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
             .map_err(|e| format!("open {}: {e}", new_path.display()))?;
         use std::io::Write;
         f.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
+        f.sync_all().map_err(|e| format!("sync app: {e}"))?;
     }
-    if bin.exists() {
-        let _ = fs::remove_file(&prev_path);
-        let _ = fs::rename(&bin, &prev_path);
-    }
+    write_pending_marker(
+        &info.version,
+        &bin,
+        &prev_path,
+        Path::new(FIRMWARE_MARKER),
+        Path::new(FIRMWARE_ATTEMPTS),
+    )?;
     fs::rename(&new_path, &bin).map_err(|e| format!("rename: {e}"))?;
-    info!("preboot firmware: updated to {}, rebooting", info.version);
-    let _ = std::process::Command::new("systemctl")
-        .arg("reboot")
-        .status();
-    std::thread::sleep(Duration::from_secs(30));
+    info!("app updated to {}; restarting BetterFrame", info.version);
+    // The service owns process restart. An app update must never reboot the OS.
     std::process::exit(0);
 }
 
@@ -248,12 +251,12 @@ pub fn apply(
     }
     let bytes = read_firmware_body(resp, info.size_bytes, cancel_requested).map_err(|err| {
         if cancel_requested() {
-            cleanup_partial_update();
+            cleanup_partial_update(&binary_path());
         }
         err
     })?;
     if cancel_requested() {
-        cleanup_partial_update();
+        cleanup_partial_update(&binary_path());
         return Err("firmware update canceled after channel change".to_string());
     }
 
@@ -274,7 +277,7 @@ pub fn apply(
     verify_signature(&info.sha256, &info.signature)
         .map_err(|e| format!("signature verify: {e}"))?;
     if cancel_requested() {
-        cleanup_partial_update();
+        cleanup_partial_update(&binary_path());
         return Err("firmware update canceled after channel change".to_string());
     }
 
@@ -297,38 +300,22 @@ pub fn apply(
         f.sync_all().ok();
     }
     if cancel_requested() {
-        cleanup_partial_update();
+        cleanup_partial_update(&binary_path());
         return Err("firmware update canceled after channel change".to_string());
     }
 
-    // Drop a marker file the systemd ExecStartPre script reads to detect a
-    // failed first boot of the new binary. We delete it after a clean boot
-    // (see `mark_firmware_applied()`). If we crash before that, next start
-    // sees a stale marker → restores .prev.
-    {
-        let marker = PathBuf::from(FIRMWARE_MARKER);
-        let payload = serde_json::json!({
-            "version": info.version,
-            "attempt_at": chrono_now_iso(),
-            "confirmed": false,
-            "bin": bin.to_string_lossy(),
-            "prev": prev_path.to_string_lossy(),
-        });
-        let _ = fs::write(&marker, payload.to_string());
-        let _ = fs::remove_file(FIRMWARE_ATTEMPTS);
-    }
-    if cancel_requested() {
-        cleanup_partial_update();
-        return Err("firmware update canceled after channel change".to_string());
-    }
+    // Commit point: after the final cancellation check, finish the protected
+    // swap even if a cancel message arrives. Cancellation must never disarm
+    // rollback for a published candidate or remove its staged executable.
+    // The next process clears this marker only after a healthy startup.
+    write_pending_marker(
+        &info.version,
+        &bin,
+        &prev_path,
+        Path::new(FIRMWARE_MARKER),
+        Path::new(FIRMWARE_ATTEMPTS),
+    )?;
 
-    // Save current binary as .prev so an out-of-band rollback can restore it.
-    if bin.exists() {
-        let _ = fs::remove_file(&prev_path);
-        if let Err(e) = fs::rename(&bin, &prev_path) {
-            warn!("firmware: could not stash previous binary: {e}");
-        }
-    }
     fs::rename(&new_path, &bin).map_err(|e| format!("rename → {}: {e}", bin.display()))?;
 
     // 5. Tell the server we're about to apply.
@@ -339,21 +326,90 @@ pub fn apply(
         .timeout(Duration::from_secs(5))
         .send();
 
-    on_progress("Rebooting", 100);
-    info!("firmware: swap complete → rebooting to pick up new binary");
-    match std::process::Command::new("systemctl")
-        .arg("reboot")
-        .status()
-    {
-        Ok(_) => {
-            std::thread::sleep(Duration::from_secs(30));
-            std::process::exit(0);
-        }
-        Err(e) => {
-            info!("systemctl reboot failed: {e}, falling back to exit");
-            std::process::exit(0);
-        }
+    on_progress("Restarting app", 100);
+    info!("app: swap complete; restarting BetterFrame");
+    // Restart=always also covers this successful exit after an atomic swap.
+    std::process::exit(0);
+}
+
+// Both enrolled and pre-pairing updates must save the previous binary and arm
+// rollback before swapping. Any failure aborts while the old binary remains.
+fn write_pending_marker(
+    version: &str,
+    bin: &Path,
+    prev: &Path,
+    marker: &Path,
+    attempts: &Path,
+) -> Result<(), String> {
+    stash_previous_binary(bin, prev)?;
+    let payload = serde_json::json!({
+        "version": version, "attempt_at": chrono_now_iso(), "confirmed": false,
+        "bin": bin.to_string_lossy(), "prev": prev.to_string_lossy(),
+    });
+    persist_pending_marker(
+        marker,
+        attempts,
+        payload.to_string().as_bytes(),
+        |file, bytes| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        },
+    )
+}
+
+// Prepare rollback without moving the installed executable out of the way.
+// Failed copies or publication leave both the current app and old backup intact.
+fn stash_previous_binary(bin: &Path, prev: &Path) -> Result<(), String> {
+    let temporary = prev.with_file_name(format!(
+        ".bf-app-prev-{}-{:016x}.tmp", std::process::id(), rand::random::<u64>()
+    ));
+    let result = (|| {
+        let mut source = fs::File::open(bin)?;
+        let mut target = fs::OpenOptions::new()
+            .create_new(true).write(true).mode_for_unix(0o600).open(&temporary)?;
+        std::io::copy(&mut source, &mut target)?;
+        target.set_permissions(source.metadata()?.permissions())?;
+        target.sync_all()?;
+        fs::rename(&temporary, prev)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
     }
+    result.map_err(|e| format!("stash previous app {}: {e}", prev.display()))
+}
+
+fn persist_pending_marker(
+    marker: &Path,
+    attempts: &Path,
+    payload: &[u8],
+    write_and_sync: impl FnOnce(&mut fs::File, &[u8]) -> std::io::Result<()>,
+) -> Result<(), String> {
+    let _guard = MARKER_LOCK.lock().unwrap();
+    let temporary = marker.with_file_name(format!(
+        ".bf-app-marker-{}-{:016x}.tmp",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode_for_unix(0o600)
+            .open(&temporary)
+            .map_err(|e| format!("create temporary app rollback marker: {e}"))?;
+        write_and_sync(&mut file, payload)
+            .map_err(|e| format!("persist app rollback marker: {e}"))?;
+        match fs::remove_file(attempts) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(format!("reset app startup attempts: {err}")),
+        }
+        fs::rename(&temporary, marker).map_err(|e| format!("publish app rollback marker: {e}"))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn newer_update(check: CheckResponse, current_version: &str) -> Option<UpdateInfo> {
@@ -445,21 +501,52 @@ fn verify_signature_with_key(
 /// Clear the in-progress marker. Call after the kiosk has booted cleanly and
 /// reported back to the server — proves the new binary survives startup.
 pub fn mark_firmware_applied() {
-    let marker = PathBuf::from(FIRMWARE_MARKER);
-    if marker.exists() {
-        if let Ok(raw) = fs::read_to_string(&marker) {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
-                if let Some(version) = value.get("version").and_then(|v| v.as_str()) {
-                    crate::update_guard::record_success("firmware", version);
-                }
-            }
+    if let Some(version) = confirm_pending_marker(
+        Path::new(FIRMWARE_MARKER),
+        Path::new(FIRMWARE_ATTEMPTS),
+        crate::server::kiosk_app_version(),
+        Path::new("/proc/self/exe"),
+    ) {
+        if !version.is_empty() {
+            crate::update_guard::record_success("firmware", &version);
         }
-        let _ = fs::remove_file(marker);
     }
-    let attempts = PathBuf::from(FIRMWARE_ATTEMPTS);
-    if attempts.exists() {
-        let _ = fs::remove_file(attempts);
+}
+
+// Never let a final heartbeat/UI frame from the old process confirm an update
+// which has been staged on disk but has not run yet. Setup also supports trusted
+// local builds with the same version, so its marker uses the executable hash.
+fn confirm_pending_marker(
+    marker: &Path,
+    attempts: &Path,
+    running_version: &str,
+    executable: &Path,
+) -> Option<String> {
+    let _guard = MARKER_LOCK.lock().unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(marker).ok()?).ok()?;
+    let version = value.get("version")?.as_str()?;
+    if let Some(expected) = value.get("sha256").and_then(|value| value.as_str()) {
+        let mut file = fs::File::open(executable).ok()?;
+        let mut digest = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let size = file.read(&mut buffer).ok()?;
+            if size == 0 {
+                break;
+            }
+            digest.update(&buffer[..size]);
+        }
+        if hex_lower(&digest.finalize()) != expected {
+            return None;
+        }
+    } else if version.is_empty()
+        || version.trim_start_matches('v') != running_version.trim_start_matches('v')
+    {
+        return None;
     }
+    fs::remove_file(marker).ok()?;
+    let _ = fs::remove_file(attempts);
+    Some(version.to_owned())
 }
 
 fn chrono_now_iso() -> String {
@@ -509,7 +596,153 @@ mod tests {
     use super::{read_firmware_body, verify_signature_with_key};
     use base64::Engine as _;
     use ed25519_dalek::{Signer, SigningKey, pkcs8::EncodePublicKey};
-    use std::io::Cursor;
+    use sha2::{Digest, Sha256};
+    use std::fs;
+    use std::io::{Cursor, Write};
+
+    #[test]
+    fn pending_marker_arms_rollback_and_resets_stale_attempts() {
+        let root = std::env::temp_dir().join(format!("bf-app-marker-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let marker = root.join("applying.json");
+        let attempts = root.join("attempts");
+        let bin = root.join("app");
+        let prev = root.join("app.prev");
+        std::fs::write(&bin, b"existing app").unwrap();
+        std::fs::write(&attempts, b"99").unwrap();
+        super::write_pending_marker("1.2.3", &bin, &prev, &marker, &attempts).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&marker).unwrap()).unwrap();
+        assert_eq!(payload["version"], "1.2.3");
+        assert_eq!(payload["confirmed"], false);
+        assert_eq!(payload["prev"], prev.to_string_lossy().as_ref());
+        assert!(!attempts.exists());
+        assert_eq!(std::fs::read(&bin).unwrap(), b"existing app");
+        assert!(
+            super::write_pending_marker(
+                "1.2.4",
+                &bin,
+                &prev,
+                &root.join("missing/marker"),
+                &attempts
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&bin).unwrap(), b"existing app");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancel_and_download_cleanup_preserve_pending_boot_state() {
+        let root = std::env::temp_dir().join(format!("bf-cancel-{}", rand::random::<u64>()));
+        fs::create_dir_all(&root).unwrap();
+        let bin = root.join("app");
+        let pending = root.join("firmware-applying.json");
+        let attempts = root.join("firmware-applying.attempts");
+        fs::write(&bin, b"running candidate").unwrap();
+        fs::write(&pending, b"pending running candidate").unwrap();
+        fs::write(&attempts, b"1").unwrap();
+        fs::write(bin.with_extension("new"), b"partial future download").unwrap();
+        super::request_cancel();
+        assert!(super::cancel_requested());
+        // The signaling thread cannot delete a worker-owned staged file, either.
+        assert!(bin.with_extension("new").exists());
+        super::cleanup_partial_update(&bin);
+        assert!(!bin.with_extension("new").exists());
+        assert_eq!(fs::read(&bin).unwrap(), b"running candidate");
+        assert_eq!(fs::read(&pending).unwrap(), b"pending running candidate");
+        assert_eq!(fs::read(&attempts).unwrap(), b"1");
+        super::clear_cancel();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rollback_backup_failure_aborts_before_marker_publication() {
+        let root = std::env::temp_dir().join(format!("bf-prev-failure-{}", rand::random::<u64>()));
+        fs::create_dir_all(&root).unwrap();
+        let bin = root.join("app");
+        let prev = root.join("app.prev");
+        let marker = root.join("marker");
+        let attempts = root.join("attempts");
+        fs::write(&bin, b"current executable").unwrap();
+        fs::write(&attempts, b"2").unwrap();
+        fs::create_dir(&prev).unwrap();
+        let result = super::write_pending_marker("next", &bin, &prev, &marker, &attempts);
+        assert!(result.unwrap_err().contains("stash previous app"));
+        assert_eq!(fs::read(&bin).unwrap(), b"current executable");
+        assert!(prev.is_dir());
+        assert!(!marker.exists());
+        assert_eq!(fs::read(&attempts).unwrap(), b"2");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 3, "temporary backup must be cleaned up");
+        fs::remove_dir(&prev).unwrap();
+        fs::write(&prev, b"stale backup").unwrap();
+        super::write_pending_marker("next", &bin, &prev, &marker, &attempts).unwrap();
+        assert_eq!(fs::read(&prev).unwrap(), b"current executable");
+        assert_eq!(fs::read(&bin).unwrap(), b"current executable");
+        assert!(marker.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn partial_marker_write_preserves_existing_marker_and_attempts() {
+        let root = std::env::temp_dir().join(format!("bf-marker-atomic-{}", rand::random::<u64>()));
+        fs::create_dir_all(&root).unwrap();
+        let marker = root.join("marker");
+        let attempts = root.join("attempts");
+        fs::write(&marker, b"existing valid marker").unwrap();
+        fs::write(&attempts, b"2").unwrap();
+        let result =
+            super::persist_pending_marker(&marker, &attempts, b"new payload", |file, _| {
+                file.write_all(b"partial")?;
+                Err(std::io::Error::from_raw_os_error(28)) // ENOSPC after a partial write.
+            });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&marker).unwrap(), b"existing valid marker");
+        assert_eq!(fs::read(&attempts).unwrap(), b"2");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        fs::remove_file(&marker).unwrap();
+        assert!(
+            super::persist_pending_marker(&marker, &attempts, b"new", |_, _| Err(
+                std::io::Error::from_raw_os_error(5)
+            ))
+            .is_err()
+        );
+        assert!(!marker.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn healthy_unpaired_candidate_confirms_only_its_own_marker() {
+        let root =
+            std::env::temp_dir().join(format!("bf-marker-confirm-{}", rand::random::<u64>()));
+        fs::create_dir_all(&root).unwrap();
+        let marker = root.join("marker");
+        let attempts = root.join("attempts");
+        let binary = root.join("running");
+        fs::write(&binary, b"running candidate").unwrap();
+        fs::write(&attempts, b"1").unwrap();
+        fs::write(&marker, r#"{"version":"1.2.3"}"#).unwrap();
+        assert!(super::confirm_pending_marker(&marker, &attempts, "1.2.2", &binary).is_none());
+        assert!(marker.exists());
+        assert_eq!(
+            super::confirm_pending_marker(&marker, &attempts, "1.2.3", &binary).as_deref(),
+            Some("1.2.3")
+        );
+        assert!(!marker.exists());
+        assert!(!attempts.exists());
+        let payload = serde_json::json!({"version":"", "sha256":super::hex_lower(&Sha256::digest(b"running candidate"))});
+        fs::write(&marker, payload.to_string()).unwrap();
+        fs::write(&binary, b"old running process").unwrap();
+        assert!(super::confirm_pending_marker(&marker, &attempts, "1.2.3", &binary).is_none());
+        assert!(marker.exists());
+        fs::write(&binary, b"running candidate").unwrap();
+        assert_eq!(
+            super::confirm_pending_marker(&marker, &attempts, "local", &binary).as_deref(),
+            Some("")
+        );
+        assert!(!marker.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn firmware_body_is_bounded_by_declared_size() {

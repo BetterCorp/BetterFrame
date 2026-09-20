@@ -29,6 +29,10 @@ use tracing::{info, warn};
 
 use crate::bundle::BundleCamera;
 
+#[path = "onvif_subscription.rs"]
+mod subscription;
+use subscription::Subscription;
+
 /// Active subscriptions keyed by camera id. Worker threads check this
 /// to know when to stop (camera removed from bundle / bundle changed).
 static ACTIVE: Mutex<Option<HashMap<String, ()>>> = Mutex::new(None);
@@ -79,12 +83,13 @@ fn set_status_with_sink(
         error: None,
         resolved_sink: None,
     });
+    let previously_active = entry.state == "active";
     entry.state = state;
     entry.error = error;
     if let Some(sink) = resolved_sink {
         entry.resolved_sink = Some(sink);
     }
-    if state == "active" {
+    if state == "active" && (!previously_active || entry.subscribed_at.is_none()) {
         entry.subscribed_at = Some(iso_now());
     }
 }
@@ -106,9 +111,9 @@ fn remember_push_renew_unsupported(cam_id: &str, err: String) {
         .insert(cam_id.to_string(), err);
 }
 
-fn push_renew_invalid_args(err: &str) -> bool {
+fn invalid_subscription_args(err: &str) -> bool {
     let lower = err.to_lowercase();
-    lower.contains("invalid args") || lower.contains("ter:invalidargs")
+    lower.contains("invalid args") || lower.contains("invalidarg")
 }
 
 pub fn mark_event_received(cam_id: &str) {
@@ -207,6 +212,8 @@ pub fn start(
     );
 
     if onvif_cams.is_empty() {
+        *GENERATION.lock().unwrap() = None;
+        *STATUS.lock().unwrap() = None;
         return;
     }
 
@@ -304,9 +311,7 @@ fn is_same_subnet(
 
 // ---- Push subscription (WS-BaseNotification) ---------------------------------
 
-struct PushSubscription {
-    subscription_reference: String,
-}
+type PushSubscription = Subscription;
 
 fn create_push_subscription(
     event_url: &str,
@@ -314,6 +319,7 @@ fn create_push_subscription(
     user: &str,
     pass: &str,
 ) -> Result<PushSubscription, String> {
+    let callback_url = escape_xml(callback_url);
     let xml = soap_post_authed(
         event_url,
         "http://docs.oasis-open.org/wsn/bw-2/NotificationProducer/SubscribeRequest",
@@ -329,31 +335,23 @@ fn create_push_subscription(
         pass,
     )?;
 
-    let address = extract_tag_ns(&xml, "Address")
-        .filter(|a| !a.is_empty() && a.starts_with("http"))
-        .ok_or_else(|| {
-            let preview: String = xml.chars().take(300).collect();
-            format!("no SubscriptionReference in Subscribe response: {preview}")
-        })?;
-
-    Ok(PushSubscription {
-        subscription_reference: address,
-    })
+    Subscription::parse(&xml, Duration::from_secs(300))
 }
 
-fn renew_push(sub_ref: &str, user: &str, pass: &str) -> Result<(), String> {
-    soap_post_authed(
-        sub_ref,
+fn renew_push(sub: &mut Subscription, user: &str, pass: &str) -> Result<(), String> {
+    let xml = soap_post_subscription(
+        sub,
         "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest",
         r#"<wsnt:Renew><wsnt:TerminationTime>PT300S</wsnt:TerminationTime></wsnt:Renew>"#,
         user,
         pass,
     )?;
+    sub.update_deadline(&xml, Duration::from_secs(300));
     Ok(())
 }
 
-fn unsubscribe_push(sub_ref: &str, user: &str, pass: &str) -> Result<(), String> {
-    let _ = soap_post_authed(
+fn unsubscribe_push(sub_ref: &Subscription, user: &str, pass: &str) -> Result<(), String> {
+    let _ = soap_post_subscription(
         sub_ref,
         "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest",
         "<wsnt:Unsubscribe/>",
@@ -447,31 +445,28 @@ fn run_subscription(
                 cam.id
             );
             match create_push_subscription(&event_url, cb_url, user, pass) {
-                Ok(push_sub) => {
+                Ok(mut push_sub) => {
                     info!(
                         "onvif-events: cam {} push subscription active, ref={}, sink={sink_label}",
-                        cam.id, push_sub.subscription_reference
+                        cam.id, push_sub.address
                     );
                     set_status_with_sink(&cam.id, "active", None, Some(sink_label.to_string()));
                     backoff_secs = 30;
 
                     // Push mode: just renew periodically. Events arrive via HTTP callback.
-                    let renew_interval = Duration::from_secs(240); // renew well before 300s timeout
-                    let mut since_renew = std::time::Instant::now();
                     let mut consecutive_errors: u32 = 0;
 
                     loop {
                         if generation.upgrade().is_none() {
-                            let _ = unsubscribe_push(&push_sub.subscription_reference, user, pass);
+                            let _ = unsubscribe_push(&push_sub, user, pass);
                             return;
                         }
 
-                        std::thread::sleep(Duration::from_secs(30));
+                        std::thread::sleep(Duration::from_secs(1));
 
-                        if since_renew.elapsed() > renew_interval {
-                            match renew_push(&push_sub.subscription_reference, user, pass) {
+                        if push_sub.renew_due() {
+                            match renew_push(&mut push_sub, user, pass) {
                                 Ok(()) => {
-                                    since_renew = std::time::Instant::now();
                                     consecutive_errors = 0;
                                 }
                                 Err(e) => {
@@ -480,17 +475,13 @@ fn run_subscription(
                                         "onvif-events: cam {} push renew failed ({consecutive_errors}x): {e}",
                                         cam.id
                                     );
-                                    if push_renew_invalid_args(&e) {
+                                    if invalid_subscription_args(&e) {
                                         remember_push_renew_unsupported(&cam.id, e.clone());
                                         warn!(
                                             "onvif-events: cam {} push renew returned Invalid Args; disabling push renew for this runtime and falling through to poll: {e}",
                                             cam.id
                                         );
-                                        let _ = unsubscribe_push(
-                                            &push_sub.subscription_reference,
-                                            user,
-                                            pass,
-                                        );
+                                        let _ = unsubscribe_push(&push_sub, user, pass);
                                         break; // fall through to PullPoint below
                                     }
                                     if consecutive_errors >= 3 {
@@ -499,11 +490,7 @@ fn run_subscription(
                                             "onvif-events: cam {} push renew failed too many times, disabling push until restart/reload and falling through to poll: {e}",
                                             cam.id
                                         );
-                                        let _ = unsubscribe_push(
-                                            &push_sub.subscription_reference,
-                                            user,
-                                            pass,
-                                        );
+                                        let _ = unsubscribe_push(&push_sub, user, pass);
                                         break; // fall through to PullPoint below
                                     }
                                 }
@@ -524,7 +511,7 @@ fn run_subscription(
 
         // ---- PullPoint fallback ----
         set_status(&cam.id, "subscribing", None);
-        let sub = match create_pullpoint(&event_url, user, pass) {
+        let mut sub = match create_pullpoint(&event_url, user, pass) {
             Ok(s) => s,
             Err(e) => {
                 warn!(
@@ -545,20 +532,18 @@ fn run_subscription(
         set_status_with_sink(&cam.id, "active", None, Some("poll".to_string()));
 
         let poll_interval = Duration::from_secs(5);
-        let renew_interval = Duration::from_secs(55);
-        let mut since_renew = std::time::Instant::now();
         let mut consecutive_errors: u32 = 0;
 
         loop {
             if generation.upgrade().is_none() {
-                let _ = unsubscribe(&sub.address, user, pass);
+                let _ = unsubscribe(&sub, user, pass);
                 return;
             }
 
             // Renew before timeout
-            if since_renew.elapsed() > renew_interval {
-                match renew(&sub.address, user, pass) {
-                    Ok(()) => since_renew = std::time::Instant::now(),
+            if sub.renew_due() {
+                match renew(&mut sub, user, pass) {
+                    Ok(()) => {}
                     Err(e) => {
                         warn!(
                             "onvif-events: cam {} renew failed: {e}, resubscribing",
@@ -569,9 +554,10 @@ fn run_subscription(
                 }
             }
 
-            match pull_messages(&sub.address, user, pass) {
+            match pull_messages(&mut sub, user, pass) {
                 Ok(events) => {
                     consecutive_errors = 0;
+                    set_status_with_sink(&cam.id, "active", None, Some("poll".to_string()));
                     for evt in events {
                         forward_event(server, kiosk_key, &cam.id, &evt);
                         mark_event_received(&cam.id);
@@ -584,25 +570,23 @@ fn run_subscription(
                         "onvif-events: cam {} pull failed ({consecutive_errors}x): {e}, backoff {error_backoff}s",
                         cam.id
                     );
-                    set_status(&cam.id, "failed", Some(e));
-                    if consecutive_errors >= 5 {
-                        break; // resubscribe from scratch
+                    set_status(&cam.id, "failed", Some(e.clone()));
+                    if invalid_subscription_args(&e) || consecutive_errors >= 5 {
+                        std::thread::sleep(poll_interval);
+                        break; // An invalid/expired endpoint needs a new subscription.
                     }
-                    std::thread::sleep(Duration::from_secs(error_backoff));
+                    std::thread::sleep(sub.poll_delay(Duration::from_secs(error_backoff)));
                     continue;
                 }
             }
 
-            std::thread::sleep(poll_interval);
+            std::thread::sleep(sub.poll_delay(poll_interval));
         }
+        let _ = unsubscribe(&sub, user, pass);
     }
 }
 
 // ---- SOAP helpers ----------------------------------------------------------
-
-struct Subscription {
-    address: String,
-}
 
 fn escape_xml(value: &str) -> String {
     value
@@ -654,10 +638,31 @@ fn wsse_text_header(user: &str, pass: &str) -> String {
     )
 }
 
-fn soap_envelope(header_inner: Option<&str>, body_inner: &str) -> String {
-    let header = header_inner
-        .map(|h| format!("<s:Header>{h}</s:Header>"))
-        .unwrap_or_default();
+fn soap_envelope(
+    header_inner: Option<&str>,
+    body_inner: &str,
+    url: &str,
+    action: &str,
+    references: &str,
+) -> String {
+    let mut id: [u8; 16] = rand::random();
+    id[6] = (id[6] & 0x0f) | 0x40;
+    id[8] = (id[8] & 0x3f) | 0x80;
+    let id = hex::encode(id);
+    let message_id = format!(
+        "urn:uuid:{}-{}-{}-{}-{}",
+        &id[..8],
+        &id[8..12],
+        &id[12..16],
+        &id[16..20],
+        &id[20..]
+    );
+    let header = format!(
+        "<s:Header><wsa:Action s:mustUnderstand=\"1\">{}</wsa:Action><wsa:To s:mustUnderstand=\"1\">{}</wsa:To><wsa:MessageID>{message_id}</wsa:MessageID><wsa:ReplyTo><wsa:Address>http://www.w3.org/2005/08/addressing/anonymous</wsa:Address></wsa:ReplyTo>{}{references}</s:Header>",
+        escape_xml(action),
+        escape_xml(url),
+        header_inner.unwrap_or_default()
+    );
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
@@ -679,7 +684,10 @@ fn soap_post_body(
 ) -> Result<(reqwest::StatusCode, String, Option<String>), String> {
     let mut request = client
         .post(url)
-        .header("Content-Type", "application/soap+xml; charset=utf-8")
+        .header(
+            "Content-Type",
+            format!("application/soap+xml; charset=utf-8; action=\"{action}\""),
+        )
         .header("SOAPAction", action)
         .body(body.to_string())
         .timeout(Duration::from_secs(10));
@@ -798,19 +806,60 @@ fn soap_post_authed(
     user: &str,
     pass: &str,
 ) -> Result<String, String> {
+    soap_post_with_references(url, action, body_inner, user, pass, "")
+}
+
+fn soap_post_subscription(
+    sub: &Subscription,
+    action: &str,
+    body: &str,
+    user: &str,
+    pass: &str,
+) -> Result<String, String> {
+    soap_post_with_references(
+        &sub.address,
+        action,
+        body,
+        user,
+        pass,
+        &sub.reference_headers,
+    )
+}
+
+fn soap_post_with_references(
+    url: &str,
+    action: &str,
+    body_inner: &str,
+    user: &str,
+    pass: &str,
+    references: &str,
+) -> Result<String, String> {
     use base64::Engine;
 
     let client = reqwest::blocking::Client::new();
 
     // Try cached auth method first — avoids 401 probing on every call.
     if let Some(cached) = get_cached_auth(url) {
-        let (body, auth) = build_auth_attempt(cached.clone(), user, pass, body_inner, url);
+        let (body, auth) = build_auth_attempt(
+            cached.clone(),
+            user,
+            pass,
+            body_inner,
+            url,
+            action,
+            references,
+        );
         if let Ok((status, text, _)) = soap_post_body(&client, url, action, &body, auth) {
             let fault = extract_soap_fault(&text);
             if status.is_success() && fault.is_empty() {
                 return Ok(text);
             }
-            // Cache miss — method no longer works, clear and re-probe.
+            // A valid authenticated SOAP fault is an operation failure, not an
+            // invitation to resend the same operation with every credential type.
+            if operation_fault(status, &text) {
+                return Err(soap_error("cached", url, action, status, &text));
+            }
+            // Authentication may have changed; re-probe.
         }
     }
 
@@ -820,19 +869,31 @@ fn soap_post_authed(
     let attempts: [(&str, String, Option<String>, Option<CachedAuth>); 4] = [
         (
             "wsse-digest",
-            soap_envelope(Some(&wsse_header(user, pass)), body_inner),
+            soap_envelope(
+                Some(&wsse_header(user, pass)),
+                body_inner,
+                url,
+                action,
+                references,
+            ),
             None,
             Some(CachedAuth::WsseDigest),
         ),
         (
             "wsse-text",
-            soap_envelope(Some(&wsse_text_header(user, pass)), body_inner),
+            soap_envelope(
+                Some(&wsse_text_header(user, pass)),
+                body_inner,
+                url,
+                action,
+                references,
+            ),
             None,
             Some(CachedAuth::WsseText),
         ),
         (
             "basic",
-            soap_envelope(None, body_inner),
+            soap_envelope(None, body_inner, url, action, references),
             Some(format!(
                 "Basic {}",
                 base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"))
@@ -841,7 +902,7 @@ fn soap_post_authed(
         ),
         (
             "challenge",
-            soap_envelope(None, body_inner),
+            soap_envelope(None, body_inner, url, action, references),
             None,
             None, // just to grab digest challenge
         ),
@@ -861,6 +922,9 @@ fn soap_post_authed(
                     return Ok(text);
                 }
                 last_error = soap_error(kind, url, action, status, &text);
+                if operation_fault(status, &text) {
+                    return Err(last_error);
+                }
             }
             Err(err) => last_error = format!("soap {kind}: {err}"),
         }
@@ -869,7 +933,7 @@ fn soap_post_authed(
     // HTTP Digest auth using challenge from the probe round.
     if let Some(challenge) = digest_challenge.as_deref() {
         if let Some(auth) = digest_auth_header_from_challenge("POST", url, challenge, user, pass) {
-            let body = soap_envelope(None, body_inner);
+            let body = soap_envelope(None, body_inner, url, action, references);
             let (status, text, _) = soap_post_body(&client, url, action, &body, Some(auth))?;
             let fault = extract_soap_fault(&text);
             if status.is_success() && fault.is_empty() {
@@ -883,25 +947,74 @@ fn soap_post_authed(
     Err(last_error)
 }
 
+fn operation_fault(status: reqwest::StatusCode, xml: &str) -> bool {
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return false;
+    }
+    let fault = extract_soap_fault(xml);
+    if fault.is_empty() {
+        return false;
+    }
+    let lower = xml.to_ascii_lowercase();
+    if [
+        "failedcheck",
+        "unsupportedalgorithm",
+        "messageexpired",
+        "notauthorized",
+        "not authorized",
+        "unauthorized",
+        "failedauthentication",
+        "invalidsecurity",
+        "securitytoken",
+        "unauthenticated",
+    ]
+    .iter()
+    .any(|value| lower.contains(value)) {
+        return false;
+    }
+    // A SOAP fault does not prove authentication succeeded. Only known
+    // operation failures can stop probing; unknown/vendor security faults must
+    // still reach WSSE-Text, Basic and HTTP Digest fallback methods.
+    [
+        "invalidargs", "invalid args", "invalidargval", "resourceunknown",
+        "actionnotsupported", "unabletorenew", "unacceptableterminationtime",
+        "invalidfilter",
+    ].iter().any(|value| lower.contains(value))
+}
+
 fn build_auth_attempt(
     method: CachedAuth,
     user: &str,
     pass: &str,
     body_inner: &str,
     url: &str,
+    action: &str,
+    references: &str,
 ) -> (String, Option<String>) {
     use base64::Engine;
     match method {
         CachedAuth::WsseDigest => (
-            soap_envelope(Some(&wsse_header(user, pass)), body_inner),
+            soap_envelope(
+                Some(&wsse_header(user, pass)),
+                body_inner,
+                url,
+                action,
+                references,
+            ),
             None,
         ),
         CachedAuth::WsseText => (
-            soap_envelope(Some(&wsse_text_header(user, pass)), body_inner),
+            soap_envelope(
+                Some(&wsse_text_header(user, pass)),
+                body_inner,
+                url,
+                action,
+                references,
+            ),
             None,
         ),
         CachedAuth::Basic => (
-            soap_envelope(None, body_inner),
+            soap_envelope(None, body_inner, url, action, references),
             Some(format!(
                 "Basic {}",
                 base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"))
@@ -909,7 +1022,10 @@ fn build_auth_attempt(
         ),
         CachedAuth::HttpDigest(ref challenge) => {
             let auth = digest_auth_header_from_challenge("POST", url, challenge, user, pass);
-            (soap_envelope(None, body_inner), auth)
+            (
+                soap_envelope(None, body_inner, url, action, references),
+                auth,
+            )
         }
     }
 }
@@ -961,16 +1077,7 @@ fn create_pullpoint(url: &str, user: &str, pass: &str) -> Result<Subscription, S
         user,
         pass,
     )?;
-    // Camera may use namespaced Address: <wsa5:Address>, <a:Address>,
-    // <wsa:Address>, or plain <Address>. Try all.
-    let address = extract_tag_ns(&xml, "Address")
-        .filter(|a| !a.is_empty() && a.starts_with("http"))
-        .ok_or_else(|| {
-            // Log first 300 chars of response for debugging.
-            let preview: String = xml.chars().take(300).collect();
-            format!("no Address in CreatePullPoint response: {preview}")
-        })?;
-    Ok(Subscription { address })
+    Subscription::parse(&xml, Duration::from_secs(60))
 }
 
 fn resolve_event_service_url(host: &str, port: u16, user: &str, pass: &str) -> Option<String> {
@@ -1019,8 +1126,12 @@ fn extract_tag_ns(xml: &str, tag: &str) -> Option<String> {
     None
 }
 
-fn pull_messages(sub_url: &str, user: &str, pass: &str) -> Result<Vec<OnvifEvent>, String> {
-    let xml = soap_post_authed(
+fn pull_messages(
+    sub_url: &mut Subscription,
+    user: &str,
+    pass: &str,
+) -> Result<Vec<OnvifEvent>, String> {
+    let xml = soap_post_subscription(
         sub_url,
         "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest",
         r#"<tev:PullMessages>
@@ -1030,22 +1141,24 @@ fn pull_messages(sub_url: &str, user: &str, pass: &str) -> Result<Vec<OnvifEvent
         user,
         pass,
     )?;
+    sub_url.observe_deadline(&xml);
     Ok(parse_notification_messages(&xml))
 }
 
-fn renew(sub_url: &str, user: &str, pass: &str) -> Result<(), String> {
-    soap_post_authed(
+fn renew(sub_url: &mut Subscription, user: &str, pass: &str) -> Result<(), String> {
+    let xml = soap_post_subscription(
         sub_url,
         "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest",
         r#"<wsnt:Renew><wsnt:TerminationTime>PT60S</wsnt:TerminationTime></wsnt:Renew>"#,
         user,
         pass,
     )?;
+    sub_url.update_deadline(&xml, Duration::from_secs(60));
     Ok(())
 }
 
-fn unsubscribe(sub_url: &str, user: &str, pass: &str) -> Result<(), String> {
-    let _ = soap_post_authed(
+fn unsubscribe(sub_url: &Subscription, user: &str, pass: &str) -> Result<(), String> {
+    let _ = soap_post_subscription(
         sub_url,
         "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest",
         "<wsnt:Unsubscribe/>",
@@ -1172,9 +1285,7 @@ fn extract_inner_text(xml: &str, tag: &str) -> Option<String> {
         let Some(name) = opening.split_ascii_whitespace().next() else {
             continue;
         };
-        if name.starts_with('/')
-            || name.rsplit_once(':').map(|(_, local)| local) != Some(tag)
-        {
+        if name.starts_with('/') || name.rsplit_once(':').map(|(_, local)| local) != Some(tag) {
             continue;
         }
         return Some(content.trim().to_string());
@@ -1435,6 +1546,204 @@ fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    #[test]
+    fn every_authentication_variant_preserves_addressing_and_reference_parameters() {
+        let refs = r#"<v:SubscriptionId xmlns:v="urn:camera" xmlns:a="http://www.w3.org/2005/08/addressing" a:IsReferenceParameter="true">42</v:SubscriptionId>"#;
+        for method in [
+            CachedAuth::WsseDigest,
+            CachedAuth::WsseText,
+            CachedAuth::Basic,
+            CachedAuth::HttpDigest("Digest realm=\"camera\", nonce=\"abc\", qop=\"auth\"".into()),
+        ] {
+            let (xml, _) = build_auth_attempt(
+                method,
+                "user",
+                "pass",
+                "<wsnt:Renew/>",
+                "http://camera/sub?a=1&b=2",
+                "urn:renew",
+                refs,
+            );
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            let find = |name| {
+                doc.descendants()
+                    .find(|n| n.has_tag_name(("http://www.w3.org/2005/08/addressing", name)))
+                    .unwrap()
+            };
+            assert_eq!(find("To").text(), Some("http://camera/sub?a=1&b=2"));
+            assert_eq!(find("Action").text(), Some("urn:renew"));
+            assert!(doc.descendants().any(
+                |n| n.has_tag_name(("urn:camera", "SubscriptionId")) && n.text() == Some("42")
+            ));
+        }
+    }
+
+    #[test]
+    fn invalid_args_is_not_an_authentication_retry() {
+        let fault = "<s:Fault><s:Reason><s:Text>Invalid Args</s:Text></s:Reason></s:Fault>";
+        assert!(operation_fault(reqwest::StatusCode::OK, fault));
+        assert!(operation_fault(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            fault
+        ));
+        assert!(!operation_fault(reqwest::StatusCode::UNAUTHORIZED, fault));
+        assert!(!operation_fault(
+            reqwest::StatusCode::OK,
+            &fault.replace("Invalid Args", "NotAuthorized")
+        ));
+    }
+
+    #[test]
+    fn security_and_unknown_faults_do_not_prove_authentication() {
+        for code in ["FailedCheck", "UnsupportedAlgorithm", "MessageExpired",
+            "InvalidSecurity", "InvalidSecurityToken", "SecurityTokenUnavailable",
+            "FailedAuthentication", "UnsupportedSecurityToken", "VendorSecurityFailure"] {
+            let xml = format!("<s:Fault><s:Code><s:Value>wsse:{code}</s:Value></s:Code><s:Reason><s:Text>Security check failed</s:Text></s:Reason></s:Fault>");
+            for status in [reqwest::StatusCode::OK, reqwest::StatusCode::INTERNAL_SERVER_ERROR] {
+                assert!(!operation_fault(status, &xml), "{status}: {code}");
+            }
+        }
+    }
+
+    #[test]
+    fn security_fault_reaches_fallback_and_caches_successful_auth() {
+        use std::io::{Read, Write};
+        use std::time::Instant;
+        for status in ["200 OK", "500 Internal Server Error"] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}/events", listener.local_addr().unwrap());
+            let worker = std::thread::spawn(move || {
+                for (index, method) in ["PasswordDigest", "PasswordText", "PasswordText"].iter().enumerate() {
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    let mut socket = loop {
+                        match listener.accept() {
+                            Ok((socket, _)) => break socket,
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                assert!(Instant::now() < deadline, "missing auth attempt {method}");
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            Err(error) => panic!("{error}"),
+                        }
+                    };
+                    socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut header = Vec::new();
+                    while !header.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        socket.read_exact(&mut byte).unwrap();
+                        header.push(byte[0]);
+                    }
+                    let header = String::from_utf8(header).unwrap().to_ascii_lowercase();
+                    let length: usize = header.lines().find_map(|line| line.strip_prefix("content-length:"))
+                        .unwrap().trim().parse().unwrap();
+                    let mut body = vec![0; length];
+                    socket.read_exact(&mut body).unwrap();
+                    assert!(String::from_utf8(body).unwrap().contains(method));
+                    let (response_status, response) = if index == 0 {
+                        (status, r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"><s:Body><s:Fault><s:Code><s:Value>wsse:FailedCheck</s:Value></s:Code><s:Reason><s:Text>Security check failed</s:Text></s:Reason></s:Fault></s:Body></s:Envelope>"#)
+                    } else {
+                        ("200 OK", "<Response/>")
+                    };
+                    write!(socket, "HTTP/1.1 {response_status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+                }
+            });
+            assert!(soap_post_authed(&url, "urn:test", "<Request/>", "user", "pass").is_ok());
+            assert!(soap_post_authed(&url, "urn:test", "<Request/>", "user", "pass").is_ok());
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn camera_receives_subscription_identity_on_pull_renew_and_unsubscribe() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let camera_base = base.clone();
+        let worker = std::thread::spawn(move || {
+            for action in [
+                "CreatePullPointSubscription",
+                "PullMessages",
+                "Renew",
+                "Unsubscribe",
+            ] {
+                let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                let mut socket = loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(std::time::Instant::now() < deadline, "missing {action}");
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                };
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let (header_end, length) = loop {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                    if request.ends_with(b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request).to_ascii_lowercase();
+                        assert!(headers.contains("application/soap+xml; charset=utf-8; action="));
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .unwrap()
+                            .trim()
+                            .parse()
+                            .unwrap();
+                        break (request.len(), length);
+                    }
+                };
+                request.resize(header_end + length, 0);
+                socket.read_exact(&mut request[header_end..]).unwrap();
+                let body = std::str::from_utf8(&request[header_end..]).unwrap();
+                let doc = roxmltree::Document::parse(body).unwrap();
+                assert!(doc.descendants().any(|n| n.tag_name().name() == action));
+                let response = if action == "CreatePullPointSubscription" {
+                    format!(
+                        r#"<Response xmlns:a="http://www.w3.org/2005/08/addressing" xmlns:v="urn:camera"><SubscriptionReference><a:Address>{camera_base}/sub?id=one&amp;mode=pull</a:Address><a:ReferenceParameters><v:SubscriptionId>42</v:SubscriptionId></a:ReferenceParameters></SubscriptionReference><CurrentTime>2020-01-01T00:00:00Z</CurrentTime><TerminationTime>2020-01-01T00:01:00Z</TerminationTime></Response>"#
+                    )
+                } else {
+                    assert!(
+                        String::from_utf8_lossy(&request[..header_end])
+                            .starts_with("POST /sub?id=one&mode=pull ")
+                    );
+                    let id = doc
+                        .descendants()
+                        .find(|n| n.has_tag_name(("urn:camera", "SubscriptionId")))
+                        .unwrap();
+                    assert_eq!(id.text(), Some("42"));
+                    assert_eq!(
+                        id.attribute((
+                            "http://www.w3.org/2005/08/addressing",
+                            "IsReferenceParameter"
+                        )),
+                        Some("true")
+                    );
+                    "<Response><CurrentTime>2020-01-01T00:00:00Z</CurrentTime><TerminationTime>2020-01-01T00:01:00Z</TerminationTime></Response>".into()
+                };
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(),
+                    response
+                )
+                .unwrap();
+            }
+        });
+        let mut sub = create_pullpoint(&format!("{base}/events"), "user", "pass").unwrap();
+        assert!(pull_messages(&mut sub, "user", "pass").unwrap().is_empty());
+        renew(&mut sub, "user", "pass").unwrap();
+        unsubscribe(&sub, "user", "pass").unwrap();
+        worker.join().unwrap();
+    }
+
     use super::parse_notification_messages;
 
     #[test]

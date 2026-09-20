@@ -1359,6 +1359,26 @@ fn add_demo_control(overlay: &gtk::Overlay) {
 }
 
 fn show_pairing_code(window: &ApplicationWindow, code: &str, status: &str) {
+    // Polling updates text in place so the Demo control retains keyboard focus.
+    if let Some(overlay) = window.child().and_downcast::<gtk::Overlay>() {
+        if overlay.widget_name() == "betterframe-pairing-screen" {
+            if let Some(vbox) = overlay.child().and_downcast::<GtkBox>() {
+                let mut child = vbox.first_child();
+                while let Some(widget) = child {
+                    child = widget.next_sibling();
+                    if let Some(label) = widget.downcast_ref::<Label>() {
+                        match widget.widget_name().as_str() {
+                            "betterframe-pairing-code" => label.set_text(code),
+                            "betterframe-pairing-status" => label.set_text(status),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            add_demo_control(&overlay);
+            return;
+        }
+    }
     let vbox = GtkBox::new(Orientation::Vertical, 20);
     vbox.set_valign(gtk::Align::Center);
     vbox.set_halign(gtk::Align::Center);
@@ -1367,6 +1387,7 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str, status: &str) {
     let title = logo_picture(BETTERFRAME_LOGO_PNG, 360, 88, "pairing-logo");
 
     let code_label = Label::new(Some(code));
+    code_label.set_widget_name("betterframe-pairing-code");
     add_css(
         &code_label,
         ".code { font-size: 72px; color: #fff; font-weight: 700; letter-spacing: 12px; font-family: monospace; }",
@@ -1374,6 +1395,7 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str, status: &str) {
     code_label.add_css_class("code");
 
     let hint = Label::new(Some(status));
+    hint.set_widget_name("betterframe-pairing-status");
     add_css(&hint, ".hint { font-size: 14px; color: #666; }");
     hint.add_css_class("hint");
 
@@ -1401,6 +1423,7 @@ fn show_pairing_code(window: &ApplicationWindow, code: &str, status: &str) {
     ver_label.set_valign(gtk::Align::End);
 
     let overlay = gtk::Overlay::new();
+    overlay.set_widget_name("betterframe-pairing-screen");
     overlay.set_child(Some(&vbox));
     overlay.add_overlay(&ver_label);
     add_demo_control(&overlay);

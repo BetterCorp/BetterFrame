@@ -151,10 +151,15 @@ class MainActivity : Activity(), ViewerSession.Listener {
     private fun kioskRoot() = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
 
     private fun updateDemoButton() {
-        root.findViewWithTag<View>("demo-control")?.let { root.removeView(it) }
+        val existing = root.findViewWithTag<Button>("demo-control")
         val exit = session.isDemo
-        if (!exit && (!session.allowDemo || pairingCode.isBlank())) return
-        val control = button(if (exit) "Exit demo" else "Demo") {
+        val visible = exit || (session.allowDemo && pairingCode.isNotBlank())
+        val label = if (exit) "Exit demo" else "Demo"
+        // Pairing polls update this screen repeatedly; retain remote focus.
+        if (visible && existing?.text?.toString() == label) return
+        existing?.let { root.removeView(it) }
+        if (!visible) return
+        val control = button(label) {
             if (exit) resetEnrollment(session.serverUrl) else session.enterDemo()
         }.apply { tag = "demo-control" }
         root.addView(control, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply {

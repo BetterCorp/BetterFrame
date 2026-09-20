@@ -453,8 +453,16 @@ ATTEMPTS="/var/lib/betterframe/kiosk/firmware-applying.attempts"
 MAX_ATTEMPTS=3
 MAX_AGE_SECONDS=120
 
+clear_bookkeeping() {
+  # Once restoration succeeds, read-only state must not prevent the old app
+  # from launching. Remaining state can be retried on the next service start.
+  if ! rm -f "$MARKER" "$ATTEMPTS"; then
+    echo "[bf-firmware-rollback] could not clear startup bookkeeping; continuing with restored/current app" >&2
+  fi
+}
+
 if [ ! -f "$MARKER" ]; then
-  rm -f "$ATTEMPTS"
+  clear_bookkeeping
   exit 0
 fi
 
@@ -464,10 +472,10 @@ rollback() {
     echo "[bf-firmware-rollback] ${reason}; .prev exists, rolling back" >&2
     cp -f "$PREV" "$BIN"
     chmod +x "$BIN"
-    rm -f "$MARKER" "$ATTEMPTS"
+    clear_bookkeeping
   else
     echo "[bf-firmware-rollback] ${reason}; no .prev, clearing marker and leaving current binary" >&2
-    rm -f "$MARKER" "$ATTEMPTS"
+    clear_bookkeeping
   fi
 }
 
@@ -482,7 +490,10 @@ esac
 # Start the health deadline when the candidate is actually launched. Setup may
 # install it hours before the next desktop login or dedicated-kiosk boot.
 if [ "$attempts" -eq 0 ]; then
-  touch "$MARKER"
+  if ! touch "$MARKER"; then
+    rollback "cannot initialize candidate health deadline"
+    exit 0
+  fi
 fi
 
 marker_mtime=$(stat -c %Y "$MARKER" 2>/dev/null || stat -f %m "$MARKER" 2>/dev/null || echo 0)
@@ -500,7 +511,10 @@ if [ "$attempts" -ge "$MAX_ATTEMPTS" ]; then
 fi
 
 attempts=$((attempts + 1))
-printf '%s\n' "$attempts" > "$ATTEMPTS"
+if ! printf '%s\n' "$attempts" > "$ATTEMPTS"; then
+  rollback "cannot record candidate start attempt"
+  exit 0
+fi
 echo "[bf-firmware-rollback] pending firmware candidate start attempt ${attempts}/${MAX_ATTEMPTS}" >&2
 BF_ROLLBACK_HELPER
 }
@@ -723,7 +737,7 @@ EOF
 }
 main() {
     parse_args "$@"
-    printf 'BetterFrame setup revision 2026-09-20.7\n'
+    printf 'BetterFrame setup revision 2026-09-20.8\n'
     [[ $(uname -s) == Linux ]] || fail 'This installer requires Linux'
     [[ $EUID == 0 ]] || fail 'Run with sudo (or root and --user USER)'
     [[ -d /run/systemd/system ]] || fail 'This installer requires systemd'

@@ -102,6 +102,34 @@ def CDLL(name):
             self.assertEqual((p/'app').read_text(), 'working current app')
             self.assertFalse(marker.exists())
 
+    def test_rollback_bookkeeping_failures_restore_and_allow_startup(self):
+        for failure in ['deadline', 'attempts', 'read_only_state']:
+            with tempfile.TemporaryDirectory() as tmp:
+                p = Path(tmp)
+                (p/'app').write_text('candidate')
+                (p/'app.prev').write_text('known good')
+                marker = p/'firmware-applying.json'
+                marker.write_text('{}')
+                script = (ROOT/'deploy/systemd/betterframe-firmware-rollback.sh').read_text()
+                script = script.replace('/opt/betterframe/kiosk/betterframe-kiosk', str(p/'app')).replace('/var/lib/betterframe/kiosk', str(p))
+                (p/'rollback.sh').write_text(script)
+                if failure == 'attempts':
+                    (p/'firmware-applying.attempts').mkdir()
+                    prefix = ''
+                elif failure == 'read_only_state':
+                    prefix = 'touch() { return 1; }; rm() { return 1; }; '
+                else:
+                    prefix = 'touch() { return 1; }; '
+                result = subprocess.run(['bash', '-c', prefix + f'source {p}/rollback.sh'], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((p/'app').read_text(), 'known good')
+                self.assertIn('rolling back', result.stderr)
+                if failure == 'read_only_state':
+                    self.assertTrue(marker.exists())
+                    self.assertIn('could not clear', result.stderr)
+                else:
+                    self.assertFalse(marker.exists())
+
     def test_rollback_destination_cannot_absorb_staged_backup(self):
         for symlink in [False, True]:
             with tempfile.TemporaryDirectory() as tmp:

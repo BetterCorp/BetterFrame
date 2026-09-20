@@ -305,7 +305,7 @@ start_app_service() {
     if [[ -f $BIN.prev ]]; then
         runtime_command rm -f -- "$BIN.new"
         runtime_command install -m 755 "$BIN.prev" "$BIN.new"
-        runtime_command mv -f -- "$BIN.new" "$BIN"
+        runtime_command mv -fT -- "$BIN.new" "$BIN"
         runtime_command rm -f -- "$STATE/firmware-applying.json" "$STATE/firmware-applying.attempts"
         service_command "$scope" reset-failed "$unit" || printf 'Could not clear failed state for %s; attempting startup.\n' "$unit" >&2
         service_command "$scope" start "$unit" || true
@@ -420,7 +420,7 @@ install_app_binary() {
     runtime_command rm -f -- "$BIN.new" "$BIN.prev.new"
     if [[ -f $BIN && ! -f $STATE/firmware-applying.json && ( $PRESERVE_PREVIOUS == 0 || ! -f $BIN.prev ) ]] && ! cmp -s "$BIN" "$STAGING/candidate"; then
         runtime_command install -m 755 "$BIN" "$BIN.prev.new"
-        runtime_command mv -f -- "$BIN.prev.new" "$BIN.prev"
+        runtime_command mv -fT -- "$BIN.prev.new" "$BIN.prev"
     fi
     clear_interrupted_update keep-marker
     # The validated staging file is private to root. Stream it to an
@@ -430,7 +430,7 @@ install_app_binary() {
     # Publish protection before replacing the executable. Failures/interruption
     # up to the final rename leave the existing app in place.
     arm_setup_candidate "$BIN.new"
-    runtime_command mv -f -- "$BIN.new" "$BIN"
+    runtime_command mv -fT -- "$BIN.new" "$BIN"
 }
 # Embedded for single-file installation. Keep identical to the deployment helper;
 # scripts/test-linux-setup.py checks that the two copies cannot drift.
@@ -723,7 +723,7 @@ EOF
 }
 main() {
     parse_args "$@"
-    printf 'BetterFrame setup revision 2026-09-20.6\n'
+    printf 'BetterFrame setup revision 2026-09-20.7\n'
     [[ $(uname -s) == Linux ]] || fail 'This installer requires Linux'
     [[ $EUID == 0 ]] || fail 'Run with sudo (or root and --user USER)'
     [[ -d /run/systemd/system ]] || fail 'This installer requires systemd'

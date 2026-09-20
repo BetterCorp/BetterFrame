@@ -102,6 +102,30 @@ def CDLL(name):
             self.assertEqual((p/'app').read_text(), 'working current app')
             self.assertFalse(marker.exists())
 
+    def test_rollback_destination_cannot_absorb_staged_backup(self):
+        for symlink in [False, True]:
+            with tempfile.TemporaryDirectory() as tmp:
+                p = Path(tmp)
+                (p/'app').write_text('working app')
+                (p/'candidate').write_text('candidate')
+                directory = p/'directory'
+                directory.mkdir()
+                if symlink:
+                    (p/'app.prev').symlink_to(directory, target_is_directory=True)
+                else:
+                    (p/'app.prev').mkdir()
+                result = self.shell(f'BIN={p}/app; STATE={p}; STAGING={p}; INSTALL_USER={os.getuid()}; USER_GROUP={os.getgid()}; install_app_binary', check=False)
+                if symlink:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse((p/'app.prev').is_symlink())
+                    self.assertEqual((p/'app.prev').read_text(), 'working app')
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual((p/'app').read_text(), 'working app')
+                    self.assertFalse((p/'firmware-applying.json').exists())
+                    self.assertEqual(list((p/'app.prev').iterdir()), [])
+                self.assertEqual(list(directory.iterdir()), [])
+
     def test_install_failures_keep_old_binary_and_pending_protection(self):
         for failure in ['cleanup', 'marker', 'rename']:
             with tempfile.TemporaryDirectory() as tmp:

@@ -136,30 +136,18 @@ require SimpleVMS. On x86 kiosks, enabling SimpleVMS adds recording, playback,
 and export when the dedicated recording filesystem is mounted at
 `/var/lib/betterframe/recordings`.
 
-```bash
-sudo apt install -y libgtk-4-dev libgstreamer1.0-dev \
-    libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good \
-    gstreamer1.0-plugins-bad gstreamer1.0-libav \
-    libwebkitgtk-6.0-dev libssl-dev
+For installation on an existing Linux desktop or standalone dedicated kiosk,
+use the root installer:
 
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
-cd /opt/betterframe
-cargo build --release --manifest-path client/Cargo.toml
-sudo install -Dm755 client/target/release/betterframe-client /opt/betterframe/kiosk/betterframe-kiosk
-
-mkdir -p ~/.config/systemd/user
-cp /opt/betterframe/deploy/systemd/betterframe-kiosk.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now betterframe-kiosk
+```sh
+sudo ./setup.sh
 ```
 
-Kiosks should point at the proxy URL, not direct backend ports:
-
-```bash
-BETTERFRAME_SERVER=http://<pi-ip> /opt/betterframe/kiosk/betterframe-kiosk
-```
+It installs prerequisites, configures the appropriate startup service and
+writable app-update paths, and preserves pairing state. See
+[Linux installation and repair](../docs/linux-install.md) for desktop/dedicated
+options and [the main README](../README.md#point-the-app-at-your-server) for
+server selection. Point kiosks at the proxy URL, not direct backend ports.
 
 ## Native server mode
 

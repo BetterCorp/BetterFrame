@@ -5,9 +5,8 @@ After=systemd-user-sessions.service systemd-logind.service network.target seatd.
 Wants=seatd.service
 Conflicts=getty@tty1.service
 After=getty@tty1.service
-# After 10 fast restarts in 60s, back off so a broken binary doesn't burn CPU.
-StartLimitIntervalSec=60
-StartLimitBurst=10
+# Keep retrying after failures; RestartSec below spaces out attempts.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -44,13 +43,8 @@ ExecStartPre=+/usr/local/sbin/betterframe-firmware-rollback.sh
 ExecStart=/bin/sh -lc 'export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"; exec /usr/bin/cage -s -- /opt/betterframe/kiosk/betterframe-kiosk'
 Restart=always
 RestartSec=2
-# If cage/kiosk exits or crashes and systemd can't restart it after the
-# burst limit (10 in 60s per [Unit]), force a full system reboot. This
-# covers scenarios where the app isn't foreground (e.g. cage died, VT
-# switched, GPU fault) — the kiosk should NEVER show anything other than
-# our app. A reboot is less alarming than a login prompt or blank screen.
-FailureAction=reboot-force
-StartLimitAction=reboot-force
+# App failures must not trigger an OS reboot. The rollback hook restores
+# an unconfirmed candidate before the restart limit is reached.
 
 # WebKitGTK uses bubblewrap for its web-content sandbox. bwrap aborts with
 # "Unexpected capabilities but not setuid" when launched from a process that

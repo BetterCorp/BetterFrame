@@ -1,6 +1,7 @@
 //! Runs before GTK/GStreamer initialization, in a separate systemd service.
 //! journald is the durable bounded spool; commit its cursor only after server ACK.
 use crate::diagnostic_logs::{self, BATCH_SIZE};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
@@ -14,7 +15,11 @@ fn entry(record: &Value) -> Option<Value> {
             let bytes: Vec<u8> = values.iter().map(|v| v.as_u64().unwrap() as u8).collect();
             String::from_utf8_lossy(&bytes).into_owned()
         }
-        Value::Array(values) => values.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n"),
+        Value::Array(values) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("\n"),
         _ => "[Journal message unavailable]".to_string(),
     };
     let micros = record["__REALTIME_TIMESTAMP"]
@@ -81,6 +86,38 @@ fn journal_command(cursor: Option<&str>, owner_since: Option<i64>) -> Command {
     command
 }
 
+// serde skips unknown fields without buffering their strings. This lets a
+// pathological MESSAGE be drained while still reading journald's small cursor,
+// even when __CURSOR follows the oversized field in the JSON object.
+#[derive(Deserialize)]
+struct CursorRecord {
+    #[serde(rename = "__CURSOR")]
+    cursor: Option<String>,
+}
+
+struct LineRemainder<'a, R> {
+    reader: &'a mut R,
+    ended: bool,
+}
+impl<R: BufRead> std::io::Read for LineRemainder<'_, R> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if self.ended || output.is_empty() {
+            return Ok(0);
+        }
+        let buffer = self.reader.fill_buf()?;
+        let end = buffer
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|n| n + 1)
+            .unwrap_or(buffer.len());
+        let count = end.min(output.len());
+        output[..count].copy_from_slice(&buffer[..count]);
+        self.ended = count == 0 || output[count - 1] == b'\n';
+        self.reader.consume(count);
+        Ok(count)
+    }
+}
+
 fn read_command(mut command: Command) -> Result<(Vec<Value>, Option<String>), ()> {
     let mut child = command
         .stdout(Stdio::piped())
@@ -108,12 +145,26 @@ fn read_command(mut command: Command) -> Result<(Vec<Value>, Option<String>), ()
             break;
         }
         if line.last() != Some(&b'\n') {
-            // Skip a pathological record without buffering it or blocking later logs.
-            if reader.skip_until(b'\n').is_err() {
+            use std::io::Read;
+            let mut remainder = LineRemainder {
+                reader: &mut reader,
+                ended: false,
+            };
+            let cursor = {
+                let full_record = std::io::Cursor::new(line).chain(&mut remainder);
+                let mut deserializer = serde_json::Deserializer::from_reader(full_record);
+                CursorRecord::deserialize(&mut deserializer)
+                    .ok()
+                    .and_then(|record| record.cursor)
+            };
+            // Drain only this record, including on malformed JSON. Never let
+            // the decoder consume a subsequent newline-delimited record.
+            if std::io::copy(&mut remainder, &mut std::io::sink()).is_err() {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(());
             }
+            last_cursor = cursor.or(last_cursor);
             continue;
         }
         let Ok(record) = serde_json::from_slice::<Value>(&line) else {
@@ -199,13 +250,18 @@ pub fn run() {
         }
         match read_batch(state["cursor"].as_str(), state["since"].as_i64()) {
             Ok((entries, cursor)) => {
-                let upload = if entries.is_empty() { Ok(()) }
-                    else { diagnostic_logs::send_with_error(&client, &dest, &entries) };
+                let upload = if entries.is_empty() {
+                    Ok(())
+                } else {
+                    diagnostic_logs::send_with_error(&client, &dest, &entries)
+                };
                 if let Err(error) = &upload {
                     eprintln!("journal-upload: {error}; retaining batch for retry");
                 }
                 if upload.is_ok() {
-                    if failures > 0 { eprintln!("journal-upload: collection/upload recovered"); }
+                    if failures > 0 {
+                        eprintln!("journal-upload: collection/upload recovered");
+                    }
                     failures = 0;
                     if let Some(cursor) = cursor {
                         state["cursor"] = json!(cursor);
@@ -222,7 +278,9 @@ pub fn run() {
                 }
             }
             Err(()) => {
-                eprintln!("journal-upload: journal read failed; check service journal permissions and journalctl availability");
+                eprintln!(
+                    "journal-upload: journal read failed; check service journal permissions and journalctl availability"
+                );
                 // A cursor may have been vacuumed. Replay the retained window;
                 // the server safely ignores events it already accepted.
                 state.as_object_mut().map(|s| s.remove("cursor"));
@@ -242,7 +300,10 @@ mod tests {
         let args: Vec<_> = command.get_args().map(|s| s.to_str().unwrap()).collect();
         assert!(args.contains(&"--all")); // Without this journalctl replaces fields >4096 bytes with null.
         assert!(args.contains(&"--after-cursor=cursor-1"));
-        for message in [json!("x".repeat(6000) + "\nWebKit failure"), json!(b"WebKit error\nsecond line".to_vec())] {
+        for message in [
+            json!("x".repeat(6000) + "\nWebKit failure"),
+            json!(b"WebKit error\nsecond line".to_vec()),
+        ] {
             let record = json!({"__CURSOR":"cursor-1", "__REALTIME_TIMESTAMP":"1700000000123456",
                 "MESSAGE":message, "PRIORITY":"3", "_SYSTEMD_UNIT":"betterframe-kiosk.service"});
             let log = entry(&record).unwrap();
@@ -253,6 +314,35 @@ mod tests {
             assert_eq!(log["context"]["truncated"], false);
         }
     }
+    #[test]
+    fn oversized_tail_advances_cursor_even_after_a_full_batch() {
+        let path = std::env::temp_dir().join(format!(
+            "bf-journal-oversized-{}-{}.json",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let mut records = Vec::new();
+        for index in 0..BATCH_SIZE {
+            let message = if index + 1 == BATCH_SIZE {
+                "x".repeat(2 * 1024 * 1024)
+            } else {
+                format!("message {index}")
+            };
+            // MESSAGE sorts before __CURSOR, placing the cursor past the cap.
+            let record = json!({"__CURSOR":format!("cursor-{index}"), "__REALTIME_TIMESTAMP":"1700000000123456", "MESSAGE":message});
+            records.extend_from_slice(record.to_string().as_bytes());
+            records.push(b'\n');
+        }
+        std::fs::write(&path, records).unwrap();
+        let mut command = Command::new("cat");
+        command.arg(&path);
+        let result = read_command(command);
+        std::fs::remove_file(path).unwrap();
+        let (entries, cursor) = result.unwrap();
+        assert_eq!(entries.len(), BATCH_SIZE - 1);
+        assert_eq!(cursor, Some(format!("cursor-{}", BATCH_SIZE - 1)));
+    }
+
     #[test]
     fn preserves_boot_and_kernel_failure_details() {
         let log = entry(&json!({"__CURSOR":"s=abc;i=1", "__REALTIME_TIMESTAMP":"1700000000123456",

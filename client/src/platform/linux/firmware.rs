@@ -175,10 +175,6 @@ pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
         Path::new(FIRMWARE_MARKER),
         Path::new(FIRMWARE_ATTEMPTS),
     )?;
-    if bin.exists() {
-        let _ = fs::remove_file(&prev_path);
-        let _ = fs::rename(&bin, &prev_path);
-    }
     fs::rename(&new_path, &bin).map_err(|e| format!("rename: {e}"))?;
     info!("app updated to {}; restarting BetterFrame", info.version);
     // The service owns process restart. An app update must never reboot the OS.
@@ -324,13 +320,6 @@ pub fn apply(
         return Err("firmware update canceled after channel change".to_string());
     }
 
-    // Save current binary as .prev so an out-of-band rollback can restore it.
-    if bin.exists() {
-        let _ = fs::remove_file(&prev_path);
-        if let Err(e) = fs::rename(&bin, &prev_path) {
-            warn!("firmware: could not stash previous binary: {e}");
-        }
-    }
     fs::rename(&new_path, &bin).map_err(|e| format!("rename → {}: {e}", bin.display()))?;
 
     // 5. Tell the server we're about to apply.
@@ -347,8 +336,8 @@ pub fn apply(
     std::process::exit(0);
 }
 
-// Both enrolled and pre-pairing updates must arm rollback before swapping.
-// Failure to persist this marker aborts the update while the old binary remains.
+// Both enrolled and pre-pairing updates must save the previous binary and arm
+// rollback before swapping. Any failure aborts while the old binary remains.
 fn write_pending_marker(
     version: &str,
     bin: &Path,
@@ -356,6 +345,7 @@ fn write_pending_marker(
     marker: &Path,
     attempts: &Path,
 ) -> Result<(), String> {
+    stash_previous_binary(bin, prev)?;
     let payload = serde_json::json!({
         "version": version, "attempt_at": chrono_now_iso(), "confirmed": false,
         "bin": bin.to_string_lossy(), "prev": prev.to_string_lossy(),
@@ -369,6 +359,27 @@ fn write_pending_marker(
             file.sync_all()
         },
     )
+}
+
+// Prepare rollback without moving the installed executable out of the way.
+// Failed copies or publication leave both the current app and old backup intact.
+fn stash_previous_binary(bin: &Path, prev: &Path) -> Result<(), String> {
+    let temporary = prev.with_file_name(format!(
+        ".bf-app-prev-{}-{:016x}.tmp", std::process::id(), rand::random::<u64>()
+    ));
+    let result = (|| {
+        let mut source = fs::File::open(bin)?;
+        let mut target = fs::OpenOptions::new()
+            .create_new(true).write(true).mode_for_unix(0o600).open(&temporary)?;
+        std::io::copy(&mut source, &mut target)?;
+        target.set_permissions(source.metadata()?.permissions())?;
+        target.sync_all()?;
+        fs::rename(&temporary, prev)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map_err(|e| format!("stash previous app {}: {e}", prev.display()))
 }
 
 fn persist_pending_marker(
@@ -623,6 +634,33 @@ mod tests {
         );
         assert_eq!(std::fs::read(&bin).unwrap(), b"existing app");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rollback_backup_failure_aborts_before_marker_publication() {
+        let root = std::env::temp_dir().join(format!("bf-prev-failure-{}", rand::random::<u64>()));
+        fs::create_dir_all(&root).unwrap();
+        let bin = root.join("app");
+        let prev = root.join("app.prev");
+        let marker = root.join("marker");
+        let attempts = root.join("attempts");
+        fs::write(&bin, b"current executable").unwrap();
+        fs::write(&attempts, b"2").unwrap();
+        fs::create_dir(&prev).unwrap();
+        let result = super::write_pending_marker("next", &bin, &prev, &marker, &attempts);
+        assert!(result.unwrap_err().contains("stash previous app"));
+        assert_eq!(fs::read(&bin).unwrap(), b"current executable");
+        assert!(prev.is_dir());
+        assert!(!marker.exists());
+        assert_eq!(fs::read(&attempts).unwrap(), b"2");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 3, "temporary backup must be cleaned up");
+        fs::remove_dir(&prev).unwrap();
+        fs::write(&prev, b"stale backup").unwrap();
+        super::write_pending_marker("next", &bin, &prev, &marker, &attempts).unwrap();
+        assert_eq!(fs::read(&prev).unwrap(), b"current executable");
+        assert_eq!(fs::read(&bin).unwrap(), b"current executable");
+        assert!(marker.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

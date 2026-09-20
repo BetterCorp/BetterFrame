@@ -238,7 +238,7 @@ PYGUARD
 start_app_service() {
     local scope=$1 unit=$2 initial_pid current_pid
     if service_command "$scope" is-failed --quiet "$unit"; then
-        service_command "$scope" reset-failed "$unit"
+        service_command "$scope" reset-failed "$unit" || printf 'Could not clear failed state for %s; attempting startup.\n' "$unit" >&2
     fi
     if service_command "$scope" start "$unit"; then
         initial_pid=$(service_command "$scope" show "$unit" -p MainPID --value)
@@ -252,7 +252,7 @@ start_app_service() {
         runtime_command rm -f -- "$BIN.new"
         runtime_command install -m 755 "$BIN.prev" "$BIN.new"
         runtime_command mv -f -- "$BIN.new" "$BIN"
-        service_command "$scope" reset-failed "$unit"
+        service_command "$scope" reset-failed "$unit" || printf 'Could not clear failed state for %s; attempting startup.\n' "$unit" >&2
         service_command "$scope" start "$unit" || true
     fi
     local option=
@@ -539,7 +539,7 @@ install_mediamtx() {
     systemctl daemon-reload
     systemctl enable betterframe-mediamtx.service
     if ((START)); then
-        systemctl reset-failed betterframe-mediamtx.service
+        systemctl reset-failed betterframe-mediamtx.service || printf 'Could not clear failed state; attempting MediaMTX startup.\n' >&2
         systemctl start betterframe-mediamtx.service
         # Service activation alone does not prove the gateway API is reachable.
         local _attempt
@@ -613,7 +613,7 @@ done
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
 if ((${#variables[@]})); then systemctl --user import-environment "${variables[@]}"; fi
 if systemctl --user is-failed --quiet betterframe.service; then
-    systemctl --user reset-failed betterframe.service
+    systemctl --user reset-failed betterframe.service || printf 'Could not clear failed state; attempting BF startup.\n' >&2
 fi
 exec systemctl --user restart betterframe.service
 EOF
@@ -656,6 +656,7 @@ EOF
 }
 main() {
     parse_args "$@"
+    printf 'BetterFrame setup revision 2026-09-20.4\n'
     [[ $(uname -s) == Linux ]] || fail 'This installer requires Linux'
     [[ $EUID == 0 ]] || fail 'Run with sudo (or root and --user USER)'
     [[ -d /run/systemd/system ]] || fail 'This installer requires systemd'

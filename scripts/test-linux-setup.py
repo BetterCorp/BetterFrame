@@ -306,6 +306,19 @@ class SetupTests(unittest.TestCase):
                                     capture_output=True, check=True)
             self.assertIn('started', result.stdout)
 
+    def test_reset_failure_does_not_block_real_startup(self):
+        self.shell('''
+            sleep() { :; }
+            service_command() {
+                case "$2" in
+                    reset-failed) return 1;;
+                    show) echo 1234;;
+                    *) return 0;;
+                esac
+            }
+            start_app_service user betterframe.service
+        ''')
+
     def test_start_success_requires_a_stable_process_after_reset(self):
         self.shell('''
             sleep() { :; }

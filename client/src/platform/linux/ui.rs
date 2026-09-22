@@ -2371,8 +2371,9 @@ fn animate_layout_swap(content_overlay: &gtk::Overlay, new_grid: &gtk::Grid) {
             let key = c.widget_name();
             if !key.is_empty() {
                 if let Some(b) = c.compute_bounds(&old_grid) {
-                    let paintable: gtk::gdk::Paintable =
-                        gtk::WidgetPaintable::new(Some(&c)).upcast();
+                    // Freeze the image while the old widget is still parented.
+                    // A live WidgetPaintable can become empty after grid removal.
+                    let paintable = gtk::WidgetPaintable::new(Some(&c)).current_image();
                     snaps.insert(
                         key.to_string(),
                         CellSnap {
@@ -2440,11 +2441,24 @@ fn animate_layout_swap(content_overlay: &gtk::Overlay, new_grid: &gtk::Grid) {
         }
 
         let ghost_weak = ghost_clone.downgrade();
+        let grid_weak = new_grid_clone.downgrade();
         gtk::glib::timeout_add_local_once(
             Duration::from_millis((LAYOUT_ANIM_MS + 50) as u64),
             move || {
+                // Frame-clock callbacks may be delayed or never run (unmapped
+                // widgets, a busy decoder/GPU, or a rapid second layout edit).
+                // Restore the real tiles before destroying their animation clock.
+                if let Some(grid) = grid_weak.upgrade() {
+                    let mut child = grid.first_child();
+                    while let Some(tile) = child {
+                        tile.set_opacity(1.0);
+                        child = tile.next_sibling();
+                    }
+                }
                 if let Some(g) = ghost_weak.upgrade() {
-                    g.unparent();
+                    if let Some(parent) = g.parent().and_then(|p| p.downcast::<gtk::Overlay>().ok()) {
+                        parent.remove_overlay(&g);
+                    }
                 }
             },
         );
@@ -3280,6 +3294,47 @@ fn ensure_web(
 
 #[cfg(test)]
 mod display_tests {
+    #[test]
+    #[ignore = "requires a graphical session; run with xvfb-run"]
+    fn layout_animation_restores_tiles_without_frame_ticks() {
+        use super::*;
+        gtk::init().unwrap();
+        let overlay = gtk::Overlay::new();
+        let old_grid = Grid::new();
+        let new_grid = Grid::new();
+        for index in 0..16 {
+            let old_tile = Label::new(Some("Old camera"));
+            old_tile.set_widget_name(&format!("cam:{index}:auto"));
+            old_grid.attach(&old_tile, index % 4, index / 4, 1, 1);
+            let new_tile = Label::new(Some("New camera"));
+            new_tile.set_widget_name(&format!("cam:{index}:{}", if index == 0 { "main" } else { "auto" }));
+            new_grid.attach(&new_tile, index % 4, index / 4, 1, 1);
+        }
+        overlay.set_child(Some(&old_grid));
+        old_grid.allocate(800, 600, -1, None);
+        // Deliberately leave the overlay unmapped: idle/timer callbacks run,
+        // but animation frame callbacks cannot restore hidden matched tiles.
+        animate_layout_swap(&overlay, &new_grid);
+        let context = gtk::glib::MainContext::default();
+        while context.pending() { context.iteration(false); }
+        assert_eq!(new_grid.first_child().unwrap().opacity(), 0.0);
+        let deadline = Instant::now() + Duration::from_millis(600);
+        while Instant::now() < deadline {
+            while context.pending() { context.iteration(false); }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut child = new_grid.first_child();
+        let mut count = 0;
+        while let Some(tile) = child {
+            assert_eq!(tile.opacity(), 1.0, "{} stayed invisible after cleanup", tile.widget_name());
+            count += 1;
+            child = tile.next_sibling();
+        }
+        assert_eq!(count, 16);
+        assert_eq!(overlay.first_child().unwrap(), new_grid.clone().upcast::<gtk::Widget>());
+        assert!(new_grid.next_sibling().is_none(), "animation overlay must be removed");
+    }
+
     #[test]
     #[ignore = "requires a graphical session; CI runs with xvfb-run"]
     fn sleep_integration_preserves_deadline_and_hides_layout_until_explicit_wake() {

@@ -77,6 +77,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwebkitgtk-6.0-dev libssl-dev xvfb xauth dbus-x11
       - run: cargo test --manifest-path client/Cargo.toml --workspace --locked
+      - name: Layout animation cleanup without frame ticks
+        run: xvfb-run -a dbus-run-session -- cargo test --manifest-path client/Cargo.toml layout_animation_restores_tiles -- --ignored --test-threads=1
       - name: Linux sleep screen and activity regression
         run: xvfb-run -a dbus-run-session -- cargo test --manifest-path client/Cargo.toml sleep_integration -- --ignored --test-threads=1
       - name: Confirm healthy pairing UI before enrollment

@@ -65,7 +65,8 @@ pub fn display_render_unchanged(
         let active_id = active_id?;
         let layout = display.layouts.iter().find(|l| l.id == active_id)?;
         let cameras: std::collections::BTreeMap<_, _> = bundle.cameras.iter()
-            .filter(|camera| layout.cells.iter().any(|cell| cell.camera_id.as_deref() == Some(&camera.id)))
+            .filter(|camera| layout.preload_camera_ids.contains(&camera.id)
+                || layout.cells.iter().any(|cell| cell.camera_id.as_deref() == Some(&camera.id)))
             .map(|camera| (camera.id.as_str(), camera))
             .collect();
         Some(serde_json::json!({
@@ -79,6 +80,18 @@ pub fn display_render_unchanged(
     }
     let old = inputs(previous, display_id, active_id);
     old.is_some() && old == inputs(next, display_id, active_id)
+}
+
+/// Pool entries are keyed by camera ID and stream role, so their configuration
+/// must also match before an old decoder/RTSP connection can be reused.
+pub fn unchanged_camera_ids(previous: Option<&KioskBundle>, next: &KioskBundle) -> std::collections::HashSet<String> {
+    let Some(previous) = previous else { return Default::default() };
+    let old: HashMap<_, _> = previous.cameras.iter().map(|camera| (&camera.id, camera)).collect();
+    next.cameras.iter().filter(|camera| {
+        old.get(&camera.id).is_some_and(|prior| {
+            serde_json::to_value(prior).ok() == serde_json::to_value(camera).ok()
+        })
+    }).map(|camera| camera.id.clone()).collect()
 }
 
 pub fn configured_cell_action(cell: &BundleCell, kind: &str) -> Option<(String, Value)> {
@@ -149,6 +162,26 @@ mod tests {
         assert!(!unchanged(&next));
         next.displays.clear();
         assert!(!unchanged(&next));
+
+        let mut preloaded = previous.clone();
+        preloaded.cameras.push(serde_json::from_value(serde_json::json!({
+            "id": "preload", "name": "Preload", "type": "onvif", "stream_policy": "auto",
+            "streams": [{"id": "s", "name": "Sub", "role": "sub", "rtsp_uri": "rtsp://old/sub"}]
+        })).unwrap());
+        preloaded.displays[0].layouts[0].preload_camera_ids.push("preload".into());
+        assert!(unchanged_camera_ids(Some(&preloaded), &preloaded).contains("preload"));
+        let mut changed = preloaded.clone();
+        changed.cameras[0].streams[0].rtsp_uri = "rtsp://new/sub".into();
+        assert!(!display_render_unchanged(&preloaded, &changed, "d", Some("active")));
+        assert!(!unchanged_camera_ids(Some(&preloaded), &changed).contains("preload"));
+        changed = preloaded.clone();
+        changed.cameras[0].playback_password_encrypted = Some("new-encrypted-value".into());
+        assert!(!display_render_unchanged(&preloaded, &changed, "d", Some("active")));
+        assert!(!unchanged_camera_ids(Some(&preloaded), &changed).contains("preload"));
+        changed.cameras.clear();
+        assert!(!display_render_unchanged(&preloaded, &changed, "d", Some("active")));
+        assert!(unchanged_camera_ids(Some(&preloaded), &changed).is_empty());
+        assert!(unchanged_camera_ids(None, &preloaded).is_empty());
     }
 
     #[test]

@@ -1466,6 +1466,15 @@ fn show_pairing_progress(window: &ApplicationWindow) {
     window.set_child(Some(&vbox));
 }
 
+fn can_preserve_display(state: &DisplayState, previous: &KioskBundle, next: &KioskBundle, id: &str) -> bool {
+    // Either override can show a camera outside the base layout.
+    let override_cameras_unchanged = (state.focus_overrides.is_empty() && state.fullscreen_override.is_none())
+        || serde_json::to_value(&previous.cameras).ok() == serde_json::to_value(&next.cameras).ok();
+    override_cameras_unchanged && crate::core::layout::display_render_unchanged(
+        previous, next, id, state.current_layout_id.as_deref(),
+    )
+}
+
 /// Render a fresh bundle: rebuild the per-display window set, restart GPIO
 /// workers, recompute warm-camera needs across all displays.
 fn render_bundle(
@@ -1483,13 +1492,7 @@ fn render_bundle(
     let unchanged_displays: std::collections::HashSet<String> = DISPLAYS.with(|ds| {
         ds.borrow().iter().filter_map(|(id, state)| {
             (same_auth && previous_bundle.as_ref().is_some_and(|previous| {
-                // Operator focus can show cameras outside the active layout.
-                let override_cameras_unchanged = state.focus_overrides.is_empty()
-                    || serde_json::to_value(&previous.cameras).ok()
-                        == serde_json::to_value(&bundle.cameras).ok();
-                override_cameras_unchanged && crate::core::layout::display_render_unchanged(
-                    previous, &bundle, id, state.current_layout_id.as_deref(),
-                )
+                can_preserve_display(state, previous, &bundle, id)
             })).then(|| id.clone())
         }).collect()
     });
@@ -1525,8 +1528,10 @@ fn render_bundle(
         &bundle.tenant_slug,
     );
 
-    // Purge warm camera pool entries for cameras no longer in the bundle at all.
-    purge_removed_cameras(&bundle.cameras);
+    // An existing camera ID does not imply that its URI/credentials are still
+    // current. Invalidate changed cameras before ensure_warm can reuse them.
+    let reusable_cameras = crate::core::layout::unchanged_camera_ids(previous_bundle.as_ref(), &bundle);
+    purge_obsolete_cameras(&reusable_cameras);
     // Match GDK monitors to bundle displays by index. Bundle display 0 → GDK
     // monitor 0, etc. v1 simple ordering — re-binding will land if/when the
     // admin UI exposes a mapping. Falls back to overlapping windows on a
@@ -1576,6 +1581,9 @@ fn render_bundle(
         let existing = DISPLAYS.with(|ds| ds.borrow_mut().remove(&bd.id));
         if unchanged_displays.contains(&bd.id) {
             if let Some(state) = existing {
+                if let Some(content) = state.content_overlay.child() {
+                    refresh_empty_display_reference(&content, &bundle, Some(bd));
+                }
                 new_state.insert(bd.id.clone(), state);
                 continue;
             }
@@ -2738,11 +2746,9 @@ fn recompute_pool_states(
     }
 }
 
-/// Remove warm camera entries for cameras no longer in the bundle.
+/// Remove pipelines whose camera was removed or whose configuration changed.
 /// Immediately stops pipelines — no cooling period.
-fn purge_removed_cameras(bundle_cameras: &[crate::bundle::BundleCamera]) {
-    let valid_ids: std::collections::HashSet<&str> =
-        bundle_cameras.iter().map(|c| c.id.as_str()).collect();
+fn purge_obsolete_cameras(valid_ids: &std::collections::HashSet<String>) {
     let mut to_remove: Vec<PoolKey> = Vec::new();
     let mut to_stop: Vec<gstreamer::Pipeline> = Vec::new();
 
@@ -2764,7 +2770,7 @@ fn purge_removed_cameras(bundle_cameras: &[crate::bundle::BundleCamera]) {
     }
     if !to_remove.is_empty() {
         info!(
-            "purged {} camera pipelines no longer in bundle",
+            "purged {} removed or reconfigured camera pipelines",
             to_remove.len()
         );
     }
@@ -3296,6 +3302,48 @@ fn ensure_web(
 mod display_tests {
     #[test]
     #[ignore = "requires a graphical session; run with xvfb-run"]
+    fn display_refresh_updates_empty_metadata_and_checks_fullscreen_camera() {
+        use super::*;
+        gtk::init().unwrap();
+        let mut bundle: KioskBundle = serde_json::from_value(serde_json::json!({
+            "kiosk_id": "k", "kiosk_name": "Before", "version": "1",
+            "cameras": [{"id":"outside", "name":"Camera", "type":"rtsp", "stream_policy":"auto",
+                "rtsp_url":"rtsp://before/live", "streams":[]}],
+            "displays": [{"id":"d", "name":"Before display", "width_px":800,"height_px":600,
+                "idle_timeout_seconds":0,"sleep_timeout_seconds":0,
+                "layouts":[{"id":"l","name":"Empty","grid_cols":1,"grid_rows":1,
+                    "priority":"normal","is_default":true,"resets_idle_timer":true,"cells":[]}]}]
+        })).unwrap();
+        CURRENT_SYNC_LABEL.with(|s| *s.borrow_mut() = "before sync".into());
+        let content = build_empty_display_message(&bundle, Some(&bundle.displays[0]), "Empty layout");
+        let reference = content.last_child().unwrap().downcast::<Label>().unwrap();
+        bundle.kiosk_name = "After".into();
+        bundle.displays[0].name = "After display".into();
+        CURRENT_SYNC_LABEL.with(|s| *s.borrow_mut() = "after sync".into());
+        refresh_empty_display_reference(&content, &bundle, Some(&bundle.displays[0]));
+        assert_eq!(reference.text().as_str(), "Kiosk: After\nDisplay: After display\nLast sync: after sync");
+        assert_eq!(content.last_child().unwrap(), reference.upcast::<gtk::Widget>(), "metadata updates in place");
+
+        let mut state = DisplayState {
+            window: ApplicationWindow::builder().build(), current_layout_id: Some("l".into()),
+            last_activity: Instant::now(), is_asleep: false, content_overlay: gtk::Overlay::new(),
+            web_layer: gtk::Fixed::new(), web_positions: Vec::new(), grid_dims: (1,1),
+            focus_overrides: HashMap::new(), fullscreen_override: None,
+            display_cleared: false, override_generation: 0,
+        };
+        let mut next = bundle.clone();
+        next.cameras[0].rtsp_url = Some("rtsp://after/live".into());
+        assert!(can_preserve_display(&state, &bundle, &next, "d"));
+        state.fullscreen_override = Some(FocusOverride { camera_id: "outside".into(), stream: "main".into(), generation: 0 });
+        assert!(!can_preserve_display(&state, &bundle, &next, "d"));
+        assert!(can_preserve_display(&state, &bundle, &bundle, "d"));
+        next.cameras.clear();
+        assert!(!can_preserve_display(&state, &bundle, &next, "d"));
+        state.window.close();
+    }
+
+    #[test]
+    #[ignore = "requires a graphical session; run with xvfb-run"]
     fn layout_animation_restores_tiles_without_frame_ticks() {
         use super::*;
         gtk::init().unwrap();
@@ -3732,6 +3780,26 @@ fn build_empty_display_reference(
     build_empty_display_message(bundle, display, crate::core::layout::NO_LAYOUTS_ASSIGNED_MESSAGE)
 }
 
+fn empty_display_reference_text(bundle: &KioskBundle, display: Option<&BundleDisplayWithLayouts>) -> String {
+    let last_sync = CURRENT_SYNC_LABEL.with(|s| s.borrow().clone());
+    format!("Kiosk: {}\nDisplay: {}\nLast sync: {}",
+        bundle.kiosk_name, display.map(|d| d.name.as_str()).unwrap_or("This display"), last_sync)
+}
+
+/// Update diagnostics in-place without rebuilding a preserved empty layout.
+fn refresh_empty_display_reference(content: &gtk::Widget, bundle: &KioskBundle, display: Option<&BundleDisplayWithLayouts>) {
+    if !content.has_css_class("bf-unassigned-display") { return; }
+    let mut child = content.first_child();
+    while let Some(widget) = child {
+        if widget.has_css_class("empty-reference") {
+            if let Some(label) = widget.downcast_ref::<Label>() {
+                label.set_label(&empty_display_reference_text(bundle, display));
+            }
+        }
+        child = widget.next_sibling();
+    }
+}
+
 fn build_empty_display_message(
     bundle: &KioskBundle,
     display: Option<&BundleDisplayWithLayouts>,
@@ -3760,11 +3828,7 @@ fn build_empty_display_message(
     vbox.append(&instruction);
     overlay.set_child(Some(&vbox));
 
-    let last_sync = CURRENT_SYNC_LABEL.with(|s| s.borrow().clone());
-    let info = Label::new(Some(&format!(
-        "Kiosk: {}\nDisplay: {}\nLast sync: {}",
-        bundle.kiosk_name, display.map(|d| d.name.as_str()).unwrap_or("This display"), last_sync,
-    )));
+    let info = Label::new(Some(&empty_display_reference_text(bundle, display)));
     info.set_halign(gtk::Align::Start);
     info.set_valign(gtk::Align::End);
     info.set_margin_start(24);

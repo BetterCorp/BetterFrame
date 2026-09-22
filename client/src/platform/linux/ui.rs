@@ -1476,6 +1476,23 @@ fn render_bundle(
     kiosk_key: &str,
 ) {
     set_reported_bundle_version(&bundle.version);
+    let previous_bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
+    let same_auth = CURRENT_AUTH.with(|a| {
+        a.borrow().as_ref().is_some_and(|(url, key)| url == server_url && key == kiosk_key)
+    });
+    let unchanged_displays: std::collections::HashSet<String> = DISPLAYS.with(|ds| {
+        ds.borrow().iter().filter_map(|(id, state)| {
+            (same_auth && previous_bundle.as_ref().is_some_and(|previous| {
+                // Operator focus can show cameras outside the active layout.
+                let override_cameras_unchanged = state.focus_overrides.is_empty()
+                    || serde_json::to_value(&previous.cameras).ok()
+                        == serde_json::to_value(&bundle.cameras).ok();
+                override_cameras_unchanged && crate::core::layout::display_render_unchanged(
+                    previous, &bundle, id, state.current_layout_id.as_deref(),
+                )
+            })).then(|| id.clone())
+        }).collect()
+    });
     CURRENT_BUNDLE.with(|b| *b.borrow_mut() = Some(bundle.clone()));
     CURRENT_AUTH.with(|a| *a.borrow_mut() = Some((server_url.to_string(), kiosk_key.to_string())));
     CURRENT_SYNC_LABEL.with(|s| *s.borrow_mut() = format_current_local_time());
@@ -1557,6 +1574,13 @@ fn render_bundle(
     let mut new_state: HashMap<String, DisplayState> = HashMap::new();
     for (i, bd) in displays.iter().enumerate() {
         let existing = DISPLAYS.with(|ds| ds.borrow_mut().remove(&bd.id));
+        if unchanged_displays.contains(&bd.id) {
+            if let Some(state) = existing {
+                new_state.insert(bd.id.clone(), state);
+                continue;
+            }
+        }
+
         let (
             window,
             was_asleep,
@@ -1661,6 +1685,9 @@ fn render_bundle(
 
     // Now render each display's initial layout.
     for bd in &displays {
+        if unchanged_displays.contains(&bd.id) {
+            continue;
+        }
         let previous = DISPLAYS.with(|ds| {
             ds.borrow()
                 .get(&bd.id)

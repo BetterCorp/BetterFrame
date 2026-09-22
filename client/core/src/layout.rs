@@ -51,6 +51,36 @@ pub fn resolve_display<'a>(
         .or_else(|| bundle.displays.get(native_index))
 }
 
+/// Whether a bundle refresh can keep a display's existing widgets and overrides.
+/// Inactive layouts still enter the cached bundle for the next layout switch.
+pub fn display_render_unchanged(
+    previous: &KioskBundle,
+    next: &KioskBundle,
+    display_id: &str,
+    active_id: Option<&str>,
+) -> bool {
+    fn inputs(bundle: &KioskBundle, display_id: &str, active_id: Option<&str>) -> Option<Value> {
+        let displays = bundle.normalized_displays();
+        let display = displays.iter().find(|d| d.id == display_id)?;
+        let active_id = active_id?;
+        let layout = display.layouts.iter().find(|l| l.id == active_id)?;
+        let cameras: std::collections::BTreeMap<_, _> = bundle.cameras.iter()
+            .filter(|camera| layout.cells.iter().any(|cell| cell.camera_id.as_deref() == Some(&camera.id)))
+            .map(|camera| (camera.id.as_str(), camera))
+            .collect();
+        Some(serde_json::json!({
+            "width": display.width_px,
+            "height": display.height_px,
+            "layout": layout,
+            "cameras": cameras,
+            "operator_console": bundle.operator_console,
+            "tenant": bundle.tenant_slug,
+        }))
+    }
+    let old = inputs(previous, display_id, active_id);
+    old.is_some() && old == inputs(next, display_id, active_id)
+}
+
 pub fn configured_cell_action(cell: &BundleCell, kind: &str) -> Option<(String, Value)> {
     let event = cell.input_options.as_ref()?.get("events")?.get(kind)?;
     Some((
@@ -85,6 +115,41 @@ pub fn same_origin(url: &str, server_url: &str) -> bool {
 mod tests {
     use super::*;
     use crate::bundle::BundleDisplayWithLayouts;
+
+    #[test]
+    fn refresh_only_invalidates_the_active_display_content() {
+        let previous: KioskBundle = serde_json::from_value(serde_json::json!({
+            "kiosk_id": "k", "kiosk_name": "Kiosk", "version": "1", "cameras": [],
+            "displays": [{
+                "id": "d", "name": "Display", "width_px": 1920, "height_px": 1080,
+                "idle_timeout_seconds": 0, "sleep_timeout_seconds": 0,
+                "layouts": [
+                    {"id": "active", "name": "Active", "grid_cols": 1, "grid_rows": 1,
+                     "priority": "normal", "is_default": true, "resets_idle_timer": true, "cells": []},
+                    {"id": "other", "name": "Other", "grid_cols": 1, "grid_rows": 1,
+                     "priority": "normal", "is_default": false, "resets_idle_timer": true, "cells": []}
+                ]
+            }]
+        })).unwrap();
+        let unchanged = |next: &KioskBundle| display_render_unchanged(&previous, next, "d", Some("active"));
+        let mut next = previous.clone();
+        next.version = "2".into();
+        assert!(unchanged(&next), "unassigned edits / repeated notifications keep the display");
+        next.displays[0].layouts[1].grid_cols = 2;
+        assert!(unchanged(&next), "inactive assigned layout edits keep the display");
+        next.displays[0].layouts.remove(1);
+        assert!(unchanged(&next), "removing an inactive assignment keeps the display");
+        next.displays[0].layouts[0].grid_cols = 2;
+        assert!(!unchanged(&next), "active layout edits must render");
+        next = previous.clone();
+        next.displays[0].layouts.remove(0);
+        assert!(!unchanged(&next), "removing the active assignment must render a fallback");
+        next = previous.clone();
+        next.displays[0].width_px = 1280;
+        assert!(!unchanged(&next));
+        next.displays.clear();
+        assert!(!unchanged(&next));
+    }
 
     #[test]
     fn selects_default_then_first_layout() {

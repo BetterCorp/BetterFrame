@@ -1531,6 +1531,52 @@ fn show_pairing_progress(window: &ApplicationWindow) {
     window.set_child(Some(&vbox));
 }
 
+/// Comparison-only copy: randomized transport ciphertext is not a camera
+/// configuration change. Keep opaque values on decrypt failure so unknown
+/// credentials cannot accidentally compare equal to absent credentials.
+fn render_comparison_bundle(bundle: &KioskBundle, decrypt_key: Option<&str>) -> KioskBundle {
+    use sha2::Digest;
+    let mut comparable = bundle.clone();
+    let normalize = |credential: &mut Option<String>| {
+        if let Some(ciphertext) = credential.as_ref() {
+            if let Some(secret) = decrypt_key.and_then(|key| onvif_events::decrypt_cluster_public(ciphertext, key)) {
+                *credential = Some(format!("sha256:{:x}", sha2::Sha256::digest(secret.as_bytes())));
+            }
+        }
+    };
+    for camera in &mut comparable.cameras {
+        normalize(&mut camera.playback_password_encrypted);
+        normalize(&mut camera.onvif_password_encrypted);
+    }
+    for layout in comparable.displays.iter_mut().flat_map(|display| &mut display.layouts)
+        .chain(comparable.layouts.iter_mut())
+    {
+        for cell in &mut layout.cells {
+            if let Some(smart) = &mut cell.smart_url {
+                for step in &mut smart.steps {
+                    normalize(&mut step.value_encrypted);
+                }
+            }
+        }
+    }
+    comparable
+}
+
+fn can_preserve_display(state: &DisplayState, previous: &KioskBundle, next: &KioskBundle, id: &str) -> bool {
+    // Compare only the cameras actually shown by overrides. Telemetry and
+    // changes to other available operator cameras do not affect these tiles.
+    let override_cameras_unchanged = state.focus_overrides.values()
+        .chain(state.fullscreen_override.iter()).all(|focus| {
+            let inputs = |bundle: &KioskBundle| bundle.cameras.iter()
+                .find(|camera| camera.id == focus.camera_id)
+                .map(crate::core::layout::camera_render_inputs);
+            inputs(previous) == inputs(next)
+        });
+    override_cameras_unchanged && crate::core::layout::display_render_unchanged(
+        previous, next, id, state.current_layout_id.as_deref(),
+    )
+}
+
 /// Render a fresh bundle: rebuild the per-display window set, restart GPIO
 /// workers, recompute warm-camera needs across all displays.
 fn render_bundle(
@@ -1541,6 +1587,21 @@ fn render_bundle(
     kiosk_key: &str,
 ) {
     set_reported_bundle_version(&bundle.version);
+    let previous_bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
+    let decrypt_key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
+    let comparable = render_comparison_bundle(&bundle, decrypt_key.as_deref());
+    let previous_comparable = previous_bundle.as_ref()
+        .map(|previous| render_comparison_bundle(previous, decrypt_key.as_deref()));
+    let same_auth = CURRENT_AUTH.with(|a| {
+        a.borrow().as_ref().is_some_and(|(url, key)| url == server_url && key == kiosk_key)
+    });
+    let unchanged_displays: std::collections::HashSet<String> = DISPLAYS.with(|ds| {
+        ds.borrow().iter().filter_map(|(id, state)| {
+            (same_auth && previous_comparable.as_ref().is_some_and(|previous| {
+                can_preserve_display(state, previous, &comparable, id)
+            })).then(|| id.clone())
+        }).collect()
+    });
     CURRENT_BUNDLE.with(|b| *b.borrow_mut() = Some(bundle.clone()));
     CURRENT_AUTH.with(|a| *a.borrow_mut() = Some((server_url.to_string(), kiosk_key.to_string())));
     CURRENT_SYNC_LABEL.with(|s| *s.borrow_mut() = format_current_local_time());
@@ -1564,7 +1625,6 @@ fn render_bundle(
         .filter(|c| layout_cam_ids.contains(&c.id))
         .cloned()
         .collect();
-    let decrypt_key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
     onvif_events::start(
         &layout_cameras,
         decrypt_key.as_deref(),
@@ -1573,8 +1633,10 @@ fn render_bundle(
         &bundle.tenant_slug,
     );
 
-    // Purge warm camera pool entries for cameras no longer in the bundle at all.
-    purge_removed_cameras(&bundle.cameras);
+    // An existing camera ID does not imply that its URI/credentials are still
+    // current. Invalidate changed cameras before ensure_warm can reuse them.
+    let reusable_cameras = crate::core::layout::unchanged_camera_ids(previous_comparable.as_ref(), &comparable);
+    purge_obsolete_cameras(&reusable_cameras);
     // Match GDK monitors to bundle displays by index. Bundle display 0 → GDK
     // monitor 0, etc. v1 simple ordering — re-binding will land if/when the
     // admin UI exposes a mapping. Falls back to overlapping windows on a
@@ -1625,6 +1687,16 @@ fn render_bundle(
     let mut new_state: HashMap<String, DisplayState> = HashMap::new();
     for (i, bd) in displays.iter().enumerate() {
         let existing = DISPLAYS.with(|ds| ds.borrow_mut().remove(&bd.id));
+        if unchanged_displays.contains(&bd.id) {
+            if let Some(state) = existing {
+                if let Some(content) = state.content_overlay.child() {
+                    refresh_empty_display_reference(&content, &bundle, Some(bd));
+                }
+                new_state.insert(bd.id.clone(), state);
+                continue;
+            }
+        }
+
         let (
             window,
             was_asleep,
@@ -1730,6 +1802,9 @@ fn render_bundle(
 
     // Now render each display's initial layout.
     for bd in &displays {
+        if unchanged_displays.contains(&bd.id) {
+            continue;
+        }
         let previous = DISPLAYS.with(|ds| {
             ds.borrow()
                 .get(&bd.id)
@@ -2413,8 +2488,9 @@ fn animate_layout_swap(content_overlay: &gtk::Overlay, new_grid: &gtk::Grid) {
             let key = c.widget_name();
             if !key.is_empty() {
                 if let Some(b) = c.compute_bounds(&old_grid) {
-                    let paintable: gtk::gdk::Paintable =
-                        gtk::WidgetPaintable::new(Some(&c)).upcast();
+                    // Freeze the image while the old widget is still parented.
+                    // A live WidgetPaintable can become empty after grid removal.
+                    let paintable = gtk::WidgetPaintable::new(Some(&c)).current_image();
                     snaps.insert(
                         key.to_string(),
                         CellSnap {
@@ -2482,11 +2558,24 @@ fn animate_layout_swap(content_overlay: &gtk::Overlay, new_grid: &gtk::Grid) {
         }
 
         let ghost_weak = ghost_clone.downgrade();
+        let grid_weak = new_grid_clone.downgrade();
         gtk::glib::timeout_add_local_once(
             Duration::from_millis((LAYOUT_ANIM_MS + 50) as u64),
             move || {
+                // Frame-clock callbacks may be delayed or never run (unmapped
+                // widgets, a busy decoder/GPU, or a rapid second layout edit).
+                // Restore the real tiles before destroying their animation clock.
+                if let Some(grid) = grid_weak.upgrade() {
+                    let mut child = grid.first_child();
+                    while let Some(tile) = child {
+                        tile.set_opacity(1.0);
+                        child = tile.next_sibling();
+                    }
+                }
                 if let Some(g) = ghost_weak.upgrade() {
-                    g.unparent();
+                    if let Some(parent) = g.parent().and_then(|p| p.downcast::<gtk::Overlay>().ok()) {
+                        parent.remove_overlay(&g);
+                    }
                 }
             },
         );
@@ -2577,10 +2666,24 @@ fn fade_out_and_drop(pic: &gtk::Picture, fixed: &gtk::Fixed) {
 /// Default cooling timeout when a layout doesn't specify one (or specifies 0).
 const DEFAULT_COOLING_SECS: u32 = 30;
 
+/// Keep hot stream role selection identical to the pool's desired keys.
+fn rewarm_hot_cameras(
+    required: &std::collections::HashSet<PoolKey>,
+    cameras: &HashMap<&str, &crate::bundle::BundleCamera>,
+    mut warm: impl FnMut(&str, &crate::bundle::BundleCamera, Option<&str>),
+) {
+    for (id, badge) in required {
+        if let Some(camera) = cameras.get(id.as_str()) {
+            let selector = match badge { 'M' => Some("main"), 'S' => Some("sub"), _ => None };
+            warm(id, camera, selector);
+        }
+    }
+}
+
 /// Walk all displays' currently-active layouts (plus any priority=hot layouts)
 /// and recompute the warm/hot pool. Pool entries dropped from active layouts
-/// transition to Cooling; new entries are NOT added here — `ensure_warm` does
-/// that when the layout actually renders.
+/// transition to Cooling. Hot-layout pipelines are also created here so
+/// invalidation cannot leave an inactive hot layout cold.
 ///
 /// Pool keys are (camera_id, badge): a camera's main and sub streams are
 /// tracked independently, so flipping a cell from M→S promotes the new sub
@@ -2709,6 +2812,11 @@ fn recompute_global_state() {
     if max_cooling_secs == 0 {
         max_cooling_secs = DEFAULT_COOLING_SECS;
     }
+    // Recreate hot streams invalidated by a bundle refresh even when their
+    // layout is inactive and no display needed to render again.
+    rewarm_hot_cameras(&hot_set, &cam_map, |id, camera, selector| {
+        let _ = ensure_warm(id, camera, selector, 0.0);
+    });
     recompute_pool_states(&warm_set, &hot_set, max_cooling_secs);
     recompute_web_states(&warm_webs, &hot_webs, max_cooling_secs);
 }
@@ -2766,11 +2874,9 @@ fn recompute_pool_states(
     }
 }
 
-/// Remove warm camera entries for cameras no longer in the bundle.
+/// Remove pipelines whose camera was removed or whose configuration changed.
 /// Immediately stops pipelines — no cooling period.
-fn purge_removed_cameras(bundle_cameras: &[crate::bundle::BundleCamera]) {
-    let valid_ids: std::collections::HashSet<&str> =
-        bundle_cameras.iter().map(|c| c.id.as_str()).collect();
+fn purge_obsolete_cameras(valid_ids: &std::collections::HashSet<String>) {
     let mut to_remove: Vec<PoolKey> = Vec::new();
     let mut to_stop: Vec<gstreamer::Pipeline> = Vec::new();
 
@@ -2792,7 +2898,7 @@ fn purge_removed_cameras(bundle_cameras: &[crate::bundle::BundleCamera]) {
     }
     if !to_remove.is_empty() {
         info!(
-            "purged {} camera pipelines no longer in bundle",
+            "purged {} removed or reconfigured camera pipelines",
             to_remove.len()
         );
     }
@@ -3329,6 +3435,180 @@ fn ensure_web(
 
 #[cfg(test)]
 mod display_tests {
+    fn camera_bundle_for_refresh(ciphertext: &str) -> super::KioskBundle {
+        serde_json::from_value(serde_json::json!({
+            "kiosk_id":"k", "kiosk_name":"Kiosk", "version":"v",
+            "cameras":[{"id":"camera", "name":"Camera", "type":"onvif", "stream_policy":"auto",
+                "playback_password_encrypted":ciphertext,"onvif_password_encrypted":ciphertext,
+                "streams":[
+                    {"id":"main","name":"Main","role":"main","rtsp_uri":"rtsp://new/main"},
+                    {"id":"sub","name":"Sub","role":"sub","rtsp_uri":"rtsp://new/sub"}
+                ]}],
+            "displays":[{"id":"d","name":"Display","width_px":800,"height_px":600,
+                "idle_timeout_seconds":0,"sleep_timeout_seconds":0,
+                "layouts":[{"id":"l","name":"Layout","grid_cols":1,"grid_rows":1,
+                    "priority":"normal","is_default":true,"resets_idle_timer":true,
+                    "preload_camera_ids":["camera"],"cells":[{
+                        "row":0,"col":0,"row_span":1,"col_span":1,"content_type":"web",
+                        "web_url":"https://example.test", "smart_url":{"steps":[{
+                            "type":"fill","selector":"#password","value_encrypted":ciphertext
+                        }]}
+                    }]}]}]
+        })).unwrap()
+    }
+
+    #[test]
+    fn randomized_camera_credentials_preserve_render_and_pool_identity() {
+        use super::*;
+        use aes_gcm::{Aes256Gcm, Nonce, aead::{Aead, KeyInit}};
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
+        let key = [42u8; 32];
+        let encoded_key = B64.encode(key);
+        let encrypt = |iv: [u8; 12], secret: &[u8]| {
+            let encrypted = Aes256Gcm::new_from_slice(&key).unwrap()
+                .encrypt(Nonce::from_slice(&iv), secret).unwrap();
+            let (ciphertext, tag) = encrypted.split_at(encrypted.len() - 16);
+            format!("v1.{}.{}.{}", B64.encode(iv), B64.encode(tag), B64.encode(ciphertext))
+        };
+        let first = camera_bundle_for_refresh(&encrypt([1; 12], b"test-secret"));
+        let second = camera_bundle_for_refresh(&encrypt([2; 12], b"test-secret"));
+        assert!(first.cameras[0].playback_password_encrypted != second.cameras[0].playback_password_encrypted);
+        let previous = render_comparison_bundle(&first, Some(&encoded_key));
+        let next = render_comparison_bundle(&second, Some(&encoded_key));
+        assert!(crate::core::layout::display_render_unchanged(&previous, &next, "d", Some("l")));
+        assert!(crate::core::layout::unchanged_camera_ids(Some(&previous), &next).contains("camera"));
+        // Normalization must never replace the cached/rendered transport bundle.
+        assert!(second.cameras[0].playback_password_encrypted.as_ref().unwrap().starts_with("v1."));
+        let changed = render_comparison_bundle(
+            &camera_bundle_for_refresh(&encrypt([3; 12], b"changed-secret")), Some(&encoded_key));
+        assert!(!crate::core::layout::display_render_unchanged(&previous, &changed, "d", Some("l")));
+        assert!(crate::core::layout::unchanged_camera_ids(Some(&previous), &changed).is_empty());
+        let unknown = render_comparison_bundle(&second, None);
+        assert!(crate::core::layout::unchanged_camera_ids(Some(&previous), &unknown).is_empty());
+        let mut smart_changed = second.clone();
+        smart_changed.displays[0].layouts[0].cells[0].smart_url.as_mut().unwrap().steps[0].value_encrypted =
+            Some(encrypt([4; 12], b"changed-web-secret"));
+        let smart_changed = render_comparison_bundle(&smart_changed, Some(&encoded_key));
+        assert!(!crate::core::layout::display_render_unchanged(&previous, &smart_changed, "d", Some("l")));
+        assert!(crate::core::layout::unchanged_camera_ids(Some(&previous), &smart_changed).contains("camera"));
+        let mut legacy = second.clone();
+        legacy.layouts = legacy.displays[0].layouts.clone();
+        let normalized_legacy = render_comparison_bundle(&legacy, Some(&encoded_key));
+        assert!(normalized_legacy.layouts[0].cells[0].smart_url.as_ref().unwrap().steps[0]
+            .value_encrypted.as_ref().unwrap().starts_with("sha256:"));
+        let wrong_key = B64.encode([43u8; 32]);
+        let unreadable = render_comparison_bundle(&second, Some(&wrong_key));
+        assert!(crate::core::layout::unchanged_camera_ids(Some(&previous), &unreadable).is_empty());
+    }
+
+    #[test]
+    fn rewarming_required_hot_streams_uses_current_camera_and_exact_roles() {
+        use super::*;
+        let bundle = camera_bundle_for_refresh("opaque");
+        let cameras = bundle.cameras.iter().map(|c| (c.id.as_str(), c)).collect();
+        let required = std::collections::HashSet::from([
+            ("camera".into(), 'M'), ("camera".into(), 'S'), ("removed".into(), 'S'),
+        ]);
+        let mut warmed = std::collections::HashSet::new();
+        // Model a pool emptied by invalidation: every still-required stream
+        // must be recreated from current configuration without rendering a grid.
+        rewarm_hot_cameras(&required, &cameras, |id, camera, selector| {
+            let (uri, badge) = camera.pick_stream(selector, 0.0).unwrap();
+            warmed.insert((id.to_string(), badge, uri));
+        });
+        assert_eq!(warmed, std::collections::HashSet::from([
+            ("camera".into(), 'M', "rtsp://new/main".into()),
+            ("camera".into(), 'S', "rtsp://new/sub".into()),
+        ]));
+    }
+
+    #[test]
+    #[ignore = "requires a graphical session; run with xvfb-run"]
+    fn display_refresh_updates_empty_metadata_and_checks_fullscreen_camera() {
+        use super::*;
+        gtk::init().unwrap();
+        let mut bundle: KioskBundle = serde_json::from_value(serde_json::json!({
+            "kiosk_id": "k", "kiosk_name": "Before", "version": "1",
+            "cameras": [{"id":"outside", "name":"Camera", "type":"rtsp", "stream_policy":"auto",
+                "rtsp_url":"rtsp://before/live", "streams":[]}],
+            "displays": [{"id":"d", "name":"Before display", "width_px":800,"height_px":600,
+                "idle_timeout_seconds":0,"sleep_timeout_seconds":0,
+                "layouts":[{"id":"l","name":"Empty","grid_cols":1,"grid_rows":1,
+                    "priority":"normal","is_default":true,"resets_idle_timer":true,"cells":[]}]}]
+        })).unwrap();
+        CURRENT_SYNC_LABEL.with(|s| *s.borrow_mut() = "before sync".into());
+        let content = build_empty_display_message(&bundle, Some(&bundle.displays[0]), "Empty layout");
+        let reference = content.last_child().unwrap().downcast::<Label>().unwrap();
+        bundle.kiosk_name = "After".into();
+        bundle.displays[0].name = "After display".into();
+        CURRENT_SYNC_LABEL.with(|s| *s.borrow_mut() = "after sync".into());
+        refresh_empty_display_reference(&content, &bundle, Some(&bundle.displays[0]));
+        assert_eq!(reference.text().as_str(), "Kiosk: After\nDisplay: After display\nLast sync: after sync");
+        assert_eq!(content.last_child().unwrap(), reference.upcast::<gtk::Widget>(), "metadata updates in place");
+
+        let mut state = DisplayState {
+            window: ApplicationWindow::builder().build(), current_layout_id: Some("l".into()),
+            last_activity: Instant::now(), is_asleep: false, content_overlay: gtk::Overlay::new(),
+            web_layer: gtk::Fixed::new(), web_positions: Vec::new(), grid_dims: (1,1),
+            focus_overrides: HashMap::new(), fullscreen_override: None,
+            display_cleared: false, override_generation: 0,
+        };
+        let mut next = bundle.clone();
+        next.cameras[0].rtsp_url = Some("rtsp://after/live".into());
+        assert!(can_preserve_display(&state, &bundle, &next, "d"));
+        state.fullscreen_override = Some(FocusOverride { camera_id: "outside".into(), stream: "main".into(), generation: 0 });
+        assert!(!can_preserve_display(&state, &bundle, &next, "d"));
+        assert!(can_preserve_display(&state, &bundle, &bundle, "d"));
+        let mut metadata_only = bundle.clone();
+        metadata_only.cameras[0].last_seen_at = Some("2026-09-23T22:00:00Z".into());
+        metadata_only.cameras[0].labels.push("updated".into());
+        assert!(can_preserve_display(&state, &bundle, &metadata_only, "d"));
+        next.cameras.clear();
+        assert!(!can_preserve_display(&state, &bundle, &next, "d"));
+        state.window.close();
+    }
+
+    #[test]
+    #[ignore = "requires a graphical session; run with xvfb-run"]
+    fn layout_animation_restores_tiles_without_frame_ticks() {
+        use super::*;
+        gtk::init().unwrap();
+        let overlay = gtk::Overlay::new();
+        let old_grid = Grid::new();
+        let new_grid = Grid::new();
+        for index in 0..16 {
+            let old_tile = Label::new(Some("Old camera"));
+            old_tile.set_widget_name(&format!("cam:{index}:auto"));
+            old_grid.attach(&old_tile, index % 4, index / 4, 1, 1);
+            let new_tile = Label::new(Some("New camera"));
+            new_tile.set_widget_name(&format!("cam:{index}:{}", if index == 0 { "main" } else { "auto" }));
+            new_grid.attach(&new_tile, index % 4, index / 4, 1, 1);
+        }
+        overlay.set_child(Some(&old_grid));
+        old_grid.allocate(800, 600, -1, None);
+        // Deliberately leave the overlay unmapped: idle/timer callbacks run,
+        // but animation frame callbacks cannot restore hidden matched tiles.
+        animate_layout_swap(&overlay, &new_grid);
+        let context = gtk::glib::MainContext::default();
+        while context.pending() { context.iteration(false); }
+        assert_eq!(new_grid.first_child().unwrap().opacity(), 0.0);
+        let deadline = Instant::now() + Duration::from_millis(600);
+        while Instant::now() < deadline {
+            while context.pending() { context.iteration(false); }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut child = new_grid.first_child();
+        let mut count = 0;
+        while let Some(tile) = child {
+            assert_eq!(tile.opacity(), 1.0, "{} stayed invisible after cleanup", tile.widget_name());
+            count += 1;
+            child = tile.next_sibling();
+        }
+        assert_eq!(count, 16);
+        assert_eq!(overlay.first_child().unwrap(), new_grid.clone().upcast::<gtk::Widget>());
+        assert!(new_grid.next_sibling().is_none(), "animation overlay must be removed");
+    }
+
     #[test]
     #[ignore = "requires a graphical session; CI runs with xvfb-run"]
     fn sleep_integration_preserves_deadline_and_hides_layout_until_explicit_wake() {
@@ -3727,6 +4007,26 @@ fn build_empty_display_reference(
     build_empty_display_message(bundle, display, crate::core::layout::NO_LAYOUTS_ASSIGNED_MESSAGE)
 }
 
+fn empty_display_reference_text(bundle: &KioskBundle, display: Option<&BundleDisplayWithLayouts>) -> String {
+    let last_sync = CURRENT_SYNC_LABEL.with(|s| s.borrow().clone());
+    format!("Kiosk: {}\nDisplay: {}\nLast sync: {}",
+        bundle.kiosk_name, display.map(|d| d.name.as_str()).unwrap_or("This display"), last_sync)
+}
+
+/// Update diagnostics in-place without rebuilding a preserved empty layout.
+fn refresh_empty_display_reference(content: &gtk::Widget, bundle: &KioskBundle, display: Option<&BundleDisplayWithLayouts>) {
+    if !content.has_css_class("bf-unassigned-display") { return; }
+    let mut child = content.first_child();
+    while let Some(widget) = child {
+        if widget.has_css_class("empty-reference") {
+            if let Some(label) = widget.downcast_ref::<Label>() {
+                label.set_label(&empty_display_reference_text(bundle, display));
+            }
+        }
+        child = widget.next_sibling();
+    }
+}
+
 fn build_empty_display_message(
     bundle: &KioskBundle,
     display: Option<&BundleDisplayWithLayouts>,
@@ -3755,11 +4055,7 @@ fn build_empty_display_message(
     vbox.append(&instruction);
     overlay.set_child(Some(&vbox));
 
-    let last_sync = CURRENT_SYNC_LABEL.with(|s| s.borrow().clone());
-    let info = Label::new(Some(&format!(
-        "Kiosk: {}\nDisplay: {}\nLast sync: {}",
-        bundle.kiosk_name, display.map(|d| d.name.as_str()).unwrap_or("This display"), last_sync,
-    )));
+    let info = Label::new(Some(&empty_display_reference_text(bundle, display)));
     info.set_halign(gtk::Align::Start);
     info.set_valign(gtk::Align::End);
     info.set_margin_start(24);

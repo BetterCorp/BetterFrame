@@ -3,7 +3,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_COMMAND, WM_KEYDOWN, GetDlgItem, IsWindowVisible, SetWindowTextW, SetWindowPos,
     HWND_TOP, SWP_NOACTIVATE, WS_CHILD, WS_VISIBLE, WS_TABSTOP, SW_SHOW, SW_HIDE,
 };
-use windows_sys::Win32::Graphics::Gdi::DT_WORDBREAK;
+use windows_sys::Win32::Graphics::Gdi::{DT_END_ELLIPSIS, DT_NOPREFIX, DT_WORDBREAK};
 
 use super::*;
 
@@ -680,7 +680,13 @@ pub(super) fn draw_cell_label(hdc: HDC, rect: RECT, text: &str) {
     };
     unsafe {
         SetTextColor(hdc, rgb(243, 244, 246));
-        DrawTextW(hdc, text_w.as_ptr(), -1, &mut text_rect, DT_LEFT | DT_TOP);
+        DrawTextW(
+            hdc,
+            text_w.as_ptr(),
+            -1,
+            &mut text_rect,
+            DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
     }
 }
 

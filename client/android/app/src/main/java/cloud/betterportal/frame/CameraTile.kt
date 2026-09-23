@@ -69,6 +69,8 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
     private val errorMessage = message("").apply { setBackgroundColor(Color.BLACK); visibility = View.GONE }
     private val label = TextView(context).apply {
         text = cell.optString("label", "Camera")
+        setSingleLine(true)
+        ellipsize = android.text.TextUtils.TruncateAt.END
         setTextColor(Color.WHITE)
         setBackgroundColor(0x99000000.toInt())
         setPadding(12, 8, 12, 8)
@@ -105,7 +107,7 @@ class CameraTile(context: Context, cell: JSONObject, onExpand: () -> Unit) : Vie
         status.addView(errorMessage, LayoutParams(-1, -1))
         status.addView(spinner, LayoutParams(spinnerSize, spinnerSize, Gravity.CENTER))
         addView(status, LayoutParams(-1, -1))
-        addView(label, LayoutParams(-1, -2, Gravity.BOTTOM))
+        addView(label, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START))
         // This app-owned surface is the single TV focus target and touch expand control.
         addView(View(context).apply {
             isFocusable = true

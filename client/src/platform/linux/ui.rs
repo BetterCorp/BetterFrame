@@ -1466,6 +1466,24 @@ fn show_pairing_progress(window: &ApplicationWindow) {
     window.set_child(Some(&vbox));
 }
 
+/// Comparison-only copy: randomized transport ciphertext is not a camera
+/// configuration change. Keep opaque values on decrypt failure so unknown
+/// credentials cannot accidentally compare equal to absent credentials.
+fn camera_comparison_bundle(bundle: &KioskBundle, decrypt_key: Option<&str>) -> KioskBundle {
+    use sha2::Digest;
+    let mut comparable = bundle.clone();
+    for camera in &mut comparable.cameras {
+        for credential in [&mut camera.playback_password_encrypted, &mut camera.onvif_password_encrypted] {
+            if let Some(ciphertext) = credential.as_ref() {
+                if let Some(secret) = decrypt_key.and_then(|key| onvif_events::decrypt_cluster_public(ciphertext, key)) {
+                    *credential = Some(format!("sha256:{:x}", sha2::Sha256::digest(secret.as_bytes())));
+                }
+            }
+        }
+    }
+    comparable
+}
+
 fn can_preserve_display(state: &DisplayState, previous: &KioskBundle, next: &KioskBundle, id: &str) -> bool {
     // Either override can show a camera outside the base layout.
     let override_cameras_unchanged = (state.focus_overrides.is_empty() && state.fullscreen_override.is_none())
@@ -1486,13 +1504,17 @@ fn render_bundle(
 ) {
     set_reported_bundle_version(&bundle.version);
     let previous_bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
+    let decrypt_key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
+    let comparable = camera_comparison_bundle(&bundle, decrypt_key.as_deref());
+    let previous_comparable = previous_bundle.as_ref()
+        .map(|previous| camera_comparison_bundle(previous, decrypt_key.as_deref()));
     let same_auth = CURRENT_AUTH.with(|a| {
         a.borrow().as_ref().is_some_and(|(url, key)| url == server_url && key == kiosk_key)
     });
     let unchanged_displays: std::collections::HashSet<String> = DISPLAYS.with(|ds| {
         ds.borrow().iter().filter_map(|(id, state)| {
-            (same_auth && previous_bundle.as_ref().is_some_and(|previous| {
-                can_preserve_display(state, previous, &bundle, id)
+            (same_auth && previous_comparable.as_ref().is_some_and(|previous| {
+                can_preserve_display(state, previous, &comparable, id)
             })).then(|| id.clone())
         }).collect()
     });
@@ -1519,7 +1541,6 @@ fn render_bundle(
         .filter(|c| layout_cam_ids.contains(&c.id))
         .cloned()
         .collect();
-    let decrypt_key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
     onvif_events::start(
         &layout_cameras,
         decrypt_key.as_deref(),
@@ -1530,7 +1551,7 @@ fn render_bundle(
 
     // An existing camera ID does not imply that its URI/credentials are still
     // current. Invalidate changed cameras before ensure_warm can reuse them.
-    let reusable_cameras = crate::core::layout::unchanged_camera_ids(previous_bundle.as_ref(), &bundle);
+    let reusable_cameras = crate::core::layout::unchanged_camera_ids(previous_comparable.as_ref(), &comparable);
     purge_obsolete_cameras(&reusable_cameras);
     // Match GDK monitors to bundle displays by index. Bundle display 0 → GDK
     // monitor 0, etc. v1 simple ordering — re-binding will land if/when the
@@ -2557,10 +2578,24 @@ fn fade_out_and_drop(pic: &gtk::Picture, fixed: &gtk::Fixed) {
 /// Default cooling timeout when a layout doesn't specify one (or specifies 0).
 const DEFAULT_COOLING_SECS: u32 = 30;
 
+/// Keep hot stream role selection identical to the pool's desired keys.
+fn rewarm_hot_cameras(
+    required: &std::collections::HashSet<PoolKey>,
+    cameras: &HashMap<&str, &crate::bundle::BundleCamera>,
+    mut warm: impl FnMut(&str, &crate::bundle::BundleCamera, Option<&str>),
+) {
+    for (id, badge) in required {
+        if let Some(camera) = cameras.get(id.as_str()) {
+            let selector = match badge { 'M' => Some("main"), 'S' => Some("sub"), _ => None };
+            warm(id, camera, selector);
+        }
+    }
+}
+
 /// Walk all displays' currently-active layouts (plus any priority=hot layouts)
 /// and recompute the warm/hot pool. Pool entries dropped from active layouts
-/// transition to Cooling; new entries are NOT added here — `ensure_warm` does
-/// that when the layout actually renders.
+/// transition to Cooling. Hot-layout pipelines are also created here so
+/// invalidation cannot leave an inactive hot layout cold.
 ///
 /// Pool keys are (camera_id, badge): a camera's main and sub streams are
 /// tracked independently, so flipping a cell from M→S promotes the new sub
@@ -2689,6 +2724,11 @@ fn recompute_global_state() {
     if max_cooling_secs == 0 {
         max_cooling_secs = DEFAULT_COOLING_SECS;
     }
+    // Recreate hot streams invalidated by a bundle refresh even when their
+    // layout is inactive and no display needed to render again.
+    rewarm_hot_cameras(&hot_set, &cam_map, |id, camera, selector| {
+        let _ = ensure_warm(id, camera, selector, 0.0);
+    });
     recompute_pool_states(&warm_set, &hot_set, max_cooling_secs);
     recompute_web_states(&warm_webs, &hot_webs, max_cooling_secs);
 }
@@ -3300,6 +3340,77 @@ fn ensure_web(
 
 #[cfg(test)]
 mod display_tests {
+    fn camera_bundle_for_refresh(ciphertext: &str) -> super::KioskBundle {
+        serde_json::from_value(serde_json::json!({
+            "kiosk_id":"k", "kiosk_name":"Kiosk", "version":"v",
+            "cameras":[{"id":"camera", "name":"Camera", "type":"onvif", "stream_policy":"auto",
+                "playback_password_encrypted":ciphertext,"onvif_password_encrypted":ciphertext,
+                "streams":[
+                    {"id":"main","name":"Main","role":"main","rtsp_uri":"rtsp://new/main"},
+                    {"id":"sub","name":"Sub","role":"sub","rtsp_uri":"rtsp://new/sub"}
+                ]}],
+            "displays":[{"id":"d","name":"Display","width_px":800,"height_px":600,
+                "idle_timeout_seconds":0,"sleep_timeout_seconds":0,
+                "layouts":[{"id":"l","name":"Layout","grid_cols":1,"grid_rows":1,
+                    "priority":"normal","is_default":true,"resets_idle_timer":true,
+                    "preload_camera_ids":["camera"],"cells":[]}]}]
+        })).unwrap()
+    }
+
+    #[test]
+    fn randomized_camera_credentials_preserve_render_and_pool_identity() {
+        use super::*;
+        use aes_gcm::{Aes256Gcm, Nonce, aead::{Aead, KeyInit}};
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
+        let key = [42u8; 32];
+        let encoded_key = B64.encode(key);
+        let encrypt = |iv: [u8; 12], secret: &[u8]| {
+            let encrypted = Aes256Gcm::new_from_slice(&key).unwrap()
+                .encrypt(Nonce::from_slice(&iv), secret).unwrap();
+            let (ciphertext, tag) = encrypted.split_at(encrypted.len() - 16);
+            format!("v1.{}.{}.{}", B64.encode(iv), B64.encode(tag), B64.encode(ciphertext))
+        };
+        let first = camera_bundle_for_refresh(&encrypt([1; 12], b"test-secret"));
+        let second = camera_bundle_for_refresh(&encrypt([2; 12], b"test-secret"));
+        assert!(first.cameras[0].playback_password_encrypted != second.cameras[0].playback_password_encrypted);
+        let previous = camera_comparison_bundle(&first, Some(&encoded_key));
+        let next = camera_comparison_bundle(&second, Some(&encoded_key));
+        assert!(crate::core::layout::display_render_unchanged(&previous, &next, "d", Some("l")));
+        assert!(crate::core::layout::unchanged_camera_ids(Some(&previous), &next).contains("camera"));
+        // Normalization must never replace the cached/rendered transport bundle.
+        assert!(second.cameras[0].playback_password_encrypted.as_ref().unwrap().starts_with("v1."));
+        let changed = camera_comparison_bundle(
+            &camera_bundle_for_refresh(&encrypt([3; 12], b"changed-secret")), Some(&encoded_key));
+        assert!(!crate::core::layout::display_render_unchanged(&previous, &changed, "d", Some("l")));
+        assert!(crate::core::layout::unchanged_camera_ids(Some(&previous), &changed).is_empty());
+        let unknown = camera_comparison_bundle(&second, None);
+        assert!(crate::core::layout::unchanged_camera_ids(Some(&previous), &unknown).is_empty());
+        let wrong_key = B64.encode([43u8; 32]);
+        let unreadable = camera_comparison_bundle(&second, Some(&wrong_key));
+        assert!(crate::core::layout::unchanged_camera_ids(Some(&previous), &unreadable).is_empty());
+    }
+
+    #[test]
+    fn rewarming_required_hot_streams_uses_current_camera_and_exact_roles() {
+        use super::*;
+        let bundle = camera_bundle_for_refresh("opaque");
+        let cameras = bundle.cameras.iter().map(|c| (c.id.as_str(), c)).collect();
+        let required = std::collections::HashSet::from([
+            ("camera".into(), 'M'), ("camera".into(), 'S'), ("removed".into(), 'S'),
+        ]);
+        let mut warmed = std::collections::HashSet::new();
+        // Model a pool emptied by invalidation: every still-required stream
+        // must be recreated from current configuration without rendering a grid.
+        rewarm_hot_cameras(&required, &cameras, |id, camera, selector| {
+            let (uri, badge) = camera.pick_stream(selector, 0.0).unwrap();
+            warmed.insert((id.to_string(), badge, uri));
+        });
+        assert_eq!(warmed, std::collections::HashSet::from([
+            ("camera".into(), 'M', "rtsp://new/main".into()),
+            ("camera".into(), 'S', "rtsp://new/sub".into()),
+        ]));
+    }
+
     #[test]
     #[ignore = "requires a graphical session; run with xvfb-run"]
     fn display_refresh_updates_empty_metadata_and_checks_fullscreen_camera() {

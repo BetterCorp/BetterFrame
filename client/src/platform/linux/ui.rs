@@ -1469,14 +1469,27 @@ fn show_pairing_progress(window: &ApplicationWindow) {
 /// Comparison-only copy: randomized transport ciphertext is not a camera
 /// configuration change. Keep opaque values on decrypt failure so unknown
 /// credentials cannot accidentally compare equal to absent credentials.
-fn camera_comparison_bundle(bundle: &KioskBundle, decrypt_key: Option<&str>) -> KioskBundle {
+fn render_comparison_bundle(bundle: &KioskBundle, decrypt_key: Option<&str>) -> KioskBundle {
     use sha2::Digest;
     let mut comparable = bundle.clone();
+    let normalize = |credential: &mut Option<String>| {
+        if let Some(ciphertext) = credential.as_ref() {
+            if let Some(secret) = decrypt_key.and_then(|key| onvif_events::decrypt_cluster_public(ciphertext, key)) {
+                *credential = Some(format!("sha256:{:x}", sha2::Sha256::digest(secret.as_bytes())));
+            }
+        }
+    };
     for camera in &mut comparable.cameras {
-        for credential in [&mut camera.playback_password_encrypted, &mut camera.onvif_password_encrypted] {
-            if let Some(ciphertext) = credential.as_ref() {
-                if let Some(secret) = decrypt_key.and_then(|key| onvif_events::decrypt_cluster_public(ciphertext, key)) {
-                    *credential = Some(format!("sha256:{:x}", sha2::Sha256::digest(secret.as_bytes())));
+        normalize(&mut camera.playback_password_encrypted);
+        normalize(&mut camera.onvif_password_encrypted);
+    }
+    for layout in comparable.displays.iter_mut().flat_map(|display| &mut display.layouts)
+        .chain(comparable.layouts.iter_mut())
+    {
+        for cell in &mut layout.cells {
+            if let Some(smart) = &mut cell.smart_url {
+                for step in &mut smart.steps {
+                    normalize(&mut step.value_encrypted);
                 }
             }
         }
@@ -1485,9 +1498,15 @@ fn camera_comparison_bundle(bundle: &KioskBundle, decrypt_key: Option<&str>) -> 
 }
 
 fn can_preserve_display(state: &DisplayState, previous: &KioskBundle, next: &KioskBundle, id: &str) -> bool {
-    // Either override can show a camera outside the base layout.
-    let override_cameras_unchanged = (state.focus_overrides.is_empty() && state.fullscreen_override.is_none())
-        || serde_json::to_value(&previous.cameras).ok() == serde_json::to_value(&next.cameras).ok();
+    // Compare only the cameras actually shown by overrides. Telemetry and
+    // changes to other available operator cameras do not affect these tiles.
+    let override_cameras_unchanged = state.focus_overrides.values()
+        .chain(state.fullscreen_override.iter()).all(|focus| {
+            let inputs = |bundle: &KioskBundle| bundle.cameras.iter()
+                .find(|camera| camera.id == focus.camera_id)
+                .map(crate::core::layout::camera_render_inputs);
+            inputs(previous) == inputs(next)
+        });
     override_cameras_unchanged && crate::core::layout::display_render_unchanged(
         previous, next, id, state.current_layout_id.as_deref(),
     )
@@ -1505,9 +1524,9 @@ fn render_bundle(
     set_reported_bundle_version(&bundle.version);
     let previous_bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
     let decrypt_key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
-    let comparable = camera_comparison_bundle(&bundle, decrypt_key.as_deref());
+    let comparable = render_comparison_bundle(&bundle, decrypt_key.as_deref());
     let previous_comparable = previous_bundle.as_ref()
-        .map(|previous| camera_comparison_bundle(previous, decrypt_key.as_deref()));
+        .map(|previous| render_comparison_bundle(previous, decrypt_key.as_deref()));
     let same_auth = CURRENT_AUTH.with(|a| {
         a.borrow().as_ref().is_some_and(|(url, key)| url == server_url && key == kiosk_key)
     });
@@ -3353,7 +3372,12 @@ mod display_tests {
                 "idle_timeout_seconds":0,"sleep_timeout_seconds":0,
                 "layouts":[{"id":"l","name":"Layout","grid_cols":1,"grid_rows":1,
                     "priority":"normal","is_default":true,"resets_idle_timer":true,
-                    "preload_camera_ids":["camera"],"cells":[]}]}]
+                    "preload_camera_ids":["camera"],"cells":[{
+                        "row":0,"col":0,"row_span":1,"col_span":1,"content_type":"web",
+                        "web_url":"https://example.test", "smart_url":{"steps":[{
+                            "type":"fill","selector":"#password","value_encrypted":ciphertext
+                        }]}
+                    }]}]}]
         })).unwrap()
     }
 
@@ -3373,20 +3397,31 @@ mod display_tests {
         let first = camera_bundle_for_refresh(&encrypt([1; 12], b"test-secret"));
         let second = camera_bundle_for_refresh(&encrypt([2; 12], b"test-secret"));
         assert!(first.cameras[0].playback_password_encrypted != second.cameras[0].playback_password_encrypted);
-        let previous = camera_comparison_bundle(&first, Some(&encoded_key));
-        let next = camera_comparison_bundle(&second, Some(&encoded_key));
+        let previous = render_comparison_bundle(&first, Some(&encoded_key));
+        let next = render_comparison_bundle(&second, Some(&encoded_key));
         assert!(crate::core::layout::display_render_unchanged(&previous, &next, "d", Some("l")));
         assert!(crate::core::layout::unchanged_camera_ids(Some(&previous), &next).contains("camera"));
         // Normalization must never replace the cached/rendered transport bundle.
         assert!(second.cameras[0].playback_password_encrypted.as_ref().unwrap().starts_with("v1."));
-        let changed = camera_comparison_bundle(
+        let changed = render_comparison_bundle(
             &camera_bundle_for_refresh(&encrypt([3; 12], b"changed-secret")), Some(&encoded_key));
         assert!(!crate::core::layout::display_render_unchanged(&previous, &changed, "d", Some("l")));
         assert!(crate::core::layout::unchanged_camera_ids(Some(&previous), &changed).is_empty());
-        let unknown = camera_comparison_bundle(&second, None);
+        let unknown = render_comparison_bundle(&second, None);
         assert!(crate::core::layout::unchanged_camera_ids(Some(&previous), &unknown).is_empty());
+        let mut smart_changed = second.clone();
+        smart_changed.displays[0].layouts[0].cells[0].smart_url.as_mut().unwrap().steps[0].value_encrypted =
+            Some(encrypt([4; 12], b"changed-web-secret"));
+        let smart_changed = render_comparison_bundle(&smart_changed, Some(&encoded_key));
+        assert!(!crate::core::layout::display_render_unchanged(&previous, &smart_changed, "d", Some("l")));
+        assert!(crate::core::layout::unchanged_camera_ids(Some(&previous), &smart_changed).contains("camera"));
+        let mut legacy = second.clone();
+        legacy.layouts = legacy.displays[0].layouts.clone();
+        let normalized_legacy = render_comparison_bundle(&legacy, Some(&encoded_key));
+        assert!(normalized_legacy.layouts[0].cells[0].smart_url.as_ref().unwrap().steps[0]
+            .value_encrypted.as_ref().unwrap().starts_with("sha256:"));
         let wrong_key = B64.encode([43u8; 32]);
-        let unreadable = camera_comparison_bundle(&second, Some(&wrong_key));
+        let unreadable = render_comparison_bundle(&second, Some(&wrong_key));
         assert!(crate::core::layout::unchanged_camera_ids(Some(&previous), &unreadable).is_empty());
     }
 
@@ -3448,6 +3483,10 @@ mod display_tests {
         state.fullscreen_override = Some(FocusOverride { camera_id: "outside".into(), stream: "main".into(), generation: 0 });
         assert!(!can_preserve_display(&state, &bundle, &next, "d"));
         assert!(can_preserve_display(&state, &bundle, &bundle, "d"));
+        let mut metadata_only = bundle.clone();
+        metadata_only.cameras[0].last_seen_at = Some("2026-09-23T22:00:00Z".into());
+        metadata_only.cameras[0].labels.push("updated".into());
+        assert!(can_preserve_display(&state, &bundle, &metadata_only, "d"));
         next.cameras.clear();
         assert!(!can_preserve_display(&state, &bundle, &next, "d"));
         state.window.close();

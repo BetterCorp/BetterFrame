@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 use url::Url;
 
-use super::bundle::{BundleCell, BundleDisplayWithLayouts, BundleLayout, KioskBundle};
+use super::bundle::{BundleCell, BundleDisplayWithLayouts, BundleLayout, KioskBundle, BundleCamera};
 
 pub const NO_LAYOUTS_ASSIGNED_MESSAGE: &str =
     "go into BetterFrame and assign layouts to this display";
@@ -51,6 +51,26 @@ pub fn resolve_display<'a>(
         .or_else(|| bundle.displays.get(native_index))
 }
 
+/// Only fields consumed by stream selection and pipeline construction.
+/// Password fields must already be normalized by the platform's comparator.
+pub fn camera_pipeline_inputs(camera: &BundleCamera) -> Value {
+    let streams: Vec<_> = camera.streams.iter()
+        .map(|stream| serde_json::json!({"role": stream.role, "uri": stream.rtsp_uri}))
+        .collect();
+    serde_json::json!({
+        "enabled": camera.enabled,
+        "url": camera.rtsp_url,
+        "streams": streams,
+        "username": camera.playback_username,
+        "password": camera.playback_password_encrypted,
+    })
+}
+
+/// A rename updates the visible tile label but need not reconnect its decoder.
+pub fn camera_render_inputs(camera: &BundleCamera) -> Value {
+    serde_json::json!({"name": camera.name, "pipeline": camera_pipeline_inputs(camera)})
+}
+
 /// Whether a bundle refresh can keep a display's existing widgets and overrides.
 /// Inactive layouts still enter the cached bundle for the next layout switch.
 pub fn display_render_unchanged(
@@ -67,7 +87,10 @@ pub fn display_render_unchanged(
         let cameras: std::collections::BTreeMap<_, _> = bundle.cameras.iter()
             .filter(|camera| layout.preload_camera_ids.contains(&camera.id)
                 || layout.cells.iter().any(|cell| cell.camera_id.as_deref() == Some(&camera.id)))
-            .map(|camera| (camera.id.as_str(), camera))
+            .map(|camera| {
+                let visible = layout.cells.iter().any(|cell| cell.camera_id.as_deref() == Some(&camera.id));
+                (camera.id.as_str(), if visible { camera_render_inputs(camera) } else { camera_pipeline_inputs(camera) })
+            })
             .collect();
         Some(serde_json::json!({
             "width": display.width_px,
@@ -89,7 +112,7 @@ pub fn unchanged_camera_ids(previous: Option<&KioskBundle>, next: &KioskBundle) 
     let old: HashMap<_, _> = previous.cameras.iter().map(|camera| (&camera.id, camera)).collect();
     next.cameras.iter().filter(|camera| {
         old.get(&camera.id).is_some_and(|prior| {
-            serde_json::to_value(prior).ok() == serde_json::to_value(camera).ok()
+            camera_pipeline_inputs(prior) == camera_pipeline_inputs(camera)
         })
     }).map(|camera| camera.id.clone()).collect()
 }
@@ -170,6 +193,18 @@ mod tests {
         })).unwrap());
         preloaded.displays[0].layouts[0].preload_camera_ids.push("preload".into());
         assert!(unchanged_camera_ids(Some(&preloaded), &preloaded).contains("preload"));
+        let mut metadata = preloaded.clone();
+        metadata.cameras[0].last_seen_at = Some("2026-09-23T22:00:00Z".into());
+        metadata.cameras[0].labels.push("new-label".into());
+        metadata.cameras[0].capabilities.push("ptz".into());
+        metadata.cameras[0].recording_config = serde_json::json!({"changed": true});
+        metadata.cameras[0].onvif_password_encrypted = Some("new-event-credential".into());
+        metadata.cameras[0].streams[0].name = "Renamed stream".into();
+        assert!(display_render_unchanged(&preloaded, &metadata, "d", Some("active")));
+        assert!(unchanged_camera_ids(Some(&preloaded), &metadata).contains("preload"));
+        metadata.cameras[0].name = "Renamed camera".into();
+        assert!(unchanged_camera_ids(Some(&preloaded), &metadata).contains("preload"));
+        assert_ne!(camera_render_inputs(&preloaded.cameras[0]), camera_render_inputs(&metadata.cameras[0]));
         let mut changed = preloaded.clone();
         changed.cameras[0].streams[0].rtsp_uri = "rtsp://new/sub".into();
         assert!(!display_render_unchanged(&preloaded, &changed, "d", Some("active")));

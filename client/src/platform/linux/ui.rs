@@ -2097,25 +2097,6 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
                                 &name_label,
                                 "label { background: rgba(0,0,0,0.7); color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 3px; }",
                             );
-                            let overlay_weak = overlay.downgrade();
-                            let name_label_weak = name_label.downgrade();
-                            overlay.add_tick_callback(move |_, _| {
-                                let Some(overlay) = overlay_weak.upgrade() else {
-                                    return gtk::glib::ControlFlow::Break;
-                                };
-                                let Some(name_label) = name_label_weak.upgrade() else {
-                                    return gtk::glib::ControlFlow::Break;
-                                };
-
-                                let tile_width = overlay.allocated_width();
-                                if tile_width > 0 {
-                                    name_label
-                                        .set_width_request(((tile_width as f64) * 0.9) as i32);
-                                    return gtk::glib::ControlFlow::Break;
-                                }
-
-                                gtk::glib::ControlFlow::Continue
-                            });
                             overlay.add_overlay(&name_label);
 
                             // Top-left badge row: stream type + status icon

@@ -336,6 +336,21 @@ pub struct BundleGpioBinding {
 }
 
 impl BundleCamera {
+    /// A layout visit gets one main-stream fallback attempt, on an explicit
+    /// error or ten seconds without video. Never oscillate after main fails.
+    pub fn should_try_main(&self, badge: char, attempted: bool, failed: bool, silent_ms: u64) -> bool {
+        badge == 'S' && !attempted && (failed || silent_ms >= 10_000)
+            && self.main_fallback_uri().is_some()
+    }
+
+    /// Only fall back when discovery provides distinct main and sub URLs.
+    pub fn main_fallback_uri(&self) -> Option<&str> {
+        let sub = self.streams.iter().find(|stream| stream.role == "sub")?;
+        let main = self.streams.iter().find(|stream| stream.role == "main")?;
+        (!main.rtsp_uri.is_empty() && main.rtsp_uri != sub.rtsp_uri)
+            .then_some(main.rtsp_uri.as_str())
+    }
+
     /// Pick stream URI + role tag for this camera given selector and cell area fraction.
     /// Heuristic: when selector=auto, cell ≥20% of grid → main, else sub.
     /// Returns (uri, role_letter) where role_letter is 'M' or 'S' (or empty if single stream).
@@ -385,6 +400,31 @@ impl BundleCamera {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn substream_fallback_requires_a_distinct_main_stream() {
+        let mut camera: BundleCamera = serde_json::from_value(serde_json::json!({
+            "id": "camera", "name": "Camera", "type": "onvif", "stream_policy": "auto",
+            "streams": [
+                {"id": "main", "name": "Main", "role": "main", "rtsp_uri": "rtsp://nvr/main"},
+                {"id": "sub", "name": "Sub", "role": "sub", "rtsp_uri": "rtsp://nvr/sub"}
+            ]
+        })).unwrap();
+        assert_eq!(camera.pick_stream(None, 0.1).unwrap().1, 'S');
+        assert_eq!(camera.main_fallback_uri(), Some("rtsp://nvr/main"));
+        assert!(!camera.should_try_main('S', false, false, 9_999));
+        assert!(camera.should_try_main('S', false, true, 0), "404 falls back immediately");
+        assert!(camera.should_try_main('S', false, false, 10_000), "silent substream times out");
+        assert!(!camera.should_try_main('M', false, true, 30_000), "main failure cannot bounce back");
+        assert!(!camera.should_try_main('S', true, true, 30_000), "no repeat within a layout visit");
+        assert!(camera.should_try_main('S', false, true, 0), "new visit permits another attempt");
+        camera.streams[0].rtsp_uri = "rtsp://nvr/sub".into();
+        assert_eq!(camera.main_fallback_uri(), None, "do not retry the same failing URL");
+        camera.streams[0].rtsp_uri.clear();
+        assert_eq!(camera.main_fallback_uri(), None);
+        camera.streams.remove(0);
+        assert_eq!(camera.main_fallback_uri(), None, "no invented main URL");
+    }
 
     #[test]
     fn normalizes_legacy_display_and_flexible_ids() {

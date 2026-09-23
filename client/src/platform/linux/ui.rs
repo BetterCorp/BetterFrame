@@ -145,6 +145,11 @@ struct WebEventMeta {
 }
 
 thread_local! {
+    // Fallback decisions belong to a display's current layout visit, not the
+    // camera configuration. Other displays may continue using the substream.
+    static MAIN_FALLBACKS: RefCell<std::collections::HashSet<(String, String)>>
+        = RefCell::new(std::collections::HashSet::new());
+
     /// (camera_id, badge) → PipelineEntry. Pool shared across all displays.
     /// State machine: see WarmthState. Entries dropped when state goes Cold.
     static WARM_CAMERAS: RefCell<HashMap<PoolKey, PipelineEntry>>
@@ -1926,6 +1931,32 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
         }
     });
 
+    if layout_changed {
+        let retry: Vec<String> = MAIN_FALLBACKS.with(|fallbacks| {
+            let mut fallbacks = fallbacks.borrow_mut();
+            let retry = fallbacks.iter().filter(|(id, _)| id == display_id)
+                .map(|(_, camera)| camera.clone()).collect();
+            fallbacks.retain(|(id, _)| id != display_id);
+            retry
+        });
+        // Start a fresh substream attempt; do not reuse its previous error.
+        WARM_CAMERAS.with(|pool| {
+            for camera in retry {
+                if let Some(entry) = pool.borrow().get(&(camera.clone(), 'S')) {
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default().as_millis() as u64;
+                    if entry.stream_status.load(Ordering::Relaxed) != pipeline::STATUS_OK
+                        || now.saturating_sub(entry.last_buffer_at.load(Ordering::Relaxed)) >= 10_000
+                    {
+                        info!("camera {camera}: retrying substream after layout change");
+                        pipeline::restart(&entry.pipeline, &entry.last_buffer_at,
+                            &entry.stream_status, &entry.pipeline_stats);
+                    }
+                }
+            }
+        });
+    }
+
     if DISPLAYS.with(|ds| ds.borrow().get(display_id).is_some_and(|st| st.is_asleep)) {
         recompute_global_state();
         return;
@@ -2002,7 +2033,10 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
     // Ensure preloaded cameras have pipelines even if not visible.
     for cam_id in &layout.preload_camera_ids {
         if let Some(cam) = cam_map.get(cam_id.as_str()) {
-            ensure_warm(cam_id, cam, None, 0.0);
+            let selector = MAIN_FALLBACKS.with(|f| {
+                f.borrow().contains(&(display_id.to_string(), cam_id.clone()))
+            }).then_some("main");
+            ensure_warm(cam_id, cam, selector, 0.0);
         }
     }
 
@@ -2029,8 +2063,13 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
                 if let Some(cam_id) = cell.camera_id.as_ref() {
                     if let Some(cam) = cam_map.get(cam_id.as_str()) {
                         let area = (cell.col_span * cell.row_span) as f32 / total_area;
-                        if let Some((paintable, badge, stream_status)) =
-                            ensure_warm(cam_id, cam, cell.stream_selector.as_deref(), area)
+                        let preferred = cam.pick_stream(cell.stream_selector.as_deref(), area);
+                        let fallback_key = (display_id.to_string(), cam_id.clone());
+                        let remembered = cam.main_fallback_uri().is_some() && preferred.as_ref().is_some_and(|(_, badge)| *badge == 'S')
+                            && MAIN_FALLBACKS.with(|f| f.borrow().contains(&fallback_key));
+                        let selector = if remembered { Some("main") } else { cell.stream_selector.as_deref() };
+                        if let Some((paintable, badge, mut stream_status)) =
+                            ensure_warm(cam_id, cam, selector, area)
                         {
                             let picture = Picture::for_paintable(&paintable);
                             picture.set_content_fit(match cell.fit.as_str() {
@@ -2086,13 +2125,15 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
                             badge_box.set_margin_start(4);
                             badge_box.set_margin_top(4);
 
+                            let stream_label = Label::new(None);
                             if badge == 'M' || badge == 'S' {
-                                let label = Label::new(Some(&badge.to_string()));
+                                let label = &stream_label;
+                                label.set_label(&badge.to_string());
                                 add_css(
-                                    &label,
+                                    label,
                                     "label { background: rgba(0,0,0,0.6); color: #fff; font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; min-width: 14px; }",
                                 );
-                                badge_box.append(&label);
+                                badge_box.append(label);
                             }
 
                             let status_label = Label::new(None);
@@ -2107,12 +2148,55 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
 
                             // Poll stream status every 1s; stop when label is dropped
                             let status_weak = status_label.downgrade();
+                            let picture_weak = picture.downgrade();
+                            let badge_weak = stream_label.downgrade();
+                            let camera = (**cam).clone();
+                            let camera_id = cam_id.clone();
+                            let mut current_badge = badge;
+                            let mut fallback_attempted = remembered;
                             gtk::glib::timeout_add_local(Duration::from_secs(1), move || {
                                 let Some(lbl) = status_weak.upgrade() else {
                                     return gtk::glib::ControlFlow::Break;
                                 };
                                 let s = stream_status.load(Ordering::Relaxed);
-                                match s {
+                                let silent_ms = WARM_CAMERAS.with(|pool| {
+                                    pool.borrow().get(&(camera_id.clone(), current_badge))
+                                        .map(|entry| {
+                                            let now = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default().as_millis() as u64;
+                                            now.saturating_sub(entry.last_buffer_at.load(Ordering::Relaxed))
+                                        }).unwrap_or(0)
+                                });
+                                if camera.should_try_main(current_badge, fallback_attempted,
+                                    s == pipeline::STATUS_ERROR, silent_ms)
+                                {
+                                    warn!("camera {} on display {}: substream {} — trying main for this layout visit",
+                                        camera_id, fallback_key.0, if s == pipeline::STATUS_ERROR { "failed" } else { "stalled" });
+                                    if let Some((paintable, badge, status)) = ensure_warm(&camera_id, &camera, Some("main"), area) {
+                                        fallback_attempted = true;
+                                        MAIN_FALLBACKS.with(|f| { f.borrow_mut().insert(fallback_key.clone()); });
+                                        WARM_CAMERAS.with(|pool| {
+                                            if let Some(entry) = pool.borrow().get(&(camera_id.clone(), badge)) {
+                                                if status.load(Ordering::Relaxed) == pipeline::STATUS_ERROR {
+                                                    pipeline::restart(&entry.pipeline, &entry.last_buffer_at,
+                                                        &entry.stream_status, &entry.pipeline_stats);
+                                                }
+                                            }
+                                        });
+                                        if let Some(picture) = picture_weak.upgrade() {
+                                            picture.set_paintable(Some(&paintable));
+                                        }
+                                        if let Some(label) = badge_weak.upgrade() {
+                                            label.set_label("M");
+                                            label.set_tooltip_text(Some("Main stream fallback: substream unavailable"));
+                                        }
+                                        current_badge = badge;
+                                        stream_status = status;
+                                        recompute_global_state();
+                                    }
+                                }
+                                match stream_status.load(Ordering::Relaxed) {
                                     pipeline::STATUS_RESTARTING => {
                                         lbl.set_label("↻");
                                         lbl.set_visible(true);
@@ -2713,6 +2797,7 @@ fn recompute_global_state() {
     // layout. Falls back to a "?" badge if pick_stream can't decide (camera
     // missing or no streams).
     fn cell_keys(
+        display_id: &str,
         layout: &crate::bundle::BundleLayout,
         cam_map: &HashMap<&str, &crate::bundle::BundleCamera>,
         out: &mut std::collections::HashSet<PoolKey>,
@@ -2730,6 +2815,9 @@ fn recompute_global_state() {
             };
             let area = (cell.col_span * cell.row_span) as f32 / total_area;
             if let Some((_, badge)) = cam.pick_stream(cell.stream_selector.as_deref(), area) {
+                let badge = if badge == 'S' && MAIN_FALLBACKS.with(|f| {
+                    f.borrow().contains(&(display_id.to_string(), cam_id.clone()))
+                }) { 'M' } else { badge };
                 out.insert((cam_id.clone(), badge));
             }
         }
@@ -2739,6 +2827,9 @@ fn recompute_global_state() {
         for cam_id in &layout.preload_camera_ids {
             if let Some(cam) = cam_map.get(cam_id.as_str()) {
                 if let Some((_, badge)) = cam.pick_stream(None, 0.0) {
+                    let badge = if badge == 'S' && MAIN_FALLBACKS.with(|f| {
+                        f.borrow().contains(&(display_id.to_string(), cam_id.clone()))
+                    }) { 'M' } else { badge };
                     out.insert((cam_id.clone(), badge));
                 }
             }
@@ -2763,7 +2854,7 @@ fn recompute_global_state() {
                 let t = if t == 0 { DEFAULT_COOLING_SECS } else { t };
                 max_cooling_secs = max_cooling_secs.max(t);
                 if !is_asleep {
-                    cell_keys(layout, &cam_map, &mut warm_set);
+                    cell_keys(&bd.id, layout, &cam_map, &mut warm_set);
                 }
             }
         }
@@ -2772,10 +2863,25 @@ fn recompute_global_state() {
         }
         for layout in &bd.layouts {
             if layout.priority == "hot" {
-                cell_keys(layout, &cam_map, &mut hot_set);
+                cell_keys(&bd.id, layout, &cam_map, &mut hot_set);
             }
         }
     }
+
+    // A fallback's main pipeline must remain warm even though the layout
+    // still requests substream. Prune decisions for removed displays/cameras.
+    MAIN_FALLBACKS.with(|fallbacks| {
+        let mut fallbacks = fallbacks.borrow_mut();
+        fallbacks.retain(|(display, camera)| {
+            active.iter().any(|(id, layout, _)| id == display && layout.is_some())
+                && cam_map.contains_key(camera.as_str())
+        });
+        for (display, camera) in fallbacks.iter() {
+            if active.iter().any(|(id, _, asleep)| id == display && !asleep) {
+                warm_set.insert((camera.clone(), 'M'));
+            }
+        }
+    });
 
     // Same walk for web/html cells — pool keys are URL / hash(HTML).
     let mut warm_webs: std::collections::HashSet<WebKey> = std::collections::HashSet::new();

@@ -108,8 +108,11 @@ class KioskPresentationTest {
 
     @Test fun remoteMenuOpensSettingsWithoutPuttingAnAddressFieldOnTheKiosk() {
         launch().use { scenario ->
-            awaitUi(scenario, "Kiosk menu did not appear") { activity ->
-                descendants(activity.window.decorView).any { it.contentDescription == "Kiosk menu" && it.isShown }
+            // A resumed activity can draw before its window receives input focus.
+            // Android drops injected keys in that interval (seen on API 29 CI).
+            awaitUi(scenario, "Kiosk menu window did not become ready for remote input") { activity ->
+                activity.hasWindowFocus() &&
+                    descendants(activity.window.decorView).any { it.contentDescription == "Kiosk menu" && it.isShown }
             }
             instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_MENU)
             awaitAccessibility("Remote Menu did not expose Settings") { root -> root.findAccessibilityNodeInfosByText("Settings").isNotEmpty() }

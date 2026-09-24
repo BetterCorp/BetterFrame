@@ -138,13 +138,7 @@ pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
         "preboot firmware: applying {} ({} bytes)",
         info.version, info.size_bytes
     );
-    let download_url = format!("{server}{}", info.download_url);
-    let client = crate::network::blocking_client();
-    let resp = client
-        .get(&download_url)
-        .timeout(Duration::from_secs(300))
-        .send()
-        .map_err(|e| format!("download failed: {e}"))?;
+    let resp = crate::update_download::get(server, None, &info.download_url, 0)?;
     if !resp.status().is_success() {
         return Err(format!("download HTTP {}", resp.status()));
     }
@@ -246,13 +240,8 @@ pub fn apply(
     on_progress("Downloading", 0);
 
     // 1. Download
-    let url = format!("{}{}", server, info.download_url.replace("/api/kiosk/firmware/download/", "/api/firmware/public/download/"));
     let client = crate::network::blocking_client();
-    let resp = client
-        .get(&url)
-        .timeout(Duration::from_secs(300))
-        .send()
-        .map_err(|e| format!("download request: {e}"))?;
+    let resp = crate::update_download::get(server, Some(key), &info.download_url, 0)?;
 
     if !resp.status().is_success() {
         return Err(format!("download HTTP {}", resp.status()));

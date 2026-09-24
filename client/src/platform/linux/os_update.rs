@@ -293,6 +293,11 @@ fn apply_tracked(
         crate::update_guard::record_attempt("os", &info.version)?;
     }
     let result = apply_inner(server, key, info, on_progress);
+    if result.as_ref().is_err_and(|error| crate::update_download::is_deferred(error)) {
+        // No installation was attempted. Refund only this reservation, retaining
+        // any previous genuine failures for the same version.
+        crate::update_guard::refund_attempt("os", &info.version)?;
+    }
     if let Err(ref error) = result {
         let _lock = JOURNAL_LOCK.lock().map_err(|_| "OS update record locked")?;
         let path = std::path::Path::new(JOURNAL_PATH);
@@ -326,7 +331,6 @@ fn apply_inner(
     // Streams directly to disk (no 1.2GB in RAM). On network failure,
     // resumes from where it left off using Range header. Retries up to
     // 5 times with 10s backoff between attempts.
-    let url = format!("{}{}", server, info.download_url.replace("/api/kiosk/os/download/", "/api/os/public/download/"));
     on_progress("Preparing", 0);
     let staging_dir = PathBuf::from("/var/lib/betterframe/tmp");
     fs::create_dir_all(&staging_dir).map_err(|e| format!("mkdir staging: {e}"))?;
@@ -346,21 +350,16 @@ fn apply_inner(
             info.size_bytes
         );
 
-        let client = crate::network::blocking_client();
-        let mut req = client.get(&url);
-        if existing_bytes > 0 {
-            req = req.header("Range", format!("bytes={existing_bytes}-"));
-        }
-
-        let resp = match req.timeout(Duration::from_secs(300)).send() {
-            Ok(r) => r,
-            Err(e) => {
-                warn!("os-update: download request failed (attempt {attempt}): {e}");
+        let resp = match crate::update_download::get(server, key, &info.download_url, existing_bytes) {
+            Ok(response) => response,
+            Err(error) => {
+                if crate::update_download::is_deferred(&error) { return Err(error); }
+                warn!("os-update: download request failed (attempt {attempt}): {error}");
                 if attempt < max_retries {
                     std::thread::sleep(Duration::from_secs(10));
                     continue;
                 }
-                return Err(format!("download failed after {max_retries} attempts: {e}"));
+                return Err(format!("download failed after {max_retries} attempts: {error}"));
             }
         };
 

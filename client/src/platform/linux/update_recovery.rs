@@ -174,6 +174,7 @@ mod tests {
     }
     #[test]
     fn rejected_auth_recovers_over_public_http_with_saved_preferences() {
+        let _download_lock = crate::update_download::TEST_LOCK.lock().unwrap();
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let server = format!("http://{}", listener.local_addr().unwrap());
@@ -187,6 +188,7 @@ mod tests {
                     "200 OK",
                     r#"{"up_to_date":false,"update":{"release_id":"app","version":"2.0.0","channel":"beta","sha256":"test","signature":"test","size_bytes":1,"download_url":"/api/firmware/public/download/app"}}"#,
                 ),
+                ("/api/kiosk/firmware/download/app", true, "401 Unauthorized", "{}"),
                 ("/api/firmware/public/download/app", false, "200 OK", "x"),
                 ("/api/kiosk/os/check?", true, "503 Unavailable", "{}"),
                 (

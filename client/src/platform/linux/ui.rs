@@ -1014,6 +1014,7 @@ fn maybe_apply_os_update(
     force: bool,
     recovery: bool,
 ) {
+    if crate::update_download::deferred() { return; }
     if !os_update::enabled() {
         info!("os-update: disabled or not a full BetterFrame OS installation");
         return;
@@ -1140,6 +1141,7 @@ fn maybe_apply_firmware_update(
     force: bool,
     recovery: bool,
 ) {
+    if crate::update_download::deferred() { return; }
     if !server::ota_enabled("BF_ENABLE_APP_OTA") {
         info!("firmware: disabled (BF_ENABLE_APP_OTA = 0)");
         return;
@@ -1238,6 +1240,11 @@ fn run_firmware_update_worker(
     UPDATE_APPLY_ACTIVE.store(false, Ordering::SeqCst);
     FIRMWARE_ACTIVE.store(false, Ordering::SeqCst);
     if let Err(err) = result {
+        if crate::update_download::is_deferred(&err) {
+            let _ = tx.send(WorkerMsg::UpdateProgress(None));
+            info!("firmware: download rate limited; retrying later without recording an installation failure");
+            return;
+        }
         let failures = crate::update_guard::record_failure("firmware", &info.version, &err);
         let _ = tx.send(WorkerMsg::UpdateProgress(None));
         warn!("firmware: apply failed: {err}");

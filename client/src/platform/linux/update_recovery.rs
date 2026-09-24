@@ -177,6 +177,7 @@ mod tests {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let server = format!("http://{}", listener.local_addr().unwrap());
+        let os_enabled = crate::os_update::enabled();
         let handler = std::thread::spawn(move || {
             let cases = [
                 ("/api/kiosk/firmware/check?", true, "401 Unauthorized", "{}"),
@@ -202,6 +203,9 @@ mod tests {
                 ),
             ];
             for (path, authenticated, status, body) in cases {
+                // App-only installations must not make OS update requests, even
+                // during recovery. Full-image hosts also exercise OS fallback.
+                if path.contains("/os/") && !os_enabled { continue; }
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))

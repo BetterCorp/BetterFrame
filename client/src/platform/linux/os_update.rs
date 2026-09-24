@@ -21,12 +21,22 @@
 //! (deploy/rauc/betterframe-rauc-boot.sh) flips Pi 5 tryboot on the
 //! next boot.
 //!
-//! Enabled unless env `BF_ENABLE_OS_OTA=0`. Non-A/B development installs
-//! must opt out explicitly so they do not try to RAUC-install bundles.
+//! Enabled only on full BetterFrame OS images with RAUC configuration and
+//! image identity files. `BF_ENABLE_OS_OTA=0` additionally disables OS updates.
 //!
 //! Compatibility: read from `/etc/betterframe/os-compatibility` (written
 //! at image build time). Falls back to env `BF_RAUC_COMPATIBILITY`, then
 //! a hardcoded default matching deploy/rauc/system.conf.
+
+#[path = "os_installation.rs"]
+mod os_installation;
+
+pub fn enabled() -> bool {
+    os_installation::updates_enabled(
+        std::path::Path::new("/"),
+        std::env::var("BF_ENABLE_OS_OTA").ok().as_deref(),
+    )
+}
 
 use crate::os_journal::{self, Journal, Stage};
 use std::fs;
@@ -174,6 +184,9 @@ pub fn check_recovery(server: &str) -> Option<UpdateInfo> {
 }
 
 fn check_at(server: &str, key: Option<&str>, path: &str, selection: &[(String, String)]) -> Option<UpdateInfo> {
+    if !enabled() {
+        return None;
+    }
     let compat = compatibility();
     let cur = current_os_version();
     let url = format!(
@@ -236,6 +249,9 @@ fn apply_tracked(
     on_progress: impl Fn(&str, u8),
     force: bool,
 ) -> Result<(), String> {
+    if !enabled() {
+        return Err("OS updates require a full BetterFrame OS installation".into());
+    }
     ensure_upgrade(info, &current_os_version())?;
     let id = boot_id();
     if id.is_empty() {
@@ -456,6 +472,10 @@ fn apply_inner(
     if cancel_requested() {
         let _ = fs::remove_file(&bundle_path);
         return Err("os update canceled after channel change".to_string());
+    }
+    // Recheck after the potentially long download before touching the host OS.
+    if !enabled() {
+        return Err("OS updates are disabled or this is not a full BetterFrame OS installation".into());
     }
     // 4. Ensure rauc daemon is running. `rauc install` talks to the D-Bus
     // daemon; if it's not active the CLI exits with code 2.

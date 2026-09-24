@@ -1001,7 +1001,7 @@ pub fn heartbeat(
             "axiom": crate::axiom::status(),
             "updates": {
                 "app_enabled": ota_enabled("BF_ENABLE_APP_OTA"),
-                "os_enabled": ota_enabled("BF_ENABLE_OS_OTA"),
+                "os_enabled": crate::os_update::enabled(),
             },
         },
         "onvif_subscriptions": serde_json::to_value(crate::onvif_events::get_statuses()).unwrap_or_default(),

@@ -280,6 +280,9 @@ def CDLL(name):
             self.assertIn('BF_ENABLE_OS_OTA=0', unit)
             self.assertIn('/opt/betterframe/kiosk/betterframe-kiosk', unit)
             self.assertNotIn('reboot', unit)
+        repair = self.shell('write_repair_override').stdout
+        for action in ['FailureAction', 'SuccessAction', 'StartLimitAction']:
+            self.assertIn(f'{action}=none', repair)
         updater = (ROOT / 'client/src/platform/linux/firmware.rs').read_text()
         self.assertNotIn('.arg("reboot")', updater)
         self.assertNotIn('Command::new', updater)

@@ -319,7 +319,7 @@ fn activate(app: &Application) {
                     }
                     std::thread::sleep(Duration::from_secs(2));
                 }
-                if server::ota_enabled("BF_ENABLE_OS_OTA") && os_update::boot_is_confirmed() && server::auto_updates_allowed() {
+                if os_update::enabled() && os_update::boot_is_confirmed() && server::auto_updates_allowed() {
                     let _ = tx.send(WorkerMsg::StartupStatus("Checking for OS updates".into()));
                     let update = if server::update_policy_path().exists() {
                         os_update::check_recovery(&server)
@@ -1014,8 +1014,8 @@ fn maybe_apply_os_update(
     force: bool,
     recovery: bool,
 ) {
-    if !server::ota_enabled("BF_ENABLE_OS_OTA") {
-        info!("os-update: disabled (BF_ENABLE_OS_OTA = 0)");
+    if !os_update::enabled() {
+        info!("os-update: disabled or not a full BetterFrame OS installation");
         return;
     }
     if !os_update::boot_is_confirmed() {

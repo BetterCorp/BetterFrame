@@ -30,9 +30,13 @@ test("unpaired kiosks render pairing and confirm boot before checking signed OS 
   const api = readFileSync(new URL("../src/plugins/service-api-http/index.ts", import.meta.url), "utf8");
   const proxy = readFileSync(new URL("../../deploy/angie/betterframe.docker.conf", import.meta.url), "utf8");
   const update = kiosk.indexOf("os_update::check_public(&server)");
-  assert.ok(kiosk.indexOf("WorkerMsg::ShowPairingCode(session.code.clone())") < update);
-  assert.ok(kiosk.indexOf('server::ota_enabled("BF_ENABLE_OS_OTA") && os_update::boot_is_confirmed()') < update);
-  assert.ok(update < kiosk.indexOf("server::poll_claim_until_expiry"));
+  const pairing = kiosk.indexOf("WorkerMsg::ShowPairingCode(session.code.clone())");
+  const gate = kiosk.indexOf("os_update::enabled() && os_update::boot_is_confirmed()");
+  const polling = kiosk.indexOf("server::poll_claim_until_expiry");
+  assert.ok(pairing >= 0, "pairing screen must be shown");
+  assert.ok(gate > pairing, "OS eligibility and boot confirmation must be checked after pairing is shown");
+  assert.ok(update > gate, "public OS update check must follow the eligibility gate");
+  assert.ok(polling > update, "claim polling must follow the public OS update check");
   const pairingScreen = kiosk.slice(kiosk.indexOf("fn show_pairing_code("), kiosk.indexOf("fn show_pairing_progress("));
   assert.match(pairingScreen, /mark_kiosk_healthy\(\)/);
   assert.match(api, /\/api\/os\/public\/check/);

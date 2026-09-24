@@ -661,6 +661,7 @@ write_repair_override() {
 # Managed by setup.sh; custom server settings belong in override.conf.
 [Unit]
 FailureAction=none
+SuccessAction=none
 StartLimitAction=none
 StartLimitIntervalSec=0
 

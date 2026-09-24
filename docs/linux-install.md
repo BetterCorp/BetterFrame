@@ -167,3 +167,9 @@ offline discovery screen can confirm the running candidate without enrollment
 or server connectivity. The initial logo and initialization progress alone do
 not confirm startup. A late frame/heartbeat from the old app cannot confirm the
 new candidate. Saved alpha releases use the dev channel.
+
+OS updates require the full BetterFrame OS image, including its OS version,
+compatibility identity, and RAUC configuration. Setting `BF_ENABLE_OS_OTA=1`
+on an app-only installation cannot enable host OS updates. App updates restart
+only BetterFrame. Re-run `setup.sh` to repair inherited systemd reboot actions
+from older standalone installations.

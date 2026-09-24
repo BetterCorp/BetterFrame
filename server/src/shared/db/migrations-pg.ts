@@ -102,6 +102,13 @@ export const PUBLIC_MIGRATIONS: readonly string[] = [
     claim_encrypted TEXT,
     acknowledged_at TIMESTAMPTZ
   )`,
+  // Keep only password hashes, so deleted devices can authenticate a reset signal.
+  `CREATE TABLE public.deleted_kiosk_keys (
+    key_hash TEXT PRIMARY KEY,
+    key_prefix TEXT NOT NULL,
+    deleted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX deleted_kiosk_keys_prefix ON public.deleted_kiosk_keys(key_prefix)`,
 ];
 
 /**

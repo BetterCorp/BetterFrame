@@ -297,6 +297,9 @@ fn apply_tracked(
         // No installation was attempted. Refund only this reservation, retaining
         // any previous genuine failures for the same version.
         crate::update_guard::refund_attempt("os", &info.version)?;
+        // Keep the local journal retryable, but do not publish a failed-install
+        // status for a download that the server asked us to defer.
+        return result;
     }
     if let Err(ref error) = result {
         let _lock = JOURNAL_LOCK.lock().map_err(|_| "OS update record locked")?;

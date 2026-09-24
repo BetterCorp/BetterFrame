@@ -1111,6 +1111,11 @@ fn maybe_apply_os_update(
         UPDATE_APPLY_ACTIVE.store(false, Ordering::SeqCst);
         OS_UPDATE_ACTIVE.store(false, Ordering::SeqCst);
         if let Err(err) = result {
+            if crate::update_download::is_deferred(&err) {
+                let _ = tx.send(WorkerMsg::UpdateProgress(None));
+                info!("os-update: download rate limited; retrying later without reporting an installation failure");
+                return;
+            }
             let failures = crate::update_guard::failure_count("os", &info.version);
             let _ = tx.send(WorkerMsg::UpdateProgress(None));
             warn!("os-update: apply failed: {err}");

@@ -64,6 +64,9 @@ mod ui;
 #[path = "platform/linux/update_guard.rs"]
 mod update_guard;
 #[cfg(target_os = "linux")]
+#[path = "platform/linux/update_recovery.rs"]
+mod update_recovery;
+#[cfg(target_os = "linux")]
 #[path = "platform/linux/ws_client.rs"]
 mod ws_client;
 

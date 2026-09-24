@@ -160,15 +160,20 @@ pub struct UpdateInfo {
 
 /// Public stable-channel check used before the kiosk has paired.
 pub fn check_public(server: &str) -> Option<UpdateInfo> {
-    check_at(server, None, "/api/os/public/check")
+    check_at(server, None, "/api/os/public/check", &[])
 }
 
 /// Authenticated check used after pairing.
 pub fn check(server: &str, key: &str) -> Option<UpdateInfo> {
-    check_at(server, Some(key), "/api/kiosk/os/check")
+    check_at(server, Some(key), "/api/kiosk/os/check", &[])
 }
 
-fn check_at(server: &str, key: Option<&str>, path: &str) -> Option<UpdateInfo> {
+pub fn check_recovery(server: &str) -> Option<UpdateInfo> {
+    let policy = crate::update_recovery::policy_for(server)?;
+    check_at(server, None, "/api/os/public/check", &policy.selection(true))
+}
+
+fn check_at(server: &str, key: Option<&str>, path: &str, selection: &[(String, String)]) -> Option<UpdateInfo> {
     let compat = compatibility();
     let cur = current_os_version();
     let url = format!(
@@ -177,7 +182,7 @@ fn check_at(server: &str, key: Option<&str>, path: &str) -> Option<UpdateInfo> {
         cur = urlencoding::encode(&cur),
     );
     let client = crate::network::blocking_client();
-    let mut request = client.get(&url);
+    let mut request = client.get(&url).query(selection);
     if let Some(key) = key {
         request = request.header("Authorization", format!("Bearer {key}"));
     }
@@ -185,19 +190,19 @@ fn check_at(server: &str, key: Option<&str>, path: &str) -> Option<UpdateInfo> {
         Ok(r) => r,
         Err(err) => {
             warn!("os-update check: request failed: {err}");
-            return None;
+            return if key.is_some() { check_recovery(server) } else { None };
         }
     };
 
     if !resp.status().is_success() {
         warn!("os-update check: HTTP {}", resp.status());
-        return None;
+        return if key.is_some() { check_recovery(server) } else { None };
     }
     match resp.json::<CheckResponse>() {
         Ok(c) => newer_update(c, &cur),
         Err(err) => {
             warn!("os-update check: parse failed: {err}");
-            None
+            if key.is_some() { check_recovery(server) } else { None }
         }
     }
 }
@@ -305,7 +310,7 @@ fn apply_inner(
     // Streams directly to disk (no 1.2GB in RAM). On network failure,
     // resumes from where it left off using Range header. Retries up to
     // 5 times with 10s backoff between attempts.
-    let url = format!("{}{}", server, info.download_url);
+    let url = format!("{}{}", server, info.download_url.replace("/api/kiosk/os/download/", "/api/os/public/download/"));
     on_progress("Preparing", 0);
     let staging_dir = PathBuf::from("/var/lib/betterframe/tmp");
     fs::create_dir_all(&staging_dir).map_err(|e| format!("mkdir staging: {e}"))?;
@@ -327,9 +332,6 @@ fn apply_inner(
 
         let client = crate::network::blocking_client();
         let mut req = client.get(&url);
-        if let Some(key) = key {
-            req = req.header("Authorization", format!("Bearer {key}"));
-        }
         if existing_bytes > 0 {
             req = req.header("Range", format!("bytes={existing_bytes}-"));
         }

@@ -221,6 +221,17 @@ fn activate(app: &Application) {
 
     let (tx, rx) = mpsc::channel::<WorkerMsg>();
 
+    let recovery_tx = tx.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(120));
+        if crate::update_recovery::needed() && crate::update_recovery::allowed() {
+            if let Some(policy) = crate::update_recovery::load() {
+                maybe_apply_os_update(&policy.server, "", &recovery_tx, false, true);
+                maybe_apply_firmware_update(&policy.server, "", &recovery_tx, false, true);
+            }
+        }
+    });
+
     let server_url = std::env::var("BETTERFRAME_SERVER")
         .ok()
         .or_else(|| std::env::args().nth(1));
@@ -251,13 +262,21 @@ fn activate(app: &Application) {
         // Bootstrap updates run before pairing so an older image can repair
         // its client before talking to a newer server.
         if !server::is_paired() {
-            if server::ota_enabled("BF_ENABLE_APP_OTA") {
+            if server::ota_enabled("BF_ENABLE_APP_OTA") && server::auto_updates_allowed() {
                 let _ = tx.send(WorkerMsg::StartupStatus("Checking for app updates".into()));
                 let current = crate::server::kiosk_app_version();
-                if let Some(update) = crate::firmware::check_public(&server, current) {
-                    info!("preboot update available: {} → {}", current, update.version);
-                    if let Err(e) = crate::firmware::apply_public(&server, &update) {
-                        tracing::warn!("preboot update failed: {e}");
+                let update = if server::update_policy_path().exists() {
+                    crate::firmware::check_recovery(&server, current)
+                } else {
+                    crate::firmware::check_public(&server, current)
+                };
+                if let Some(update) = update {
+                    if server::auto_updates_allowed() && UPDATE_APPLY_ACTIVE.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+                        info!("preboot update available: {} → {}", current, update.version);
+                        if let Err(e) = crate::firmware::apply_public(&server, &update) {
+                            tracing::warn!("preboot update failed: {e}");
+                        }
+                        UPDATE_APPLY_ACTIVE.store(false, Ordering::SeqCst);
                     }
                 }
             }
@@ -300,9 +319,15 @@ fn activate(app: &Application) {
                     }
                     std::thread::sleep(Duration::from_secs(2));
                 }
-                if server::ota_enabled("BF_ENABLE_OS_OTA") && os_update::boot_is_confirmed() {
+                if server::ota_enabled("BF_ENABLE_OS_OTA") && os_update::boot_is_confirmed() && server::auto_updates_allowed() {
                     let _ = tx.send(WorkerMsg::StartupStatus("Checking for OS updates".into()));
-                    if let Some(update) = os_update::check_public(&server) {
+                    let update = if server::update_policy_path().exists() {
+                        os_update::check_recovery(&server)
+                    } else {
+                        os_update::check_public(&server)
+                    };
+                    if let Some(update) = update.filter(|_| server::auto_updates_allowed()
+                        && UPDATE_APPLY_ACTIVE.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok()) {
                         let version = update.version.clone();
                         let tx_progress = tx.clone();
                         if let Err(e) = os_update::apply_public(&server, &update, move |phase, pct| {
@@ -314,6 +339,7 @@ fn activate(app: &Application) {
                             let _ = tx.send(WorkerMsg::UpdateProgress(None));
                             tracing::warn!("preboot OS update failed: {e}");
                         }
+                        UPDATE_APPLY_ACTIVE.store(false, Ordering::SeqCst);
                     }
                 }
                 let _ = tx.send(WorkerMsg::ShowPairingCode(session.code.clone()));
@@ -522,6 +548,7 @@ fn activate(app: &Application) {
                                 &key_for_reload,
                                 &tx_for_reload,
                                 force,
+                                false,
                             );
                         } else {
                             info!("firmware: outside configured update window");
@@ -534,6 +561,7 @@ fn activate(app: &Application) {
                                 &key_for_reload,
                                 &tx_for_reload,
                                 force,
+                                false,
                             );
                         } else {
                             info!("os-update: outside configured update window");
@@ -576,8 +604,8 @@ fn activate(app: &Application) {
                 confirmation_reported = os_update::report_confirmed(&server, &key);
             }
             if server::auto_updates_allowed() {
-                maybe_apply_os_update(&server, &key, &tx_progress, false);
-                maybe_apply_firmware_update(&server, &key, &tx_progress, false);
+                maybe_apply_os_update(&server, &key, &tx_progress, false, false);
+                maybe_apply_firmware_update(&server, &key, &tx_progress, false, false);
             } else {
                 info!("auto-update: outside configured update window");
             }
@@ -984,6 +1012,7 @@ fn maybe_apply_os_update(
     kiosk_key: &str,
     tx: &mpsc::Sender<WorkerMsg>,
     force: bool,
+    recovery: bool,
 ) {
     if !server::ota_enabled("BF_ENABLE_OS_OTA") {
         info!("os-update: disabled (BF_ENABLE_OS_OTA = 0)");
@@ -1007,7 +1036,12 @@ fn maybe_apply_os_update(
     let tx = tx.clone();
     std::thread::spawn(move || {
         let _lock = OS_UPDATE_LOCK.lock().unwrap();
-        let Some(info) = os_update::check(&server_url, &kiosk_key) else {
+        let update = if recovery {
+            os_update::check_recovery(&server_url)
+        } else {
+            os_update::check(&server_url, &kiosk_key)
+        };
+        let Some(info) = update else {
             info!("os-update: no eligible update");
             OS_UPDATE_ACTIVE.store(false, Ordering::SeqCst);
             return;
@@ -1049,6 +1083,10 @@ fn maybe_apply_os_update(
                 "size_bytes": info.size_bytes,
             }),
         );
+        if !force && !server::auto_updates_allowed() {
+            OS_UPDATE_ACTIVE.store(false, Ordering::SeqCst);
+            return;
+        }
         if UPDATE_APPLY_ACTIVE
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
@@ -1100,6 +1138,7 @@ fn maybe_apply_firmware_update(
     kiosk_key: &str,
     tx: &mpsc::Sender<WorkerMsg>,
     force: bool,
+    recovery: bool,
 ) {
     if !server::ota_enabled("BF_ENABLE_APP_OTA") {
         info!("firmware: disabled (BF_ENABLE_APP_OTA = 0)");
@@ -1117,7 +1156,7 @@ fn maybe_apply_firmware_update(
     let kiosk_key = kiosk_key.to_string();
     let tx = tx.clone();
     std::thread::spawn(move || {
-        run_firmware_update_worker(server_url, kiosk_key, tx, force);
+        run_firmware_update_worker(server_url, kiosk_key, tx, force, recovery);
     });
 }
 
@@ -1126,10 +1165,16 @@ fn run_firmware_update_worker(
     kiosk_key: String,
     tx: mpsc::Sender<WorkerMsg>,
     force: bool,
+    recovery: bool,
 ) {
     let _lock = FIRMWARE_LOCK.lock().unwrap();
     let current = option_env!("BF_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
-    let Some(info) = firmware::check(&server_url, &kiosk_key, current) else {
+    let update = if recovery {
+        firmware::check_recovery(&server_url, current)
+    } else {
+        firmware::check(&server_url, &kiosk_key, current)
+    };
+    let Some(info) = update else {
         info!("firmware: no eligible update");
         FIRMWARE_ACTIVE.store(false, Ordering::SeqCst);
         return;
@@ -1172,6 +1217,10 @@ fn run_firmware_update_worker(
             "release_id": &info.release_id,
         }),
     );
+    if !force && !server::auto_updates_allowed() {
+        FIRMWARE_ACTIVE.store(false, Ordering::SeqCst);
+        return;
+    }
     if UPDATE_APPLY_ACTIVE
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()

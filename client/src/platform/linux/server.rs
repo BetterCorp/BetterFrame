@@ -1051,6 +1051,7 @@ pub fn heartbeat(
                         "_check says key still valid, ignoring bf_kiosk_deleted from heartbeat"
                     );
                 }
+                crate::update_recovery::record_heartbeat(server, &body);
                 let fw = body.get("firmware_channel").and_then(|v| v.as_str());
                 let os = body.get("os_update_channel").and_then(|v| v.as_str());
                 let fw_target = body.get("firmware_target_version").map(|v| v.as_str());
@@ -1074,7 +1075,14 @@ pub fn heartbeat(
         .unwrap_or(false)
 }
 
+pub fn update_policy_path() -> PathBuf {
+    state_dir().join("update-policy.json")
+}
+
 pub fn auto_updates_allowed() -> bool {
+    if update_policy_path().exists() {
+        return crate::update_recovery::allowed();
+    }
     AUTO_UPDATES_ALLOWED.load(Ordering::SeqCst)
 }
 
@@ -1134,6 +1142,7 @@ pub fn cancel_active_updates(reason: &str) {
 }
 
 pub fn clear_cached_update_preferences() {
+    crate::update_recovery::suspend();
     CACHED_FIRMWARE_CHANNEL.lock().unwrap().take();
     CACHED_FIRMWARE_TARGET_VERSION.lock().unwrap().take();
     CACHED_OS_CHANNEL.lock().unwrap().take();

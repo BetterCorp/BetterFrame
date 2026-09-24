@@ -952,6 +952,7 @@ pub fn heartbeat(
     displays: &[DisplayReport],
     hw: &crate::hwmon::HwInfo,
 ) -> bool {
+    let policy_generation = crate::update_recovery::heartbeat_generation();
     let client = crate::network::blocking_client();
     let display_info: Vec<_> = displays
         .iter()
@@ -1051,7 +1052,7 @@ pub fn heartbeat(
                         "_check says key still valid, ignoring bf_kiosk_deleted from heartbeat"
                     );
                 }
-                crate::update_recovery::record_heartbeat(server, &body);
+                crate::update_recovery::record_heartbeat(server, &body, policy_generation);
                 let fw = body.get("firmware_channel").and_then(|v| v.as_str());
                 let os = body.get("os_update_channel").and_then(|v| v.as_str());
                 let fw_target = body.get("firmware_target_version").map(|v| v.as_str());

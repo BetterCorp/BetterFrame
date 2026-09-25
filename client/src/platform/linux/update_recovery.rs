@@ -10,10 +10,29 @@ use std::{
 
 static LAST_HEARTBEAT: Mutex<Option<Instant>> = Mutex::new(None);
 // Serializes policy publication with cancellation and identifies in-flight requests.
-static POLICY_WRITE: Mutex<u64> = Mutex::new(0);
+static POLICY_WRITE: Mutex<PolicyWrites> = Mutex::new(PolicyWrites {
+    generation: 0,
+    next_request: 0,
+    last_saved: 0,
+});
 
-pub fn heartbeat_generation() -> u64 {
-    *POLICY_WRITE.lock().unwrap()
+struct PolicyWrites {
+    generation: u64,
+    next_request: u64,
+    last_saved: u64,
+}
+
+#[derive(Clone, Copy)]
+pub struct HeartbeatRequest {
+    generation: u64,
+    sequence: u64,
+}
+
+/// Capture before sending, so concurrent responses cannot roll back a newer policy.
+pub fn begin_heartbeat() -> HeartbeatRequest {
+    let mut state = POLICY_WRITE.lock().unwrap();
+    state.next_request += 1;
+    HeartbeatRequest { generation: state.generation, sequence: state.next_request }
 }
 
 pub fn load() -> Option<Policy> {
@@ -34,7 +53,7 @@ pub fn policy_for(server: &str) -> Option<Policy> {
     load().filter(|policy| policy.server == server)
 }
 
-pub fn record_heartbeat(server: &str, body: &serde_json::Value, generation: u64) {
+pub fn record_heartbeat(server: &str, body: &serde_json::Value, request: HeartbeatRequest) {
     // A successful HTTP response with an invalid body is not a healthy control plane.
     if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         return;
@@ -57,8 +76,8 @@ pub fn record_heartbeat(server: &str, body: &serde_json::Value, generation: u64)
             .into(),
         os_update_target_version: body["os_update_target_version"].as_str().map(str::to_owned),
     };
-    let current_generation = POLICY_WRITE.lock().unwrap();
-    if generation != *current_generation {
+    let mut state = POLICY_WRITE.lock().unwrap();
+    if request.generation != state.generation || request.sequence <= state.last_saved {
         return;
     }
     let path = crate::server::update_policy_path();
@@ -66,6 +85,7 @@ pub fn record_heartbeat(server: &str, body: &serde_json::Value, generation: u64)
     if let Err(error) = result {
         tracing::warn!("update policy could not be saved: {error}");
     } else {
+        state.last_saved = request.sequence;
         let _ = fs::remove_file(path.with_extension("suspended"));
     }
 }
@@ -92,8 +112,8 @@ fn save(path: &Path, policy: &Policy) -> Result<(), String> {
 }
 
 pub fn suspend() {
-    let mut generation = POLICY_WRITE.lock().unwrap();
-    *generation = generation.wrapping_add(1);
+    let mut state = POLICY_WRITE.lock().unwrap();
+    state.generation += 1;
     if let Err(error) = fs::write(
         crate::server::update_policy_path().with_extension("suspended"),
         b"awaiting updated policy",
@@ -242,7 +262,7 @@ mod tests {
             "update_schedule":{"mode":"always","windows":[],"timezone":"UTC"},
             "firmware_channel":"beta","firmware_target_version":"2.0.0",
             "os_update_channel":"beta","os_update_target_version":"2.0.0"});
-        record_heartbeat(&server, &body, heartbeat_generation());
+        record_heartbeat(&server, &body, begin_heartbeat());
         assert!(allowed());
         assert!(!needed());
         let update = crate::firmware::check(&server, "deleted-key", "1.0.0").unwrap();
@@ -263,7 +283,7 @@ mod tests {
         suspend();
         assert!(!allowed());
         assert!(policy_for(&server).is_none());
-        record_heartbeat(&server, &body, heartbeat_generation());
+        record_heartbeat(&server, &body, begin_heartbeat());
         assert!(allowed());
         let _ = fs::remove_file(crate::server::update_policy_path());
     }
@@ -274,14 +294,14 @@ mod tests {
         let old_body = serde_json::json!({"ok":true,
             "update_schedule":{"mode":"always","windows":[],"timezone":"UTC"},
             "firmware_channel":"beta","firmware_target_version":"2.0.0"});
-        record_heartbeat(server, &old_body, heartbeat_generation());
-        let in_flight = heartbeat_generation();
+        record_heartbeat(server, &old_body, begin_heartbeat());
+        let in_flight = begin_heartbeat();
         suspend();
         record_heartbeat(server, &old_body, in_flight);
         assert!(!allowed());
         assert!(policy_for(server).is_none());
 
-        let fresh = heartbeat_generation();
+        let fresh = begin_heartbeat();
         let mut new_body = old_body.clone();
         new_body["firmware_target_version"] = serde_json::json!("3.0.0");
         record_heartbeat(server, &new_body, fresh);
@@ -292,11 +312,37 @@ mod tests {
         assert_eq!(policy_for(server).unwrap().firmware_target_version.as_deref(), Some("3.0.0"));
         // Every cancellation invalidates requests, including ones begun suspended.
         suspend();
-        let suspended_request = heartbeat_generation();
+        let suspended_request = begin_heartbeat();
         suspend();
         record_heartbeat(server, &new_body, suspended_request);
         assert!(policy_for(server).is_none());
-        record_heartbeat(server, &new_body, heartbeat_generation());
+        record_heartbeat(server, &new_body, begin_heartbeat());
+        assert!(allowed());
+        let _ = fs::remove_file(crate::server::update_policy_path());
+    }
+
+    #[test]
+    fn older_response_cannot_restore_always_after_newer_window_policy() {
+        let _download_lock = crate::update_download::TEST_LOCK.lock().unwrap();
+        let server = "https://frame.example";
+        let old_body = serde_json::json!({"ok":true,
+            "update_schedule":{"mode":"always","windows":[],"timezone":"UTC"}});
+        record_heartbeat(server, &old_body, begin_heartbeat());
+        assert!(allowed());
+        let older = begin_heartbeat();
+        let newer = begin_heartbeat();
+        let mut new_body = old_body.clone();
+        new_body["update_schedule"]["mode"] = serde_json::json!("windows");
+        // No cancellation: a settings change can be delivered solely by heartbeat.
+        record_heartbeat(server, &new_body, newer);
+        record_heartbeat(server, &old_body, older);
+        assert_eq!(policy_for(server).unwrap().schedule.mode, "windows");
+        assert!(!allowed());
+        // Starting a request that fails does not discard another usable response.
+        let successful = begin_heartbeat();
+        let failed = begin_heartbeat();
+        record_heartbeat(server, &serde_json::json!({"ok":false}), failed);
+        record_heartbeat(server, &old_body, successful);
         assert!(allowed());
         let _ = fs::remove_file(crate::server::update_policy_path());
     }

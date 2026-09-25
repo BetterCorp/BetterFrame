@@ -3076,6 +3076,12 @@ export class Repository {
     void this.notify("kiosks", "update", id);
   }
 
+  async listDeletedKioskKeysByPrefix(prefix: string): Promise<Array<{ key_hash: string }>> {
+    return await this._all(
+      "SELECT key_hash FROM public.deleted_kiosk_keys WHERE key_prefix = ?", [prefix],
+    ) as Array<{ key_hash: string }>;
+  }
+
   async deleteKiosk(id: string): Promise<void> {
     const displays = await this.listDisplaysForKiosk(id);
     await this.transact(async () => {
@@ -3085,6 +3091,11 @@ export class Repository {
       await this._run(`DELETE FROM displays WHERE kiosk_id = ?`, [id]);
       await this._run(`DELETE FROM kiosk_labels WHERE kiosk_id = ?`, [id]);
       await this._run(`DELETE FROM kiosk_gpio_bindings WHERE kiosk_id = ?`, [id]);
+      await this._run(
+        `INSERT INTO public.deleted_kiosk_keys (key_hash, key_prefix)
+         SELECT key_hash, key_prefix FROM kiosks WHERE id = ?
+         ON CONFLICT (key_hash) DO NOTHING`, [id],
+      );
       await this._run(`DELETE FROM kiosks WHERE id = ?`, [id]);
     });
     for (const display of displays) {

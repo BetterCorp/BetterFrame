@@ -69,7 +69,23 @@ export function registerViewerDeviceAuth(app: H3, repo: Repository, auth: AuthAp
     }
     const key = bearer ?? rawKeyCookie;
     const verified = key ? await auth.verifyKioskKey(key) : null;
-    if (!verified) return new Response(null, { status: 401 });
+    if (!verified) {
+      // Existing Linux clients expect a successful deletion envelope, followed by
+      // an independent 401 from _check. Never turn an unknown key into a reset.
+      if (bearer && bearer.length >= 8
+          && ((path === "/api/kiosk/bundle" && event.req.method === "GET")
+            || (path === "/api/kiosk/heartbeat" && event.req.method === "POST"))) {
+        const deleted = await repo.listDeletedKioskKeysByPrefix(bearer.slice(0, 8));
+        for (const candidate of deleted) {
+          if (await auth.verifyPassword(bearer, candidate.key_hash)) {
+            return Response.json({ bf_kiosk_deleted: true }, {
+              headers: { "cache-control": "no-store" },
+            });
+          }
+        }
+      }
+      return new Response(null, { status: 401 });
+    }
     return repo.adapter.withSearchPath(verified.schema_name, async () => {
       const kiosk = await repo.getKioskById(verified.id);
       if (!kiosk?.enabled) return new Response(null, { status: 401 });

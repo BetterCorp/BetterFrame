@@ -50,6 +50,20 @@ pub fn record_attempt(kind: &str, version: &str) -> Result<u32, String> {
     Ok(attempts)
 }
 
+/// Undo one pre-recorded attempt when the server deferred the download.
+pub fn refund_attempt(kind: &str, version: &str) -> Result<(), String> {
+    let _lock = GUARD_LOCK.lock().map_err(|_| "Update attempt record locked")?;
+    let mut state = read_state();
+    refund_entry(&mut state, &key(kind, version));
+    write_state(&state)
+}
+
+fn refund_entry(state: &mut AttemptState, key: &str) {
+    if let Some(entry) = state.entries.get_mut(key) {
+        entry.failures = entry.failures.saturating_sub(1);
+    }
+}
+
 pub fn record_failure(kind: &str, version: &str, err: &str) -> u32 {
     let _lock = GUARD_LOCK.lock().ok();
     let mut state = read_state();
@@ -124,4 +138,21 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rate_limit_refund_preserves_previous_installation_failures() {
+        let mut state = AttemptState::default();
+        state.entries.insert("os:2.0".into(), AttemptEntry {failures: 3, ..Default::default()});
+        refund_entry(&mut state, "os:2.0");
+        assert_eq!(state.entries["os:2.0"].failures, 2);
+        refund_entry(&mut state, "os:unknown");
+        assert_eq!(state.entries.len(), 1);
+        state.entries.get_mut("os:2.0").unwrap().failures = 0;
+        refund_entry(&mut state, "os:2.0");
+        assert_eq!(state.entries["os:2.0"].failures, 0);
+    }
 }

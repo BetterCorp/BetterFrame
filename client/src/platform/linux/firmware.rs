@@ -99,6 +99,15 @@ pub struct UpdateInfo {
 /// Public pre-boot firmware check — no auth needed. Always checks stable
 /// channel. Used before pairing to self-update to latest binary.
 pub fn check_public(server: &str, current_version: &str) -> Option<UpdateInfo> {
+    check_public_with_selection(server, current_version, &[])
+}
+
+pub fn check_recovery(server: &str, current_version: &str) -> Option<UpdateInfo> {
+    let policy = crate::update_recovery::policy_for(server)?;
+    check_public_with_selection(server, current_version, &policy.selection(false))
+}
+
+fn check_public_with_selection(server: &str, current_version: &str, selection: &[(String, String)]) -> Option<UpdateInfo> {
     let url = format!(
         "{server}/api/firmware/public/check?target={target}&arch={arch}&current={cur}",
         target = FIRMWARE_TARGET,
@@ -106,7 +115,7 @@ pub fn check_public(server: &str, current_version: &str) -> Option<UpdateInfo> {
         cur = current_version,
     );
     let client = crate::network::blocking_client();
-    let resp = match client.get(&url).timeout(Duration::from_secs(10)).send() {
+    let resp = match client.get(&url).query(selection).timeout(Duration::from_secs(10)).send() {
         Ok(r) => r,
         Err(err) => {
             warn!("preboot firmware check: {err}");
@@ -129,13 +138,7 @@ pub fn apply_public(server: &str, info: &UpdateInfo) -> Result<(), String> {
         "preboot firmware: applying {} ({} bytes)",
         info.version, info.size_bytes
     );
-    let download_url = format!("{server}{}", info.download_url);
-    let client = crate::network::blocking_client();
-    let resp = client
-        .get(&download_url)
-        .timeout(Duration::from_secs(300))
-        .send()
-        .map_err(|e| format!("download failed: {e}"))?;
+    let resp = crate::update_download::get(server, None, &info.download_url, 0)?;
     if !resp.status().is_success() {
         return Err(format!("download HTTP {}", resp.status()));
     }
@@ -203,19 +206,19 @@ pub fn check(server: &str, key: &str, current_version: &str) -> Option<UpdateInf
         Ok(r) => r,
         Err(err) => {
             warn!("firmware check: request failed: {err}");
-            return None;
+            return check_recovery(server, current_version);
         }
     };
 
     if !resp.status().is_success() {
         warn!("firmware check: HTTP {}", resp.status());
-        return None;
+        return check_recovery(server, current_version);
     }
     match resp.json::<CheckResponse>() {
         Ok(c) => newer_update(c, current_version),
         Err(err) => {
             warn!("firmware check: parse failed: {err}");
-            None
+            check_recovery(server, current_version)
         }
     }
 }
@@ -237,14 +240,8 @@ pub fn apply(
     on_progress("Downloading", 0);
 
     // 1. Download
-    let url = format!("{}{}", server, info.download_url);
     let client = crate::network::blocking_client();
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {key}"))
-        .timeout(Duration::from_secs(300))
-        .send()
-        .map_err(|e| format!("download request: {e}"))?;
+    let resp = crate::update_download::get(server, Some(key), &info.download_url, 0)?;
 
     if !resp.status().is_success() {
         return Err(format!("download HTTP {}", resp.status()));

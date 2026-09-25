@@ -1,3 +1,4 @@
+import { selectPublicUpdate } from "../../shared/public-update-selection.js";
 import { effectiveFirmwareChannel } from "../../shared/kiosk-channels.js";
 import { parseKioskLogs } from "../../shared/kiosk-logs.js";
 import { reconcileOsUpdateReport } from "../../shared/os-update-status.js";
@@ -535,7 +536,7 @@ function registerPairingRoutes(
   });
 
   // Public firmware check — no auth. Used by kiosks on first boot before
-  // pairing to self-update to latest stable binary. Always stable channel.
+  // pairing or during auth outages. Defaults to stable; recovery uses saved preferences.
   app.get("/api/firmware/public/check", async (event) => {
     const url = new URL(event.req.url);
     const target = normalizeFirmwareTarget(
@@ -544,7 +545,10 @@ function registerPairingRoutes(
     if (!target) throw createError({ statusCode: 400, statusMessage: "target required" });
     const current = url.searchParams.get("current")?.trim() ?? "";
 
-    const release = await withDefaultTenant(repo, null, () => repo.getLatestFirmwareRelease("stable", target));
+    const release = await withDefaultTenant(repo, null, () => selectPublicUpdate(url.searchParams,
+      (channel) => repo.getLatestFirmwareRelease(channel, target),
+      (version) => repo.getFirmwareReleaseByVersionArch(version, target),
+    ));
     if (!release || !isVersionUpgrade(release.version, current)) {
       return { up_to_date: true };
     }
@@ -554,6 +558,7 @@ function registerPairingRoutes(
       update: {
         release_id: release.id,
         version: release.version,
+        channel: release.channel,
         sha256: release.sha256,
         signature: release.signature,
         size_bytes: release.size_bytes,
@@ -599,7 +604,10 @@ function registerPairingRoutes(
     if (!compatibility) throw createError({ statusCode: 400, statusMessage: "compatibility required" });
     const current = url.searchParams.get("current")?.trim() ?? "";
     const release = await withDefaultTenant(repo, null, () =>
-      repo.getLatestOsUpdateRelease("stable", compatibility)
+      selectPublicUpdate(url.searchParams,
+        (channel) => repo.getLatestOsUpdateRelease(channel, compatibility),
+        (version) => repo.getOsUpdateReleaseByVersionCompatibility(version, compatibility),
+      )
     );
     if (!release || !isVersionUpgrade(release.version, current)) return { up_to_date: true };
     return {
@@ -1316,6 +1324,10 @@ export function registerKioskRoutes(
       os_update_channel: fresh?.os_update_channel ?? "stable",
       os_update_target_version: fresh?.os_update_target_version ?? null,
       auto_updates_allowed: updateScheduleAllowsNow(updateSchedule),
+      update_schedule: {
+        ...updateSchedule,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      },
       audio_default_volume_percent: fresh?.audio_default_volume_percent ?? 50,
       ...(pendingConfig ? { pending_config: pendingConfig } : {}),
     };

@@ -45,11 +45,22 @@
                     Id="StartMenuShortcut"
                     Directory="ProgramMenuFolder"
                     Name="BetterFrame"
-                    Arguments="agent"
+                    Arguments="desktop"
                     WorkingDirectory="APPLICATIONFOLDER"
                     Icon="BetterFrameIcon.exe"
                     Advertise="yes" />
               </File>
+            </Component>
+            <!-- MSI owns startup registration, including repair, upgrade and removal.
+                 The display must run in the signed-in user's desktop session. -->
+            <Component Id="DesktopStartup" Guid="*" Win64="yes">
+              <RegistryValue
+                  Root="HKLM"
+                  Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                  Name="BetterFrame"
+                  Type="string"
+                  Value="&quot;[#ClientExe]&quot; desktop"
+                  KeyPath="yes" />
             </Component>
             <Component Id="LicenseSummaryFile" Guid="*">
               <File Id="LicenseSummary" Source="..\LICENSE.md" KeyPath="yes" />
@@ -83,6 +94,7 @@
         ConfigurableDirectory="APPLICATIONFOLDER"
         Absent="disallow">
       <ComponentRef Id="ClientBinary" />
+      <ComponentRef Id="DesktopStartup" />
       <ComponentRef Id="LicenseSummaryFile" />
       <ComponentRef Id="LicenseAgplFile" />
       <ComponentRef Id="LicenseCommercialFile" />

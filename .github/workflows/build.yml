@@ -395,29 +395,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cargo install cargo-wix --version 0.3.9 --locked
-          $archive = Join-Path $env:RUNNER_TEMP "gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION-merge-modules.zip"
-          gh release download $env:GSTREAMER_RELEASE --repo $env:GITHUB_REPOSITORY --dir $env:RUNNER_TEMP --pattern (Split-Path $archive -Leaf)
-          $actualHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualHash -ne $env:GSTREAMER_MSM_SHA256) {
-            throw "GStreamer merge-module checksum mismatch: $actualHash"
-          }
-          $extractDir = Join-Path $env:RUNNER_TEMP "gstreamer-msm"
-          Expand-Archive -LiteralPath $archive -DestinationPath $extractDir
-          $sourceDir = Get-ChildItem $extractDir -Directory | Select-Object -First 1
-          $moduleDir = New-Item -ItemType Directory -Force -Path "target\gstreamer-msm"
-          @(
-            "base-system-1.0.msm",
-            "base-crypto.msm",
-            "gstreamer-1.0-core.msm",
-            "gstreamer-1.0-net.msm",
-            "gstreamer-1.0-playback.msm",
-            "gstreamer-1.0-codecs.msm",
-            "gstreamer-1.0-system.msm",
-            "gstreamer-1.0-libav.msm"
-          ) | ForEach-Object { Copy-Item (Join-Path $sourceDir $_) $moduleDir }
-          $msiVersion = "0.1.${{ github.run_number }}"
-          cargo wix --package betterframe-client --nocapture --install-version $msiVersion -L -sice:ICE30 -L -sice:ICE80
+          ../scripts/build-windows-msi.ps1 -InstallVersion "0.1.${{ github.run_number }}"
           $msi = Get-ChildItem target\wix\*.msi | Select-Object -First 1
           Copy-Item $msi.FullName "betterframe-windows-client-${{ inputs.version }}-x86_64.msi"
       - uses: actions/upload-artifact@v7
@@ -430,6 +408,9 @@ jobs:
     needs: windows-client
     runs-on: windows-latest
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
       - uses: actions/download-artifact@v8
         with:
           name: betterframe-windows-client-x86_64
@@ -440,11 +421,7 @@ jobs:
           if (Test-Path "$env:ProgramFiles\gstreamer") {
             throw "clean-host test runner unexpectedly contains a global GStreamer installation"
           }
-          $msi = Resolve-Path "betterframe-windows-client-${{ inputs.version }}-x86_64.msi"
-          $installer = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
-          if ($installer.ExitCode -notin 0, 3010) { throw "client install failed with exit code $($installer.ExitCode)" }
-          & "$env:ProgramFiles\betterframe-windows-client\bin\betterframe-windows-client.exe" self-test
-          if ($LASTEXITCODE -ne 0) { throw "installed client self-test failed with exit code $LASTEXITCODE" }
+          ../scripts/test-windows-msi.ps1 -MsiPath "betterframe-windows-client-${{ inputs.version }}-x86_64.msi"
       - name: Upload Windows installer to GitHub Release
         uses: softprops/action-gh-release@v3
         with:

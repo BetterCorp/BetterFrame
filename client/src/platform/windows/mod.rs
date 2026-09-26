@@ -199,8 +199,33 @@ fn unpaired_state(server_url: &str) -> ClientState {
 
 pub fn run() {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+    let args: Vec<String> = std::env::args().collect();
+    let command = args.get(1).map(String::as_str);
+    let desktop = matches!(command, None | Some("desktop"));
+    if !desktop && command != Some("app") {
+        // Keep explicit diagnostic/administration commands usable from a terminal.
+        // Explorer and logon launches never allocate a console.
+        unsafe {
+            windows_sys::Win32::System::Console::AttachConsole(
+                windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS,
+            );
+        }
+    }
+    // Guard before starting diagnostic workers or touching shared state.
+    let _instance = if desktop || command == Some("agent") {
+        match acquire_instance("Local\\BetterFrameWindowsAgent") {
+            Ok(Some(instance)) => Some(instance),
+            Ok(None) => return,
+            Err(error) => {
+                report_startup_error(&error, desktop);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
     // Agent and renderer are separate processes: use separate protected spools.
-    let mode = if std::env::args().nth(1).as_deref() == Some("agent") { "agent" } else { "app" };
+    let mode = if desktop || command == Some("agent") { "agent" } else { "app" };
     let read_path = state_dir().join(format!("logs-{mode}.json"));
     let write_path = read_path.clone();
     let app_logs = crate::diagnostic_logs::AppLogLayer::start(
@@ -218,21 +243,22 @@ pub fn run() {
         .with(tracing_subscriber::fmt::layer())
         .with(app_logs).init();
 
-    let args: Vec<String> = std::env::args().collect();
     info!(
         "BetterFrame Windows client {} starting (mode={}, arch={})",
         kiosk_app_version(),
-        args.get(1).map(String::as_str).unwrap_or("help"),
+        args.get(1).map(String::as_str).unwrap_or("desktop"),
         std::env::consts::ARCH
     );
     let result = match args.get(1).map(|s| s.as_str()) {
-        Some("agent") => run_agent_cli(&args[2..]),
+        None => run_agent_cli(&[]),
+        Some("desktop" | "agent") => run_agent_cli(&args[2..]),
         Some("app") => run_app(),
         Some("self-test") => self_test(),
         Some("install") => install_tasks(&args[2..]),
         Some("uninstall") => uninstall_tasks(),
         _ => {
             eprintln!("Usage:");
+            eprintln!("  betterframe-windows-client [desktop] [--server URL]");
             eprintln!("  betterframe-windows-client agent [--server URL]");
             eprintln!("  betterframe-windows-client app");
             eprintln!("  betterframe-windows-client self-test");
@@ -243,7 +269,7 @@ pub fn run() {
     };
 
     if let Err(err) = result {
-        eprintln!("{err}");
+        report_startup_error(&err, desktop);
         std::process::exit(1);
     }
 }

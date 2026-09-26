@@ -119,6 +119,25 @@ class Client {
     if ($attempts.version -ne '1.0.2' -or $attempts.count -ne 1) { throw 'Failure history was lost during rollback' }
     if ((Get-Service BetterFrameUpdater).Status -ne 'Running') { throw 'Recovery left the updater stopped' }
     Write-Host 'Failed candidate rolled back, client restarted, updater survived, and retry history persisted.'
+
+    # A restart must recover an unfinished transaction before checking for
+    # another release, even when the app and enrollment are unavailable.
+    Stop-Service BetterFrameUpdater
+    Get-Process betterframe-windows-client -ErrorAction SilentlyContinue | Stop-Process -Force
+    $previous = Get-Content "$fixture/1.0.1.json" -Raw | ConvertFrom-Json
+    $candidate = Get-Content "$fixture/1.0.2.json" -Raw | ConvertFrom-Json
+    Write-Json "$updateDir/pending.json" @{
+        previous=$previous; candidate=$candidate; stage='installing'
+        started=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); sessions=@([Diagnostics.Process]::GetCurrentProcess().SessionId)
+    }
+    Remove-Item "$stateDir/runtime-health.json" -Force -ErrorAction SilentlyContinue
+    Start-Service BetterFrameUpdater
+    Wait-For {
+        if ((Test-Path "$updateDir/pending.json") -or -not (Test-Path "$stateDir/runtime-health.json")) { return $false }
+        try { $health = Get-Content "$stateDir/runtime-health.json" -Raw | ConvertFrom-Json } catch { return $false }
+        return $health.version -eq '1.0.1'
+    } 'Service restart did not recover the interrupted transaction' 180
+    Write-Host 'Interrupted transaction recovered from its durable journal with the desktop stopped.'
 } finally {
     Stop-Service BetterFrameUpdater -ErrorAction SilentlyContinue
     Get-Process betterframe-windows-client -ErrorAction SilentlyContinue | Stop-Process -Force

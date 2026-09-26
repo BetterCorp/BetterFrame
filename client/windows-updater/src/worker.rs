@@ -6,7 +6,7 @@ use std::{
     fs, os::windows::process::CommandExt, path::Path, process::Command, sync::atomic::Ordering,
     time::Duration,
 };
-use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
+use windows_sys::Win32::System::Threading::DETACHED_PROCESS;
 
 const INSTALL_MUTEX: &str = "Global\\BetterFrameUpdateInstall";
 #[derive(Clone, Serialize, Deserialize)]
@@ -317,15 +317,7 @@ fn install(pending: &mut Pending, key: &str) -> Result<(), String> {
     os::run_msi(&candidate)?;
     os::package_probe()?;
     let updater = os::install_dir().join("bin/betterframe-windows-updater.exe");
-    if !Command::new(updater)
-        .arg("probe")
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .map_err(|e| e.to_string())?
-        .success()
-    {
-        return Err("installed updater cannot start".into());
-    }
+    os::executable_probe(&updater, "probe")?;
     os::start_service()?;
     pending.stage = "awaiting-health".into();
     write("pending.json", pending)?;

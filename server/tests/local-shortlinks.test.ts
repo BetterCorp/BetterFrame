@@ -46,6 +46,8 @@ test("PostgreSQL aliases backfill, persist, retry collisions and remain tenant s
   const client = await pool.connect();
   const start = TENANT_MIGRATIONS.findIndex(sql => sql.startsWith("CREATE TABLE local_short_keys"));
   assert.ok(start > 0);
+  const end = TENANT_MIGRATIONS.findIndex(sql => sql.startsWith("CREATE UNIQUE INDEX cameras_local_short_key_unique"));
+  assert.ok(end > start);
   try {
     await client.query(`CREATE SCHEMA ${schema}`);
     await client.query(`SET search_path TO ${schema}, pg_catalog`);
@@ -55,7 +57,7 @@ test("PostgreSQL aliases backfill, persist, retry collisions and remain tenant s
     await client.query(`CREATE FUNCTION gen_random_uuid() RETURNS uuid LANGUAGE sql VOLATILE AS $$
       SELECT (lpad(to_hex(nextval('short_test_sequence')), 6, '0') || '00-0000-4000-8000-000000000000')::uuid
     $$`);
-    for (const sql of TENANT_MIGRATIONS.slice(start)) await client.query(sql);
+    for (const sql of TENANT_MIGRATIONS.slice(start, end + 1)) await client.query(sql);
     const original = (await client.query("SELECT * FROM layouts")).rows[0];
     assert.match(original.local_short_key, /^[0-9a-f]{6}$/);
     assert.equal(rowToLayout(original).local_short_key, original.local_short_key);

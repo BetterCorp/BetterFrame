@@ -94,4 +94,6 @@ Updater tests cover signature/hash/size rejection, origin restrictions, no redir
 authentication recovery, saved pins, DST windows, rate-limit deferral and interrupted
 downloads. Native Windows CI runs the real SYSTEM service against a local BF fixture:
 it saves policy, loses enrollment and authentication, installs a signed upgrade, then
-rejects a broken candidate and restores the previously working MSI and client.
+rejects a broken candidate and restores the previously working MSI and client. It
+also restarts with an unfinished transaction journal and a stopped desktop to verify
+recovery before any further update checks.

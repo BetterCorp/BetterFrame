@@ -432,8 +432,11 @@ pub fn launch_client(session: u32) -> Result<(), String> {
     Ok(())
 }
 pub fn package_probe() -> Result<(), String> {
-    let mut process = Command::new(client_exe())
-        .arg("installation-test")
+    executable_probe(&client_exe(), "installation-test")
+}
+pub fn executable_probe(path: &Path, argument: &str) -> Result<(), String> {
+    let mut process = Command::new(path)
+        .arg(argument)
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|e| e.to_string())?;
@@ -442,12 +445,12 @@ pub fn package_probe() -> Result<(), String> {
             return if status.success() {
                 Ok(())
             } else {
-                Err(format!("installed client probe failed: {status}"))
+                Err(format!("installed executable probe failed: {status}"))
             };
         }
         std::thread::sleep(Duration::from_secs(1));
     }
     let _ = process.kill();
     let _ = process.wait();
-    Err("installed client probe timed out".into())
+    Err("installed executable probe timed out".into())
 }

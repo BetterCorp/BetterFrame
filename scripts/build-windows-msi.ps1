@@ -32,5 +32,6 @@ $moduleDir = New-Item -ItemType Directory -Force -Path "target\gstreamer-msm"
   "gstreamer-1.0-system.msm",
   "gstreamer-1.0-libav.msm"
 ) | ForEach-Object { Copy-Item (Join-Path $sourceDir $_) $moduleDir }
-cargo wix --package betterframe-client --nocapture --install-version $InstallVersion -L -sice:ICE30 -L -sice:ICE80 -L -ext -L WixUtilExtension
+# cargo-wix loads WixUtilExtension automatically when the source uses its namespace.
+cargo wix --package betterframe-client --nocapture --install-version $InstallVersion -L -sice:ICE30 -L -sice:ICE80
 if ($LASTEXITCODE -ne 0) { throw "MSI build failed" }

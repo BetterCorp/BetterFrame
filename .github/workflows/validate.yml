@@ -138,6 +138,11 @@ jobs:
           ../scripts/build-windows-msi.ps1 -InstallVersion "0.1.${{ github.run_number }}"
           $msi = Get-ChildItem target/wix/*.msi | Select-Object -First 1
           ../scripts/test-windows-msi.ps1 -MsiPath $msi.FullName
+  windows-update-recovery:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
       - name: Recover Windows updates through BF after authentication and app failures
         working-directory: client
         run: ../scripts/test-windows-update-recovery.ps1

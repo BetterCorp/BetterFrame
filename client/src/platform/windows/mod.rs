@@ -836,7 +836,11 @@ async fn handle_agent_command(
         }
         AgentCommand::Reboot => {
             if current_policy.controls.host_reboot {
-                let _ = Command::new("shutdown").args(["/r", "/t", "5"]).spawn();
+                use std::os::windows::process::CommandExt;
+                let _ = Command::new("shutdown")
+                    .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                    .args(["/r", "/t", "5"])
+                    .spawn();
             } else if current_policy.controls.app_restart {
                 // Host reboot not permitted â€” degrade to restarting the app.
                 restart_app(app)?;

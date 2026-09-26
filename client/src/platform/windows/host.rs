@@ -1,4 +1,6 @@
 use super::*;
+use std::os::windows::process::CommandExt;
+use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 pub(super) fn set_monitor_power(on: bool) {
     unsafe {
@@ -32,6 +34,7 @@ pub(super) fn set_volume_percent(percent: u32) {
         )
     };
     let _ = Command::new("powershell.exe")
+        .creation_flags(CREATE_NO_WINDOW)
         .args([
             "-NoProfile",
             "-ExecutionPolicy",
@@ -120,6 +123,7 @@ pub(super) fn uninstall_tasks() -> Result<(), String> {
 
 pub(super) fn run_command(program: &str, args: &[&str]) -> Result<(), String> {
     let status = Command::new(program)
+        .creation_flags(CREATE_NO_WINDOW)
         .args(args)
         .status()
         .map_err(|e| format!("{program}: {e}"))?;

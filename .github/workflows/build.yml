@@ -469,10 +469,15 @@ jobs:
           jq -nc --arg v "${{ inputs.version }}" --arg c "${{ inputs.channel }}" \
             --rawfile b "$bin.b64" --rawfile s "$bin.sig" \
             '{version:$v,channel:$c,target:"windows-x64",content_b64:$b,signature:$s}' > "$bin.import.json"
-          curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 10 \
+          status=$(curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 10 \
             --connect-timeout 15 --max-time 600 \
             -H "Authorization: Bearer $BF_AUTOIMPORT_API_KEY" -H 'Content-Type: application/json' \
-            --data-binary @"$bin.import.json" "$BF_AUTOIMPORT_URL/api/admin/firmware/import"
+            --output "$bin.import-response.json" --write-out '%{http_code}' \
+            --data-binary @"$bin.import.json" "$BF_AUTOIMPORT_URL/api/admin/firmware/import")
+          [[ "$status" =~ ^2[0-9][0-9]$ ]] || { echo "BF publication did not return success: $status"; exit 1; }
+          jq -e --rawfile hash "$bin.sha256" \
+            '.ok == true and (.release_id | type == "string" and length > 0) and .sha256 == $hash' \
+            "$bin.import-response.json" > /dev/null
       - name: Upload Windows installer to GitHub Release
         uses: softprops/action-gh-release@v3
         with:

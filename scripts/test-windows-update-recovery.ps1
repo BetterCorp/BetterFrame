@@ -43,7 +43,7 @@ try {
     $env:BF_FIRMWARE_SIGNING_PUBLIC_KEY = Get-Content "$fixture/pub.pem" -Raw
     $env:RUSTFLAGS = '-C target-feature=+crt-static'
     foreach ($version in @('1.0.0','1.0.1','1.0.2')) {
-        $dir = New-Item -ItemType Directory -Force "$fixture/$version"
+        $dir = (New-Item -ItemType Directory -Force (Join-Path $fixture "release-$version")).FullName
         $env:BF_BUILD_VERSION = $version
         cargo build --release --locked -p betterframe-windows-updater --target-dir target/updater
         if ($LASTEXITCODE -ne 0) { throw 'Fixture updater build failed' }
@@ -67,8 +67,10 @@ class Client {
   }
 }
 "@
-        [IO.File]::WriteAllText("$dir/client.cs", $source)
-        & $csc /nologo /target:winexe "/out:$dir/client.exe" "$dir/client.cs"
+        $sourcePath = Join-Path $dir "client.cs"
+        $clientPath = Join-Path $dir "client.exe"
+        [IO.File]::WriteAllText($sourcePath, $source)
+        & $csc /nologo /target:winexe "/out:$clientPath" $sourcePath
         if ($LASTEXITCODE -ne 0) { throw 'Fixture client build failed' }
         & $candle -nologo -arch x64 "-dReleaseVersion=$version" "-dFixtureDir=$dir" -out "$dir/package.wixobj" ../scripts/windows-update-tests/fixture.wxs
         if ($LASTEXITCODE -ne 0) { throw 'Fixture WiX compile failed' }

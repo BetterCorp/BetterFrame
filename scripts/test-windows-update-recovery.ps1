@@ -30,8 +30,12 @@ function Wait-For([scriptblock]$Condition, [string]$Message, [int]$Seconds = 180
     throw $Message
 }
 function Invoke-Msi([string]$Arguments) {
-    $process = Start-Process msiexec.exe -ArgumentList $Arguments -Wait -PassThru
-    if ($process.ExitCode -notin 0,3010) { throw "Fixture MSI failed: $($process.ExitCode)" }
+    $log = Join-Path $fixture 'fixture-install.log'
+    $process = Start-Process msiexec.exe -ArgumentList "$Arguments /L*v `"$log`"" -Wait -PassThru
+    if ($process.ExitCode -notin 0,3010) {
+        if (Test-Path $log) { Get-Content $log -Tail 60 }
+        throw "Fixture MSI failed: $($process.ExitCode)"
+    }
 }
 try {
     if (Get-Service BetterFrameUpdater -ErrorAction SilentlyContinue) { throw 'Test requires no existing BetterFrame installation' }
@@ -93,7 +97,8 @@ class Client {
     $origin = 'http://127.0.0.1:' + (Get-Content "$fixture/port" -Raw)
     New-Item -ItemType Directory -Force $stateDir | Out-Null
     Write-Json "$stateDir/state.json" @{server_url=$origin;kiosk_key='disposable-test-key';demo=$false}
-    Invoke-Msi "/i `"$fixture/1.0.0.msi`" /qn /norestart"
+    $initialMsi = (Resolve-Path (Join-Path $fixture '1.0.0.msi')).Path
+    Invoke-Msi "/i `"$initialMsi`" /qn /norestart"
     Start-Process "$installDir/bin/betterframe-windows-client.exe" -ArgumentList desktop | Out-Null
     Wait-For { Test-Path "$updateDir/policy.json" } 'Updater did not persist server policy'
     Stop-Service BetterFrameUpdater

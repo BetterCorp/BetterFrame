@@ -1,6 +1,13 @@
 # Run from client/ with the GStreamer SDK and WiX available (Windows CI).
 param([Parameter(Mandatory = $true)][string]$InstallVersion)
 $ErrorActionPreference = 'Stop'
+if (-not $env:BF_BUILD_VERSION) { $env:BF_BUILD_VERSION = '0.1.0' }
+$previousRustFlags = $env:RUSTFLAGS
+try {
+    $env:RUSTFLAGS = '-C target-feature=+crt-static'
+    cargo build --release --locked -p betterframe-windows-updater --target-dir target/updater
+    if ($LASTEXITCODE -ne 0) { throw "Windows updater build failed" }
+} finally { $env:RUSTFLAGS = $previousRustFlags }
 
 cargo install cargo-wix --version 0.3.9 --locked
 if ($LASTEXITCODE -ne 0) { throw "cargo-wix install failed" }
@@ -25,5 +32,5 @@ $moduleDir = New-Item -ItemType Directory -Force -Path "target\gstreamer-msm"
   "gstreamer-1.0-system.msm",
   "gstreamer-1.0-libav.msm"
 ) | ForEach-Object { Copy-Item (Join-Path $sourceDir $_) $moduleDir }
-cargo wix --package betterframe-client --nocapture --install-version $InstallVersion -L -sice:ICE30 -L -sice:ICE80
+cargo wix --package betterframe-client --nocapture --install-version $InstallVersion -L -sice:ICE30 -L -sice:ICE80 -L -ext -L WixUtilExtension
 if ($LASTEXITCODE -ne 0) { throw "MSI build failed" }

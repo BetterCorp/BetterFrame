@@ -1050,4 +1050,5 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     `ALTER TABLE ${table} ALTER COLUMN local_short_key SET NOT NULL`,
     `CREATE UNIQUE INDEX ${table}_local_short_key_unique ON ${table}(local_short_key)`,
   ]),
+  `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS windows_update_push TEXT`,
 ];

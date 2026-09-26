@@ -238,6 +238,7 @@ pub(super) fn paint_window(hwnd: HWND) {
             if show_demo { SetWindowPos(control, HWND_TOP, 12, 12, 140, 44, SWP_NOACTIVATE); }
         }
         EndPaint(hwnd, &ps);
+        confirm_runtime_health();
     }
 }
 
@@ -1148,5 +1149,16 @@ mod origin_cache_tests {
             assert_eq!(cached, HashSet::from([new.clone(), other_window]));
             assert_eq!(new, web_cell_key(7, "layout", "cached-v1", "view", content, "https://frame-eu.betterportal.net"));
         }
+    }
+}
+
+// Confirmation depends on a painted local window, never network or enrollment.
+fn confirm_runtime_health() {
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    if now.saturating_sub(LAST.load(std::sync::atomic::Ordering::Relaxed)) < 15 { return; }
+    let bytes = serde_json::to_vec(&serde_json::json!({"version": kiosk_app_version(), "at": now})).unwrap();
+    if write_protected(&state_dir().join("runtime-health.json"), &bytes).is_ok() {
+        LAST.store(now, std::sync::atomic::Ordering::Relaxed);
     }
 }

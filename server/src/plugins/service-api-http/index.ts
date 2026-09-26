@@ -1,3 +1,4 @@
+import { selectWindowsRelease, windowsPushRequest, windowsUpdatePolicy } from "../../shared/windows-updates.js";
 import { selectPublicUpdate } from "../../shared/public-update-selection.js";
 import { effectiveFirmwareChannel } from "../../shared/kiosk-channels.js";
 import { parseKioskLogs } from "../../shared/kiosk-logs.js";
@@ -1585,6 +1586,24 @@ export function registerKioskRoutes(
       await repo.updateKiosk(kiosk.id, { firmware_target: target } as any);
     }
     const currentVersion = url.searchParams.get("current")?.trim() ?? kiosk.kiosk_app_version ?? "";
+
+    // Windows service polls independently of the desktop/control connection.
+    // It receives durable policy on up-to-date responses as well as upgrades.
+    if (target === "windows-x64") {
+      const policy = await windowsUpdatePolicy(repo, kiosk);
+      const release = await selectWindowsRelease(repo, kiosk, verified.schema_name);
+      const upgrade = release && isVersionUpgrade(release.version, currentVersion);
+      return {
+        up_to_date: !upgrade,
+        update_policy: policy,
+        push_request: upgrade ? windowsPushRequest(kiosk.windows_update_push, release.version, policy) : null,
+        ...(upgrade ? { update: {
+          release_id: release.id, version: release.version, channel: release.channel,
+          sha256: release.sha256, signature: release.signature, size_bytes: release.size_bytes,
+          download_url: `/api/kiosk/firmware/download/${release.id}`,
+        } } : {}),
+      };
+    }
 
     let release = null;
     // Explicit per-kiosk pin wins over all rollout / channel selection.

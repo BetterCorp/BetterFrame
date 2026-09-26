@@ -1,3 +1,4 @@
+import { createWindowsPush, selectWindowsRelease, windowsUpdatePolicy } from "../../shared/windows-updates.js";
 /**
  * Admin firmware routes — release upload, list, yank, per-kiosk push.
  *
@@ -25,6 +26,7 @@ import type { FirmwareChannel } from "../../shared/types.js";
 import { currentTenantSchema, isDefaultTenant, withDefaultTenant } from "../../shared/default-tenant.js";
 import {
   FIRMWARE_TARGET_PC_X86_64,
+  FIRMWARE_TARGET_WINDOWS,
   FIRMWARE_TARGET_RPI5,
   normalizeFirmwareTarget,
 } from "../../shared/firmware-targets.js";
@@ -33,6 +35,7 @@ import { verifyDetached } from "../../shared/firmware.js";
 
 const ALLOWED_CHANNELS: ReadonlySet<FirmwareChannel> = new Set(["stable", "beta", "dev"]);
 const ALLOWED_TARGETS = new Set([
+  FIRMWARE_TARGET_WINDOWS,
   FIRMWARE_TARGET_RPI5,
   FIRMWARE_TARGET_PC_X86_64,
 ]);
@@ -135,6 +138,9 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
       throw createError({ statusCode: 400, statusMessage: `invalid target '${target}'` });
     }
 
+    if (body.content_b64.length > Math.ceil(512 * 1024 * 1024 / 3) * 4) {
+      throw createError({ statusCode: 413, statusMessage: "firmware artifact exceeds 512 MiB" });
+    }
     const buf = Buffer.from(body.content_b64, "base64");
     if (buf.length === 0) {
       throw createError({ statusCode: 400, statusMessage: "empty artifact" });
@@ -189,6 +195,9 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
       throw createError({ statusCode: 400, statusMessage: `unknown ioBOX model '${modelId}'` });
     }
 
+    if (body.content_b64.length > Math.ceil(512 * 1024 * 1024 / 3) * 4) {
+      throw createError({ statusCode: 413, statusMessage: "firmware artifact exceeds 512 MiB" });
+    }
     const buf = Buffer.from(body.content_b64, "base64");
     if (buf.length === 0) throw createError({ statusCode: 400, statusMessage: "empty artifact" });
 
@@ -273,8 +282,17 @@ export function registerFirmwareRoutes(app: H3, deps: AdminDeps): void {
   // Push update now: server pings the kiosk via WS coordinator so it goes
   // and pulls /api/kiosk/firmware/check immediately. The actual download
   // happens kiosk-side over the existing kiosk_key channel.
-  app.post("/admin/kiosks/:id/firmware/push", (event) => {
+  app.post("/admin/kiosks/:id/firmware/push", async (event) => {
     const id = (getRouterParam(event, "id") ?? "");
+    const kiosk = await deps.repo.getKioskById(id);
+    if (!kiosk) throw createError({ statusCode: 404, statusMessage: "kiosk not found" });
+    if (kiosk.firmware_target === FIRMWARE_TARGET_WINDOWS) {
+      const release = await selectWindowsRelease(deps.repo, kiosk, currentTenantSchema(event));
+      if (release) {
+        const policy = await windowsUpdatePolicy(deps.repo, kiosk);
+        await deps.repo.updateKiosk(id, { windows_update_push: createWindowsPush(release.version, policy) });
+      }
+    }
     const dispatched = getCoordinator().sendToKiosk(id, { type: "firmware_check", force: true });
     return { ok: true, dispatched };
   });

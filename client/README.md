@@ -89,3 +89,9 @@ it (this does not uninstall the MSI). Normal application removal uses Windows
 **Installed apps**. Explicit CLI commands such as `agent` and `self-test` still
 attach to an existing terminal; for scripts use PowerShell `Start-Process -Wait
 -PassThru` to wait and inspect the exit code of the GUI executable.
+
+The MSI also installs the independent **BetterFrameUpdater** service for automatic
+app updates and rollback through BF-hosted, vendor-signed MSI packages. Updates
+respect saved maintenance windows and can recover without working enrollment.
+See [Windows updates and recovery](../docs/windows-updates.md) for first-deployment
+requirements, retained installers, and recovery behavior.

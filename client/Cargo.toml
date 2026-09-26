@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "android-bridge"]
+members = ["core", "android-bridge", "windows-updater"]
 resolver = "2"
 
 [package]

@@ -68,6 +68,12 @@ test("firmware HTTP imports safely retry, reject conflicts and serialize concurr
     }
     assert.ok((await readdir(firmware.firmwareDir())).every(name => name.endsWith(".bin")));
 
+    const windows = await request({...payload("signed MSI bytes"), target: "windows-x64"});
+    assert.equal(windows.status, 200);
+    const windowsRelease = await repo.getFirmwareRelease((await windows.json()).release_id);
+    assert.equal(windowsRelease?.arch, "windows-x64");
+    assert.deepEqual(await firmware.readBlob(windowsRelease!.artifact_path, windowsRelease!.sha256), Buffer.from("signed MSI bytes"));
+
     await repo.yankFirmwareRelease(original.release_id);
     assert.equal((await request(payload())).status, 409);
     assert.ok((await repo.getFirmwareRelease(original.release_id))?.yanked_at);

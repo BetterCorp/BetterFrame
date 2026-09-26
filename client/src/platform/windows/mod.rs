@@ -201,6 +201,10 @@ pub fn run() {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
     let args: Vec<String> = std::env::args().collect();
     let command = args.get(1).map(String::as_str);
+    if command == Some("installation-test") {
+        if installation_test().is_err() { std::process::exit(1); }
+        return;
+    }
     let desktop = matches!(command, None | Some("desktop"));
     if !desktop && command != Some("app") {
         // Keep explicit diagnostic/administration commands usable from a terminal.
@@ -254,6 +258,7 @@ pub fn run() {
         Some("desktop" | "agent") => run_agent_cli(&args[2..]),
         Some("app") => run_app(),
         Some("self-test") => self_test(),
+        Some("installation-test") => installation_test(),
         Some("install") => install_tasks(&args[2..]),
         Some("uninstall") => uninstall_tasks(),
         _ => {
@@ -289,15 +294,7 @@ fn self_test() -> Result<(), String> {
         return Err("protected state-file round-trip returned different data".to_string());
     }
 
-    gstreamer::init().map_err(|error| format!("GStreamer initialization: {error}"))?;
-    for plugin in ["rtspsrc", "decodebin", "d3d11videosink"] {
-        if gstreamer::ElementFactory::find(plugin).is_none() {
-            return Err(format!(
-                "required GStreamer element is unavailable: {plugin}"
-            ));
-        }
-    }
-
+    installation_test()?;
     let webview = wry::webview_version().map_err(|error| format!("WebView2: {error}"))?;
     let displays = query_native_displays();
     if displays.is_empty() {
@@ -310,11 +307,27 @@ fn self_test() -> Result<(), String> {
     Ok(())
 }
 
+// Safe under SYSTEM: never creates or rewrites the user's enrollment directory ACL.
+fn installation_test() -> Result<(), String> {
+    gstreamer::init().map_err(|error| format!("GStreamer initialization: {error}"))?;
+    for plugin in ["rtspsrc", "decodebin", "d3d11videosink"] {
+        if gstreamer::ElementFactory::find(plugin).is_none() {
+            return Err(format!(
+                "required GStreamer element is unavailable: {plugin}"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn run_agent_cli(args: &[String]) -> Result<(), String> {
     loop {
         // Finish a persisted local exit before discovery, pairing or rendering.
         // The marker can outlive demo=true if a previous cleanup was interrupted.
         complete_demo_exit()?;
+        let app = Arc::new(Mutex::new(None::<Child>));
+        start_app(&app)?;
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -326,11 +339,12 @@ fn run_agent_cli(args: &[String]) -> Result<(), String> {
                     Ok(server) => break server,
                     Err(error) => {
                         warn!("server discovery: {error}; retrying");
+                        let _ = supervise_app(&app);
                         tokio::time::sleep(Duration::from_secs(10)).await;
                     }
                 }
             };
-            run_agent(server).await
+            run_agent(server, app).await
         });
         // Drop the runtime first: old heartbeat/bundle tasks must never restore cleared state.
         drop(rt);
@@ -366,7 +380,7 @@ async fn discover_server(
     Err("could not find BetterFrame server".to_string())
 }
 
-async fn run_agent(server_url: String) -> Result<(), String> {
+async fn run_agent(server_url: String, app: Arc<Mutex<Option<Child>>>) -> Result<(), String> {
     ensure_secure_state_dir()?;
     ensure_default_policy()?;
 
@@ -374,7 +388,6 @@ async fn run_agent(server_url: String) -> Result<(), String> {
         latest.server_url = server_url;
         Ok(())
     })?;
-    let app = Arc::new(Mutex::new(None::<Child>));
     // The renderer reads protected cached state independently. Start it before
     // regional discovery so an offline upgrade keeps showing the saved display.
     start_app(&app)?;
@@ -833,6 +846,16 @@ async fn handle_agent_command(
             } else {
                 info!("volume mute ignored by Windows policy");
             }
+        }
+        AgentCommand::CancelUpdates => {
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_nanos().to_string();
+            write_protected(&state_dir().join("update-policy-suspended"), stamp.as_bytes())?;
+        }
+        AgentCommand::FirmwareCheck { .. } => {
+            // SYSTEM independently polls BF; an explicit push is persisted by BF
+            // and verified there, never elevated from a user-writable local flag.
+            info!("Windows updater will check the persisted BF update request");
         }
         AgentCommand::Reboot => {
             if current_policy.controls.host_reboot {

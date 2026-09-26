@@ -27,6 +27,10 @@ try {
     Invoke-Msi "/i `"$msi`" APPLICATIONFOLDER=`"$installDir`" /qn /norestart"
     $installed = $true
     Assert-Startup
+    $service = Get-CimInstance Win32_Service -Filter "Name='BetterFrameUpdater'"
+    if ($service.StartMode -ne 'Auto' -or $service.StartName -ne 'LocalSystem' -or $service.State -ne 'Running') {
+        throw 'Independent SYSTEM updater service was not installed and started'
+    }
     # Verify the actual PE header: Explorer must not allocate a console window.
     $image = [IO.File]::ReadAllBytes($exe)
     $peOffset = [BitConverter]::ToInt32($image, 0x3c)
@@ -58,7 +62,7 @@ try {
         throw 'Duplicate launch did not exit'
     }
     if ($duplicate.ExitCode -ne 0) { throw "Duplicate launch failed: $($duplicate.ExitCode)" }
-    Stop-Process -Id $agent.Id -Force
+    & taskkill.exe /PID $agent.Id /T /F | Out-Null
     $agent.WaitForExit()
     $agent = $null
 
@@ -70,10 +74,11 @@ try {
     if (Get-ItemProperty -Path $runKey -Name BetterFrame -ErrorAction SilentlyContinue) {
         throw 'Uninstall left automatic startup registered'
     }
+    if (Get-Service BetterFrameUpdater -ErrorAction SilentlyContinue) { throw 'Uninstall left the updater service installed' }
     if (Test-Path $exe) { throw 'Uninstall left the client executable installed' }
     Write-Host 'Windows MSI startup, GUI executable, duplicate launch, repair and uninstall passed.'
 } finally {
-    if ($agent -and -not $agent.HasExited) { Stop-Process -Id $agent.Id -Force }
+    if ($agent -and -not $agent.HasExited) { & taskkill.exe /PID $agent.Id /T /F | Out-Null }
     $env:ProgramData = $originalProgramData
     if ($installed) { Invoke-Msi "/x `"$msi`" /qn /norestart" }
     if (Test-Path $testData) { Remove-Item -LiteralPath $testData -Recurse -Force }

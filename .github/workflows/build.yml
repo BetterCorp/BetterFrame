@@ -387,6 +387,20 @@ jobs:
           "PKG_CONFIG=$pkgConfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "PKG_CONFIG_PATH=$pkgConfigPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "LIB=C:\Program Files\gstreamer\1.0\msvc_x86_64\lib;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Prepare Windows update trust root
+        env:
+          BF_CLIENT_FIRMWARE_SIGNING_KEY: ${{ secrets.BF_CLIENT_FIRMWARE_SIGNING_KEY }}
+        run: |
+          if (-not $env:BF_CLIENT_FIRMWARE_SIGNING_KEY) { throw "Windows release signing key is required" }
+          $key = Join-Path $env:RUNNER_TEMP 'windows-update.key'
+          $pub = Join-Path $env:RUNNER_TEMP 'windows-update.pub.pem'
+          [IO.File]::WriteAllText($key, $env:BF_CLIENT_FIRMWARE_SIGNING_KEY)
+          openssl pkey -in $key -pubout -out $pub
+          if ($LASTEXITCODE -ne 0) { throw "Cannot derive Windows update trust root" }
+          "BF_FIRMWARE_SIGNING_PUBLIC_KEY<<BF_KEY" >> $env:GITHUB_ENV
+          Get-Content $pub >> $env:GITHUB_ENV
+          "BF_KEY" >> $env:GITHUB_ENV
+          "BF_WINDOWS_SIGNING_KEY=$key" >> $env:GITHUB_ENV
       - name: Build and test Windows client
         working-directory: client
         run: cargo test --release --locked
@@ -395,41 +409,34 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cargo install cargo-wix --version 0.3.9 --locked
-          $archive = Join-Path $env:RUNNER_TEMP "gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION-merge-modules.zip"
-          gh release download $env:GSTREAMER_RELEASE --repo $env:GITHUB_REPOSITORY --dir $env:RUNNER_TEMP --pattern (Split-Path $archive -Leaf)
-          $actualHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualHash -ne $env:GSTREAMER_MSM_SHA256) {
-            throw "GStreamer merge-module checksum mismatch: $actualHash"
-          }
-          $extractDir = Join-Path $env:RUNNER_TEMP "gstreamer-msm"
-          Expand-Archive -LiteralPath $archive -DestinationPath $extractDir
-          $sourceDir = Get-ChildItem $extractDir -Directory | Select-Object -First 1
-          $moduleDir = New-Item -ItemType Directory -Force -Path "target\gstreamer-msm"
-          @(
-            "base-system-1.0.msm",
-            "base-crypto.msm",
-            "gstreamer-1.0-core.msm",
-            "gstreamer-1.0-net.msm",
-            "gstreamer-1.0-playback.msm",
-            "gstreamer-1.0-codecs.msm",
-            "gstreamer-1.0-system.msm",
-            "gstreamer-1.0-libav.msm"
-          ) | ForEach-Object { Copy-Item (Join-Path $sourceDir $_) $moduleDir }
-          $msiVersion = "0.1.${{ github.run_number }}"
-          cargo wix --package betterframe-client --nocapture --install-version $msiVersion -L -sice:ICE30 -L -sice:ICE80
+          ../scripts/build-windows-msi.ps1 -InstallVersion "0.1.${{ github.run_number }}"
           $msi = Get-ChildItem target\wix\*.msi | Select-Object -First 1
           Copy-Item $msi.FullName "betterframe-windows-client-${{ inputs.version }}-x86_64.msi"
+          $artifact = "betterframe-windows-client-${{ inputs.version }}-x86_64.msi"
+          $sha = (Get-FileHash $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$artifact.sha256", $sha)
+          openssl pkeyutl -sign -rawin -in "$artifact.sha256" -inkey $env:BF_WINDOWS_SIGNING_KEY -out "$artifact.sig.raw"
+          if ($LASTEXITCODE -ne 0) { throw "Windows MSI signing failed" }
+          $signature = [Convert]::ToBase64String([IO.File]::ReadAllBytes("$artifact.sig.raw")).TrimEnd('=').Replace('+','-').Replace('/','_')
+          [IO.File]::WriteAllText("$artifact.sig", $signature)
+          Remove-Item $env:BF_WINDOWS_SIGNING_KEY, "$artifact.sig.raw"
+
       - uses: actions/upload-artifact@v7
         with:
           name: betterframe-windows-client-x86_64
-          path: client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi
+          path: |
+            client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi
+            client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi.sig
+            client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi.sha256
           retention-days: 14
 
   windows-client-package-test:
     needs: windows-client
     runs-on: windows-latest
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
       - uses: actions/download-artifact@v8
         with:
           name: betterframe-windows-client-x86_64
@@ -440,16 +447,45 @@ jobs:
           if (Test-Path "$env:ProgramFiles\gstreamer") {
             throw "clean-host test runner unexpectedly contains a global GStreamer installation"
           }
-          $msi = Resolve-Path "betterframe-windows-client-${{ inputs.version }}-x86_64.msi"
-          $installer = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
-          if ($installer.ExitCode -notin 0, 3010) { throw "client install failed with exit code $($installer.ExitCode)" }
-          & "$env:ProgramFiles\betterframe-windows-client\bin\betterframe-windows-client.exe" self-test
-          if ($LASTEXITCODE -ne 0) { throw "installed client self-test failed with exit code $LASTEXITCODE" }
+          ../scripts/test-windows-msi.ps1 -MsiPath "betterframe-windows-client-${{ inputs.version }}-x86_64.msi"
+  windows-client-publish:
+    needs: windows-client-package-test
+    runs-on: ubuntu-24.04
+    env:
+      BF_AUTOIMPORT_URL: ${{ secrets.BF_AUTOIMPORT_URL }}
+      BF_AUTOIMPORT_API_KEY: ${{ secrets.BF_AUTOIMPORT_API_KEY }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: betterframe-windows-client-x86_64
+          path: client
+      - name: Publish signed Windows MSI to BF storage
+        working-directory: client
+        run: |
+          set -euo pipefail
+          test -n "$BF_AUTOIMPORT_URL" && test -n "$BF_AUTOIMPORT_API_KEY" || { echo "BF artifact publication is required"; exit 1; }
+          bin="betterframe-windows-client-${{ inputs.version }}-x86_64.msi"
+          base64 -w 0 "$bin" > "$bin.b64"
+          jq -nc --arg v "${{ inputs.version }}" --arg c "${{ inputs.channel }}" \
+            --rawfile b "$bin.b64" --rawfile s "$bin.sig" \
+            '{version:$v,channel:$c,target:"windows-x64",content_b64:$b,signature:$s}' > "$bin.import.json"
+          status=$(curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 10 \
+            --connect-timeout 15 --max-time 600 \
+            -H "Authorization: Bearer $BF_AUTOIMPORT_API_KEY" -H 'Content-Type: application/json' \
+            --output "$bin.import-response.json" --write-out '%{http_code}' \
+            --data-binary @"$bin.import.json" "$BF_AUTOIMPORT_URL/api/admin/firmware/import")
+          [[ "$status" =~ ^2[0-9][0-9]$ ]] || { echo "BF publication did not return success: $status"; exit 1; }
+          jq -e --rawfile hash "$bin.sha256" \
+            '.ok == true and (.release_id | type == "string" and length > 0) and .sha256 == $hash' \
+            "$bin.import-response.json" > /dev/null
       - name: Upload Windows installer to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag }}
-          files: client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi
+          files: |
+            client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi
+            client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi.sig
+            client/betterframe-windows-client-${{ inputs.version }}-x86_64.msi.sha256
 
   # Source/dependency SBOM is attached to every release for licensing and
   # vulnerability inventory. Binary/image jobs remain traceable to this ref.

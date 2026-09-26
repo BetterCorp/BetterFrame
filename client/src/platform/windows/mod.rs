@@ -199,8 +199,37 @@ fn unpaired_state(server_url: &str) -> ClientState {
 
 pub fn run() {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+    let args: Vec<String> = std::env::args().collect();
+    let command = args.get(1).map(String::as_str);
+    if command == Some("installation-test") {
+        if installation_test().is_err() { std::process::exit(1); }
+        return;
+    }
+    let desktop = matches!(command, None | Some("desktop"));
+    if !desktop && command != Some("app") {
+        // Keep explicit diagnostic/administration commands usable from a terminal.
+        // Explorer and logon launches never allocate a console.
+        unsafe {
+            windows_sys::Win32::System::Console::AttachConsole(
+                windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS,
+            );
+        }
+    }
+    // Guard before starting diagnostic workers or touching shared state.
+    let _instance = if desktop || command == Some("agent") {
+        match acquire_instance("Local\\BetterFrameWindowsAgent") {
+            Ok(Some(instance)) => Some(instance),
+            Ok(None) => return,
+            Err(error) => {
+                report_startup_error(&error, desktop);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
     // Agent and renderer are separate processes: use separate protected spools.
-    let mode = if std::env::args().nth(1).as_deref() == Some("agent") { "agent" } else { "app" };
+    let mode = if desktop || command == Some("agent") { "agent" } else { "app" };
     let read_path = state_dir().join(format!("logs-{mode}.json"));
     let write_path = read_path.clone();
     let app_logs = crate::diagnostic_logs::AppLogLayer::start(
@@ -218,21 +247,23 @@ pub fn run() {
         .with(tracing_subscriber::fmt::layer())
         .with(app_logs).init();
 
-    let args: Vec<String> = std::env::args().collect();
     info!(
         "BetterFrame Windows client {} starting (mode={}, arch={})",
         kiosk_app_version(),
-        args.get(1).map(String::as_str).unwrap_or("help"),
+        args.get(1).map(String::as_str).unwrap_or("desktop"),
         std::env::consts::ARCH
     );
     let result = match args.get(1).map(|s| s.as_str()) {
-        Some("agent") => run_agent_cli(&args[2..]),
+        None => run_agent_cli(&[]),
+        Some("desktop" | "agent") => run_agent_cli(&args[2..]),
         Some("app") => run_app(),
         Some("self-test") => self_test(),
+        Some("installation-test") => installation_test(),
         Some("install") => install_tasks(&args[2..]),
         Some("uninstall") => uninstall_tasks(),
         _ => {
             eprintln!("Usage:");
+            eprintln!("  betterframe-windows-client [desktop] [--server URL]");
             eprintln!("  betterframe-windows-client agent [--server URL]");
             eprintln!("  betterframe-windows-client app");
             eprintln!("  betterframe-windows-client self-test");
@@ -243,7 +274,7 @@ pub fn run() {
     };
 
     if let Err(err) = result {
-        eprintln!("{err}");
+        report_startup_error(&err, desktop);
         std::process::exit(1);
     }
 }
@@ -263,15 +294,7 @@ fn self_test() -> Result<(), String> {
         return Err("protected state-file round-trip returned different data".to_string());
     }
 
-    gstreamer::init().map_err(|error| format!("GStreamer initialization: {error}"))?;
-    for plugin in ["rtspsrc", "decodebin", "d3d11videosink"] {
-        if gstreamer::ElementFactory::find(plugin).is_none() {
-            return Err(format!(
-                "required GStreamer element is unavailable: {plugin}"
-            ));
-        }
-    }
-
+    installation_test()?;
     let webview = wry::webview_version().map_err(|error| format!("WebView2: {error}"))?;
     let displays = query_native_displays();
     if displays.is_empty() {
@@ -284,11 +307,27 @@ fn self_test() -> Result<(), String> {
     Ok(())
 }
 
+// Safe under SYSTEM: never creates or rewrites the user's enrollment directory ACL.
+fn installation_test() -> Result<(), String> {
+    gstreamer::init().map_err(|error| format!("GStreamer initialization: {error}"))?;
+    for plugin in ["rtspsrc", "decodebin", "d3d11videosink"] {
+        if gstreamer::ElementFactory::find(plugin).is_none() {
+            return Err(format!(
+                "required GStreamer element is unavailable: {plugin}"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn run_agent_cli(args: &[String]) -> Result<(), String> {
     loop {
         // Finish a persisted local exit before discovery, pairing or rendering.
         // The marker can outlive demo=true if a previous cleanup was interrupted.
         complete_demo_exit()?;
+        let app = Arc::new(Mutex::new(None::<Child>));
+        start_app(&app)?;
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -300,11 +339,12 @@ fn run_agent_cli(args: &[String]) -> Result<(), String> {
                     Ok(server) => break server,
                     Err(error) => {
                         warn!("server discovery: {error}; retrying");
+                        let _ = supervise_app(&app);
                         tokio::time::sleep(Duration::from_secs(10)).await;
                     }
                 }
             };
-            run_agent(server).await
+            run_agent(server, app).await
         });
         // Drop the runtime first: old heartbeat/bundle tasks must never restore cleared state.
         drop(rt);
@@ -340,7 +380,7 @@ async fn discover_server(
     Err("could not find BetterFrame server".to_string())
 }
 
-async fn run_agent(server_url: String) -> Result<(), String> {
+async fn run_agent(server_url: String, app: Arc<Mutex<Option<Child>>>) -> Result<(), String> {
     ensure_secure_state_dir()?;
     ensure_default_policy()?;
 
@@ -348,7 +388,6 @@ async fn run_agent(server_url: String) -> Result<(), String> {
         latest.server_url = server_url;
         Ok(())
     })?;
-    let app = Arc::new(Mutex::new(None::<Child>));
     // The renderer reads protected cached state independently. Start it before
     // regional discovery so an offline upgrade keeps showing the saved display.
     start_app(&app)?;
@@ -808,9 +847,23 @@ async fn handle_agent_command(
                 info!("volume mute ignored by Windows policy");
             }
         }
+        AgentCommand::CancelUpdates => {
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_nanos().to_string();
+            write_protected(&state_dir().join("update-policy-suspended"), stamp.as_bytes())?;
+        }
+        AgentCommand::FirmwareCheck { .. } => {
+            // SYSTEM independently polls BF; an explicit push is persisted by BF
+            // and verified there, never elevated from a user-writable local flag.
+            info!("Windows updater will check the persisted BF update request");
+        }
         AgentCommand::Reboot => {
             if current_policy.controls.host_reboot {
-                let _ = Command::new("shutdown").args(["/r", "/t", "5"]).spawn();
+                use std::os::windows::process::CommandExt;
+                let _ = Command::new("shutdown")
+                    .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                    .args(["/r", "/t", "5"])
+                    .spawn();
             } else if current_policy.controls.app_restart {
                 // Host reboot not permitted â€” degrade to restarting the app.
                 restart_app(app)?;

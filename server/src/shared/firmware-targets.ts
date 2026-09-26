@@ -1,3 +1,4 @@
+export const FIRMWARE_TARGET_WINDOWS = "windows-x64";
 export const FIRMWARE_TARGET_RPI5 = "betterframe-rpi5-aarch64";
 export const FIRMWARE_TARGET_PC_X86_64 = "betterframe-pc-x86_64";
 
@@ -22,6 +23,8 @@ export function firmwareTargetLabel(raw: string | null | undefined): string {
       return "Raspberry Pi 5";
     case FIRMWARE_TARGET_PC_X86_64:
       return "PC x86_64";
+    case FIRMWARE_TARGET_WINDOWS:
+      return "Windows x64";
     case "":
       return "unknown";
     default:
@@ -31,5 +34,5 @@ export function firmwareTargetLabel(raw: string | null | undefined): string {
 
 export function isKnownFirmwareTarget(raw: string | null | undefined): boolean {
   const target = normalizeFirmwareTarget(raw);
-  return target === FIRMWARE_TARGET_RPI5 || target === FIRMWARE_TARGET_PC_X86_64;
+  return target === FIRMWARE_TARGET_WINDOWS || target === FIRMWARE_TARGET_RPI5 || target === FIRMWARE_TARGET_PC_X86_64;
 }

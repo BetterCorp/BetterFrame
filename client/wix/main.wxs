@@ -6,7 +6,7 @@
   <?error BetterFrame Windows Client only supports x64 builds. ?>
 <?endif ?>
 
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi" xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
   <Product
       Id="*"
       Name="betterframe-windows-client"
@@ -27,7 +27,11 @@
 
     <MajorUpgrade
         Schedule="afterInstallInitialize"
-        DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+        AllowDowngrades="yes" />
+    <!-- The updater enforces upgrade-only selection; MSI must permit recovery
+         to the previously verified package after failed local health checks. -->
+    <Property Id="BF_RELEASE_VERSION" Value="$(env.BF_BUILD_VERSION)" />
+    <Property Id="BF_UPDATE_TARGET" Value="windows-x64" />
     <Media Id="1" Cabinet="media1.cab" EmbedCab="yes" CompressionLevel="high" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
@@ -45,11 +49,35 @@
                     Id="StartMenuShortcut"
                     Directory="ProgramMenuFolder"
                     Name="BetterFrame"
-                    Arguments="agent"
+                    Arguments="desktop"
                     WorkingDirectory="APPLICATIONFOLDER"
                     Icon="BetterFrameIcon.exe"
                     Advertise="yes" />
               </File>
+            </Component>
+            <!-- MSI owns startup registration, including repair, upgrade and removal.
+                 The display must run in the signed-in user's desktop session. -->
+            <Component Id="DesktopStartup" Guid="*" Win64="yes">
+              <RegistryValue
+                  Root="HKLM"
+                  Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                  Name="BetterFrame"
+                  Type="string"
+                  Value="&quot;[#ClientExe]&quot; desktop"
+                  KeyPath="yes" />
+            </Component>
+            <Component Id="UpdaterService" Guid="*" Win64="yes">
+              <File Id="UpdaterExe" Name="betterframe-windows-updater.exe"
+                    Source="target\updater\release\betterframe-windows-updater.exe" KeyPath="yes" />
+              <ServiceInstall Id="InstallUpdater" Name="BetterFrameUpdater"
+                  DisplayName="BetterFrame Updater" Description="Installs verified BetterFrame updates and recovers failed installations."
+                  Type="ownProcess" Start="auto" ErrorControl="normal"
+                  Account="LocalSystem" Arguments="service" Vital="yes">
+                <util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart"
+                    ThirdFailureActionType="restart" RestartServiceDelayInSeconds="60" ResetPeriodInDays="1" />
+              </ServiceInstall>
+              <ServiceControl Id="ControlUpdater" Name="BetterFrameUpdater"
+                  Start="install" Stop="both" Remove="uninstall" Wait="yes" />
             </Component>
             <Component Id="LicenseSummaryFile" Guid="*">
               <File Id="LicenseSummary" Source="..\LICENSE.md" KeyPath="yes" />
@@ -83,6 +111,8 @@
         ConfigurableDirectory="APPLICATIONFOLDER"
         Absent="disallow">
       <ComponentRef Id="ClientBinary" />
+      <ComponentRef Id="DesktopStartup" />
+      <ComponentRef Id="UpdaterService" />
       <ComponentRef Id="LicenseSummaryFile" />
       <ComponentRef Id="LicenseAgplFile" />
       <ComponentRef Id="LicenseCommercialFile" />

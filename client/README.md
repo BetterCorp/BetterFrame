@@ -62,3 +62,36 @@ path. Camera and webpage navigation retain their own existing behavior.
 
 BetterFrame uses `cloud.betterportal.frame` as its canonical application ID for
 Android/Android TV and Linux GTK. See [application identity and domain conventions](../docs/application-identity.md).
+
+### Windows installation and startup
+
+Install the Windows MSI, then open **BetterFrame** from the Start menu to begin
+pairing. The display shows the pairing code; no terminal or separate `install`
+command is needed. Double-clicking the installed executable also starts the app.
+
+The MSI enables BetterFrame at Windows sign-in through the machine-wide
+`HKLM\Software\Microsoft\Windows\CurrentVersion\Run\BetterFrame` entry.
+The agent and display run without a console window, in the signed-in user's
+session. Repeated launches in that session reuse the running agent. MSI repair
+restores the startup entry, upgrades update its executable path, and uninstall
+removes it. Windows Settings / Task Manager **Startup apps** can disable startup.
+
+Use one dedicated Windows account for the kiosk: enrollment is machine-wide,
+with protected state restricted to the account that created it, administrators,
+and SYSTEM. Sign in with that same account after reboot. The installer does not
+configure automatic Windows sign-in, and the display cannot run before sign-in.
+A Windows service runs in a noninteractive session and cannot display this UI.
+
+The older CLI `install` / `uninstall` commands manage a separate, optional
+scheduled task; they are not needed for MSI installations. If you previously
+created that task, run the CLI `uninstall` command once as administrator to remove
+it (this does not uninstall the MSI). Normal application removal uses Windows
+**Installed apps**. Explicit CLI commands such as `agent` and `self-test` still
+attach to an existing terminal; for scripts use PowerShell `Start-Process -Wait
+-PassThru` to wait and inspect the exit code of the GUI executable.
+
+The MSI also installs the independent **BetterFrameUpdater** service for automatic
+app updates and rollback through BF-hosted, vendor-signed MSI packages. Updates
+respect saved maintenance windows and can recover without working enrollment.
+See [Windows updates and recovery](../docs/windows-updates.md) for first-deployment
+requirements, retained installers, and recovery behavior.

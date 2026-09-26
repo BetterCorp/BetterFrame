@@ -4233,6 +4233,7 @@ export function FirmwarePage(props: FirmwarePageProps) {
             <select id="target" name="target" class="form-input">
               <option value="betterframe-rpi5-aarch64">Raspberry Pi 5</option>
               <option value="betterframe-pc-x86_64">PC x86_64</option>
+              <option value="windows-x64">Windows x64</option>
             </select>
           </div>
           <div class="form-group" style="grid-column:1/-1">

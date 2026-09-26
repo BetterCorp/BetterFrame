@@ -417,6 +417,7 @@ export function rowToKiosk(r: Row): Kiosk {
     disk_total_mb: nn(r["disk_total_mb"]),
     disk_free_mb: nn(r["disk_free_mb"]),
     disk_used_percent: nn(r["disk_used_percent"]),
+    windows_update_push: sn(r["windows_update_push"]),
     firmware_channel: (s(r["firmware_channel"] ?? "stable")) as FirmwareChannel,
     firmware_target_version: sn(r["firmware_target_version"]),
     firmware_last_attempt_at: sn(r["firmware_last_attempt_at"]),

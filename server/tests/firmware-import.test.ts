@@ -11,6 +11,7 @@ import { PgAdapter } from "../src/shared/db/pg-adapter.js";
 import { Repository } from "../src/shared/db/repository.js";
 import { registerFirmwareRoutes } from "../src/plugins/service-admin-http/routes-firmware.js";
 import type { AdminDeps } from "../src/plugins/service-admin-http/index.js";
+import { createWindowsPush, windowsPushRequest, windowsUpdatePolicy } from "../src/shared/windows-updates.js";
 
 test("firmware HTTP imports safely retry, reject conflicts and serialize concurrent registration", { skip: !process.env["BF_TEST_PG_URL"] }, async (t) => {
   const dataDir = await mkdtemp(join(tmpdir(), "bf-firmware-import-"));
@@ -67,6 +68,20 @@ test("firmware HTTP imports safely retry, reject conflicts and serialize concurr
       assert.deepEqual(await firmware.readBlob(release.artifact_path, release.sha256), Buffer.from("signed firmware"));
     }
     assert.ok((await readdir(firmware.firmwareDir())).every(name => name.endsWith(".bin")));
+
+    const windows = await request({...payload("signed MSI bytes"), target: "windows-x64"});
+    assert.equal(windows.status, 200);
+    const windowsRelease = await repo.getFirmwareRelease((await windows.json()).release_id);
+    assert.equal(windowsRelease?.arch, "windows-x64");
+    assert.deepEqual(await firmware.readBlob(windowsRelease!.artifact_path, windowsRelease!.sha256), Buffer.from("signed MSI bytes"));
+
+    const kiosk = await repo.createKiosk({name: "Windows updater", key_hash: "unused", key_prefix: "unused"});
+    const policy = await windowsUpdatePolicy(repo, kiosk);
+    const push = createWindowsPush(windowsRelease!.version, policy);
+    await repo.updateKiosk(kiosk.id, {windows_update_push: push});
+    const reloaded = await repo.getKioskById(kiosk.id);
+    assert.equal(reloaded?.windows_update_push, push);
+    assert.ok(windowsPushRequest(reloaded?.windows_update_push, windowsRelease!.version, policy));
 
     await repo.yankFirmwareRelease(original.release_id);
     assert.equal((await request(payload())).status, 409);

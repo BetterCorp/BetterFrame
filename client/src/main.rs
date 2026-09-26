@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 pub use betterframe_client_core as core;
 pub use core::bundle;
 mod network;

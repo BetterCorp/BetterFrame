@@ -1,0 +1,29 @@
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="BetterFrame updater recovery fixture" Language="1033"
+    Version="$(var.ReleaseVersion)" Manufacturer="BetterCorp"
+    UpgradeCode="C57DAC79-D926-492A-800D-190630390291">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+    <MajorUpgrade Schedule="afterInstallInitialize" AllowDowngrades="yes" />
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="BF_RELEASE_VERSION" Value="$(var.ReleaseVersion)" />
+    <Property Id="BF_UPDATE_TARGET" Value="windows-x64" />
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="APPLICATIONFOLDER" Name="BetterFrame Recovery Test">
+          <Directory Id="Bin" Name="bin">
+            <Component Id="Client" Guid="*" Win64="yes">
+              <File Id="ClientExe" Name="betterframe-windows-client.exe" Source="$(var.FixtureDir)\client.exe" KeyPath="yes" />
+            </Component>
+            <Component Id="Updater" Guid="*" Win64="yes">
+              <File Id="UpdaterExe" Name="betterframe-windows-updater.exe" Source="$(var.FixtureDir)\updater.exe" KeyPath="yes" />
+              <ServiceInstall Id="InstallUpdater" Name="BetterFrameUpdater" Type="ownProcess"
+                Start="auto" ErrorControl="normal" Account="LocalSystem" Arguments="service" />
+              <ServiceControl Id="ControlUpdater" Name="BetterFrameUpdater" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+    </Directory>
+    <Feature Id="App" Level="1"><ComponentRef Id="Client" /><ComponentRef Id="Updater" /></Feature>
+  </Product>
+</Wix>

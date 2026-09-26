@@ -394,6 +394,7 @@ export interface Kiosk {
   disk_total_mb: number | null;
   disk_free_mb: number | null;
   disk_used_percent: number | null;
+  windows_update_push?: string | null;
   firmware_channel: FirmwareChannel;
   firmware_target_version: string | null;
   firmware_last_attempt_at: string | null;

@@ -1,4 +1,6 @@
 use super::*;
+use std::os::windows::process::CommandExt;
+use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 pub(super) fn set_monitor_power(on: bool) {
     unsafe {
@@ -32,6 +34,7 @@ pub(super) fn set_volume_percent(percent: u32) {
         )
     };
     let _ = Command::new("powershell.exe")
+        .creation_flags(CREATE_NO_WINDOW)
         .args([
             "-NoProfile",
             "-ExecutionPolicy",
@@ -120,6 +123,7 @@ pub(super) fn uninstall_tasks() -> Result<(), String> {
 
 pub(super) fn run_command(program: &str, args: &[&str]) -> Result<(), String> {
     let status = Command::new(program)
+        .creation_flags(CREATE_NO_WINDOW)
         .args(args)
         .status()
         .map_err(|e| format!("{program}: {e}"))?;
@@ -130,12 +134,34 @@ pub(super) fn run_command(program: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
-pub(super) fn acquire_app_instance() -> Result<Option<HANDLE>, String> {
-    let name = wide("Local\\BetterFrameWindowsRenderer");
+pub(super) fn report_startup_error(error: &str, desktop: bool) {
+    eprintln!("{error}");
+    if desktop {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+        let text = wide(&format!("BetterFrame could not start.\n\n{error}"));
+        let title = wide("BetterFrame");
+        unsafe { MessageBoxW(0, text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR); }
+    }
+}
+
+pub(super) struct InstanceGuard(HANDLE);
+
+impl Drop for InstanceGuard {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0); }
+    }
+}
+
+pub(super) fn acquire_app_instance() -> Result<Option<InstanceGuard>, String> {
+    acquire_instance("Local\\BetterFrameWindowsRenderer")
+}
+
+pub(super) fn acquire_instance(name: &str) -> Result<Option<InstanceGuard>, String> {
+    let name = wide(name);
     let handle = unsafe { CreateMutexW(null(), 0, name.as_ptr()) };
     if handle == 0 {
         return Err(format!(
-            "create renderer mutex: {}",
+            "create instance mutex: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -143,5 +169,19 @@ pub(super) fn acquire_app_instance() -> Result<Option<HANDLE>, String> {
         unsafe { CloseHandle(handle) };
         return Ok(None);
     }
-    Ok(Some(handle))
+    Ok(Some(InstanceGuard(handle)))
+}
+
+#[cfg(test)]
+mod instance_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_launch_is_ignored_and_exit_releases_instance() {
+        let name = format!("Local\\BetterFrameInstanceTest-{}", std::process::id());
+        let first = acquire_instance(&name).unwrap().unwrap();
+        assert!(acquire_instance(&name).unwrap().is_none());
+        drop(first);
+        assert!(acquire_instance(&name).unwrap().is_some());
+    }
 }

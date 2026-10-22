@@ -71,13 +71,14 @@ user_systemctl() {
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$USER_ID/bus" systemctl --user "$@"
 }
 disable_user_app_offline() {
-    # Enablement is filesystem state; --no-reload works without a user bus.
+    # --root=/ forces filesystem-only operations even on a booted host.
+    # --no-reload alone still tries to connect to the runtime user's bus.
     local units
     units=$(runtime_command env XDG_CONFIG_HOME="$USER_HOME/.config" \
-        systemctl --user --no-reload list-unit-files --no-legend --no-pager)
+        systemctl --user --root=/ --no-reload list-unit-files --no-legend --no-pager)
     if [[ $'\n'$units == *$'\nbetterframe.service '* ]]; then
         runtime_command env XDG_CONFIG_HOME="$USER_HOME/.config" \
-            systemctl --user --no-reload disable betterframe.service
+            systemctl --user --root=/ --no-reload disable betterframe.service
     fi
 }
 load_distribution() {
@@ -738,7 +739,7 @@ EOF
 }
 main() {
     parse_args "$@"
-    printf 'BetterFrame setup revision 2026-09-20.8\n'
+    printf 'BetterFrame setup revision 2026-10-22.1\n'
     [[ $(uname -s) == Linux ]] || fail 'This installer requires Linux'
     [[ $EUID == 0 ]] || fail 'Run with sudo (or root and --user USER)'
     [[ -d /run/systemd/system ]] || fail 'This installer requires systemd'

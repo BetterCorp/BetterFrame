@@ -182,7 +182,7 @@ def CDLL(name):
                 else:
                     self.assertEqual((p/'firmware-applying.json').read_text(), '{"version":"old"}')
 
-    @unittest.skipUnless(os.environ.get('BF_TEST_ISOLATED_SYSTEMD') == '1', 'requires disposable container')
+    @unittest.skipUnless(shutil.which('systemctl'), 'requires systemctl')
     def test_disable_user_service_without_running_user_manager(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
@@ -199,6 +199,31 @@ def CDLL(name):
             (units/'betterframe.service').unlink()
             result = self.shell(f'USER_HOME={home}; INSTALL_USER={os.getuid()}; unset DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR; disable_user_app_offline', check=False)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @unittest.skipUnless(shutil.which('systemctl'), 'requires systemctl')
+    def test_disable_user_service_ignores_inherited_bus_address(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            units = home/'.config/systemd/user'
+            wants = units/'graphical-session.target.wants'
+            wants.mkdir(parents=True)
+            unit = units/'betterframe.service'
+            content = '[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=graphical-session.target\n'
+            unit.write_text(content)
+            link = wants/'betterframe.service'
+            link.symlink_to('../betterframe.service')
+            other = wants/'other.service'
+            other.symlink_to('../other.service')
+            result = self.shell(f'''USER_HOME={home}; INSTALL_USER={os.getuid()}
+                export XDG_RUNTIME_DIR={home}/no-runtime
+                export DBUS_SESSION_BUS_ADDRESS=unix:path={home}/no-bus
+                disable_user_app_offline
+                disable_user_app_offline
+            ''', check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(link.is_symlink())
+            self.assertTrue(other.is_symlink())
+            self.assertEqual(unit.read_text(), content)
 
     def test_alpha_releases_are_dev_for_discovery_and_saved_inference(self):
         import json

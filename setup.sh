@@ -71,13 +71,14 @@ user_systemctl() {
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$USER_ID/bus" systemctl --user "$@"
 }
 disable_user_app_offline() {
-    # Enablement is filesystem state; --no-reload works without a user bus.
+    # --root=/ forces filesystem-only operations even on a booted host.
+    # --no-reload alone still tries to connect to the runtime user's bus.
     local units
     units=$(runtime_command env XDG_CONFIG_HOME="$USER_HOME/.config" \
-        systemctl --user --no-reload list-unit-files --no-legend --no-pager)
+        systemctl --user --root=/ --no-reload list-unit-files --no-legend --no-pager)
     if [[ $'\n'$units == *$'\nbetterframe.service '* ]]; then
         runtime_command env XDG_CONFIG_HOME="$USER_HOME/.config" \
-            systemctl --user --no-reload disable betterframe.service
+            systemctl --user --root=/ --no-reload disable betterframe.service
     fi
 }
 load_distribution() {
@@ -123,6 +124,7 @@ select_packages() {
                 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 gstreamer1.0-tools
                 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
                 gstreamer1.0-libav dbus-user-session v4l-utils alsa-utils wlr-randr x11-xserver-utils)
+            if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then PACKAGES+=(apparmor); fi
             ;;
         *' fedora '*|*' rhel '*)
             PACKAGE_MANAGER=dnf
@@ -700,6 +702,27 @@ fi
 exec systemctl --user restart betterframe.service
 EOF
 }
+write_apparmor_profile() {
+    cat <<'EOF'
+# Allow BetterFrame's WebKit sandbox on hosts restricting user namespaces.
+# This applies only to the installed BF executable and its inherited children.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile betterframe /opt/betterframe/kiosk/betterframe-kiosk flags=(unconfined) {
+  userns,
+}
+EOF
+}
+configure_webkit_apparmor() {
+    local restriction=${1:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}
+    [[ -r $restriction && $(< "$restriction") == 1 ]] || return 0
+    command -v apparmor_parser >/dev/null || fail 'Install apparmor to allow the BetterFrame WebKit sandbox'
+    [[ ! -L /etc/apparmor.d ]] || fail 'Refusing symlink AppArmor profile directory'
+    write_apparmor_profile | reconcile_file /etc/apparmor.d/betterframe 644 root root
+    apparmor_parser -r /etc/apparmor.d/betterframe || fail 'Could not load BetterFrame AppArmor profile; existing app was not replaced'
+    printf 'AppArmor profile loaded for the BetterFrame WebKit sandbox.\n'
+}
 write_dedicated_unit() {
     cat <<EOF
 [Unit]
@@ -738,7 +761,7 @@ EOF
 }
 main() {
     parse_args "$@"
-    printf 'BetterFrame setup revision 2026-09-20.8\n'
+    printf 'BetterFrame setup revision 2026-10-22.2\n'
     [[ $(uname -s) == Linux ]] || fail 'This installer requires Linux'
     [[ $EUID == 0 ]] || fail 'Run with sudo (or root and --user USER)'
     [[ -d /run/systemd/system ]] || fail 'This installer requires systemd'
@@ -799,8 +822,11 @@ main() {
     trap 'rm -rf -- "$STAGING"' EXIT
     prepare_candidate
     if [[ $MEDIA_GATEWAY == on ]]; then download_mediamtx; fi
-    # Do not stop or replace a working app until validation has passed.
     BACKUP_ID=$(date +%Y%m%dT%H%M%S)-$$
+    # Authorize WebKit's sandbox before stopping or replacing the current app.
+    # Ubuntu 24.04 otherwise traps as soon as a layout creates a WebView.
+    configure_webkit_apparmor
+    # Do not stop or replace a working app until validation has passed.
     unit_dir="$USER_HOME/.config/systemd/user"
     autostart_dir="$USER_HOME/.config/autostart"
     # Secure BF's parent directories before touching runtime-writable children.

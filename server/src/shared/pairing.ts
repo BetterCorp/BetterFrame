@@ -1,4 +1,3 @@
-import { isAndroidViewer } from "./android-viewer.js";
 /**
  * Pairing state machine — shared module.
  *
@@ -11,7 +10,7 @@ import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import type { Observable } from "@bsb/base";
 import type { Repository } from "./db/repository.js";
 import type { AuthApi } from "./auth.js";
-import { CLUSTER_SECRET_CONTEXT, type SecretsApi } from "./secrets.js";
+import type { SecretsApi } from "./secrets.js";
 
 export function secretHash(secret: string): string {
   return createHash("sha256").update(secret).digest("hex");
@@ -90,7 +89,6 @@ export interface PairingClaimResult {
   kioskId?: string;
   kioskName?: string;
   kioskKey?: string;
-  clusterKey?: string;
   encryptKey?: string;
   bundleUrl?: string;
   demo?: boolean;
@@ -117,14 +115,13 @@ export async function claimPairing(
   if (remaining <= 0) return { status: "expired" };
   if (!pc.consumed_at) return { status: "pending", expiresInSeconds: Math.ceil(remaining / 1000) };
 
-  let claim: { kioskKey?: string; clusterKey?: string; encryptKey?: string } = {};
+  let claim: { kioskKey?: string; encryptKey?: string } = {};
   const encryptedClaim = extras["pairing_claim_encrypted"];
   if (typeof encryptedClaim === "string") {
     try {
       const parsed = JSON.parse(secrets.decryptString(encryptedClaim, "pairing-claim")) as Record<string, unknown>;
       claim = {
         kioskKey: typeof parsed["kioskKey"] === "string" ? parsed["kioskKey"] : undefined,
-        clusterKey: typeof parsed["clusterKey"] === "string" ? parsed["clusterKey"] : undefined,
         encryptKey: typeof parsed["encryptKey"] === "string" ? parsed["encryptKey"] : undefined,
       };
     } catch {
@@ -135,7 +132,6 @@ export async function claimPairing(
     // Compatibility with pairing codes confirmed by older server builds.
     claim = {
       kioskKey: extras["kiosk_key_plaintext"] as string | undefined,
-      clusterKey: extras["cluster_key"] as string | undefined,
       encryptKey: extras["encrypt_key"] as string | undefined,
     };
   }
@@ -155,7 +151,6 @@ export async function claimPairing(
     kioskId: pc.consumed_by_kiosk_id,
     kioskName: kiosk?.name ?? pc.kiosk_proposed_name ?? "kiosk",
     kioskKey,
-    clusterKey: isAndroidViewer(kiosk) ? undefined : claim.clusterKey,
     encryptKey: claim.encryptKey,
     bundleUrl: "/api/kiosk/bundle",
     demo: extras["demo"] === true,
@@ -299,22 +294,9 @@ export async function confirmPairing(
     const kioskEncryptKeyEncrypted = secrets.encryptString(kioskEncryptKey, "kiosk-encrypt");
     await repo.updateKiosk(kioskId, { encrypt_key_encrypted: kioskEncryptKeyEncrypted } as any);
 
-    // Still deliver cluster_key for backward compat (old kiosk binaries
-    // that don't understand encrypt_key yet). Remove once all kiosks are
-    // on the new binary.
-    const clusterKeyEncrypted = await repo.getSetupExtra("cluster_key_encrypted") as string | undefined;
-    let clusterKey: string | undefined;
-    if (clusterKeyEncrypted) {
-      try {
-        clusterKey = secrets.decryptString(clusterKeyEncrypted, CLUSTER_SECRET_CONTEXT);
-      } catch {
-        throw new Error("server cluster encryption key is unreadable");
-      }
-    }
-
+    // Supported clients use their per-device key; adoption must not read the legacy cluster key.
     const pairingClaimEncrypted = secrets.encryptString(JSON.stringify({
       kioskKey: kioskKeyPlaintext,
-      clusterKey,
       encryptKey: kioskEncryptKey,
     }), "pairing-claim");
     await repo.markPairingCodeClaimed(input.code, kioskId, {

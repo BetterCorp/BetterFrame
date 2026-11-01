@@ -67,8 +67,9 @@ export const pairClaimRequest = av.object(
 
 /**
  * Step 3 successful response. The kiosk persists `kiosk_key` 0600 and uses it
- * as the Bearer token for all subsequent requests. `cluster_key` is the shared
- * symmetric key for camera-password decryption.
+ * as the Bearer token for all subsequent requests. `encrypt_key` is the
+ * per-device symmetric key for camera-password decryption. `cluster_key` is
+ * retained in the schema for older server responses; new adoption omits it.
  */
 export const pairClaimResponse = av.object(
   {

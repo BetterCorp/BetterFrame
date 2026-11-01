@@ -519,7 +519,6 @@ function registerPairingRoutes(
       kiosk_id: result.kioskId,
       kiosk_name: result.kioskName,
       kiosk_key: result.kioskKey,
-      cluster_key: result.clusterKey,
       encrypt_key: result.encryptKey,
       bundle_url: result.bundleUrl,
     };
@@ -1009,7 +1008,8 @@ export function registerKioskRoutes(
       status: 409, headers: { "cache-control": "no-store" },
     });
     if (viewer && await powerTarget() === null) return unassigned();
-    const clusterKey = await getClusterKey(repo, secrets);
+    const enrolledKiosk = await repo.getKioskById(kiosk.id);
+    const clusterKey = enrolledKiosk?.encrypt_key_encrypted ? undefined : await getClusterKey(repo, secrets);
     const bundle = await generateBundle(repo, secrets, kiosk.id, clusterKey, event.context.obs)
       .catch((error: unknown) => {
         if (!(error instanceof BundleGenerationError)) throw error;

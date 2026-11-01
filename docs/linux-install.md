@@ -136,6 +136,23 @@ Reboot when convenient or start your display manager manually. To change setup
 mode/user, restore the old startup configuration first, then remove
 `/etc/betterframe/linux-install` and rerun setup with the appropriate user.
 
+## Ubuntu WebKit sandbox
+
+On hosts with AppArmor restrictions on unprivileged user namespaces (including
+Ubuntu 24.04), setup installs and loads `/etc/apparmor.d/betterframe` for
+`/opt/betterframe/kiosk/betterframe-kiosk`. This allows WebKit's sandbox to create
+its user namespace when a layout renders web or HTML content. WebKit sandboxing
+and the host's global AppArmor settings stay enabled.
+
+If an older installation crashes on layout assignment with `bwrap: setting up
+uid map: Permission denied`, AppArmor denials for `unprivileged_userns`, and
+`Failed to fully launch dbus-proxy`, rerun the updated installer. Restart
+BetterFrame after loading the profile so the new process receives it. This setup
+repair works with the existing app binary; no app release or reboot is required.
+
+See the [Ubuntu 24.04 release notes](https://documentation.ubuntu.com/release-notes/24.04/#unprivileged-user-namespace-restrictions)
+for the application-specific `userns` permission.
+
 ## MediaMTX gateway
 
 Setup asks whether to install MediaMTX for Operator Console preview and optional

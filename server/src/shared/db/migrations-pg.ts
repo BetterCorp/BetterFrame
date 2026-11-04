@@ -109,6 +109,15 @@ export const PUBLIC_MIGRATIONS: readonly string[] = [
     deleted_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX deleted_kiosk_keys_prefix ON public.deleted_kiosk_keys(key_prefix)`,
+  // BP owns tenants and human access. This table binds only local resources.
+  `CREATE TABLE public.bp_tenant_bindings (
+    installation_id TEXT NOT NULL,
+    bp_tenant_id TEXT NOT NULL,
+    frame_tenant_id UUID NOT NULL UNIQUE REFERENCES public.tenants(id) ON DELETE RESTRICT,
+    state TEXT NOT NULL DEFAULT 'ready' CHECK (state IN ('provisioning', 'ready', 'suspended', 'archived')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (installation_id, bp_tenant_id)
+  )`,
 ];
 
 /**

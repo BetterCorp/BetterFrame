@@ -44,7 +44,7 @@ export interface FirmwareApi {
   /** Persist an uploaded firmware blob to disk and return absolute path. */
   storeBlob(bytes: Buffer, sha256: string): Promise<string>;
   /** Read a stored firmware blob by absolute path (re-checks sha256). */
-  readBlob(path: string, expectedSha256: string): Promise<Buffer>;
+  readBlob(path: string, expectedSha256: string): Promise<Buffer<ArrayBuffer>>;
   /** Delete a stored firmware blob (yank cleanup). */
   removeBlob(path: string): Promise<void>;
   /** Directory holding all firmware blobs. */
@@ -112,7 +112,7 @@ export function initFirmware(config: FirmwareConfig, log: FirmwareLog): Firmware
     }
   }
 
-  async function readBlob(path: string, expectedSha256: string): Promise<Buffer> {
+  async function readBlob(path: string, expectedSha256: string): Promise<Buffer<ArrayBuffer>> {
     const buf = await readFile(path);
     const got = createHash("sha256").update(buf).digest("hex");
     if (got !== expectedSha256) {

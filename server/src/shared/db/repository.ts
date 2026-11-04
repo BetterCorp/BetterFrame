@@ -1,3 +1,5 @@
+import { CAMERA_CREDENTIAL_PREFIX } from "../admin/camera-credentials.js";
+import type { SecretsApi } from "../secrets.js";
 import type { LogFilters, LogPage, LogSummary } from "../kiosk-log-view.js";
 /**
  * Repository — typed accessor over the DB adapter.
@@ -135,6 +137,25 @@ export class Repository {
   readonly adapter: DbAdapter;
   private readonly notify: NotifyFn;
   private _obs?: Observable;
+  private cameraCredentialCodec?: Pick<SecretsApi, "decryptString">;
+  setCameraCredentialCodec(codec: Pick<SecretsApi, "decryptString">): void { this.cameraCredentialCodec = codec; }
+  private decodeCameraCredential(value: string | null): string | null {
+    if (!value?.startsWith(CAMERA_CREDENTIAL_PREFIX)) return value;
+    if (!this.cameraCredentialCodec) throw new Error("Encrypted camera credentials require the installation key");
+    return this.cameraCredentialCodec.decryptString(value.slice(CAMERA_CREDENTIAL_PREFIX.length), "camera-password");
+  }
+  private cameraRow(row: Record<string, unknown>): Camera {
+    const camera = rowToCamera(row);
+    camera.onvif_password = this.decodeCameraCredential(camera.onvif_password);
+    camera.rtsp_url = this.decodeCameraCredential(camera.rtsp_url);
+    return camera;
+  }
+  private deviceRow(row: Record<string, unknown>): CameraDevice {
+    const device = rowToCameraDevice(row);
+    device.password = this.decodeCameraCredential(device.password);
+    return device;
+  }
+
 
   constructor(adapter: DbAdapter, notify: NotifyFn) {
     this.adapter = adapter;
@@ -285,7 +306,7 @@ export class Repository {
   async countTenants(): Promise<number> {
     if (this.adapter.dialect() !== "postgres") return 0;
     const r = await this._get<{ c: number }>("SELECT COUNT(*) AS c FROM public.tenants");
-    return r?.c ?? 0;
+    return Number(r?.c ?? 0);
   }
 
   // ===========================================================================
@@ -359,7 +380,7 @@ export class Repository {
 
   async countUsers(): Promise<number> {
     const r = await this._get<{ c: number }>("SELECT COUNT(*) AS c FROM users");
-    return r?.c ?? 0;
+    return Number(r?.c ?? 0);
   }
 
   async getUserById(id: string): Promise<User | null> {
@@ -1112,7 +1133,7 @@ export class Repository {
         ORDER BY c.name`,
       layoutIds,
     );
-    return rs.map((r) => rowToCamera(r as Record<string, unknown>));
+    return rs.map((r) => this.cameraRow(r as Record<string, unknown>));
   }
 
   // ===========================================================================
@@ -1121,17 +1142,17 @@ export class Repository {
 
   async listCameraDevices(): Promise<CameraDevice[]> {
     const rs = await this._all("SELECT * FROM camera_devices ORDER BY name");
-    return rs.map((r) => rowToCameraDevice(r as Record<string, unknown>));
+    return rs.map((r) => this.deviceRow(r as Record<string, unknown>));
   }
 
   async getCameraDeviceById(id: string): Promise<CameraDevice | null> {
     const r = await this._get("SELECT * FROM camera_devices WHERE id = ?", [id]);
-    return r ? rowToCameraDevice(r as Record<string, unknown>) : null;
+    return r ? this.deviceRow(r as Record<string, unknown>) : null;
   }
 
   async getCameraDeviceByEndpoint(host: string, port: number): Promise<CameraDevice | null> {
     const r = await this._get("SELECT * FROM camera_devices WHERE host = ? AND port = ?", [host, port]);
-    return r ? rowToCameraDevice(r as Record<string, unknown>) : null;
+    return r ? this.deviceRow(r as Record<string, unknown>) : null;
   }
 
   async createCameraDevice(input: {
@@ -1168,7 +1189,7 @@ export class Repository {
     vals.push(id);
     await this.transact(async () => {
       await this._run(`UPDATE camera_devices SET ${sets.join(", ")} WHERE id = ?`, vals);
-      const device = await this.getCameraDeviceById(id);
+      const device = await this._get<CameraDevice>("SELECT host, port, username, password FROM camera_devices WHERE id = ?", [id]);
       if (device) {
         await this._run(
           `UPDATE cameras
@@ -1190,22 +1211,22 @@ export class Repository {
 
   async listCameras(): Promise<Camera[]> {
     const rs = await this._all("SELECT * FROM cameras ORDER BY name");
-    return rs.map((r) => rowToCamera(r as Record<string, unknown>));
+    return rs.map((r) => this.cameraRow(r as Record<string, unknown>));
   }
 
   async listCamerasByDevice(deviceId: string): Promise<Camera[]> {
     const rs = await this._all("SELECT * FROM cameras WHERE device_id = ? ORDER BY name", [deviceId]);
-    return rs.map((r) => rowToCamera(r as Record<string, unknown>));
+    return rs.map((r) => this.cameraRow(r as Record<string, unknown>));
   }
 
   async getCameraById(id: string): Promise<Camera | null> {
     const r = await this._get("SELECT * FROM cameras WHERE id = ?", [id]);
-    return r ? rowToCamera(r as Record<string, unknown>) : null;
+    return r ? this.cameraRow(r as Record<string, unknown>) : null;
   }
 
   async getCameraByName(name: string): Promise<Camera | null> {
     const r = await this._get("SELECT * FROM cameras WHERE name = ?", [name]);
-    return r ? rowToCamera(r as Record<string, unknown>) : null;
+    return r ? this.cameraRow(r as Record<string, unknown>) : null;
   }
 
   async createCamera(input: {
@@ -1265,7 +1286,7 @@ export class Repository {
       [input.cloud_account_id, input.cloud_vendor_camera_id],
     );
     if (existing) {
-      const cam = rowToCamera(existing as Record<string, unknown>);
+      const cam = this.cameraRow(existing as Record<string, unknown>);
       await this._run(
         `UPDATE cameras SET name = ?, cloud_stream_url = ?, cloud_stream_type = ?, enabled = ? WHERE id = ?`,
         [input.name, input.cloud_stream_url, input.cloud_stream_type, Boolean(input.enabled), cam.id],
@@ -1293,7 +1314,7 @@ export class Repository {
       "SELECT * FROM cameras WHERE cloud_account_id = ? ORDER BY name",
       [accountId],
     );
-    return rs.map((r) => rowToCamera(r as Record<string, unknown>));
+    return rs.map((r) => this.cameraRow(r as Record<string, unknown>));
   }
 
   async deleteCloudCamerasNotIn(accountId: string, keepVendorIds: string[]): Promise<number> {
@@ -1386,6 +1407,11 @@ export class Repository {
   async listLabels(): Promise<Label[]> {
     const rs = await this._all("SELECT * FROM labels ORDER BY name");
     return rs.map((r) => rowToLabel(r as Record<string, unknown>));
+  }
+
+  async getLabelById(id: string): Promise<Label | null> {
+    const row = await this._get("SELECT * FROM labels WHERE id = ?", [id]);
+    return row ? rowToLabel(row as Record<string, unknown>) : null;
   }
 
   async getLabelByName(name: string): Promise<Label | null> {
@@ -2806,7 +2832,7 @@ export class Repository {
         ORDER BY c.name`,
       [...labelIds, ...labelIds],
     );
-    return rs.map((r) => rowToCamera(r as Record<string, unknown>));
+    return rs.map((r) => this.cameraRow(r as Record<string, unknown>));
   }
 
   async layoutsForLabelIds(labelIds: string[]): Promise<Layout[]> {

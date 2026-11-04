@@ -75,3 +75,34 @@ The owner performs the BP installation/link after discovery and health checks pa
 No BP tenant, user, membership or permission is created by this deployment. Record
 the BP tenant UUID and intended existing Frame tenant UUID before mapping cloned
 data; linking the service alone does not bind existing tenant data.
+
+## easy1 bootstrap handoff, 2026-11-04
+
+- Service: `betterframe/bp-test`.
+- URL: https://frame-bp-test-b6084fe2.n3y1ei.easypanel.host
+- Identity: `cloud.betterportal.frame`; renderer: `bootstrap5`.
+- Trusted control plane: https://config.eu.betterportal.net
+- Isolated PostgreSQL: `betterframe/bp-test-db`; the full snapshot restored successfully
+  (about 35 GB, including event history). The matching installation key is copied.
+- Deployed application source: `a8d755bb57b890b1832a394397ac0722f18bb12f`;
+  later commits add test-image packaging and deployment documentation.
+
+Verified HTTPS health, manifest and schema responses are 200. Health reports setup
+mode, awaiting the owner's installation/link. Missing setup tokens return 400;
+installation requests for another control plane return 403; operation requests
+before installation return 503. No BP tenant data is mapped or permission granted
+by these checks. Sandbox mode is enabled, the legacy listener binds loopback, and
+fleet API/coordinator listeners are disabled.
+
+The stopped `bp-test-clone` utility owns the persistent Docker volume
+`betterframe_bp-test-clone_data`, which `bp-test` uses by bind mount. Retain that
+volume and its service definition until the data is moved to another persistent
+volume. The utility's production source mount was removed and its environment was
+cleared after success. The inspection utility is also stopped with cleared credentials.
+Production services were not changed.
+
+Next: owner links the URL through BP, mounts the desired views and operation
+dependencies, and assigns test grants. Configure explicit tenant UUID mappings
+before opening views that should use cloned existing data. Then verify the linked
+browser flows with both administrator and restricted accounts. The broader feature
+parity and cutover gates remain in `docs/betterportal-implementation.md`.

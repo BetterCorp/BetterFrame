@@ -22,5 +22,6 @@ ENV NODE_ENV=production APP_DIR=/home/bsb/server BSB_CONFIG_FILE=/home/bsb/sec-c
 ENTRYPOINT ["/usr/local/bin/bf-entrypoint.sh"]
 CMD []
 EXPOSE 18083
-HEALTHCHECK --interval=20s --timeout=5s --start-period=120s --retries=5 CMD node -e "fetch('http://127.0.0.1:18083/.well-known/bp/health',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+# Allow the isolated database restore to complete before health failures restart this test service.
+HEALTHCHECK --interval=20s --timeout=5s --start-period=7200s --retries=5 CMD node -e "fetch('http://127.0.0.1:18083/.well-known/bp/health',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 LABEL org.opencontainers.image.revision="@COMMIT@" org.opencontainers.image.version="@VERSION@"

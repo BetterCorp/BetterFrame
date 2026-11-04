@@ -50,3 +50,28 @@ physical device and external vendor tests require a separate controlled fixture.
 
 Do not cut over until the feature parity matrix, BP browser integration, Node-RED
 bridge, remote debug grants, account recovery and rollback gates are complete.
+
+## Database clone and persistence
+
+With Easypanel's native PostgreSQL service, explicitly set
+`PGDATA=/var/lib/postgresql/data/pgdata` for PostgreSQL 18. Its default data directory
+is outside the native service's `/var/lib/postgresql/data` bind mount. Verify
+`SHOW data_directory` and a service restart before restoring the snapshot.
+
+Restore a completed, uniquely named dump into the isolated empty database. Hold a
+single worker lock, use `pg_restore --single-transaction --exit-on-error --no-owner
+--no-acl`, and retain the archive until restoration succeeds. A large event history
+can take time to restore; do not restart the worker because the frontend is waiting.
+Only create `/var/lib/betterframe/.bp-clone-complete` after database restoration and
+installation-key copy/ownership have both completed. `BF_EXPECT_CLONE=true` makes
+the test image wait for that marker before starting any Frame migrations.
+
+The source database and source key are read only during copying. Remove source
+credentials and mounts from the utility once the clone is complete. Keep test data
+and the matching key in persistent storage. Never attach the test server to the
+production database or production writable volumes.
+
+The owner performs the BP installation/link after discovery and health checks pass.
+No BP tenant, user, membership or permission is created by this deployment. Record
+the BP tenant UUID and intended existing Frame tenant UUID before mapping cloned
+data; linking the service alone does not bind existing tenant data.

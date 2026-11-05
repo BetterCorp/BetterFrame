@@ -76,33 +76,52 @@ No BP tenant, user, membership or permission is created by this deployment. Reco
 the BP tenant UUID and intended existing Frame tenant UUID before mapping cloned
 data; linking the service alone does not bind existing tenant data.
 
-## easy1 bootstrap handoff, 2026-11-04
+## easy1 parallel test handoff, 2026-11-05
 
 - Service: `betterframe/bp-test`.
 - URL: https://frame-bp-test-b6084fe2.n3y1ei.easypanel.host
 - Identity: `cloud.betterportal.frame`; renderer: `bootstrap5`.
 - Trusted control plane: https://config.eu.betterportal.net
-- Isolated PostgreSQL: `betterframe/bp-test-db`; the full snapshot restored successfully
-  (about 35 GB, including event history). The matching installation key is copied.
-- Deployed application source: `a8d755bb57b890b1832a394397ac0722f18bb12f`;
-  later commits add test-image packaging and deployment documentation.
+- Isolated PostgreSQL: `betterframe/bp-test-db`; full cloned snapshot (about 35 GB,
+  including event history), with its matching installation key.
+- Deployed application source: `257523f10354781057d684f9c13a3f73928e60a0`.
+- BetterCorp BP tenant: `019ff668-98b8-7834-97df-868a46048327`, explicitly bound
+  to existing Frame tenant `45d4483c-d9fc-40b0-8c15-6f2b1a2ace31`.
+- Existing BetterCorp resources were adopted once by BP issuer
+  `https://default-auth.eu.betterportal.net`, subject
+  `01a0e0af-1ef5-7527-9ca1-9fc5b69a926a`, using migration ID
+  `bettercorp-current-resources-2026-11-05`.
 
-Verified HTTPS health, manifest and schema responses are 200. Health reports setup
-mode, awaiting the owner's installation/link. Missing setup tokens return 400;
-installation requests for another control plane return 403; operation requests
-before installation return 503. No BP tenant data is mapped or permission granted
-by these checks. Sandbox mode is enabled, the legacy listener binds loopback, and
-fleet API/coordinator listeners are disabled.
+Read-only verification found all 141 existing records assigned: 46 cameras,
+5 camera devices, 11 kiosks, 14 displays, 52 entities, 10 layouts, 2 labels and
+1 AbleSign account. The remaining owned resource tables were empty.
 
-The stopped `bp-test-clone` utility owns the persistent Docker volume
-`betterframe_bp-test-clone_data`, which `bp-test` uses by bind mount. Retain that
-volume and its service definition until the data is moved to another persistent
-volume. The utility's production source mount was removed and its environment was
-cleared after success. The inspection utility is also stopped with cleared credentials.
-Production services were not changed.
+The public manifest advertises tenant setting `userIsolationEnabled`, default
+`false`. Enable it through BP tenant service configuration for per-user ownership;
+leave it off for shared internal use. It applies across apps. Administrator access
+still requires BP route grants, and Node-RED is administrator-only in either mode.
+`BF_BP_EXISTING_RESOURCE_OWNERS` configures explicit one-time adoption; it does not
+replace the BP setting or continuously claim newly unowned resources.
 
-Next: owner links the URL through BP, mounts the desired views and operation
-dependencies, and assigns test grants. Configure explicit tenant UUID mappings
-before opening views that should use cloned existing data. Then verify the linked
-browser flows with both administrator and restricted accounts. The broader feature
-parity and cutover gates remain in `docs/betterportal-implementation.md`.
+Frame's persistent bind points directly at the verified backing directory:
+`/etc/easypanel/projects/betterframe/bp-test-clone/volumes/data`.
+Do not bind another service to `/var/lib/docker/volumes/.../_data`: Easypanel's
+local volume driver mounts the backing directory there while named-volume users
+run. Stopping the last named-volume user unmounts it, and replacement bind tasks
+can see an empty directory. Matching installation/bootstrap fingerprints and a
+restart with both helpers stopped verify the direct backing-directory mount.
+
+Retain the stopped `bp-test-clone` service definition and its backing data until
+storage is deliberately moved. It no longer needs to run for Frame to see its
+files. The inspection utility is stopped and its database credentials cleared.
+No production source mounts or credentials remain on these utilities.
+
+Sandbox mode remains enabled, the legacy listener binds loopback, and fleet/API
+coordinator listeners are disabled. No production service, BP auth configuration,
+role grant or production tenant setting was changed. The separate BP permission
+sync fix remains unpublished and undeployed.
+
+The service retains its BP link. Verify the linked BP shell and forms with both
+administrator and restricted accounts; local Chromium checks cover Frame views
+but do not replace the owner's authenticated BP session. Broader workflow parity
+and production cutover remain gated by `docs/betterportal-implementation.md`.

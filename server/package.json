@@ -2,7 +2,7 @@
   "name": "betterframe",
   "version": "0.1.0",
   "private": true,
-  "description": "BetterFrame backend — BSB v9 service plugins.",
+  "description": "BetterFrame backend \u2014 BSB v9 service plugins.",
   "license": "AGPL-3.0-only OR Commercial",
   "type": "module",
   "files": [
@@ -17,12 +17,29 @@
     "start": "bsb-plugin-cli start",
     "dev": "cross-env NODE_OPTIONS=\"--import tsx\" bsb-plugin-cli dev",
     "test": "cross-env TSX_TSCONFIG_PATH=tsconfig.test.json node --import tsx tests/run-tests.ts",
-    "schemas:export": "node --enable-source-maps lib/scripts/export-schemas.js"
+    "schemas:export": "node --enable-source-maps lib/scripts/export-schemas.js",
+    "bp:gen": "bp run gen",
+    "bp:types": "bp run types",
+    "bp:contract": "bp run contract",
+    "bp:check": "bp run check-routes",
+    "pretest": "npm run bp:gen"
   },
-  "bsb": {},
+  "bsb": {
+    "hooks": {
+      "afterSchemas": [
+        "bp:gen",
+        "bp:types"
+      ],
+      "afterBuild": [
+        "bp:contract"
+      ]
+    }
+  },
   "dependencies": {
-    "@bsb/base": "^9.6.87",
-    "anyvali": "^1.1.0",
+    "@betterportal/framework": "^11.0.3",
+    "@betterportal/plugin-bsb": "^11.0.3",
+    "@bsb/base": "^9.7.4",
+    "anyvali": "^1.1.6",
     "argon2": "^0.44.0",
     "h3": "^2.0.1-rc.22",
     "jsx-htmx": "^2.0.2",
@@ -34,12 +51,17 @@
     "ws": "^8.20.0"
   },
   "devDependencies": {
-    "@types/node": "^25.0.0",
+    "@types/node": "^26.6.6",
     "@types/pg": "^8.20.0",
     "@types/ws": "^8.18.1",
     "socket.io": "4.8.1",
     "socket.io-client": "4.8.1",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
+  },
+  "betterportal": {
+    "routes": [
+      "src/plugins/service-betterportal-frame/bp-routes/"
+    ]
   }
 }

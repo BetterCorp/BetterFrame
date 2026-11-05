@@ -67,3 +67,6 @@ server/src/shared/db/MULTI_TENANT.md
 
 # Codex local working notes / task tracking
 .codex-tasklist.md
+
+# BetterPortal generated contracts and types
+**/.bp-generated/

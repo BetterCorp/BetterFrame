@@ -15,6 +15,11 @@ export async function mirrorPlatformAdmins(
   const params = adminId ? [adminId] : [];
 
   for (const schema of schemas) {
+    // BP-provisioned scopes have no Frame human accounts or mirrored grants.
+    const external = await adapter.get(
+      `SELECT 1 FROM public.bp_tenant_bindings b JOIN public.tenants t ON t.id = b.frame_tenant_id WHERE t.schema_name = ?`, [schema],
+    );
+    if (external) continue;
     const target = quotedSchema(schema);
     await adapter.run(
       `UPDATE ${target}.users AS target

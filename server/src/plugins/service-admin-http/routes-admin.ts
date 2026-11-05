@@ -1,3 +1,4 @@
+import { sendPowerCommand as deliverPowerCommand } from "../../shared/admin/power.js";
 import { visibleTenants } from "../../shared/demo.js";
 import { kioskDebugEnabled, kioskDebugRequirement } from "../../shared/kiosk-channels.js";
 /**
@@ -1127,7 +1128,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       if (!response.ok) throw new Error(`snapshot HTTP ${String(response.status)}`);
       const body = response.body;
       if (body.byteLength > 10 * 1024 * 1024) return new Response("Preview too large", { status: 413 });
-      return new Response(body, {
+      return new Response(new Uint8Array(body), {
         headers: { "content-type": safeProxyContentType(response.contentType), "cache-control": "no-store" },
       });
     } catch (error) {
@@ -1567,7 +1568,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (!jpeg) {
       return new Response("Snapshot failed (camera unreachable or ffmpeg/gst missing)", { status: 502 });
     }
-    return new Response(jpeg, {
+    return new Response(new Uint8Array(jpeg), {
       status: 200,
       headers: {
         "content-type": "image/jpeg",
@@ -3104,28 +3105,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/displays/:displayId/layout", displayLayoutSwitch);
   app.post("/admin/displays/:displayId/layout/:layoutId", displayLayoutSwitch);
 
-  const sendPowerCommand = async (kioskId: string, state: "on" | "standby", displayId?: string) => {
-    const kiosk = await deps.repo.getKioskById(kioskId);
-    if (!kiosk) return Response.json({ error: "Kiosk not found" }, { status: 404 });
-    if (isAndroidViewer(kiosk)) {
-      if (!supportsAndroidStandby(kiosk)) return Response.json({ error: "Update the Android viewer to enable standby/wake" }, { status: 409 });
-      const displays = (await deps.repo.listDisplaysForKiosk(kioskId)).filter((display) => display.is_enabled);
-      if (displays.length !== 1 || (displayId !== undefined && displayId !== displays[0]!.id)) {
-        return Response.json({ error: "Power target is not the Android viewer's assigned display" }, { status: 409 });
-      }
-      displayId = displays[0]!.id;
-    }
-    if (!kiosk.enabled) return Response.json({ error: "Kiosk is disabled" }, { status: 409 });
-    // Carry the command's targets through delivery. Re-reading assignment after
-    // the write could report a power change for an untouched replacement display.
-    const displayIds = displayId ? [displayId] : (await deps.repo.listDisplaysForKiosk(kioskId)).map((display) => display.id);
-    const sent = await getCoordinator().sendPowerToKiosk(kioskId, {
-      type: state === "on" ? "wake" : "standby",
-      ...(displayId ? { display_id: displayId } : {}),
-    });
-    if (!sent) return Response.json({ error: "Power command could not be delivered" }, { status: 409 });
-    return { displayIds };
-  };
+  const sendPowerCommand = (kioskId: string, state: "on" | "standby", displayId?: string) => deliverPowerCommand(deps, kioskId, state, displayId);
 
   const displayPower = async (event: any, state: "on" | "standby") => {
     const id = (getRouterParam(event, "id") ?? "");
@@ -3158,6 +3138,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // Node-RED embedded page
   app.get("/admin/nodered", async (event) => {
     const user = event.context.user!;
+    if (user.role !== "admin") return new Response("Tenant administrator required", { status: 403 });
     return htmlPage(NoderedEmbedPage({ user: user.username }));
   });
 
@@ -3678,6 +3659,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Dashboard entity sync — pull tabs from Node-RED, mirror as entities --
   app.post("/admin/entities/sync-dashboards", async (event) => {
+    if (event.context.user?.role !== "admin") return new Response("Tenant administrator required", { status: 403 });
     const result = await syncDashboardsFromNodered(deps, event.context.tenant?.id ?? "default");
     if (isHtmxRequest(event)) {
       return htmlFragment(

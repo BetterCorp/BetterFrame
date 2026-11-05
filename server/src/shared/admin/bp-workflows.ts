@@ -13,31 +13,52 @@ export async function changePower(
   state: "on" | "standby",
   kind: "kiosks" | "displays",
 ): Promise<void> {
-  const display = kind === "displays" ? await deps.repo.getDisplayById(id) : null;
+  if (kind === "kiosks" && !(await deps.repo.getKioskById(id)))
+    throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
+  const display =
+    kind === "displays" ? await deps.repo.getDisplayById(id) : null;
   if (kind === "displays" && !display)
     throw createError({ statusCode: 404, statusMessage: "Display not found" });
   const kioskId = display?.kiosk_id ?? (kind === "kiosks" ? id : undefined);
-  if (!kioskId) throw createError({ statusCode: 409, statusMessage: "Display has no kiosk" });
+  if (!kioskId)
+    throw createError({
+      statusCode: 409,
+      statusMessage: "Display has no kiosk",
+    });
   await withPowerStateLock(kioskId, async () => {
-    const result = await sendPowerCommand(deps, kioskId, state, kind === "displays" ? id : undefined);
+    const result = await sendPowerCommand(
+      deps,
+      kioskId,
+      state,
+      kind === "displays" ? id : undefined,
+    );
     if (result instanceof Response) {
       const error = (await result.json()) as { error: string };
-      throw createError({ statusCode: result.status, statusMessage: error.error });
+      throw createError({
+        statusCode: result.status,
+        statusMessage: error.error,
+      });
     }
     for (const target of result.displayIds)
       await deps.repo.updateDisplay(target, {
         actual_power_state: state === "on" ? "awake" : "standby",
         actual_power_state_at: new Date().toISOString(),
       });
-    const tenant = await deps.repo.adapter.get<{ id: string; slug: string; name: string }>(
-      "SELECT id,slug,name FROM public.tenants WHERE id = (SELECT frame_tenant_id FROM public.bp_tenant_bindings WHERE bp_tenant_id = ? AND frame_tenant_id IN (SELECT id FROM public.tenants WHERE schema_name = current_schema()))",
-      [ctx.tenant.id],
-    );
+    const tenant = deps.bpTenant;
     if (tenant && !deps.sandboxMode)
       deps.nodered.forward(
         "display.power.changed",
-        { display_id: result.displayIds[0] ?? null, kiosk_id: kioskId, state, source: "server" },
-        { tenant_id: tenant.id, tenant_slug: tenant.slug, tenant_name: tenant.name },
+        {
+          display_id: result.displayIds[0] ?? null,
+          kiosk_id: kioskId,
+          state,
+          source: "server",
+        },
+        {
+          tenant_id: tenant.id,
+          tenant_slug: tenant.slug,
+          tenant_name: tenant.name,
+        },
       );
     await bpAudit(deps, ctx, `frame.${kind}.power.${state}`, id);
   });
@@ -48,18 +69,26 @@ export async function switchLayout(
   displayId: string,
   layoutId: string,
 ): Promise<void> {
+  const display = await deps.repo.getDisplayById(displayId);
+  if (!display)
+    throw createError({ statusCode: 404, statusMessage: "Display not found" });
+  if (!display.is_enabled || !display.kiosk_id)
+    throw createError({
+      statusCode: 409,
+      statusMessage: "Display is disabled or unassigned",
+    });
+  const attached = await deps.repo.listLayoutsForDisplay(displayId);
+  if (!attached.some((layout) => layout.id === layoutId))
+    throw createError({
+      statusCode: 404,
+      statusMessage: "Layout is not assigned to this display",
+    });
   if (deps.sandboxMode)
     throw createError({
       statusCode: 409,
-      statusMessage: "Live device commands are disabled in this test deployment",
+      statusMessage:
+        "Live device commands are disabled in this test deployment",
     });
-  const display = await deps.repo.getDisplayById(displayId);
-  if (!display) throw createError({ statusCode: 404, statusMessage: "Display not found" });
-  if (!display.is_enabled || !display.kiosk_id)
-    throw createError({ statusCode: 409, statusMessage: "Display is disabled or unassigned" });
-  const attached = await deps.repo.listLayoutsForDisplay(displayId);
-  if (!attached.some((layout) => layout.id === layoutId))
-    throw createError({ statusCode: 404, statusMessage: "Layout is not assigned to this display" });
   if (
     !getCoordinator().sendToKiosk(
       display.kiosk_id,

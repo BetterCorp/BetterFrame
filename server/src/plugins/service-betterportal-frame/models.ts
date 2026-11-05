@@ -4,6 +4,7 @@ export const ItemSchema = av.object({
   name: av.string(),
   status: av.string(),
   summary: av.string(),
+  timestamp: av.optional(av.string()),
 });
 export const ListSchema = av.object({
   title: av.string(),

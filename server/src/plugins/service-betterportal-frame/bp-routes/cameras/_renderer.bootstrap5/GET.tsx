@@ -5,10 +5,10 @@ import type { ListSchema } from "../../../models.js";
 import { List } from "../../../ui.js";
 export function render(data: Infer<typeof ListSchema>, ctx: ViewRenderContext): HtmlRenderable {
   return (
-    <section>
+    <section class="frame-ui">
       {List(data, ctx)}
-      <details class="mt-4">
-        <summary>Add cameras</summary>
+      <details class="mt-4 frame-create">
+        <summary>Add camera</summary>
         <BPRoute
           ctx={ctx}
           path="/cameras"
@@ -23,10 +23,10 @@ export function render(data: Infer<typeof ListSchema>, ctx: ViewRenderContext): 
               <input class="form-control" name="name" type="text" />
             </label>
             <label class="form-label d-block">
-              Type: rtsp or onvif
+              Connection type
               <select class="form-select" name="type">
-                <option value="rtsp">rtsp</option>
-                <option value="onvif">onvif</option>
+                <option value="rtsp">RTSP stream</option>
+                <option value="onvif">ONVIF camera</option>
               </select>
             </label>
             <label class="form-label d-block">

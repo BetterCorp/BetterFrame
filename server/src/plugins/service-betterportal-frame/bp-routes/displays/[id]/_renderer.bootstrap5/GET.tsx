@@ -5,7 +5,7 @@ import type { ResponseSchema } from "../GET.js";
 import { Navigation } from "../../../../ui.js";
 export function render(data: Infer<typeof ResponseSchema>, ctx: ViewRenderContext): HtmlRenderable {
   return (
-    <section>
+    <section class="frame-ui">
       <Navigation ctx={ctx} />
       <h1 class="h3">{data.name}</h1>
       <BPRoute
@@ -58,37 +58,40 @@ export function render(data: Infer<typeof ResponseSchema>, ctx: ViewRenderContex
         <bp-noperm>Read-only access.</bp-noperm>
         <bp-error>Editing unavailable.</bp-error>
       </BPRoute>
-      <BPRoute
-        ctx={ctx}
-        path="/displays/:id/power/wake"
-        params={{ id: data.id }}
-        method="POST"
-        as="button"
-        target="#frame-action-result"
-        swap="innerHTML"
-        class="btn btn-outline-secondary ms-2"
-      >
-        <bp-ok>Wake</bp-ok>
-        <bp-noperm as="none"></bp-noperm>
-        <bp-error as="none"></bp-error>
-      </BPRoute>
-      <BPRoute
-        ctx={ctx}
-        path="/displays/:id/power/standby"
-        params={{ id: data.id }}
-        method="POST"
-        as="button"
-        target="#frame-action-result"
-        swap="innerHTML"
-        class="btn btn-outline-secondary ms-2"
-      >
-        <bp-ok>Standby</bp-ok>
-        <bp-noperm as="none"></bp-noperm>
-        <bp-error as="none"></bp-error>
-      </BPRoute>
+      <div class="frame-power">
+        <h2 class="h6">Power controls</h2>
+        <BPRoute
+          ctx={ctx}
+          path="/displays/:id/power/wake"
+          params={{ id: data.id }}
+          method="POST"
+          as="button"
+          target="#frame-action-result"
+          swap="innerHTML"
+          class="btn btn-outline-secondary me-2"
+        >
+          <bp-ok>Wake</bp-ok>
+          <bp-noperm as="none"></bp-noperm>
+          <bp-error as="none"></bp-error>
+        </BPRoute>
+        <BPRoute
+          ctx={ctx}
+          path="/displays/:id/power/standby"
+          params={{ id: data.id }}
+          method="POST"
+          as="button"
+          target="#frame-action-result"
+          swap="innerHTML"
+          class="btn btn-outline-secondary me-2"
+        >
+          <bp-ok>Standby</bp-ok>
+          <bp-noperm as="none"></bp-noperm>
+          <bp-error as="none"></bp-error>
+        </BPRoute>
+      </div>
       <h2 class="h5 mt-4">Assigned layouts</h2>
       {data.layouts.map((layout) => (
-        <div class="d-flex align-items-center gap-2 mb-2">
+        <div class="frame-assignment d-flex align-items-center gap-2 mb-2">
           <span>{layout.name}</span>
           <BPRoute
             ctx={ctx}
@@ -96,6 +99,7 @@ export function render(data: Infer<typeof ResponseSchema>, ctx: ViewRenderContex
             params={{ id: data.id }}
             method="POST"
             as="form"
+            class="frame-inline mb-0"
             target="#frame-action-result"
             swap="innerHTML"
           >
@@ -113,6 +117,7 @@ export function render(data: Infer<typeof ResponseSchema>, ctx: ViewRenderContex
             params={{ id: data.id }}
             method="DELETE"
             as="form"
+            class="frame-inline mb-0"
             target="#frame-action-result"
             swap="innerHTML"
           >

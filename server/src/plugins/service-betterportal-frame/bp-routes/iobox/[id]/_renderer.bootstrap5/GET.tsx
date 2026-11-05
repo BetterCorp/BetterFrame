@@ -5,7 +5,7 @@ import type { ResponseSchema } from "../GET.js";
 import { Navigation } from "../../../../ui.js";
 export function render(data: Infer<typeof ResponseSchema>, ctx: ViewRenderContext): HtmlRenderable {
   return (
-    <section>
+    <section class="frame-ui">
       <Navigation ctx={ctx} />
       <h1 class="h3">{data.name}</h1>
       <BPRoute

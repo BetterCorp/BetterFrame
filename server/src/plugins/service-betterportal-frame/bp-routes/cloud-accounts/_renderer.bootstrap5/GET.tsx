@@ -2,39 +2,43 @@
 import { BPRoute, type HtmlRenderable, type ViewRenderContext } from "@betterportal/framework";
 import type { Infer } from "anyvali";
 import type { ResponseSchema } from "../GET.js";
-import { List } from "../../../ui.js";
+import { Navigation, PageHeading, ResourceTable } from "../../../ui.js";
 export function render(data: Infer<typeof ResponseSchema>, ctx: ViewRenderContext): HtmlRenderable {
   return (
-    <section>
-      {List(data, ctx)}
-      {data.items.map((item) => (
-        <div class="d-flex align-items-center gap-2 mb-2">
-          <span>{item.name}</span>
-          <BPRoute
-            ctx={ctx}
-            path="/cloud-accounts/:id/sync"
-            params={{ id: item.id }}
-            method="POST"
-            as="button"
-            target="#frame-action-result"
-          >
-            <bp-ok>Sync</bp-ok>
-            <bp-noperm as="none"></bp-noperm>
-          </BPRoute>
-          <BPRoute
-            ctx={ctx}
-            path="/cloud-accounts/:id/delete"
-            params={{ id: item.id }}
-            method="DELETE"
-            as="button"
-            target="#frame-action-result"
-            hx-confirm="Delete account and its cloud cameras?"
-          >
-            <bp-ok>Delete</bp-ok>
-            <bp-noperm as="none"></bp-noperm>
-          </BPRoute>
-        </div>
-      ))}
+    <section class="frame-ui">
+      <Navigation ctx={ctx} />
+      <PageHeading title={data.title} count={data.items.length} />
+      <ResourceTable
+        data={data}
+        ctx={ctx}
+        actions={(item) => (
+          <>
+            <BPRoute
+              ctx={ctx}
+              path="/cloud-accounts/:id/sync"
+              params={{ id: item.id }}
+              method="POST"
+              as="button"
+              target="#frame-action-result"
+            >
+              <bp-ok class="btn btn-sm btn-outline-secondary">Sync</bp-ok>
+              <bp-noperm as="none" />
+            </BPRoute>
+            <BPRoute
+              ctx={ctx}
+              path="/cloud-accounts/:id/delete"
+              params={{ id: item.id }}
+              method="DELETE"
+              as="button"
+              target="#frame-action-result"
+              hx-confirm="Delete account and its cloud cameras?"
+            >
+              <bp-ok class="btn btn-sm btn-outline-danger">Delete</bp-ok>
+              <bp-noperm as="none" />
+            </BPRoute>
+          </>
+        )}
+      />
       <h2 class="h5 mt-4">Add account</h2>
       {data.providers.map((provider) => (
         <details class="mb-3">

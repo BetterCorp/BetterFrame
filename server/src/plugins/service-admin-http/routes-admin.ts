@@ -3138,6 +3138,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // Node-RED embedded page
   app.get("/admin/nodered", async (event) => {
     const user = event.context.user!;
+    if (user.role !== "admin") return new Response("Tenant administrator required", { status: 403 });
     return htmlPage(NoderedEmbedPage({ user: user.username }));
   });
 
@@ -3658,6 +3659,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   // ---- Dashboard entity sync — pull tabs from Node-RED, mirror as entities --
   app.post("/admin/entities/sync-dashboards", async (event) => {
+    if (event.context.user?.role !== "admin") return new Response("Tenant administrator required", { status: 403 });
     const result = await syncDashboardsFromNodered(deps, event.context.tenant?.id ?? "default");
     if (isHtmxRequest(event)) {
       return htmlFragment(

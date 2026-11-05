@@ -61,6 +61,7 @@ default:
         port: 18083
         installationId: "${BF_BP_INSTALLATION_ID}"
         existingTenantBindings: ${BF_BP_EXISTING_TENANT_BINDINGS}
+        existingResourceOwners: ${BF_BP_EXISTING_RESOURCE_OWNERS}
         betterportal:
           controlPlaneUrl: "${BF_BP_CONTROL_PLANE_URL}"
           bootstrapStatePath: /var/lib/betterframe/bp/bootstrap.json

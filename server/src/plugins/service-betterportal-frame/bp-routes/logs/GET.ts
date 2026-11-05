@@ -24,7 +24,7 @@ export const auth: ApiAuthRequirement = {
 export const ResponseSchema = av.object({
   title: av.string(),
   items: av.array(
-    av.object({ id: av.string(), name: av.string(), status: av.string(), summary: av.string() }),
+    av.object({ id: av.string(), name: av.string(), status: av.string(), summary: av.string(), timestamp: av.string() }),
   ),
   detailPath: av.string(),
   nextCursor: av.string(),
@@ -42,7 +42,7 @@ export default createHandler({ response: ResponseSchema, query: QuerySchema }, (
       detailPath: "/logs/:id",
       until: filters.until,
       nextCursor: page.hasMore && last ? encodeLogCursor({ time: last.cursor_time, id: last.id }) : "",
-      items: items.map((x) => ({ id: x.id, name: x.kiosk_name, status: x.level, summary: x.preview })),
+      items: items.map((x) => ({ id: x.id, name: x.kiosk_name, status: x.level, summary: x.preview, timestamp: x.cursor_time })),
     };
   }),
 );

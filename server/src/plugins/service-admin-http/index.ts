@@ -104,6 +104,7 @@ export const EventSchemas = createEventSchemas({
 });
 
 export interface AdminDeps {
+  bpTenant?: import("../../shared/types.js").Tenant;
   sandboxMode?: boolean;
   enableDemoTenant?: boolean;
   repo: Repository;

@@ -1,14 +1,14 @@
 /* @jsxImportSource @betterportal/framework */
 import { BPRoute, type HtmlRenderable, type ViewRenderContext } from "@betterportal/framework";
 import type { Infer } from "anyvali";
-import type { ListSchema } from "../../../models.js";
+import type { ResponseSchema } from "../GET.js";
 import { List } from "../../../ui.js";
-export function render(data: Infer<typeof ListSchema>, ctx: ViewRenderContext): HtmlRenderable {
+export function render(data: Infer<typeof ResponseSchema>, ctx: ViewRenderContext): HtmlRenderable {
   return (
-    <section>
+    <section class="frame-ui">
       {List(data, ctx)}
-      <details class="mt-4">
-        <summary>Add entities</summary>
+      <details class="mt-4 frame-create">
+        <summary>Add content</summary>
         <BPRoute
           ctx={ctx}
           path="/entities"
@@ -18,17 +18,20 @@ export function render(data: Infer<typeof ListSchema>, ctx: ViewRenderContext): 
           swap="innerHTML"
         >
           <bp-ok>
+            <p class="frame-section-note">
+              Choose a content type and complete its matching fields.
+            </p>
             <label class="form-label d-block">
               Name
               <input class="form-control" name="name" type="text" />
             </label>
             <label class="form-label d-block">
-              Type: camera, html, web or dashboard
+              Content type
               <select class="form-select" name="type">
-                <option value="camera">camera</option>
-                <option value="html">html</option>
-                <option value="web">web</option>
-                <option value="dashboard">dashboard</option>
+                <option value="camera">Camera</option>
+                <option value="html">HTML</option>
+                <option value="web">Web page</option>
+                {data.canUseNodeRed ? <option value="dashboard">Node-RED dashboard</option> : null}
               </select>
             </label>
             <label class="form-label d-block">
@@ -36,8 +39,13 @@ export function render(data: Infer<typeof ListSchema>, ctx: ViewRenderContext): 
               <input class="form-control" name="description" type="text" />
             </label>
             <label class="form-label d-block">
-              Camera ID
-              <input class="form-control" name="camera_id" type="text" />
+              Camera
+              <select class="form-select" name="camera_id">
+                <option value="">Choose a camera</option>
+                {data.cameras.map((camera) => (
+                  <option value={camera.id}>{camera.name}</option>
+                ))}
+              </select>
             </label>
             <label class="form-label d-block">
               HTML content
@@ -47,10 +55,12 @@ export function render(data: Infer<typeof ListSchema>, ctx: ViewRenderContext): 
               Web URL
               <input class="form-control" name="web_url" type="url" />
             </label>
-            <label class="form-label d-block">
-              Dashboard ID
-              <input class="form-control" name="dashboard_id" type="text" />
-            </label>
+            {data.canUseNodeRed ? (
+              <label class="form-label d-block">
+                Node-RED dashboard ID
+                <input class="form-control" name="dashboard_id" type="text" />
+              </label>
+            ) : null}
             <button class="btn btn-primary" type="submit">
               Create
             </button>

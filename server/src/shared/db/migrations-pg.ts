@@ -1060,4 +1060,39 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     `CREATE UNIQUE INDEX ${table}_local_short_key_unique ON ${table}(local_short_key)`,
   ]),
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS windows_update_push TEXT`,
+  // BP resource ownership is independent of legacy human accounts and permissions.
+  `CREATE TABLE bp_resource_owners (
+    resource_type TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    owner_issuer TEXT NOT NULL,
+    owner_subject TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (resource_type, resource_id)
+  )`,
+  `CREATE INDEX bp_resource_owners_principal ON bp_resource_owners(owner_issuer, owner_subject, resource_type, resource_id)`,
+  `CREATE FUNCTION delete_bp_resource_owner() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      EXECUTE format('DELETE FROM %I.bp_resource_owners WHERE resource_type = $1 AND resource_id = $2', TG_TABLE_SCHEMA)
+        USING TG_TABLE_NAME, OLD.id::text;
+      RETURN OLD;
+    END
+  $$`,
+  ...[
+    "cameras",
+    "camera_devices",
+    "kiosks",
+    "displays",
+    "layouts",
+    "entities",
+    "labels",
+    "ioboxes",
+    "cloud_accounts",
+    "firmware_releases",
+    "os_update_releases",
+    "ablesign_accounts",
+  ].map(
+    (table) =>
+      `CREATE TRIGGER ${table}_bp_owner_cleanup AFTER DELETE ON ${table} FOR EACH ROW EXECUTE FUNCTION delete_bp_resource_owner()`,
+  ),
+  `CREATE TABLE bp_owner_bootstraps (migration_id TEXT PRIMARY KEY, owner_issuer TEXT NOT NULL, owner_subject TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
 ];

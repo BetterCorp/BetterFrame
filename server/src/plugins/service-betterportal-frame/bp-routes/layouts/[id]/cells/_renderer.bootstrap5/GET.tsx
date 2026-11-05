@@ -12,16 +12,30 @@ function Fields({
   entities: Data["entities"];
 }): HtmlRenderable {
   return (
-    <div class="row g-2">
-      <label class="col-sm">
+    <div class="frame-cell-fields">
+      <label class="d-block">
         Row
-        <input class="form-control" type="number" min="0" max="63" name="row" value={String(cell.row)} />
+        <input
+          class="form-control"
+          type="number"
+          min="0"
+          max="63"
+          name="row"
+          value={String(cell.row)}
+        />
       </label>
-      <label class="col-sm">
+      <label class="d-block">
         Column
-        <input class="form-control" type="number" min="0" max="63" name="col" value={String(cell.col)} />
+        <input
+          class="form-control"
+          type="number"
+          min="0"
+          max="63"
+          name="col"
+          value={String(cell.col)}
+        />
       </label>
-      <label class="col-sm">
+      <label class="d-block">
         Rows
         <input
           class="form-control"
@@ -32,7 +46,7 @@ function Fields({
           value={String(cell.row_span)}
         />
       </label>
-      <label class="col-sm">
+      <label class="d-block">
         Columns
         <input
           class="form-control"
@@ -43,7 +57,7 @@ function Fields({
           value={String(cell.col_span)}
         />
       </label>
-      <label class="col-sm">
+      <label class="d-block">
         Content
         <select class="form-select" name="entity_id">
           <option value="">Empty</option>
@@ -54,7 +68,7 @@ function Fields({
           ))}
         </select>
       </label>
-      <label class="col-sm">
+      <label class="d-block">
         Fit
         <select class="form-select" name="fit">
           {["cover", "contain", "fill"].map((value) => (
@@ -64,7 +78,7 @@ function Fields({
           ))}
         </select>
       </label>
-      <label class="col-sm">
+      <label class="d-block">
         Stream
         <select class="form-select" name="stream_selector">
           {["auto", "main", "sub"].map((value) => (
@@ -79,12 +93,13 @@ function Fields({
 }
 export function render(data: Data, ctx: ViewRenderContext): HtmlRenderable {
   return (
-    <section>
+    <section class="frame-ui">
       <Navigation ctx={ctx} />
       <h1 class="h3">{data.name}: cells</h1>
-      {data.cells.map((cell) => (
+      {data.cells.map((cell, index) => (
         <article class="card mb-3">
           <div class="card-body">
+            <h2 class="h6">Cell {index + 1}</h2>
             <BPRoute
               ctx={ctx}
               path="/layouts/:id/cells/:cellId"
@@ -118,7 +133,10 @@ export function render(data: Data, ctx: ViewRenderContext): HtmlRenderable {
           </div>
         </article>
       ))}
-      <h2 class="h5">Add cell</h2>
+      <h2 class="h5 mt-4">Add cell</h2>
+      <p class="frame-section-note">
+        Choose content and its position in the layout grid. Row and column positions start at zero.
+      </p>
       <BPRoute
         ctx={ctx}
         path="/layouts/:id/cells"

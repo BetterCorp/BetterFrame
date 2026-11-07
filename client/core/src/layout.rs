@@ -92,6 +92,8 @@ pub fn display_render_unchanged(
                 (camera.id.as_str(), if visible { camera_render_inputs(camera) } else { camera_pipeline_inputs(camera) })
             })
             .collect();
+        let mut layout = layout.clone();
+        for cell in &mut layout.cells { cell.overlay_html = None; }
         Some(serde_json::json!({
             "width": display.width_px,
             "height": display.height_px,
@@ -151,6 +153,29 @@ pub fn same_origin(url: &str, server_url: &str) -> bool {
 mod tests {
     use super::*;
     use crate::bundle::BundleDisplayWithLayouts;
+
+    #[test]
+    fn overlay_updates_preserve_content_and_reach_android() {
+        let previous: KioskBundle = serde_json::from_value(serde_json::json!({
+            "kiosk_id":"k", "kiosk_name":"Kiosk", "version":"1", "cameras":[],
+            "displays":[{"id":"d", "name":"Display", "width_px":640,"height_px":360,
+                "idle_timeout_seconds":0,"sleep_timeout_seconds":0,
+                "layouts":[{"id":"active","name":"Active","grid_cols":1,"grid_rows":1,
+                    "priority":"normal","is_default":true,"resets_idle_timer":true,
+                    "cells":[{"view_id":"block","row":0,"col":0,"row_span":1,"col_span":1,
+                        "content_type":"html","html_content":"<b>Underlying page</b>","overlay_html":"old"}]}]}]
+        })).unwrap();
+        let mut next = previous.clone();
+        next.displays[0].layouts[0].cells[0].overlay_html = Some("updated".into());
+        assert!(display_render_unchanged(&previous, &next, "d", Some("active")));
+        let plan = crate::android::render_plan(&next, None, None).unwrap();
+        assert_eq!(plan.cells[0].overlay_html.as_deref(), Some("updated"));
+        assert_eq!(plan.cells[0].web.as_ref().unwrap().html.as_deref(), Some("<b>Underlying page</b>"));
+        next.displays[0].layouts[0].cells[0].overlay_html = None;
+        assert!(display_render_unchanged(&previous, &next, "d", Some("active")));
+        next.displays[0].layouts[0].cells[0].html_content = Some("Changed page".into());
+        assert!(!display_render_unchanged(&previous, &next, "d", Some("active")));
+    }
 
     #[test]
     fn refresh_only_invalidates_the_active_display_content() {

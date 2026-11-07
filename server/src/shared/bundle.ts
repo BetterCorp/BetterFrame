@@ -1,3 +1,4 @@
+import { blockOverlay, renderOverlay, overlayPlaybackDocument } from "./overlays.js";
 /**
  * Bundle generation — display-chain routing.
  *
@@ -78,6 +79,7 @@ export interface BundleCamera {
 }
 
 export interface BundleCell {
+  overlay_html?: string;
   view_id: string;
   entity_id: string | null;
   row: number;
@@ -346,7 +348,15 @@ export async function generateBundle(
               : cellInputOptions;
           }
         }
+        const overlay = blockOverlay(c.options);
+        const template = overlay ? await repo.getOverlayTemplate(overlay.template_id) : null;
+        let overlayHtml: string | undefined;
+        if (template && overlay) {
+          try { overlayHtml = overlayPlaybackDocument(renderOverlay(template.html, overlay.data)); }
+          catch { span?.log.warn("overlay render failed for block {id}", { id: c.id }); }
+        }
         const bundleCell: BundleCell = {
+          ...(overlayHtml ? { overlay_html: overlayHtml } : {}),
           view_id: c.id,
           entity_id: c.entity_id,
           row: c.row,

@@ -1,3 +1,4 @@
+import { registerOverlayRoutes } from "./routes-overlays.js";
 import { visibleTenants } from "../../shared/demo.js";
 import { kioskDebugEnabled, kioskDebugRequirement } from "../../shared/kiosk-channels.js";
 /**
@@ -729,6 +730,7 @@ async function shiftCellsForInsertion(
 }
 
 export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
+  registerOverlayRoutes(app, deps);
   // ---- Overview -------------------------------------------------------------
 
   app.get("/admin/", async (event) => {
@@ -1963,7 +1965,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       } else {
         delete opts["smart_url"];
       }
-      await deps.repo.updateLayoutCell(cellId, { options: JSON.stringify(opts) } as any);
+      await deps.repo.updateLayoutCell(cellId, { options: opts });
     }
 
     notifyKiosks();

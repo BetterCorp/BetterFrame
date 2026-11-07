@@ -362,3 +362,32 @@ test("display dashboard access follows assigned IDs through live tenant paths wi
   assert.equal(displayDashboardRequestAllowed("/dashboard/page1", assigned, []), false);
   assert.equal(displayDashboardRequestAllowed("/dashboard/page1", new Set(), pages), false);
 });
+
+test("assigned overlays ship rendered live data and recover through the cached bundle", async () => {
+  const { repo, secrets, cells } = fixture();
+  const options = cells[0]!.options as Record<string, unknown>;
+  options["overlay"] = { template_id: "template", data: { progress: 12 } };
+  const withOverlay = { ...repo, getOverlayTemplate: async () => ({ id: "template", name: "Printer", html: "<b>{{progress}}</b>", sample_data: { progress: 99 } }) };
+  const first = await generateBundle(withOverlay as never, secrets as never, "viewer", "cluster");
+  assert.ok(first);
+  const overlay = first.layouts[0]?.cells[0]?.overlay_html;
+  assert.ok(overlay);
+  assert.match(overlay, /sandbox=""/);
+  assert.match(overlay, /&lt;b&gt;12&lt;\/b&gt;/);
+  assert.doesNotMatch(overlay, />99</);
+  options["overlay"] = { template_id: "template", data: { progress: 64 } };
+  const second = await generateBundle(withOverlay as never, secrets as never, "viewer", "cluster");
+  assert.notEqual(second?.version, first.version);
+  assert.equal(second?.layouts[0]?.cells[0]?.camera_id, first.layouts[0]?.cells[0]?.camera_id);
+  assert.match(second?.layouts[0]?.cells[0]?.overlay_html ?? "", /&lt;b&gt;64&lt;\/b&gt;/);
+});
+
+test("an overlay rendering failure cannot make the underlying kiosk bundle unavailable", async () => {
+  const { repo, secrets, cells } = fixture();
+  (cells[0]!.options as Record<string, unknown>)["overlay"] = { template_id: "template", data: { active: true } };
+  const withOverlay = { ...repo, getOverlayTemplate: async () => ({ html: "{{#if active}}{{missingHelper value}}{{/if}}", sample_data: { active: false } }) };
+  const bundle = await generateBundle(withOverlay as never, secrets as never, "viewer", "cluster");
+  assert.ok(bundle);
+  assert.equal(bundle.layouts[0]?.cells[0]?.overlay_html, undefined);
+  assert.equal(bundle.layouts[0]?.cells[0]?.camera_id, "camera");
+});

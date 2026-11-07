@@ -3322,6 +3322,7 @@ export function renderCellSidebar(
           <button type="button" class="btn btn-danger" hx-post={deleteUrl} hx-target="#layout-cell-sidebar" hx-swap="outerHTML" hx-confirm="Delete this cell?">Delete</button>
         </div>
       </form>
+      <div hx-get={`/admin/overlays/blocks/${c.id}`} hx-trigger="load" hx-swap="outerHTML">Loading overlay…</div>
     </div>
   );
 }

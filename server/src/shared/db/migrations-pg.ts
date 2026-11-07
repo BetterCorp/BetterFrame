@@ -1051,4 +1051,10 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     `CREATE UNIQUE INDEX ${table}_local_short_key_unique ON ${table}(local_short_key)`,
   ]),
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS windows_update_push TEXT`,
+  `CREATE TABLE overlay_templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    html TEXT NOT NULL,
+    sample_data JSONB NOT NULL DEFAULT '{}'
+  )`,
 ];

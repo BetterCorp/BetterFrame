@@ -134,3 +134,16 @@ The compose stack mounts `nodered-data` as `/data`. Either:
   `npm install /repo/nodered`, or
 - mount `./nodered` into `/data/node_modules/@betterframe/nodered-nodes` and
   restart the container.
+
+## Block overlays
+
+Create an overlay template under **Overlay templates**, preview it with sample JSON,
+then select it in a layout block's **Overlay** section. `bf-overlay` sends `msg.payload`
+as the block's complete live JSON data; set its Block ID or override with `msg.block_id`.
+Each block retains its own data. Sample data is never used for playback.
+
+The equivalent tenant-scoped admin API is `POST /api/admin/blocks/<block-id>/overlay`
+with `{ "data": { "progress": 64 } }`. Use the standard admin API key and tenant header.
+Use `GET /api/admin/overlay-templates` to list templates. Updates notify clients to
+fetch their bundle; camera players and underlying web pages stay mounted when only
+an overlay changes. This first version targets status updates, not per-frame tracking.

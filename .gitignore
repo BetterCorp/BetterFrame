@@ -9,6 +9,7 @@ nodered/lib/
 client/target/
 client/core/target/
 client/android/.gradle/
+client/android/.kotlin/
 client/android/**/build/
 client/android/local.properties
 *.jks

@@ -481,7 +481,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
         // Release replaced/hidden resources before allocating a single new decoder or browser.
         tiles.keys.toList().forEach { id ->
             if (contentKeys[id] != tiles[id]?.first) {
-                tiles.remove(id)?.second?.let { it.release(); grid.removeView(it) }
+                tiles.remove(id)?.second?.let { it.releaseOverlay(); it.release(); grid.removeView(it) }
             }
         }
         grid.rows = value.optInt("rows", 1).coerceIn(1, 32)
@@ -520,6 +520,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
                 tiles[id] = contentKeys.getValue(id) to tile
                 grid.addView(tile)
             }
+            tile.updateOverlay(cell.optString("overlayHtml"))
             tile.layoutParams = CellGrid.Params(
                 cell.optInt("row", 0), cell.optInt("col", 0),
                 cell.optInt("rowSpan", 1), cell.optInt("colSpan", 1)
@@ -613,7 +614,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
     private fun releaseTiles() {
         dismissContentDialogs()
         contentMenuState = null
-        tiles.values.forEach { it.second.release() }
+        tiles.values.forEach { it.second.releaseOverlay(); it.second.release() }
         tiles.clear()
         if (::grid.isInitialized) grid.removeAllViews()
     }
@@ -627,7 +628,7 @@ private data class MenuCellState(val id: String, val contentKey: String, val row
 /** Geometry changes resize existing browser/decoder surfaces without restarting content. */
 private fun tileContentKey(cell: JSONObject): String = JSONObject().apply {
     cell.keys().forEach { key ->
-        if (key != "row" && key != "col" && key != "rowSpan" && key != "colSpan") put(key, cell.get(key))
+        if (key != "overlayHtml" && key != "row" && key != "col" && key != "rowSpan" && key != "colSpan") put(key, cell.get(key))
     }
 }.toString()
 

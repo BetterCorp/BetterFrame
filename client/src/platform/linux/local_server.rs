@@ -1238,9 +1238,9 @@ fn capture_jpeg_blocking(
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    // 5s ceiling: rtspsrc handshake + a couple of decoded frames. jpegenc
-    // emits one JPEG, filesink writes it. num-buffers=1 on filesink stops
-    // the pipeline after the first sample so we don't dangle.
+    // jpegenc snapshot mode sends EOS after one encoded frame so filesink
+    // writes a single JPEG and the pipeline exits. filesink has no
+    // num-buffers property.
     let mut args = vec![
         "-q".to_string(),
         "rtspsrc".to_string(),
@@ -1261,9 +1261,9 @@ fn capture_jpeg_blocking(
         "videoconvert".to_string(),
         "!".to_string(),
         "jpegenc".to_string(),
+        "snapshot=true".to_string(),
         "!".to_string(),
         "filesink".to_string(),
-        "num-buffers=1".to_string(),
         format!("location={}", tmp.display()),
     ]);
     let status = Command::new("gst-launch-1.0")

@@ -65,15 +65,14 @@ async function tryFfmpeg(rtspUrl: string, timeoutMs: number): Promise<Buffer | n
 
 async function tryGstLaunch(rtspUrl: string, timeoutMs: number): Promise<Buffer | null> {
   const out = join(tmpdir(), `bf-snap-${randomBytes(8).toString("hex")}.jpg`);
-  // rtspsrc → decodebin → videoconvert → jpegenc → single-frame filesink
+  // jpegenc snapshot mode sends EOS after one frame; filesink only writes it.
   const args = [
     "-q",
     "rtspsrc", `location=${rtspUrl}`, "protocols=tcp", "latency=200", "!",
     "decodebin", "!",
     "videoconvert", "!",
-    "jpegenc", "!",
+    "jpegenc", "snapshot=true", "!",
     "filesink", `location=${out}`,
-    "num-buffers=1",
   ];
   const ok = await runWithTimeout("gst-launch-1.0", args, timeoutMs);
   if (!ok) {

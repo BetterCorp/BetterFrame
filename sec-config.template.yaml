@@ -29,8 +29,9 @@ default:
           user: ${BF_PG_USER}
           password: ${BF_PG_PASSWORD}
           poolMax: ${BF_PG_POOL_MAX}
-        host: 0.0.0.0
+        host: ${BF_ADMIN_HOST}
         port: 18080
+        sandboxMode: ${BF_SANDBOX_MODE}
         enableDemoTenant: ${BF_ENABLE_DEMO_TENANT}
         dataDir: /var/lib/betterframe
         kioskLogRetentionHours: ${BF_KIOSK_LOG_RETENTION_HOURS}
@@ -51,10 +52,25 @@ default:
         firmwareImportApiKey: "${BF_FIRMWARE_IMPORT_API_KEY}"
         otaImportApiKey: "${BF_OTA_IMPORT_API_KEY}"
 
+    service-betterportal-frame:
+      package: betterframe
+      plugin: service-betterportal-frame
+      enabled: ${BF_BP_ENABLED}
+      config:
+        host: ${BF_BP_HOST}
+        port: 18083
+        installationId: "${BF_BP_INSTALLATION_ID}"
+        existingTenantBindings: ${BF_BP_EXISTING_TENANT_BINDINGS}
+        existingResourceOwners: ${BF_BP_EXISTING_RESOURCE_OWNERS}
+        betterportal:
+          controlPlaneUrl: "${BF_BP_CONTROL_PLANE_URL}"
+          bootstrapStatePath: /var/lib/betterframe/bp/bootstrap.json
+          scopedConfigCachePath: /var/lib/betterframe/bp/scoped-config.json
+
     service-api-http:
       package: betterframe
       plugin: service-api-http
-      enabled: true
+      enabled: ${BF_FLEET_API_ENABLED}
       config:
         db:
           host: ${BF_PG_HOST}
@@ -84,7 +100,7 @@ default:
     service-coordinator-ws:
       package: betterframe
       plugin: service-coordinator-ws
-      enabled: true
+      enabled: ${BF_COORDINATOR_ENABLED}
       config:
         db:
           host: ${BF_PG_HOST}

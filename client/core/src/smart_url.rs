@@ -52,7 +52,7 @@ pub struct SmartUrlProgress {
     complete: bool,
     triggered: bool,
     failed: bool,
-    at_login: bool,
+    retry_armed: bool,
 }
 
 impl SmartUrlProgress {
@@ -65,12 +65,28 @@ impl SmartUrlProgress {
 
     pub fn observe_url(&mut self, current_url: &str, prefix: Option<&str>) {
         let at_login = prefix.is_some_and(|prefix| login_url_matches(current_url, prefix));
-        if !self.failed && at_login && !self.at_login && (!self.triggered || self.complete) {
+        if !self.failed && at_login && (!self.triggered || (self.complete && self.retry_armed)) {
             self.triggered = true;
+            self.retry_armed = false;
             self.next = 0;
             self.complete = false;
         }
-        self.at_login = at_login;
+    }
+
+    /// Only a settled page outside the login prefix can arm a later retry.
+    /// A transient destination in the redirect chain cannot count as a login.
+    pub fn confirm_authenticated(&mut self) {
+        if self.complete && !self.failed {
+            self.retry_armed = true;
+        }
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.complete && !self.failed
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn take_step(&mut self, count: usize) -> Option<(usize, u64)> {
@@ -205,6 +221,13 @@ mod tests {
             assert_eq!(run.take_step(1), None);
         }
         run.observe_url("http://ha/lovelace/2", Some("/auth"));
+        run.observe_url("http://ha/auth?transient=1", Some("/auth"));
+        assert_eq!(
+            run.take_step(1),
+            None,
+            "intermediate redirects cannot rearm authentication"
+        );
+        run.confirm_authenticated(); // native runner confirms a settled non-login page
         run.observe_url("http://ha/auth?state=789", Some("/auth"));
         assert_eq!(run.take_step(1).unwrap().0, 0);
     }

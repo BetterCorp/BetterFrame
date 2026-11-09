@@ -6,7 +6,7 @@ use gtk4::{gio, glib, prelude::*};
 use webkit6::prelude::*;
 
 use crate::bundle::{SmartUrlConfig, SmartUrlStep};
-use crate::core::smart_url::SmartUrlProgress;
+use crate::core::smart_url::{SmartUrlProgress, login_url_matches};
 
 struct Runner {
     config: SmartUrlConfig,
@@ -107,6 +107,34 @@ fn observe_url(webview: &webkit6::WebView, runner: &Runner) {
     }
 }
 
+fn confirm_settled_page(webview: &webkit6::WebView, runner: &Rc<Runner>) {
+    if !runner.progress.borrow().is_complete() {
+        return;
+    }
+    let Some(url) = webview.uri() else {
+        return;
+    };
+    let prefix = runner.config.login_detect_url.as_deref().unwrap_or("");
+    if login_url_matches(&url, prefix) {
+        return;
+    }
+    let generation = runner.progress.borrow().generation();
+    let weak = webview.downgrade();
+    let runner = runner.clone();
+    // Client-side redirects can report Finished for an intermediate page.
+    // Never arm retries until the final non-login URL has actually settled.
+    glib::timeout_add_local_once(Duration::from_secs(1), move || {
+        if let Some(wv) = weak.upgrade() {
+            if !wv.is_loading()
+                && wv.uri().as_ref() == Some(&url)
+                && runner.progress.borrow().generation() == generation
+            {
+                runner.progress.borrow_mut().confirm_authenticated();
+            }
+        }
+    });
+}
+
 fn drive(webview: &webkit6::WebView, runner: &Rc<Runner>) {
     if webview.is_loading() {
         return;
@@ -116,6 +144,7 @@ fn drive(webview: &webkit6::WebView, runner: &Rc<Runner>) {
         .borrow_mut()
         .take_step(runner.config.steps.len());
     let Some((index, generation)) = next else {
+        confirm_settled_page(webview, runner);
         return;
     };
     let step = &runner.config.steps[index];
@@ -447,6 +476,7 @@ mod tests {
             2,
             "normal reloads never replay authentication"
         );
+        pump(Duration::from_millis(1100)); // the authenticated destination settles
         first_wv.load_uri(&format!("{}/auth/authorize?expired=1", fixture.root));
         wait_until(|| fixture.count("/success") == 3);
 

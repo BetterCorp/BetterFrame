@@ -2435,6 +2435,7 @@ fn apply_operator_overrides(display_id: &str, layout: &mut crate::bundle::Bundle
     };
     if cleared {
         for cell in &mut layout.cells {
+            cell.overlay_html = None;
             cell.content_type = "none".to_string();
             cell.camera_id = None;
         }
@@ -2466,6 +2467,8 @@ fn apply_operator_overrides(display_id: &str, layout: &mut crate::bundle::Bundle
         cell.col = 0;
         cell.row_span = 1;
         cell.col_span = 1;
+        // A fullscreen operator camera is unbound to the first layout block.
+        cell.overlay_html = None;
         cell.content_type = "camera".to_string();
         cell.camera_id = Some(focus.camera_id);
         cell.stream_selector = Some(focus.stream);
@@ -3622,9 +3625,23 @@ pub fn test_overlay_refresh() {
         assert_eq!(pool.borrow()[overlay_key].webview, overlay);
         assert_eq!(pool.borrow()[&base_key].webview, base);
     });
-    layout.cells[0].overlay_html = None;
-    sync_block_overlays("overlay-test", &layout);
+    DISPLAYS.with(|ds| ds.borrow_mut().get_mut("overlay-test").unwrap().display_cleared = true);
+    let mut cleared = layout.clone();
+    apply_operator_overrides("overlay-test", &mut cleared);
+    assert!(cleared.cells.iter().all(|cell| cell.content_type == "none" && cell.overlay_html.is_none()));
+    sync_block_overlays("overlay-test", &cleared);
     recompute_web_states(&warm, &Default::default(), 0);
+    DISPLAYS.with(|ds| {
+        let mut ds = ds.borrow_mut();
+        let st = ds.get_mut("overlay-test").unwrap();
+        st.display_cleared = false;
+        st.fullscreen_override = Some(FocusOverride { camera_id:"other-camera".into(), stream:"main".into(), generation:1 });
+    });
+    let mut fullscreen = layout.clone();
+    apply_operator_overrides("overlay-test", &mut fullscreen);
+    assert_eq!(fullscreen.cells[0].camera_id.as_deref(), Some("other-camera"));
+    assert!(fullscreen.cells[0].overlay_html.is_none());
+    assert!(layout.cells[0].overlay_html.is_some(), "operator overrides must retain configured block data for restore");
     WARM_WEBVIEWS.with(|pool| {
         assert!(!pool.borrow().contains_key(overlay_key));
         assert_eq!(pool.borrow()[&base_key].webview, base);

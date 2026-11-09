@@ -334,3 +334,4 @@ betterframe/
 - Windows web content keys order local storage with BTreeMap. Linux reorders already-parented children without unrealizing WebKit layers.
 - Guard all overlay decoding/lookup/rendering during bundle generation. Invalid stored data remains editable; HTML/htmx validation failures preserve the submitted draft, while API errors stay JSON.
 - The fixture-only GTK CI step disables WebKit's sandbox because hosted Ubuntu blocks its user namespace. Production sandbox configuration is unchanged.
+- Block overlays clear with an operator display and never transfer into unbound entity/camera fullscreen views. The cached block configuration remains intact for restore.

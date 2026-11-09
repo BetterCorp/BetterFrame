@@ -401,8 +401,9 @@ export async function generateBundle(
         if (c.entity_id != null && !virtualLayouts.has(c.entity_id)) {
           const ent = await repo.getEntityById(c.entity_id);
           if (ent) {
-            // Cell-level click/hold actions (e.g. switch-to-fullscreen) must not
-            // fire again inside the fullscreen layout itself.
+            // Entity fullscreen views have no originating block. Keep block data
+            // and click/hold actions out of their reusable virtual cells.
+            const { overlay_html: _blockOverlay, ...entityCell } = bundleCell;
             const { events: _cellEvents, ...fullscreenInputOptions } =
               (bundleCell.input_options ?? {}) as Record<string, unknown>;
             virtualLayouts.set(c.entity_id, {
@@ -417,7 +418,7 @@ export async function generateBundle(
               resets_idle_timer: true,
               is_default: false,
               cells: [{
-                ...bundleCell,
+                ...entityCell,
                 view_id: `virtual:${ent.id}`,
                 row: 0,
                 col: 0,

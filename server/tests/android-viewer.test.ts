@@ -407,3 +407,23 @@ test("stored-data and template-lookup failures omit only the overlay", async () 
     assert.equal(bundle.layouts[0]?.cells[0]?.camera_id, "camera", failure);
   }
 });
+
+test("entity fullscreen layouts never inherit an originating block overlay", async () => {
+  const { repo, secrets, cells } = fixture();
+  const first = cells[0]!;
+  (first.options as Record<string, unknown>)["overlay"] = { template_id: "template", data: { name: "First block" } };
+  const second = { ...first, id: "second-block", col: 2, options: { ...first.options } };
+  (second.options as Record<string, unknown>)["overlay"] = { template_id: "template", data: { name: "Second block" } };
+  cells.push(second);
+  const withOverlay = { ...repo, getOverlayTemplate: async () => ({ html: "<b>{{name}}</b>" }) };
+  const bundle = await generateBundle(withOverlay as never, secrets as never, "viewer", "cluster");
+  assert.ok(bundle);
+  const assigned = bundle.displays[0]!.layouts.find(layout => layout.id === "layout")!;
+  assert.match(assigned.cells.find(cell => cell.view_id === "cell")?.overlay_html ?? "", /First block/);
+  assert.match(assigned.cells.find(cell => cell.view_id === "second-block")?.overlay_html ?? "", /Second block/);
+  const virtual = bundle.displays[0]!.layouts.find(layout => layout.id === "entity")!;
+  assert.ok(virtual);
+  assert.equal(virtual.cells[0]?.overlay_html, undefined);
+  assert.equal(virtual.cells[0]?.camera_id, "camera");
+  assert.equal("overlay_html" in virtual.cells[0]!, false);
+});

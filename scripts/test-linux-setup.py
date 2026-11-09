@@ -247,14 +247,17 @@ def CDLL(name):
         self.assertIn('cage', self.shell('DISTRO_ID=ubuntu; DISTRO_LIKE=debian; MODE=dedicated; select_packages; echo "${PACKAGES[*]}"').stdout)
         self.assertNotEqual(self.shell('DISTRO_ID=arch; DISTRO_LIKE=; select_packages', check=False).returncode, 0)
 
-    def test_webkit_apparmor_only_loads_for_restricted_hosts(self):
+    def test_webkit_apparmor_survives_temporarily_disabled_restrictions(self):
         installed_binary = self.shell('printf "%s" "$BIN"').stdout
-        for state in ['missing', '0', '1', 'load-failure']:
+        for state, value, load_succeeds in [
+            ('missing', None, True), ('disabled', '0\n', True), ('enabled', '1\n', True),
+            ('disabled-load-failure', '0\n', False), ('load-failure', '1\n', False),
+        ]:
             with self.subTest(state=state), tempfile.TemporaryDirectory() as tmp:
                 p = Path(tmp)
                 restriction = p/'restriction'
-                if state != 'missing':
-                    restriction.write_text('0\n' if state == '0' else '1\n')
+                if value is not None:
+                    restriction.write_text(value)
                 result = self.shell(f'''
                     reconcile_file() {{
                         printf '%s\\n' "$*" > {p}/destination
@@ -262,21 +265,22 @@ def CDLL(name):
                     }}
                     apparmor_parser() {{
                         printf '%s\\n' "$*" > {p}/loaded
-                        [[ {state} != load-failure ]]
+                        return {0 if load_succeeds else 1}
                     }}
                     configure_webkit_apparmor {restriction}
                     echo continued
                 ''', check=False)
-                if state in ['missing', '0']:
+                if value is None:
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertFalse((p/'profile').exists())
                     self.assertFalse((p/'loaded').exists())
                 else:
+                    self.assertTrue((p/'profile').is_file(), 'supported hosts need a persistent profile even when the restriction is currently disabled')
                     self.assertEqual((p/'destination').read_text().strip(), '/etc/apparmor.d/betterframe 644 root root')
                     # The profile must follow the installer's actual executable path.
                     self.assertIn(f'profile betterframe {installed_binary} flags=(unconfined)', (p/'profile').read_text())
                     self.assertEqual((p/'loaded').read_text().strip(), '-r /etc/apparmor.d/betterframe')
-                    if state == 'load-failure':
+                    if not load_succeeds:
                         self.assertNotEqual(result.returncode, 0)
                         self.assertNotIn('continued', result.stdout)
                         self.assertIn('Could not load BetterFrame AppArmor profile', result.stderr)

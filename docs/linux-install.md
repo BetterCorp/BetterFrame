@@ -138,17 +138,19 @@ mode/user, restore the old startup configuration first, then remove
 
 ## Ubuntu WebKit sandbox
 
-On hosts with AppArmor restrictions on unprivileged user namespaces (including
+On hosts exposing AppArmor's unprivileged user-namespace restriction (including
 Ubuntu 24.04), setup installs and loads `/etc/apparmor.d/betterframe` for
 `/opt/betterframe/kiosk/betterframe-kiosk`. This allows WebKit's sandbox to create
-its user namespace when a layout renders web or HTML content. WebKit sandboxing
-and the host's global AppArmor settings stay enabled.
+its user namespace when a layout renders web or HTML content. The profile is
+installed even when the restriction is currently disabled, so it is ready if the
+restriction returns after a reboot or is re-enabled. WebKit sandboxing stays
+enabled, and setup preserves the host's global AppArmor settings.
 
 The exception is attached to the executable path, not to verified executable
 contents. The runtime user owns both the executable and its directory so app
 updates can replace it atomically. That user can therefore replace the profiled
 binary and run arbitrary code with `userns` permission. Treat the runtime account
-as trusted for this capability; the global restriction remains enabled.
+as trusted for this capability.
 
 If an older installation crashes on layout assignment with `bwrap: setting up
 uid map: Permission denied`, AppArmor denials for `unprivileged_userns`, and

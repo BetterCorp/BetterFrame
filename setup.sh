@@ -716,7 +716,9 @@ EOF
 }
 configure_webkit_apparmor() {
     local restriction=${1:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}
-    [[ -r $restriction && $(< "$restriction") == 1 ]] || return 0
+    # A one-boot disable is lost on reboot; provision the persistent profile
+    # whenever this kernel mechanism exists, regardless of its current value.
+    [[ -e $restriction ]] || return 0
     command -v apparmor_parser >/dev/null || fail 'Install apparmor to allow the BetterFrame WebKit sandbox'
     [[ ! -L /etc/apparmor.d ]] || fail 'Refusing symlink AppArmor profile directory'
     write_apparmor_profile | reconcile_file /etc/apparmor.d/betterframe 644 root root
@@ -761,7 +763,7 @@ EOF
 }
 main() {
     parse_args "$@"
-    printf 'BetterFrame setup revision 2026-10-22.2\n'
+    printf 'BetterFrame setup revision 2026-11-09.1\n'
     [[ $(uname -s) == Linux ]] || fail 'This installer requires Linux'
     [[ $EUID == 0 ]] || fail 'Run with sudo (or root and --user USER)'
     [[ -d /run/systemd/system ]] || fail 'This installer requires systemd'

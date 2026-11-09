@@ -3645,7 +3645,37 @@ pub fn test_overlay_refresh() {
     sync_block_overlays("overlay-test", &layout);
     let overlay_key = "overlay:overlay-test:layout:block";
     let overlay = WARM_WEBVIEWS.with(|pool| pool.borrow()[overlay_key].webview.clone());
-    let warm = std::collections::HashSet::from([base_key.clone()]);
+    let unrealized = std::rc::Rc::new(std::cell::Cell::new(0));
+    let observed = unrealized.clone();
+    overlay.connect_unrealize(move |_| observed.set(observed.get() + 1));
+    let window = DISPLAYS.with(|ds| {
+        let ds = ds.borrow();
+        let st = &ds["overlay-test"];
+        st.window.set_default_size(640, 360);
+        st.content_overlay.set_child(Some(&web_spacer()));
+        st.content_overlay.add_overlay(&st.web_layer);
+        st.window.set_child(Some(&st.content_overlay));
+        st.window.present();
+        st.window.clone()
+    });
+    let context = gtk::glib::MainContext::default();
+    let until = Instant::now() + Duration::from_secs(3);
+    while window.allocated_width() == 0 && Instant::now() < until {
+        if context.pending() { context.iteration(false); }
+        else { std::thread::sleep(Duration::from_millis(5)); }
+    }
+    assert!(apply_webview_positions("overlay-test"));
+    assert!(overlay.is_realized());
+    for _ in 0..5 { assert!(apply_webview_positions("overlay-test")); }
+    assert_eq!(unrealized.get(), 0, "unchanged position passes keep WebKit realized");
+    let extra_key = html_key("<p>Second base</p>");
+    let extra = ensure_web(extra_key.clone(), WebSource::Html("<p>Second base</p>"), "", "", None, None);
+    DISPLAYS.with(|ds| ds.borrow_mut().get_mut("overlay-test").unwrap().web_positions.insert(1,
+        WebCellPos { key:extra_key.clone(), row:0,col:0,row_span:1,col_span:1 }));
+    assert!(apply_webview_positions("overlay-test"));
+    assert_eq!(overlay.prev_sibling(), Some(extra.upcast()));
+    assert_eq!(unrealized.get(), 0, "raising over a new base view keeps WebKit realized");
+    let warm = std::collections::HashSet::from([base_key.clone(), extra_key]);
     recompute_web_states(&warm, &Default::default(), 0);
     assert!(WARM_WEBVIEWS.with(|pool| pool.borrow().contains_key(overlay_key)));
     layout.cells[0].overlay_html = Some("<p>64%</p>".into());
@@ -3661,6 +3691,7 @@ pub fn test_overlay_refresh() {
         assert!(!pool.borrow().contains_key(overlay_key));
         assert_eq!(pool.borrow()[&base_key].webview, base);
     });
+    window.close();
     DISPLAYS.with(|ds| { ds.borrow_mut().remove("overlay-test"); });
     WARM_WEBVIEWS.with(|pool| pool.borrow_mut().clear());
     println!("Overlay refresh keeps existing webviews and cleans removed layers");
@@ -4445,6 +4476,7 @@ fn apply_webview_positions(display_id: &str) -> bool {
         WARM_WEBVIEWS.with(|m| {
             let pool = m.borrow();
 
+            let mut previous: Option<gtk::Widget> = None;
             for pos in &st.web_positions {
                 let Some(entry) = pool.get(&pos.key) else {
                     continue;
@@ -4456,9 +4488,6 @@ fn apply_webview_positions(display_id: &str) -> bool {
 
                 entry.webview.set_size_request(w as i32, h as i32);
 
-                if pos.key.starts_with("overlay:") && entry.webview.parent().is_some() {
-                    entry.webview.unparent();
-                }
                 if entry.webview.parent().as_ref() == Some(st.web_layer.upcast_ref::<gtk::Widget>())
                 {
                     st.web_layer.move_(&entry.webview, x, y);
@@ -4468,6 +4497,12 @@ fn apply_webview_positions(display_id: &str) -> bool {
                     }
                     st.web_layer.put(&entry.webview, x, y);
                 }
+                // Same-parent sibling moves preserve realization and the current
+                // WebKit frame. Positions list base pages before their overlays.
+                if entry.webview.prev_sibling().as_ref() != previous.as_ref() {
+                    entry.webview.insert_after(&st.web_layer, previous.as_ref());
+                }
+                previous = Some(entry.webview.clone().upcast());
                 entry.webview.set_visible(true);
             }
 

@@ -359,8 +359,7 @@ pub(super) fn sync_webviews(
         let view_id = cell.view_id.clone().unwrap_or_else(|| index.to_string());
         if cell.content_type == "web" || cell.content_type == "html" {
             // Overlay/bundle changes must not reload an unrelated web page.
-            let content = serde_json::to_string(&(&cell.web_url, &cell.html_content,
-                &cell.local_storage)).unwrap_or_default();
+            let content = crate::core::layout::web_content_key(cell);
             specs.push(WebCellSpec {
                 overlay: false,
                 key: web_cell_key(hwnd, &layout.id, &content, &view_id, &cell.content_type, &state.server_url),

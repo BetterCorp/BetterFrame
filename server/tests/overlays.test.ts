@@ -69,7 +69,9 @@ test("block bindings retain independent data, reject invalid writes, and never c
   assert.equal((await f.post("/api/admin/blocks/second/overlay", { data: {} })).status, 409);
   assert.equal((await f.post("/api/admin/blocks/missing/overlay", { data: {} })).status, 404);
   assert.equal((await f.post("/api/admin/blocks/block/overlay", { data: [] })).status, 422);
-  assert.equal((await f.post("/admin/overlays/blocks/block", { template_id: "other", data: {} })).status, 404);
+  const missingTemplate = await f.post("/admin/overlays/blocks/block", { template_id: "other", data: {} });
+  assert.equal(missingTemplate.status, 200);
+  assert.match(await missingTemplate.text(), /role="alert"[^>]*>Overlay template not found/);
   assert.deepEqual(f.cells.get("block").options.overlay.data, { progress: 64 });
   assert.equal(notifications, 2);
   assert.equal((await f.post("/admin/overlays/blocks/block", { template_id: "", data: "bad JSON ignored on remove" })).status, 200);
@@ -163,4 +165,52 @@ test("PostgreSQL overlay migration and repository remain tenant scoped and survi
     for (const schema of schemas) await adapter.exec(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
     await adapter.close();
   }
+});
+
+test("rendering bounds intermediate output and interrupts empty exponential loops", () => {
+  assert.throws(() => renderOverlay("{{#each items}}{{../text}}{{/each}}", {
+    items: Array(64).fill(0), text: "x".repeat(20000),
+  }), /512 KiB output budget/);
+  const started = performance.now();
+  assert.throws(() => renderOverlay("{{#each a}}{{#each ../a}}{{#each ../../a}}{{/each}}{{/each}}{{/each}}", {
+    a: Array(1000).fill(0),
+  }), /rendering exceeded 100 ms/);
+  assert.ok(performance.now() - started < 2000, "pathological loops must terminate promptly");
+  assert.match(renderOverlay("{{name}}", { name: "Recovered" }), /<body>Recovered<\/body>/);
+  assert.match(renderOverlay("{{#each a}}{{#each ../a}}{{#each ../../a}}{{/each}}{{/each}}{{/each}}", { a: [] }), /<body><\/body>/);
+});
+
+test("invalid browser submissions preserve drafts and display errors without saving", async () => {
+  const f = fixture();
+  const html = "<style>.bar{width:25%}</style><b>{{progress}}</b>";
+  const invalid = '{"progress":';
+  const response = await f.post("/admin/overlays/new", { name: "Keep <draft>", html, sample_data: invalid });
+  assert.equal(response.status, 422);
+  assert.match(response.headers.get("content-type") ?? "", /text\/html/);
+  const page = await response.text();
+  assert.match(page, /role="alert"/);
+  assert.ok(page.includes('value="Keep &lt;draft&gt;"') || page.includes('value="Keep <draft>"'));
+  assert.ok(page.includes('&lt;style&gt;.bar{width:25%}&lt;/style&gt;'));
+  assert.ok(page.includes('{&quot;progress&quot;:'));
+  assert.equal(f.templates.size, 1);
+  const block = await f.post("/admin/overlays/blocks/block", { template_id: "template", data: invalid });
+  assert.equal(block.status, 200, "htmx swaps this error fragment");
+  const fragment = await block.text();
+  assert.match(fragment, /role="alert"/);
+  assert.ok(fragment.includes('{&quot;progress&quot;:'));
+  assert.match(fragment, /value="template" selected/);
+  assert.deepEqual(f.cells.get("block").options, { untouched: true });
+  const api = await f.post("/api/admin/blocks/block/overlay", { data: [] });
+  assert.equal(api.status, 409);
+  assert.match(api.headers.get("content-type") ?? "", /application\/json/);
+});
+
+test("the block editor can load and repair malformed retained overlay data", async () => {
+  const f = fixture();
+  f.cells.get("block").options.overlay = { template_id: "template", data: ["corrupt"] };
+  const response = await f.app.request("http://bf.test/admin/overlays/blocks/block");
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /Stored overlay data is invalid/);
+  assert.equal((await f.post("/admin/overlays/blocks/block", { template_id: "template", data: '{"progress":25}' })).status, 200);
+  assert.deepEqual(f.cells.get("block").options.overlay.data, { progress: 25 });
 });

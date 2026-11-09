@@ -3,10 +3,22 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { H3 } from "h3";
 import { chromium } from "playwright";
+import { Layout } from "../server/src/web-templates/layout.tsx";
+import { BlockOverlayEditor } from "../server/src/web-templates/overlay-pages.tsx";
+import { htmlPage } from "../server/src/plugins/service-admin-http/html-response.ts";
 import { registerOverlayRoutes } from "../server/src/plugins/service-admin-http/routes-overlays.ts";
 
 const app = new H3();
-registerOverlayRoutes(app, { repo: { listOverlayTemplates: async () => [] } });
+const template = { id: "printer", name: "Printer", html: "{{progress}}", sample_data: { progress: 64 } };
+const cell = { id: "block", options: {} };
+const repo = {
+  listOverlayTemplates: async () => [template],
+  getOverlayTemplate: async id => id === template.id ? template : null,
+  getLayoutCellById: async id => id === cell.id ? cell : null,
+  updateLayoutCell: async (_id, patch) => Object.assign(cell, patch),
+};
+registerOverlayRoutes(app, { repo });
+app.get("/test-block-editor", () => htmlPage(Layout({ title: "Block overlay test", children: BlockOverlayEditor({ cell, templates: [template] }) })));
 const server = createServer(async (request, response) => {
   try {
     if (request.url.startsWith("/static/")) {
@@ -84,6 +96,29 @@ try {
   await preview.locator("#isolated").waitFor({ state: "detached" });
   await page.selectOption("#overlay-size", "640,360");
   await page.screenshot({ path: process.env.BF_OVERLAY_SCREENSHOT || "/tmp/betterframe-overlay-preview.png", fullPage: true });
+  // Normal form submissions retain the entire draft in an HTML error page.
+  await page.locator("#overlay-name").fill("Keep draft");
+  await page.locator("#overlay-sample").fill('{"progress":');
+  await Promise.all([
+    page.waitForURL("**/admin/overlays/new"),
+    page.getByRole("button", { name: "Save template" }).click(),
+  ]);
+  assert.equal(await page.locator("#overlay-name").inputValue(), "Keep draft");
+  assert.equal(await page.locator("#overlay-html").inputValue(), html);
+  assert.equal(await page.locator("#overlay-sample").inputValue(), '{"progress":');
+  assert.ok(await page.locator('[role="alert"]').first().textContent());
+  // htmx swaps a visible validation error while retaining the block draft.
+  await page.goto(`http://127.0.0.1:${server.address().port}/test-block-editor`);
+  await page.waitForFunction(() => typeof window.htmx !== "undefined");
+  await page.locator('select[name="template_id"]').selectOption("printer");
+  await page.locator('textarea[name="data"]').fill('{"progress":');
+  const blockResponse = page.waitForResponse(r => r.url().endsWith("/admin/overlays/blocks/block") && r.request().method() === "POST");
+  await page.getByRole("button", { name: "Save overlay" }).click();
+  assert.equal((await blockResponse).status(), 200);
+  await page.locator('#block-overlay-block [role="alert"]').waitFor();
+  assert.equal(await page.locator('select[name="template_id"]').inputValue(), "printer");
+  assert.equal(await page.locator('textarea[name="data"]').inputValue(), '{"progress":');
+  assert.deepEqual(cell.options, {});
   console.log("Overlay browser checks passed: live data, progress math/clamping, responsive viewport, invalid JSON recovery, CSS isolation, script isolation.");
 } finally {
   await browser?.close();

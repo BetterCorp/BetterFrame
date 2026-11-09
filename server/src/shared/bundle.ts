@@ -348,12 +348,15 @@ export async function generateBundle(
               : cellInputOptions;
           }
         }
-        const overlay = blockOverlay(c.options);
-        const template = overlay ? await repo.getOverlayTemplate(overlay.template_id) : null;
         let overlayHtml: string | undefined;
-        if (template && overlay) {
-          try { overlayHtml = overlayPlaybackDocument(renderOverlay(template.html, overlay.data)); }
-          catch { span?.log.warn("overlay render failed for block {id}", { id: c.id }); }
+        try {
+          const overlay = blockOverlay(c.options);
+          const template = overlay ? await repo.getOverlayTemplate(overlay.template_id) : null;
+          if (template && overlay) overlayHtml = overlayPlaybackDocument(renderOverlay(template.html, overlay.data));
+        } catch (cause) {
+          span?.log.warn("overlay unavailable for block {id}: {message}", {
+            id: c.id, message: cause instanceof Error ? cause.message : String(cause),
+          });
         }
         const bundleCell: BundleCell = {
           ...(overlayHtml ? { overlay_html: overlayHtml } : {}),

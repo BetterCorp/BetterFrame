@@ -391,3 +391,19 @@ test("an overlay rendering failure cannot make the underlying kiosk bundle unava
   assert.equal(bundle.layouts[0]?.cells[0]?.overlay_html, undefined);
   assert.equal(bundle.layouts[0]?.cells[0]?.camera_id, "camera");
 });
+
+test("stored-data and template-lookup failures omit only the overlay", async () => {
+  for (const failure of ["array", "string", "oversize", "lookup"] as const) {
+    const { repo, secrets, cells } = fixture();
+    const data = failure === "array" ? [] : failure === "string" ? "bad" : failure === "oversize" ? { text: "x".repeat(32769) } : {};
+    (cells[0]!.options as Record<string, unknown>)["overlay"] = { template_id: "template", data };
+    const withOverlay = { ...repo, getOverlayTemplate: async () => {
+      if (failure === "lookup") throw new Error("Template storage unavailable");
+      return { html: "{{progress}}" };
+    } };
+    const bundle = await generateBundle(withOverlay as never, secrets as never, "viewer", "cluster");
+    assert.ok(bundle, failure);
+    assert.equal(bundle.layouts[0]?.cells[0]?.overlay_html, undefined, failure);
+    assert.equal(bundle.layouts[0]?.cells[0]?.camera_id, "camera", failure);
+  }
+});

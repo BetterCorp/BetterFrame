@@ -130,6 +130,13 @@ pub fn configured_cell_action(cell: &BundleCell, kind: &str) -> Option<(String, 
     ))
 }
 
+/// Stable content identity across independently seeded/deserialized storage maps.
+pub fn web_content_key(cell: &BundleCell) -> String {
+    let storage = cell.local_storage.as_ref().map(|entries|
+        entries.iter().collect::<std::collections::BTreeMap<_, _>>());
+    serde_json::to_string(&(&cell.web_url, &cell.html_content, storage)).unwrap()
+}
+
 pub fn resolve_web_url(value: &str, server_url: &str) -> Option<String> {
     let value = value.trim();
     if Url::parse(value).is_ok() {
@@ -153,6 +160,27 @@ pub fn same_origin(url: &str, server_url: &str) -> bool {
 mod tests {
     use super::*;
     use crate::bundle::BundleDisplayWithLayouts;
+
+    #[test]
+    fn web_content_identity_orders_storage_and_tracks_actual_value_changes() {
+        let cell: BundleCell = serde_json::from_value(serde_json::json!({
+            "view_id":"web", "row":0,"col":0,"row_span":1,"col_span":1,
+            "content_type":"web", "web_url":"https://player.example/",
+            "local_storage":{"screenToken":"token", "screenId":"id"}
+        })).unwrap();
+        let key = web_content_key(&cell);
+        assert_eq!(key, r#"["https://player.example/",null,{"screenId":"id","screenToken":"token"}]"#);
+        for _ in 0..32 {
+            let mut refreshed = cell.clone();
+            refreshed.local_storage = Some([
+                ("screenToken".into(), "token".into()), ("screenId".into(), "id".into())
+            ].into_iter().collect());
+            refreshed.overlay_html = Some("updated overlay".into());
+            assert_eq!(key, web_content_key(&refreshed));
+            refreshed.local_storage.as_mut().unwrap().insert("screenToken".into(), "new token".into());
+            assert_ne!(key, web_content_key(&refreshed));
+        }
+    }
 
     #[test]
     fn overlay_updates_preserve_content_and_reach_android() {

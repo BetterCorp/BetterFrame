@@ -3568,22 +3568,25 @@ fn ensure_web(
 #[cfg(debug_assertions)]
 pub fn test_overlay_refresh() {
     gtk::init().unwrap();
+    gstreamer::init().unwrap();
+    let app = Application::builder().application_id("cloud.betterframe.OverlayTest").build();
+    app.register(None::<&gtk::gio::Cancellable>).unwrap();
+    let pairing = ApplicationWindow::builder().application(&app).build();
     let mut layout: crate::bundle::BundleLayout = serde_json::from_value(serde_json::json!({
         "id":"layout", "name":"Layout", "grid_cols":1, "grid_rows":1,
         "priority":"normal", "is_default":true, "resets_idle_timer":true,
         "cells":[{"view_id":"block", "row":0, "col":0, "row_span":1, "col_span":1,
             "content_type":"html", "html_content":"<p>Base</p>", "overlay_html":"<p>12%</p>"}]
     })).unwrap();
+    let mut bundle: KioskBundle = serde_json::from_value(serde_json::json!({
+        "kiosk_id":"overlay-test", "kiosk_name":"Overlay test", "version":"1", "cameras":[],
+        "displays":[{"id":"overlay-test", "name":"Overlay display", "width_px":640, "height_px":360,
+            "idle_timeout_seconds":0, "sleep_timeout_seconds":0, "default_layout_id":"layout",
+            "layouts":[layout.clone()]}]
+    })).unwrap();
+    render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "test");
     let base_key = web_cell_key("overlay-test", "layout", &layout.cells[0]);
-    let base = ensure_web(base_key.clone(), WebSource::Html("<p>Base</p>"), "", "", None, None, None);
-    DISPLAYS.with(|ds| { ds.borrow_mut().insert("overlay-test".into(), DisplayState {
-        window: ApplicationWindow::builder().build(), current_layout_id: Some("layout".into()),
-        last_activity: Instant::now(), is_asleep:false, content_overlay:gtk::Overlay::new(),
-        web_layer:gtk::Fixed::new(), web_positions:vec![WebCellPos { key:base_key.clone(), row:0,col:0,row_span:1,col_span:1 }],
-        grid_dims:(1,1), overlay_layout:None, focus_overrides:HashMap::new(),
-        fullscreen_override:None, display_cleared:false, override_generation:0,
-    }); });
-    sync_block_overlays("overlay-test", &layout);
+    let base = WARM_WEBVIEWS.with(|pool| pool.borrow()[&base_key].webview.clone());
     let overlay_key = "overlay:overlay-test:layout:block";
     let overlay = WARM_WEBVIEWS.with(|pool| pool.borrow()[overlay_key].webview.clone());
     let unrealized = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -3593,10 +3596,6 @@ pub fn test_overlay_refresh() {
         let ds = ds.borrow();
         let st = &ds["overlay-test"];
         st.window.set_default_size(640, 360);
-        st.content_overlay.set_child(Some(&web_spacer()));
-        st.content_overlay.add_overlay(&st.web_layer);
-        st.window.set_child(Some(&st.content_overlay));
-        st.window.present();
         st.window.clone()
     });
     let context = gtk::glib::MainContext::default();
@@ -3620,11 +3619,25 @@ pub fn test_overlay_refresh() {
     recompute_web_states(&warm, &Default::default(), 0);
     assert!(WARM_WEBVIEWS.with(|pool| pool.borrow().contains_key(overlay_key)));
     layout.cells[0].overlay_html = Some("<p>64%</p>".into());
-    sync_block_overlays("overlay-test", &layout);
+    bundle.displays[0].layouts[0] = layout.clone();
+    bundle.version = "2".into();
+    render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "test");
+    assert!(apply_webview_positions("overlay-test"));
     WARM_WEBVIEWS.with(|pool| {
         assert_eq!(pool.borrow()[overlay_key].webview, overlay);
         assert_eq!(pool.borrow()[&base_key].webview, base);
     });
+    assert!(overlay.is_realized());
+    assert_eq!(unrealized.get(), 0, "full bundle refresh must reuse the realized overlay browser");
+    let mut removed = bundle.clone();
+    removed.version = "3".into();
+    removed.displays[0].layouts[0].cells[0].overlay_html = None;
+    render_bundle(&app, &pairing, removed, "http://127.0.0.1:1", "test");
+    WARM_WEBVIEWS.with(|pool| {
+        assert!(!pool.borrow().contains_key(overlay_key), "full refresh removes obsolete overlays");
+        assert_eq!(pool.borrow()[&base_key].webview, base);
+    });
+    render_bundle(&app, &pairing, bundle, "http://127.0.0.1:1", "test");
     DISPLAYS.with(|ds| ds.borrow_mut().get_mut("overlay-test").unwrap().display_cleared = true);
     let mut cleared = layout.clone();
     apply_operator_overrides("overlay-test", &mut cleared);
@@ -3647,6 +3660,7 @@ pub fn test_overlay_refresh() {
         assert_eq!(pool.borrow()[&base_key].webview, base);
     });
     window.close();
+    pairing.close();
     DISPLAYS.with(|ds| { ds.borrow_mut().remove("overlay-test"); });
     WARM_WEBVIEWS.with(|pool| pool.borrow_mut().clear());
     println!("Overlay refresh keeps existing webviews and cleans removed layers");
@@ -4050,14 +4064,17 @@ mod display_tests {
     }
 }
 
-/// Walk an arbitrary layout's web/html cells and add their pool keys to `out`.
-/// Mirrors `cell_keys` for cameras.
+/// Add a layout's base and overlay browser keys before purging obsolete views.
+/// Overlays must survive until the refreshed display synchronizes their data.
 fn web_keys_for_layout(
     display_id: &str,
     layout: &crate::bundle::BundleLayout,
     out: &mut std::collections::HashSet<WebKey>,
 ) {
     for cell in &layout.cells {
+        if cell.overlay_html.is_some() {
+            out.insert(format!("overlay:{display_id}:{}:{}", layout.id, cell_id(cell)));
+        }
         let has_content = match cell.content_type.as_str() {
             "web" => cell.web_url.as_deref().is_some_and(|url| !url.trim().is_empty()),
             "html" => cell.html_content.as_deref().is_some_and(|html| !html.trim().is_empty()),

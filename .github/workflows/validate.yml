@@ -77,6 +77,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwebkitgtk-6.0-dev libssl-dev xvfb xauth dbus-x11
       - run: cargo test --manifest-path client/Cargo.toml --workspace --locked
+      - name: Smart URL browser regressions
+        env:
+          GDK_BACKEND: x11
+        run: xvfb-run -a dbus-run-session -- cargo test --manifest-path client/Cargo.toml --bin betterframe-client smart_url_browser_regression -- --ignored --test-threads=1
       - name: Preserved display metadata and fullscreen refresh
         run: xvfb-run -a dbus-run-session -- cargo test --manifest-path client/Cargo.toml display_refresh_updates -- --ignored --test-threads=1
       - name: Layout animation cleanup without frame ticks

@@ -1051,4 +1051,14 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     `CREATE UNIQUE INDEX ${table}_local_short_key_unique ON ${table}(local_short_key)`,
   ]),
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS windows_update_push TEXT`,
+  // Authentication belongs to the entity. Only migrate unambiguous legacy
+  // block configurations; retain conflicting block options for manual recovery.
+  `ALTER TABLE entities ADD COLUMN IF NOT EXISTS smart_url_json JSONB`,
+  `UPDATE entities e SET smart_url_json = legacy.config::jsonb
+     FROM (SELECT entity_id, MIN((options->'smart_url')::text) AS config
+             FROM layout_cells
+            WHERE entity_id IS NOT NULL AND options->'smart_url' IS NOT NULL
+              AND options->'smart_url' != 'null'::jsonb
+            GROUP BY entity_id HAVING COUNT(DISTINCT (options->'smart_url')::text) = 1) legacy
+    WHERE e.id = legacy.entity_id AND e.type = 'web' AND e.smart_url_json IS NULL`,
 ];

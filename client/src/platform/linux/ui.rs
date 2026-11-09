@@ -1,3 +1,6 @@
+#[path = "smart_url.rs"]
+mod smart_url;
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs;
@@ -121,6 +124,7 @@ type PoolKey = (String, char);
 /// leaves the WebView alive (unparented) so a fast switch-back preserves the
 /// page state, JS execution, and avoids a full reload.
 struct WebEntry {
+    smart_url: Option<smart_url::Controller>,
     webview: webkit6::WebView,
     state: WarmthState,
     cooling_until: Option<Instant>,
@@ -128,9 +132,8 @@ struct WebEntry {
     last_reported_url: Option<String>,
 }
 
-/// Key for the webview pool. "web:<url>" for remote pages, "html:<hash>" for
-/// inline HTML. Same content under either form across multiple cells/layouts
-/// shares one WebView.
+/// A WebView belongs to one display/layout/block and playback configuration.
+/// Reusing an unchanged block preserves its page; other blocks stay independent.
 type WebKey = String;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1677,6 +1680,14 @@ fn render_bundle(
 
     // Collect camera IDs actually referenced in layout cells.
     let displays = bundle.normalized_displays();
+    let mut valid_webs = std::collections::HashSet::new();
+    for display in &displays {
+        for layout in &display.layouts {
+            web_keys_for_layout(&display.id, layout, &mut valid_webs);
+        }
+    }
+    purge_obsolete_webviews(&valid_webs);
+
     let layout_cam_ids: std::collections::HashSet<String> = displays
         .iter()
         .flat_map(|d| d.layouts.iter())
@@ -2111,12 +2122,7 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
                     cell.stream_selector.as_deref().unwrap_or("auto")
                 )
             }),
-            "web" => cell.web_url.as_deref().map(|u| format!("web:{}", u.trim())),
-            "html" => cell
-                .html_content
-                .as_deref()
-                .filter(|h| !h.trim().is_empty())
-                .map(html_key),
+            "web" | "html" => Some(web_cell_key(display_id, layout_id, cell)),
             _ => None,
         };
         let widget: gtk::Widget = match cell.content_type.as_str() {
@@ -2270,13 +2276,14 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
                 if html.trim().is_empty() {
                     none_cell()
                 } else {
-                    let key = html_key(html);
+                    let key = web_cell_key(display_id, layout_id, cell);
                     let meta = web_event_meta(&bundle, display_id, cell, &server_url, &kiosk_key);
                     let _ = ensure_web(
                         key.clone(),
                         WebSource::Html(html),
                         &server_url,
                         &kiosk_key,
+                        None,
                         None,
                         Some(meta),
                     );
@@ -2295,13 +2302,14 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
                 if url.is_empty() {
                     none_cell()
                 } else {
-                    let key = format!("web:{url}");
-                    let wv = ensure_web(
+                    let key = web_cell_key(display_id, layout_id, cell);
+                    let _ = ensure_web(
                         key.clone(),
                         WebSource::Url(url),
                         &server_url,
                         &kiosk_key,
                         cell.local_storage.as_ref(),
+                        resolved_smart_config(cell).as_ref(),
                         Some(web_event_meta(
                             &bundle,
                             display_id,
@@ -2310,11 +2318,6 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
                             &kiosk_key,
                         )),
                     );
-                    if let Some(ref smart) = cell.smart_url {
-                        let decrypt_key =
-                            server::load_encrypt_key().or_else(|| server::load_cluster_key());
-                        execute_smart_url_steps(&wv, smart, decrypt_key.as_deref());
-                    }
                     web_cells.push(WebCellPos {
                         key,
                         col: cell.col,
@@ -2925,7 +2928,7 @@ fn recompute_global_state() {
         }
     });
 
-    // Same walk for web/html cells — pool keys are URL / hash(HTML).
+    // Use the same display/layout/block/settings identity as rendering.
     let mut warm_webs: std::collections::HashSet<WebKey> = std::collections::HashSet::new();
     let mut hot_webs: std::collections::HashSet<WebKey> = std::collections::HashSet::new();
     for bd in &displays {
@@ -2943,7 +2946,7 @@ fn recompute_global_state() {
                 .and_then(|(layout_id, _)| layout_id.as_ref())
             {
                 if let Some(layout) = bd.layouts.iter().find(|l| l.id.as_str() == cur_id.as_str()) {
-                    web_keys_for_layout(layout, &mut warm_webs);
+                    web_keys_for_layout(&bd.id, layout, &mut warm_webs);
                 }
             }
         }
@@ -2952,7 +2955,7 @@ fn recompute_global_state() {
         }
         for layout in &bd.layouts {
             if layout.priority == "hot" {
-                web_keys_for_layout(layout, &mut hot_webs);
+                web_keys_for_layout(&bd.id, layout, &mut hot_webs);
             }
         }
     }
@@ -3200,90 +3203,6 @@ fn load_webview_url(webview: &webkit6::WebView, url: &str, server_url: &str, kio
     webkit6::prelude::WebViewExt::load_uri(webview, url);
 }
 
-/// Execute smart URL steps on a WebView after loading. Steps run
-/// sequentially via JS injection. Used for auto-login, cookie accept,
-/// multi-step navigation before showing the final page.
-fn execute_smart_url_steps(
-    webview: &webkit6::WebView,
-    config: &crate::bundle::SmartUrlConfig,
-    decrypt_key: Option<&str>,
-) {
-    let mut js_parts: Vec<String> = Vec::new();
-
-    for step in &config.steps {
-        match step.step_type.as_str() {
-            "navigate" => {
-                if let Some(url) = &step.url {
-                    js_parts.push(format!("window.location.href = {};", js_string_lit(url)));
-                    js_parts.push("await new Promise(r => setTimeout(r, 1000));".to_string());
-                }
-            }
-            "fill" => {
-                if let Some(sel) = &step.selector {
-                    let value = step
-                        .value
-                        .clone()
-                        .or_else(|| {
-                            step.value_encrypted.as_ref().and_then(|enc| {
-                                decrypt_key.and_then(|k| {
-                                    crate::onvif_events::decrypt_cluster_public(enc, k)
-                                })
-                            })
-                        })
-                        .unwrap_or_default();
-                    js_parts.push(format!(
-                        "{{ var el = document.querySelector({}); if (el) {{ el.value = {}; el.dispatchEvent(new Event('input', {{bubbles:true}})); }} }}",
-                        js_string_lit(sel), js_string_lit(&value)
-                    ));
-                }
-            }
-            "click" => {
-                if let Some(sel) = &step.selector {
-                    js_parts.push(format!(
-                        "{{ var el = document.querySelector({}); if (el) el.click(); }}",
-                        js_string_lit(sel)
-                    ));
-                }
-            }
-            "wait" => {
-                let ms = step.delay_ms.unwrap_or(1000);
-                js_parts.push(format!("await new Promise(r => setTimeout(r, {ms}));"));
-            }
-            "wait_for" => {
-                if let Some(sel) = &step.selector {
-                    let timeout = step.timeout_ms.unwrap_or(10000);
-                    js_parts.push(format!(
-                        "await new Promise((resolve) => {{ var deadline = Date.now() + {timeout}; (function check() {{ if (document.querySelector({sel})) return resolve(); if (Date.now() > deadline) return resolve(); setTimeout(check, 200); }})(); }});",
-                        sel = js_string_lit(sel)
-                    ));
-                }
-            }
-            "javascript" => {
-                if let Some(script) = &step.script {
-                    js_parts.push(script.clone());
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if js_parts.is_empty() {
-        return;
-    }
-
-    let full_js = format!("(async () => {{ {} }})();", js_parts.join("\n"));
-    let wv = webview.clone();
-
-    // Execute after the page loads — wait for load-changed signal.
-    use webkit6::prelude::*;
-    wv.connect_load_changed(move |wv, event| {
-        if event == webkit6::LoadEvent::Finished {
-            let js = full_js.clone();
-            wv.evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
-        }
-    });
-}
-
 fn js_string_lit(s: &str) -> String {
     format!(
         "'{}'",
@@ -3392,13 +3311,28 @@ enum WebSource<'a> {
     Html(&'a str),
 }
 
-/// Stable key for an inline HTML cell. Hash the content so identical HTML in
-/// two layouts/cells shares one WebView in the pool.
-fn html_key(html: &str) -> WebKey {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    html.hash(&mut h);
-    format!("html:{:x}", h.finish())
+/// Resolve credentials before comparing settings so randomized bundle encryption
+/// does not recreate otherwise unchanged browser pages on every refresh.
+fn resolved_smart_config(cell: &BundleCell) -> Option<crate::bundle::SmartUrlConfig> {
+    let mut config = cell.smart_url.clone()?;
+    let key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
+    for step in &mut config.steps {
+        if step.value.is_none() {
+            if let Some(value) = step.value_encrypted.as_ref().and_then(|encrypted| {
+                key.as_deref().and_then(|key| onvif_events::decrypt_cluster_public(encrypted, key))
+            }) {
+                step.value = Some(value);
+                step.value_encrypted = None;
+            }
+        }
+    }
+    Some(config)
+}
+
+fn web_cell_key(display_id: &str, layout_id: &str, cell: &BundleCell) -> WebKey {
+    let mut comparable = cell.clone();
+    comparable.smart_url = resolved_smart_config(cell);
+    crate::core::smart_url::web_cell_key(display_id, layout_id, &comparable)
 }
 
 fn web_event_meta(
@@ -3459,6 +3393,7 @@ fn ensure_web(
     server_url: &str,
     kiosk_key: &str,
     local_storage: Option<&std::collections::HashMap<String, String>>,
+    smart_config: Option<&crate::bundle::SmartUrlConfig>,
     event_meta: Option<WebEventMeta>,
 ) -> webkit6::WebView {
     let cached = WARM_WEBVIEWS.with(|m| m.borrow().get(&key).map(|e| e.webview.clone()));
@@ -3557,6 +3492,8 @@ fn ensure_web(
         }
     }
 
+    let smart_url = smart_config.and_then(|config| smart_url::install(&wv, config.clone(), server_url, kiosk_key));
+
     match source {
         WebSource::Html(html) => {
             webkit6::prelude::WebViewExt::load_html(&wv, html, None);
@@ -3569,6 +3506,7 @@ fn ensure_web(
         m.borrow_mut().insert(
             key.clone(),
             WebEntry {
+                smart_url,
                 webview: wv.clone(),
                 state: WarmthState::Warm,
                 cooling_until: None,
@@ -3982,28 +3920,33 @@ mod display_tests {
 /// Walk an arbitrary layout's web/html cells and add their pool keys to `out`.
 /// Mirrors `cell_keys` for cameras.
 fn web_keys_for_layout(
+    display_id: &str,
     layout: &crate::bundle::BundleLayout,
     out: &mut std::collections::HashSet<WebKey>,
 ) {
     for cell in &layout.cells {
-        match cell.content_type.as_str() {
-            "web" => {
-                if let Some(url) = cell.web_url.as_deref() {
-                    let url = url.trim();
-                    if !url.is_empty() {
-                        out.insert(format!("web:{url}"));
-                    }
-                }
-            }
-            "html" => {
-                if let Some(html) = cell.html_content.as_deref() {
-                    if !html.trim().is_empty() {
-                        out.insert(html_key(html));
-                    }
-                }
-            }
-            _ => {}
+        let has_content = match cell.content_type.as_str() {
+            "web" => cell.web_url.as_deref().is_some_and(|url| !url.trim().is_empty()),
+            "html" => cell.html_content.as_deref().is_some_and(|html| !html.trim().is_empty()),
+            _ => false,
+        };
+        if has_content {
+            out.insert(web_cell_key(display_id, &layout.id, cell));
         }
+    }
+}
+
+/// A removed/edited auth configuration must stop even on a hidden page.
+fn purge_obsolete_webviews(valid: &std::collections::HashSet<WebKey>) {
+    let removed = WARM_WEBVIEWS.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        let keys: Vec<_> = pool.keys().filter(|key| !valid.contains(*key)).cloned().collect();
+        keys.into_iter().filter_map(|key| pool.remove(&key)).collect::<Vec<_>>()
+    });
+    for entry in removed {
+        if let Some(controller) = &entry.smart_url { controller.stop(); }
+        if entry.webview.parent().is_some() { entry.webview.unparent(); }
+        webkit6::prelude::WebViewExt::stop_loading(&entry.webview);
     }
 }
 

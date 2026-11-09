@@ -248,6 +248,7 @@ def CDLL(name):
         self.assertNotEqual(self.shell('DISTRO_ID=arch; DISTRO_LIKE=; select_packages', check=False).returncode, 0)
 
     def test_webkit_apparmor_only_loads_for_restricted_hosts(self):
+        installed_binary = self.shell('printf "%s" "$BIN"').stdout
         for state in ['missing', '0', '1', 'load-failure']:
             with self.subTest(state=state), tempfile.TemporaryDirectory() as tmp:
                 p = Path(tmp)
@@ -272,7 +273,8 @@ def CDLL(name):
                     self.assertFalse((p/'loaded').exists())
                 else:
                     self.assertEqual((p/'destination').read_text().strip(), '/etc/apparmor.d/betterframe 644 root root')
-                    self.assertIn('/opt/betterframe/kiosk/betterframe-kiosk flags=(unconfined)', (p/'profile').read_text())
+                    # The profile must follow the installer's actual executable path.
+                    self.assertIn(f'profile betterframe {installed_binary} flags=(unconfined)', (p/'profile').read_text())
                     self.assertEqual((p/'loaded').read_text().strip(), '-r /etc/apparmor.d/betterframe')
                     if state == 'load-failure':
                         self.assertNotEqual(result.returncode, 0)

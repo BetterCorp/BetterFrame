@@ -144,14 +144,30 @@ Ubuntu 24.04), setup installs and loads `/etc/apparmor.d/betterframe` for
 its user namespace when a layout renders web or HTML content. WebKit sandboxing
 and the host's global AppArmor settings stay enabled.
 
+The exception is attached to the executable path, not to verified executable
+contents. The runtime user owns both the executable and its directory so app
+updates can replace it atomically. That user can therefore replace the profiled
+binary and run arbitrary code with `userns` permission. Treat the runtime account
+as trusted for this capability; the global restriction remains enabled.
+
 If an older installation crashes on layout assignment with `bwrap: setting up
 uid map: Permission denied`, AppArmor denials for `unprivileged_userns`, and
-`Failed to fully launch dbus-proxy`, rerun the updated installer. Restart
-BetterFrame after loading the profile so the new process receives it. This setup
-repair works with the existing app binary; no app release or reboot is required.
+`Failed to fully launch dbus-proxy`, use the updated installer with the existing
+app binary, reusing the saved installation choices:
+
+```sh
+sudo ./setup.sh --yes --binary /opt/betterframe/kiosk/betterframe-kiosk
+```
+
+This retains the installed app version instead of downloading a BF app release.
+Setup may still download prerequisites and MediaMTX. Restart BetterFrame after
+loading the profile so the new process receives it. No new app release or reboot
+is required.
 
 See the [Ubuntu 24.04 release notes](https://documentation.ubuntu.com/release-notes/24.04/#unprivileged-user-namespace-restrictions)
-for the application-specific `userns` permission.
+for the application-specific `userns` permission, and
+[Ubuntu's explanation of the restriction's limitations](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007)
+for the trade-offs of unconfined profiles.
 
 ## MediaMTX gateway
 

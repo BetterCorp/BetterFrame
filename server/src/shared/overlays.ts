@@ -1,5 +1,6 @@
 import Handlebars from "handlebars";
 import { Script } from "node:vm";
+import { createHash } from "node:crypto";
 
 export interface OverlayTemplate {
   id: string;
@@ -41,12 +42,12 @@ engine.registerHelper("__overlayOutput", (value: unknown) => {
 });
 
 /** Bound synchronous parse/compile/render work, including empty nested loops. */
-function withinTimeLimit<T>(operation: () => T): T {
+function withinTimeLimit<T>(operation: () => T, timeoutMs = OVERLAY_TIMEOUT_MS): T {
   try {
-    return timedOperation.runInNewContext({ operation }, { timeout: OVERLAY_TIMEOUT_MS }) as T;
+    return timedOperation.runInNewContext({ operation }, { timeout: timeoutMs }) as T;
   } catch (cause) {
     if ((cause as { code?: string })?.code === "ERR_SCRIPT_EXECUTION_TIMEOUT") {
-      throw new Error(`Overlay rendering exceeded ${OVERLAY_TIMEOUT_MS} ms`);
+      throw new Error(`Overlay rendering exceeded ${timeoutMs} ms`);
     }
     throw cause;
   }
@@ -80,7 +81,7 @@ export function escapeOverlayAttribute(value: string): string {
 }
 
 /** Identical document for editor preview and playback. The host supplies the sandbox. */
-export function renderOverlay(html: string, data: Record<string, unknown>): string {
+export function renderOverlay(html: string, data: Record<string, unknown>, timeoutMs = OVERLAY_TIMEOUT_MS): string {
   templateInput(html);
   const input = overlayData(data);
   const previousBudget = outputBudget;
@@ -95,9 +96,36 @@ export function renderOverlay(html: string, data: Record<string, unknown>): stri
         compiled.set(html, template);
       }
       return template(input, { allowProtoMethodsByDefault: false, allowProtoPropertiesByDefault: false });
-    });
+    }, timeoutMs);
   } finally { outputBudget = previousBudget; }
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: https:; font-src data: https:; base-uri 'none'; form-action 'none'"><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}*,*::before,*::after{box-sizing:border-box}</style></head><body>${content}</body></html>`;
+}
+
+/** Share a CPU deadline across a bundle and memoize both successful and failed renders. */
+export function createOverlayBatchRenderer(): (html: string, data: Record<string, unknown>) => string {
+  let remainingMs = OVERLAY_TIMEOUT_MS;
+  const results = new Map<string, { content: string } | { error: Error }>();
+  return (html, data) => {
+    const key = createHash("sha256").update(html).update("\0").update(JSON.stringify(data)).digest("hex");
+    const cached = results.get(key);
+    if (cached) {
+      if ("error" in cached) throw cached.error;
+      return cached.content;
+    }
+    if (remainingMs < 1) throw new Error("Bundle overlay rendering budget exhausted");
+    const started = performance.now();
+    try {
+      const content = renderOverlay(html, data, Math.floor(remainingMs));
+      if (results.size >= 32) results.delete(results.keys().next().value!);
+      results.set(key, { content });
+      return content;
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      if (results.size >= 32) results.delete(results.keys().next().value!);
+      results.set(key, { error });
+      throw error;
+    } finally { remainingMs -= performance.now() - started; }
+  };
 }
 
 /** A native WebView must isolate authored HTML too, including injected closing tags. */

@@ -429,3 +429,26 @@ test("entity fullscreen layouts never inherit an originating block overlay", asy
   assert.equal(virtual.cells[0]?.camera_id, "camera");
   assert.equal("overlay_html" in virtual.cells[0]!, false);
 });
+
+
+test("a large layout shares one overlay deadline and still ships its base content", async () => {
+  const { repo, secrets, cells } = fixture();
+  const first = structuredClone(cells[0]!);
+  cells.length = 0;
+  for (let block = 0; block < 64; block++) {
+    const cell = structuredClone(first);
+    cell.id = `block-${block}`;
+    cell.col = block % 8;
+    cell.row = Math.floor(block / 8);
+    (cell.options as Record<string, unknown>)["overlay"] = { template_id: "template", data: { a: Array(1000).fill(0), block } };
+    cells.push(cell);
+  }
+  const withOverlay = { ...repo, getOverlayTemplate: async () => ({ html: "{{#each a}}{{#each ../a}}{{#each ../../a}}{{/each}}{{/each}}{{/each}}" }) };
+  const started = performance.now();
+  const bundle = await generateBundle(withOverlay as never, secrets as never, "viewer", "cluster");
+  assert.ok(performance.now() - started < 1500, "bundle must not spend 100 ms per block rendering overlays");
+  assert.ok(bundle);
+  const layout = bundle.displays[0]!.layouts.find(layout => layout.id === "layout")!;
+  assert.equal(layout.cells.length, 64);
+  assert.ok(layout.cells.every(cell => cell.camera_id === "camera" && cell.overlay_html === undefined));
+});

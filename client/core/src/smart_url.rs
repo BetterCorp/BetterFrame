@@ -133,6 +133,27 @@ mod tests {
     }
 
     #[test]
+    fn overlay_refresh_and_random_storage_order_preserve_browser_identity() {
+        let mut cell = web_cell();
+        cell.local_storage = Some([
+            ("screenId".into(), "id".into()), ("screenToken".into(), "token".into()),
+        ].into_iter().collect());
+        let expected = web_cell_key("display", "layout", &cell);
+        for _ in 0..64 {
+            let mut refreshed = cell.clone();
+            refreshed.overlay_html = Some("new overlay data".into());
+            refreshed.local_storage = Some([
+                ("screenToken".into(), "token".into()), ("screenId".into(), "id".into()),
+            ].into_iter().collect());
+            // settings is a serde_json::Value: object keys already serialize in
+            // canonical order, independently of the input HashMap's seed.
+            assert_eq!(expected, web_cell_key("display", "layout", &refreshed));
+            refreshed.local_storage.as_mut().unwrap().insert("screenToken".into(), "changed".into());
+            assert_ne!(expected, web_cell_key("display", "layout", &refreshed));
+        }
+    }
+
+    #[test]
     fn login_detection_matches_prefixes_instead_of_substrings() {
         let root = "http://192.168.74.4:8123";
         assert!(login_url_matches(

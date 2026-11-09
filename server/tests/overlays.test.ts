@@ -3,7 +3,7 @@ import test from "node:test";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { H3 } from "h3";
-import { renderOverlay, overlayPlaybackDocument, overlayData, EXAMPLE_OVERLAY, EXAMPLE_OVERLAY_DATA } from "../src/shared/overlays.js";
+import { createOverlayBatchRenderer, renderOverlay, overlayPlaybackDocument, overlayData, EXAMPLE_OVERLAY, EXAMPLE_OVERLAY_DATA } from "../src/shared/overlays.js";
 import { OverlayTemplatesPage } from "../src/web-templates/overlay-pages.js";
 import { registerOverlayRoutes } from "../src/plugins/service-admin-http/routes-overlays.js";
 import { getCoordinator, setCoordinator } from "../src/shared/coordinator-registry.js";
@@ -117,6 +117,29 @@ test("Node-RED overlay node sends complete data with tenant-scoped authenticatio
   assert.equal(calls.length, 1);
 });
 
+test("Node-RED overlay errors retain actionable server details and tolerate non-JSON failures", async t => {
+  const original = globalThis.fetch; t.after(() => { globalThis.fetch = original; });
+  let input: any, Constructor: any;
+  require("../../nodered/src/bf-overlay.js")({ nodes: {
+    registerType: (_name: string, value: any) => { Constructor = value; },
+    getNode: () => ({ server_url: "https://bf.test", api_key: "test-key" }),
+    createNode: (node: any) => { node.on = (_event: string, handler: any) => { input = handler; }; node.status = () => {}; },
+  } });
+  new Constructor({ block_id: "block" });
+  for (const [status, body, expected] of [
+    [409, JSON.stringify({ error: "Assign an overlay template to this block first" }), "HTTP 409: Assign an overlay template to this block first"],
+    [422, JSON.stringify({ error: "Overlay data exceeds 32 KiB" }), "HTTP 422: Overlay data exceeds 32 KiB"],
+    [503, "<html>Unavailable</html>", "HTTP 503"],
+    [502, JSON.stringify({ message: "Unavailable" }), "HTTP 502"],
+    [500, JSON.stringify({ error: { message: "Unavailable" } }), "HTTP 500"],
+  ] as const) {
+    globalThis.fetch = (async () => new Response(body, { status })) as typeof fetch;
+    let failure: Error | undefined;
+    await input({ payload: {} }, () => assert.fail("failed update must not be sent"), (error: Error) => { failure = error; });
+    assert.equal(failure?.message, expected);
+  }
+});
+
 test("PostgreSQL overlay migration and repository remain tenant scoped and survive reopening", { skip: !process.env["BF_TEST_PG_URL"] }, async () => {
   const url = process.env["BF_TEST_PG_URL"]!;
   const adapter = new PgAdapter(url);
@@ -178,6 +201,25 @@ test("rendering bounds intermediate output and interrupts empty exponential loop
   assert.ok(performance.now() - started < 2000, "pathological loops must terminate promptly");
   assert.match(renderOverlay("{{name}}", { name: "Recovered" }), /<body>Recovered<\/body>/);
   assert.match(renderOverlay("{{#each a}}{{#each ../a}}{{#each ../../a}}{{/each}}{{/each}}{{/each}}", { a: [] }), /<body><\/body>/);
+});
+
+test("a bundle shares one render deadline, caches failures, and recovers in the next batch", () => {
+  const render = createOverlayBatchRenderer();
+  const pathological = "{{#each a}}{{#each ../a}}{{#each ../../a}}{{/each}}{{/each}}{{/each}}";
+  const data = { a: Array(1000).fill(0), block: 0 };
+  const started = performance.now();
+  let firstError: unknown;
+  try { render(pathological, data); assert.fail("pathological render should fail"); }
+  catch (error) { firstError = error; }
+  assert.match(String(firstError), /rendering exceeded/);
+  assert.throws(() => render(pathological, data), error => error === firstError, "the same failed render must be memoized");
+  for (let block = 1; block < 64; block++) {
+    assert.throws(() => render(pathological, { ...data, block }), /rendering exceeded|budget exhausted/);
+  }
+  assert.ok(performance.now() - started < 1500, "64 independent overlays must share the 100 ms bundle deadline");
+  const fresh = createOverlayBatchRenderer();
+  assert.match(fresh("{{name}}", { name: "Recovered" }), /<body>Recovered<\/body>/);
+  assert.equal(fresh("{{name}}", { name: "Recovered" }), fresh("{{name}}", { name: "Recovered" }));
 });
 
 test("invalid browser submissions preserve drafts and display errors without saving", async () => {

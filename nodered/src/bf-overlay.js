@@ -14,7 +14,11 @@ module.exports = function (RED) {
           method: "POST", headers: adminHeaders(cfg, { "content-type": "application/json" }),
           body: JSON.stringify({ data: msg.payload }), signal: AbortSignal.timeout(10000),
         });
-        if (!response.ok) throw new Error("HTTP " + response.status);
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          const detail = body && typeof body.error === "string" ? body.error : "";
+          throw new Error("HTTP " + response.status + (detail ? ": " + detail : ""));
+        }
         msg.payload = (await response.json()).overlay;
         node.status({ fill: "green", shape: "dot", text: "updated" });
         send(msg); done();

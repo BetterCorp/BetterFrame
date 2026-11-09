@@ -1,4 +1,4 @@
-import { blockOverlay, renderOverlay, overlayPlaybackDocument } from "./overlays.js";
+import { blockOverlay, createOverlayBatchRenderer, overlayPlaybackDocument } from "./overlays.js";
 /**
  * Bundle generation — display-chain routing.
  *
@@ -263,6 +263,7 @@ export async function generateBundle(
   let cameras = [...cameraById.values()].sort((a, b) => a.name.localeCompare(b.name));
   const deviceNames = new Map((await repo.listCameraDevices()).map((device) => [device.id, device.name]));
   const stableEncryptedValues = new Map<string, string>();
+  const renderBundleOverlay = createOverlayBatchRenderer();
 
   function encryptForBundle(plaintext: string, key: string, stableContext: string): string {
     const ciphertext = secrets.encryptForCluster(plaintext, key);
@@ -371,7 +372,7 @@ export async function generateBundle(
         try {
           const overlay = blockOverlay(c.options);
           const template = overlay ? await repo.getOverlayTemplate(overlay.template_id) : null;
-          if (template && overlay) overlayHtml = overlayPlaybackDocument(renderOverlay(template.html, overlay.data));
+          if (template && overlay) overlayHtml = overlayPlaybackDocument(renderBundleOverlay(template.html, overlay.data));
         } catch (cause) {
           span?.log.warn("overlay unavailable for block {id}: {message}", {
             id: c.id, message: cause instanceof Error ? cause.message : String(cause),

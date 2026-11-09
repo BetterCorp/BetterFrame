@@ -330,8 +330,9 @@ betterframe/
 - Browser regression: `TSX_TSCONFIG_PATH=server/tsconfig.test.json node --import tsx scripts/test-overlay-preview.mjs` after `npx playwright install chromium`. Optional `BF_CHROMIUM_PATH` selects an existing Chromium executable.
 
 ### Overlay review hardening (2026-11-09)
-- Render/compile operations have a 100 ms VM deadline; the Handlebars buffer compiler checks a 512 KiB budget before appending fragments, including intermediate loop output. Compiled templates have a bounded 32-entry cache.
+- Render/compile operations have a 100 ms VM deadline; the Handlebars buffer compiler checks a 512 KiB budget before appending fragments, including intermediate loop output. Compiled templates have a bounded 32-entry cache. Bundle generation shares one 100 ms budget across all overlays and memoizes successful/failed renders in a bounded cache.
 - Windows web content keys order local storage with BTreeMap. Linux reorders already-parented children without unrealizing WebKit layers.
 - Guard all overlay decoding/lookup/rendering during bundle generation. Invalid stored data remains editable; HTML/htmx validation failures preserve the submitted draft, while API errors stay JSON.
 - The fixture-only GTK CI step disables WebKit's sandbox because hosted Ubuntu blocks its user namespace. Production sandbox configuration is unchanged.
 - Block overlays clear with an operator display and never transfer into unbound entity/camera fullscreen views. The cached block configuration remains intact for restore.
+- Android base pages and overlay browsers share the same 32-WebView limit, with base pages taking priority. Release displaced overlays before allocating new base browsers.

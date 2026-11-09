@@ -412,7 +412,9 @@ test("entity fullscreen layouts never inherit an originating block overlay", asy
   const { repo, secrets, cells } = fixture();
   const first = cells[0]!;
   (first.options as Record<string, unknown>)["overlay"] = { template_id: "template", data: { name: "First block" } };
-  const second = { ...first, id: "second-block", col: 2, options: { ...first.options } };
+  const second = structuredClone(first);
+  second.id = "second-block";
+  second.col = 2;
   (second.options as Record<string, unknown>)["overlay"] = { template_id: "template", data: { name: "Second block" } };
   cells.push(second);
   const withOverlay = { ...repo, getOverlayTemplate: async () => ({ html: "<b>{{name}}</b>" }) };

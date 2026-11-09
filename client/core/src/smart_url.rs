@@ -62,6 +62,7 @@ pub struct SmartUrlProgress {
 }
 
 impl SmartUrlProgress {
+    /// Invalidate the old document's callbacks while preserving the step cursor.
     pub fn load_started(&mut self) {
         // Progress lives outside the document. A redirect invalidates callbacks
         // from the old document, but never starts the sequence over.
@@ -69,6 +70,10 @@ impl SmartUrlProgress {
         self.busy = false;
     }
 
+    /// Start an eligible auth attempt only on a matching login URL.
+    /// `now` is monotonic elapsed time from the same origin used for completion
+    /// and failure. Active attempts stay intact; terminal attempts wait for the
+    /// cooldown unless a settled authenticated page has armed a new login.
     pub fn observe_url(&mut self, current_url: &str, prefix: Option<&str>, now: Duration) {
         let at_login = prefix.is_some_and(|prefix| login_url_matches(current_url, prefix));
         let running = self.triggered && !self.complete && !self.failed;
@@ -97,14 +102,18 @@ impl SmartUrlProgress {
         }
     }
 
+    /// Report successful completion only while the controller remains active.
     pub fn is_complete(&self) -> bool {
         self.complete && !self.failed && !self.cancelled
     }
 
+    /// Identify the attempt/document generation used to reject stale callbacks.
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
+    /// Claim one step and its generation, preventing concurrent execution.
+    /// Reaching the end marks completion and starts the cooldown at `now`.
     pub fn take_step(&mut self, count: usize, now: Duration) -> Option<(usize, u64)> {
         if self.cancelled || !self.triggered || self.busy || self.complete || self.failed {
             return None;
@@ -120,6 +129,8 @@ impl SmartUrlProgress {
         Some((index, self.generation))
     }
 
+    /// Accept a result only for the currently claimed generation.
+    /// Failure ends the attempt and starts its cooldown at monotonic `now`.
     pub fn finish_step(&mut self, generation: u64, success: bool, now: Duration) -> bool {
         if generation != self.generation || !self.busy {
             return false;
@@ -131,6 +142,7 @@ impl SmartUrlProgress {
         success
     }
 
+    /// End a failed attempt and set its earliest retry time after the cooldown.
     pub fn fail(&mut self, now: Duration) {
         self.failed = true;
         self.busy = false;
@@ -144,6 +156,7 @@ impl SmartUrlProgress {
         self.generation += 1;
     }
 
+    /// Report permanent disposal so periodic polling can stop.
     pub fn is_cancelled(&self) -> bool {
         self.cancelled
     }
@@ -238,6 +251,7 @@ mod tests {
         assert_eq!(run.take_step(3, Duration::ZERO).unwrap().0, 1);
     }
 
+    /// Verify that transient redirect URLs cannot rearm a completed attempt.
     #[test]
     fn completed_sequence_does_not_restart_during_redirects() {
         let mut run = SmartUrlProgress::default();

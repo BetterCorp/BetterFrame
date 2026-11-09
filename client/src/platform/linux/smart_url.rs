@@ -19,6 +19,7 @@ struct Runner {
 pub(super) struct Controller(Rc<Runner>);
 
 impl Controller {
+    /// Permanently cancel this view's auth flow, including delayed callbacks.
     pub(super) fn stop(&self) {
         self.0.progress.borrow_mut().cancel();
     }
@@ -110,6 +111,8 @@ pub(super) fn install(
     Some(controller)
 }
 
+/// Recheck a loaded view after navigation, mapping, or a periodic timer.
+/// Loading and disposed views are skipped; an eligible flow advances one step.
 fn check_url(webview: &webkit6::WebView, runner: &Rc<Runner>) {
     if webview.is_loading() || runner.progress.borrow().is_cancelled() {
         return;
@@ -118,6 +121,7 @@ fn check_url(webview: &webkit6::WebView, runner: &Rc<Runner>) {
     drive(webview, runner);
 }
 
+/// Feed the current page URL and the runner's monotonic elapsed time into auth state.
 fn observe_url(webview: &webkit6::WebView, runner: &Runner) {
     if let Some(url) = webview.uri() {
         runner.progress.borrow_mut().observe_url(
@@ -128,6 +132,8 @@ fn observe_url(webview: &webkit6::WebView, runner: &Runner) {
     }
 }
 
+/// Arm a future login transition after a completed non-login page stays settled.
+/// The delayed confirmation requires the same URL and document generation.
 fn confirm_settled_page(webview: &webkit6::WebView, runner: &Rc<Runner>) {
     if !runner.progress.borrow().is_complete() {
         return;
@@ -156,6 +162,8 @@ fn confirm_settled_page(webview: &webkit6::WebView, runner: &Rc<Runner>) {
     });
 }
 
+/// Dispatch at most one eligible step, then wait for its callback or navigation.
+/// Completion and failure use the same monotonic clock as periodic auth checks.
 fn drive(webview: &webkit6::WebView, runner: &Rc<Runner>) {
     if webview.is_loading() {
         return;
@@ -428,6 +436,7 @@ mod tests {
         wait_with_timeout(Duration::from_secs(20), ready);
     }
 
+    /// Pump GTK while waiting for a browser condition, bounded by `timeout`.
     fn wait_with_timeout(timeout: Duration, mut ready: impl FnMut() -> bool) {
         let deadline = Instant::now() + timeout;
         while !ready() && Instant::now() < deadline {
@@ -437,6 +446,7 @@ mod tests {
         pump(Duration::from_millis(250));
     }
 
+    /// Execute a fixture script and wait for its result without reloading the view.
     fn evaluate(webview: &webkit6::WebView, script: &str) {
         let result = Rc::new(RefCell::new(None));
         let output = result.clone();
@@ -477,6 +487,8 @@ mod tests {
         (key, wv)
     }
 
+    /// Exercise redirects, cached-view activation, periodic retries, and disposal
+    /// in real WebKit views. Requires a display; CI runs this test under Xvfb.
     #[test]
     #[ignore = "requires an X/Wayland display and WebKit subprocesses; run with xvfb-run"]
     fn smart_url_browser_regression() {

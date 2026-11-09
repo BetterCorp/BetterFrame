@@ -8,3 +8,4 @@ pub mod state;
 pub mod version;
 
 pub mod update_policy;
+pub mod smart_url;

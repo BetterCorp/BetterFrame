@@ -270,6 +270,23 @@ export async function generateBundle(
     return ciphertext;
   }
 
+  function entitySmartUrl(ent: Entity): BundleCell["smart_url"] {
+    const raw = ent.type === "web" ? ent.smart_url_json : null;
+    if (!raw?.steps.length || viewer) return undefined;
+    return {
+      ...raw,
+      steps: raw.steps.map((source) => {
+        const step = { ...source };
+        const key = kioskEncryptKey ?? clusterKey;
+        if (step.value != null && step.type === "fill" && key) {
+          step.value_encrypted = encryptForBundle(step.value, key, `smart-url:entity:${ent.id}:${String(step.selector ?? "")}`);
+          delete step.value;
+        }
+        return step;
+      }),
+    };
+  }
+
   async function resolveEntityContent(ent: Entity): Promise<{
     contentType: CellContentType;
     cameraId: string | null;
@@ -331,6 +348,7 @@ export async function generateBundle(
         let contentType = c.content_type;
         let cellLocalStorage: Record<string, string> | undefined;
         let cellInputOptions: Record<string, unknown> | undefined = c.input_options_json;
+        let cellSmartUrl: BundleCell["smart_url"];
         let cameraId = c.camera_id;
         let webUrl = c.web_url;
         let htmlContent = c.html_content;
@@ -343,6 +361,7 @@ export async function generateBundle(
             webUrl = resolved.webUrl;
             htmlContent = resolved.htmlContent;
             cellLocalStorage = resolved.localStorage;
+            cellSmartUrl = entitySmartUrl(ent);
             cellInputOptions = Object.keys(ent.input_options_json ?? {}).length > 0
               ? ent.input_options_json
               : cellInputOptions;
@@ -373,26 +392,8 @@ export async function generateBundle(
           html_content: htmlContent,
           cooling_timeout_seconds: c.cooling_timeout_seconds,
           fit: c.fit,
-          // Smart URL: encrypted credentials use per-kiosk key so each
-          // kiosk's bundle has uniquely encrypted values.
-          smart_url: viewer && c.options?.["smart_url"] ? { steps: [] } : c.options?.["smart_url"] ? (() => {
-            const raw = c.options["smart_url"] as any;
-            const steps = Array.isArray(raw.steps) ? raw.steps.map((s: any) => {
-              const step = { ...s };
-              // Encrypt plaintext values with per-kiosk key for transport.
-              const ek = kioskEncryptKey ?? clusterKey;
-              if (step.value && step.type === "fill" && ek) {
-                step.value_encrypted = encryptForBundle(step.value, ek, `smart-url:${c.id}:${String(step.selector ?? "")}`);
-                delete step.value;
-              }
-              return step;
-            }) : [];
-            return {
-              steps,
-              login_detect_url: raw.login_detect_url,
-              session_check_interval_ms: raw.session_check_interval_ms,
-            };
-          })() : undefined,
+          // Blocks cannot override entity authentication.
+          smart_url: cellSmartUrl,
           local_storage: cellLocalStorage,
           input_options: cellInputOptions,
         };
@@ -473,6 +474,7 @@ export async function generateBundle(
           html_content: resolved.htmlContent,
           cooling_timeout_seconds: null,
           fit: "contain",
+          smart_url: entitySmartUrl(ent),
           local_storage: resolved.localStorage,
           input_options: viewer ? undefined : ent.input_options_json,
         }],

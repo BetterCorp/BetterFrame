@@ -1,3 +1,4 @@
+import { smartUrlFormDraft } from "../shared/smart-url.js";
 import { effectiveFirmwareChannel, kioskDebugEnabled, kioskDebugRequirement } from "../shared/kiosk-channels.js";
 /**
  * Admin page templates: overview, cameras, kiosks, account, etc.
@@ -1121,6 +1122,41 @@ function entityFormScript(rootId: string): string {
   );
 }
 
+function SmartUrlEditor({ config }: { config?: import("../schemas/wire/smart-url.js").SmartUrlConfig | null }) {
+  return (
+        <div class="form-group" id="smart-url-entity">
+          <label style="font-weight:600">Smart URL Steps</label>
+          <div style="font-size:0.7rem;color:#666;margin-bottom:0.5rem">
+            Run only when this entity redirects to the login URL prefix. Leave steps empty for manual login.
+          </div>
+          <div id="steps-entity">
+            {(config?.steps ?? []).map((step, idx: number) => (
+              <div style="display:grid;grid-template-columns:100px 1fr auto;gap:4px;margin-bottom:4px;align-items:center">
+                <select name={`step_${idx}_type`} class="form-input" style="font-size:0.75rem">
+                  {["navigate","fill","click","wait","wait_for","javascript"].map((t) => (
+                    <option value={t} selected={step.type === t}>{t}</option>
+                  ))}
+                </select>
+                <input name={`step_${idx}_value`} type="text" class="form-input" style="font-size:0.75rem"
+                  placeholder={step.type === "navigate" ? "URL" : step.type === "fill" ? "selector=value" : step.type === "click" ? "CSS selector" : step.type === "wait" ? "ms" : step.type === "javascript" ? "JS code" : "selector"}
+                  value={step.type === "fill" ? `${step.selector ?? ""}=${step.value ?? ""}` : step.url ?? step.selector ?? step.script ?? (step.delay_ms != null ? String(step.delay_ms) : "")} />
+                <button type="button" class="btn btn-sm btn-danger" style="padding:2px 6px"
+                  onclick={`this.closest('div').remove()`}>x</button>
+              </div>
+            ))}
+          </div>
+          <button type="button" class="btn btn-sm btn-ghost" style="font-size:0.75rem"
+            onclick={`var d=document.createElement('div');d.style='display:grid;grid-template-columns:100px 1fr auto;gap:4px;margin-bottom:4px;align-items:center';var n=Array.from(document.querySelectorAll('#steps-entity select')).reduce(function(m,s){return Math.max(m,Number(s.name.split('_')[1])+1)},0);d.innerHTML='<select name=\"step_'+n+'_type\" class=\"form-input\" style=\"font-size:0.75rem\"><option value=\"navigate\">navigate</option><option value=\"fill\">fill</option><option value=\"click\">click</option><option value=\"wait\">wait</option><option value=\"wait_for\">wait_for</option><option value=\"javascript\">javascript</option></select><input name=\"step_'+n+'_value\" type=\"text\" class=\"form-input\" style=\"font-size:0.75rem\" placeholder=\"value\"><button type=\"button\" class=\"btn btn-sm btn-danger\" style=\"padding:2px 6px\" onclick=\"this.closest(\\'div\\').remove()\">x</button>';document.getElementById('steps-entity').appendChild(d)`}
+          >+ Add Step</button>
+          <div style="margin-top:0.5rem">
+            <label style="font-size:0.7rem">Login URL prefix (run authentication steps when the path starts with this)</label>
+            <input name="smart_url_login_detect" type="text" class="form-input" style="font-size:0.75rem"
+              value={config?.login_detect_url ?? ""} placeholder="e.g. /auth or https://example.com/login" />
+          </div>
+        </div>
+  );
+}
+
 export function EntityNewPage(props: EntityNewPageProps) {
   const v = props.values ?? {};
   const selType = v["type"] ?? "html";
@@ -1169,6 +1205,7 @@ export function EntityNewPage(props: EntityNewPageProps) {
               <label for="web_url">URL</label>
               <input id="web_url" name="web_url" type="url" class="form-input" placeholder="https://example.com" value={v["web_url"] ?? ""} />
             </div>
+            <SmartUrlEditor config={smartUrlFormDraft(v)} />
           </div>
 
           <div class="ent-fields-html" style={selType === "html" ? "" : "display:none"}>
@@ -1193,6 +1230,8 @@ interface EntityEditPageProps {
   cameras: Camera[];
   error?: string;
   success?: string;
+  values?: Record<string, string>;
+  legacySmartUrls?: import("../schemas/wire/smart-url.js").SmartUrlConfig[];
 }
 
 export function EntityEditPage(props: EntityEditPageProps) {
@@ -1265,7 +1304,15 @@ export function EntityEditPage(props: EntityEditPageProps) {
             {e.type === "web" && (
               <div class="form-group">
                 <label for="web_url">URL</label>
-                <input id="web_url" name="web_url" type="url" class="form-input" value={e.web_url ?? ""} />
+                <input id="web_url" name="web_url" type="url" class="form-input" value={props.values?.["web_url"] ?? e.web_url ?? ""} />
+                <SmartUrlEditor config={props.values ? smartUrlFormDraft(props.values) : e.smart_url_json} />
+                {(props.legacySmartUrls?.length ?? 0) > 1 && (
+                  <details class="form-hint">
+                    <summary>Review previous block authentication settings</summary>
+                    <p>This entity had different authentication settings in its blocks. Set one configuration above. Previous block settings are no longer applied.</p>
+                    {props.legacySmartUrls!.map((config) => <pre>{JSON.stringify(config, null, 2)}</pre>)}
+                  </details>
+                )}
               </div>
             )}
             {e.type === "html" && (
@@ -3244,36 +3291,9 @@ export function renderCellSidebar(
           </select>
         </div>
 
-        <div class="form-group" id={`smart-url-${String(c.id)}`}>
-          <label style="font-weight:600">Smart URL Steps</label>
-          <div style="font-size:0.7rem;color:#666;margin-bottom:0.5rem">
-            Auto-login / navigate sequences. Leave empty for direct URL load.
-          </div>
-          <div id={`steps-${String(c.id)}`}>
-            {((c.options?.["smart_url"] as any)?.steps ?? []).map((step: any, idx: number) => (
-              <div style="display:grid;grid-template-columns:100px 1fr auto;gap:4px;margin-bottom:4px;align-items:center">
-                <select name={`step_${idx}_type`} class="form-input" style="font-size:0.75rem">
-                  {["navigate","fill","click","wait","wait_for","javascript"].map((t) => (
-                    <option value={t} selected={step.type === t}>{t}</option>
-                  ))}
-                </select>
-                <input name={`step_${idx}_value`} type="text" class="form-input" style="font-size:0.75rem"
-                  placeholder={step.type === "navigate" ? "URL" : step.type === "fill" ? "selector=value" : step.type === "click" ? "CSS selector" : step.type === "wait" ? "ms" : step.type === "javascript" ? "JS code" : "selector"}
-                  value={step.type === "fill" ? `${step.selector ?? ""}=${step.value ?? ""}` : step.url ?? step.selector ?? step.script ?? (step.delay_ms != null ? String(step.delay_ms) : "")} />
-                <button type="button" class="btn btn-sm btn-danger" style="padding:2px 6px"
-                  onclick={`this.closest('div').remove()`}>x</button>
-              </div>
-            ))}
-          </div>
-          <button type="button" class="btn btn-sm btn-ghost" style="font-size:0.75rem"
-            onclick={`var d=document.createElement('div');d.style='display:grid;grid-template-columns:100px 1fr auto;gap:4px;margin-bottom:4px;align-items:center';var n=document.querySelectorAll('#steps-${String(c.id)} > div').length;d.innerHTML='<select name=\"step_'+n+'_type\" class=\"form-input\" style=\"font-size:0.75rem\"><option value=\"navigate\">navigate</option><option value=\"fill\">fill</option><option value=\"click\">click</option><option value=\"wait\">wait</option><option value=\"wait_for\">wait_for</option><option value=\"javascript\">javascript</option></select><input name=\"step_'+n+'_value\" type=\"text\" class=\"form-input\" style=\"font-size:0.75rem\" placeholder=\"value\"><button type=\"button\" class=\"btn btn-sm btn-danger\" style=\"padding:2px 6px\" onclick=\"this.closest(\\'div\\').remove()\">x</button>';document.getElementById('steps-${String(c.id)}').appendChild(d)`}
-          >+ Add Step</button>
-          <div style="margin-top:0.5rem">
-            <label style="font-size:0.7rem">Login detect URL (re-run steps when redirected here)</label>
-            <input name="smart_url_login_detect" type="text" class="form-input" style="font-size:0.75rem"
-              value={(c.options?.["smart_url"] as any)?.login_detect_url ?? ""} placeholder="e.g. /login" />
-          </div>
-        </div>
+        {c.entity_id != null && entityById.get(c.entity_id)?.type === "web" && (
+          <div class="form-hint">Authentication is configured on the <a href={`/admin/entities/${c.entity_id}`}>web entity</a>.</div>
+        )}
 
         <div class="form-group span-grid">
           <div>

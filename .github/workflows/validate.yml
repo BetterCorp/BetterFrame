@@ -88,6 +88,12 @@ jobs:
           WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
           GTK_A11Y: none
         run: xvfb-run -a dbus-run-session -- cargo run --manifest-path client/Cargo.toml -- --test-overlays
+      - name: Smart URL browser regressions
+        env:
+          GDK_BACKEND: x11
+          # Hosted runners block bubblewrap UID maps. This test loads only its localhost fixture.
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
+        run: xvfb-run -a dbus-run-session -- cargo test --manifest-path client/Cargo.toml --bin betterframe-client smart_url_browser_regression -- --ignored --test-threads=1
       - name: Preserved display metadata and fullscreen refresh
         run: xvfb-run -a dbus-run-session -- cargo test --manifest-path client/Cargo.toml display_refresh_updates -- --ignored --test-threads=1
       - name: Layout animation cleanup without frame ticks

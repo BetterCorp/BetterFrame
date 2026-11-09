@@ -2943,6 +2943,13 @@ export class Repository {
     return rs.map((r) => rowToEntity(r as Record<string, unknown>));
   }
 
+  /** Preserved legacy variants are shown for recovery, never used by playback. */
+  async legacyEntitySmartUrls(id: string): Promise<NonNullable<Entity["smart_url_json"]>[]> {
+    const rows = await this._all(`SELECT DISTINCT options->'smart_url' AS config FROM layout_cells
+      WHERE entity_id = ? AND jsonb_typeof(options->'smart_url') = 'object'`, [id]);
+    return rows.map((row) => row["config"] as NonNullable<Entity["smart_url_json"]>);
+  }
+
   async getEntityById(id: string): Promise<Entity | null> {
     const r = await this._get("SELECT * FROM entities WHERE id = ?", [id]);
     return r ? rowToEntity(r as Record<string, unknown>) : null;
@@ -2971,11 +2978,12 @@ export class Repository {
     dashboard_id?: string | null;
     ablesign_screen_id?: string | null;
     managed?: boolean;
+    smart_url_json?: Entity["smart_url_json"];
   }): Promise<Entity> {
     const id = uuidv7();
     await this._run(
-      `INSERT INTO entities (id, name, type, description, camera_id, html_content, web_url, dashboard_id, ablesign_screen_id, managed)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO entities (id, name, type, description, camera_id, html_content, web_url, dashboard_id, ablesign_screen_id, managed, smart_url_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.name,
@@ -2987,6 +2995,7 @@ export class Repository {
         input.type === "dashboard" ? (input.dashboard_id ?? null) : null,
         input.type === "ablesign" ? (input.ablesign_screen_id ?? null) : null,
         input.managed ?? false,
+        input.type === "web" ? J(input.smart_url_json ?? null) : null,
       ],
     );
     void this.notify("entities", "create", id);
@@ -3014,13 +3023,14 @@ export class Repository {
       web_url?: string | null;
       dashboard_id?: string | null;
       input_options_json?: Record<string, unknown>;
+      smart_url_json?: Entity["smart_url_json"];
     },
   ): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
       sets.push(`${k} = ?`);
-      vals.push(k === "input_options_json" ? J(v ?? {}) : v === undefined ? null : v);
+      vals.push(k === "input_options_json" ? J(v ?? {}) : k === "smart_url_json" ? J(v ?? null) : v === undefined ? null : v);
     }
     if (sets.length === 0) return;
     vals.push(id);

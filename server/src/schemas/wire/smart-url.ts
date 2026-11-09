@@ -1,14 +1,14 @@
 /**
  * Smart URL action steps — automated browser sequences for web cells.
  *
- * When a web cell has smart_url_steps in its options, the kiosk's WebKit
- * executes each step in order before displaying the final page. Use cases:
+ * Web entities own authentication steps. Layout blocks inherit them without
+ * overrides. The kiosk runs them only on a matching login URL prefix. Use cases:
  *   - Login to a dashboard (navigate → fill form → click → wait → navigate)
  *   - Accept cookie banners
  *   - Navigate through multi-step wizards
  *   - Auto-refresh on session expiry (detect redirect → re-run sequence)
  *
- * Steps are authored in the admin UI's cell editor and delivered via the
+ * Steps are authored in the admin UI's entity editor and delivered via the
  * bundle. Credentials in "fill" steps are encrypted with the per-kiosk
  * encryption key.
  */
@@ -48,8 +48,9 @@ export const smartUrlStep = av.object(
 export const smartUrlConfig = av.object(
   {
     steps: av.array(smartUrlStep),
-    // Re-run the sequence when the page redirects to a login URL.
-    // Substring match on the current URL — if detected, sequence restarts.
+    // Run the sequence only when the page enters a matching login URL.
+    // Prefix match: /auth matches the start of the path; absolute URLs match the full URL.
+    // A new transition into this prefix restarts a completed sequence once.
     login_detect_url: av.optional(av.string().maxLength(2048)),
     // Interval to check for session expiry (ms). 0 = disabled.
     session_check_interval_ms: av.optional(av.int().min(0).max(3600000)),

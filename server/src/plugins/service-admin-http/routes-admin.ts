@@ -1,3 +1,4 @@
+import { parseSmartUrlForm } from "../../shared/smart-url.js";
 import { visibleTenants } from "../../shared/demo.js";
 import { kioskDebugEnabled, kioskDebugRequirement } from "../../shared/kiosk-channels.js";
 /**
@@ -1440,6 +1441,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       if (!webUrl) errors.push("URL required.");
     }
 
+    let smartUrl: import("../../schemas/wire/smart-url.js").SmartUrlConfig | null = null;
+    if (type === "web") {
+      try { smartUrl = parseSmartUrlForm(body ?? {}); }
+      catch (error) { errors.push((error as Error).message); }
+    }
     if (errors.length > 0) {
       return htmlPage(EntityNewPage({
         user: user.username,
@@ -1456,6 +1462,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       camera_id: cameraId,
       html_content: htmlContent,
       web_url: webUrl,
+      smart_url_json: smartUrl,
     });
     notifyKiosks();
     return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
@@ -1470,6 +1477,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       user: user.username,
       entity: ent,
       cameras: await deps.repo.listCameras(),
+      legacySmartUrls: ent.type === "web" && !ent.smart_url_json ? await deps.repo.legacyEntitySmartUrls(id) : [],
     }));
   });
 
@@ -1488,6 +1496,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       html_content?: string | null;
       web_url?: string | null;
       input_options_json?: Record<string, unknown>;
+      smart_url_json?: import("../../schemas/wire/smart-url.js").SmartUrlConfig | null;
     } = {
       name: (body?.["name"] ?? ent.name).trim(),
       description: (body?.["description"] ?? "").trim() || null,
@@ -1499,6 +1508,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       patch.html_content = body?.["html_content"] ?? null;
     } else if (ent.type === "web") {
       patch.web_url = (body?.["web_url"] ?? "").trim() || null;
+      try { patch.smart_url_json = parseSmartUrlForm(body ?? {}); }
+      catch (error) {
+        return htmlPage(EntityEditPage({ user: event.context.user!.username, entity: ent,
+          cameras: await deps.repo.listCameras(), error: (error as Error).message, values: body }));
+      }
     }
     await deps.repo.updateEntity(id, patch);
     notifyKiosks();
@@ -1933,39 +1947,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       }
     }
 
-    // Parse smart URL steps from the step builder form fields.
-    const steps: Array<Record<string, unknown>> = [];
-    for (let i = 0; i < 50; i++) {
-      const stepType = body?.[`step_${i}_type`];
-      const stepValue = body?.[`step_${i}_value`];
-      if (!stepType) break;
-      const step: Record<string, unknown> = { type: stepType };
-      if (stepType === "navigate") step["url"] = stepValue;
-      else if (stepType === "fill" && stepValue?.includes("=")) {
-        const eqIdx = stepValue.indexOf("=");
-        step["selector"] = stepValue.slice(0, eqIdx);
-        step["value"] = stepValue.slice(eqIdx + 1);
-      }
-      else if (stepType === "click" || stepType === "wait_for") step["selector"] = stepValue;
-      else if (stepType === "wait") step["delay_ms"] = Number(stepValue) || 1000;
-      else if (stepType === "javascript") step["script"] = stepValue;
-      steps.push(step);
-    }
-    const loginDetect = (body?.["smart_url_login_detect"] ?? "").trim();
-    const updatedCell = await deps.repo.getLayoutCellById(cellId);
-    if (updatedCell) {
-      const opts = { ...(updatedCell.options ?? {}) };
-      if (steps.length > 0) {
-        opts["smart_url"] = {
-          steps,
-          ...(loginDetect ? { login_detect_url: loginDetect } : {}),
-        };
-      } else {
-        delete opts["smart_url"];
-      }
-      await deps.repo.updateLayoutCell(cellId, { options: JSON.stringify(opts) } as any);
-    }
-
+    // Authentication is owned by the entity. Ignore stale block editor fields.
     notifyKiosks();
 
     if (isHtmxRequest(event)) {

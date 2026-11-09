@@ -61,7 +61,7 @@ test("Android bundle follows resolved assigned camera entities and preserves HTM
   assert.deepEqual(bundle.operator_console.tools, []);
   assert.deepEqual(bundle.gpio_bindings, []);
   assert.deepEqual(bundle.layouts[0]?.preload_camera_ids, []);
-  assert.deepEqual(bundle.layouts[0]?.cells[0]?.smart_url, { steps: [] });
+  assert.equal(bundle.layouts[0]?.cells[0]?.smart_url, undefined);
   assert.equal(bundle.layouts[0]?.cells[2]?.html_content, "<p>Offline</p>");
   assert.deepEqual(bundle.layouts[0]?.cells[3]?.local_storage, { screenId: "screen-identity", screenToken: "signage-token" });
 });

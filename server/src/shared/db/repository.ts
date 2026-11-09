@@ -1,3 +1,4 @@
+import type { OverlayTemplate } from "../overlays.js";
 import type { LogFilters, LogPage, LogSummary } from "../kiosk-log-view.js";
 /**
  * Repository — typed accessor over the DB adapter.
@@ -917,6 +918,27 @@ export class Repository {
   }
 
   // ===========================================================================
+  // Overlay templates are stored inside the active tenant schema.
+  async listOverlayTemplates(): Promise<OverlayTemplate[]> {
+    return this._all<OverlayTemplate>("SELECT * FROM overlay_templates ORDER BY name");
+  }
+
+  async getOverlayTemplate(id: string): Promise<OverlayTemplate | null> {
+    return (await this._get<OverlayTemplate>("SELECT * FROM overlay_templates WHERE id = ?", [id])) ?? null;
+  }
+
+  async saveOverlayTemplate(input: OverlayTemplate): Promise<void> {
+    await this._run(`INSERT INTO overlay_templates (id, name, html, sample_data) VALUES (?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET name = excluded.name, html = excluded.html, sample_data = excluded.sample_data`,
+      [input.id, input.name, input.html, J(input.sample_data)]);
+    void this.notify("overlay_templates", "update", input.id);
+  }
+
+  async deleteOverlayTemplate(id: string): Promise<void> {
+    await this._run("DELETE FROM overlay_templates WHERE id = ?", [id]);
+    void this.notify("overlay_templates", "delete", id);
+  }
+
   // layout cells
   // ===========================================================================
 

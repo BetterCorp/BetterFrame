@@ -292,8 +292,8 @@ and [background activity restrictions](https://developer.android.com/guide/compo
   never paint retry after 90 seconds using network backoff. Visible pages are not
   restarted while caching; browser page completion cannot identify when a
   third-party player has finished downloading its media.
-- Up to 32 visible camera streams and 32 web/HTML/signage cells, within the
-  64-cell layout limit. Fullscreen expansion releases hidden media. Excess cells
+- Up to 32 visible camera streams and 32 browser views (web/HTML/signage and
+  overlays combined), within the 64-cell layout limit. Fullscreen expansion releases hidden media. Excess cells
   display a limit message and can be expanded individually. Tune camera count,
   substream resolution, frame rate and bitrate to the device and page workload;
   32 is the application ceiling, not a guaranteed hardware capacity. Hardware
@@ -309,6 +309,7 @@ and [background activity restrictions](https://developer.android.com/guide/compo
   session-configuration message and can be expanded individually. Compatible
   cells and independent origins can render together. Conflicting or unavailable
   pages do not consume the 32-view budget; later compatible cells fill those slots.
+  Base pages take priority over overlays; overlays use the remaining slots.
   Assigned storage is
   initialized only on its player origin. External top-level navigation/SSO,
   scripted smart-URL login and native JavaScript bridges are unsupported.

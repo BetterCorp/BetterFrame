@@ -1,3 +1,4 @@
+import { blockOverlay, createOverlayBatchRenderer, overlayPlaybackDocument } from "./overlays.js";
 /**
  * Bundle generation — display-chain routing.
  *
@@ -78,6 +79,7 @@ export interface BundleCamera {
 }
 
 export interface BundleCell {
+  overlay_html?: string;
   view_id: string;
   entity_id: string | null;
   row: number;
@@ -261,6 +263,7 @@ export async function generateBundle(
   let cameras = [...cameraById.values()].sort((a, b) => a.name.localeCompare(b.name));
   const deviceNames = new Map((await repo.listCameraDevices()).map((device) => [device.id, device.name]));
   const stableEncryptedValues = new Map<string, string>();
+  const renderBundleOverlay = createOverlayBatchRenderer();
 
   function encryptForBundle(plaintext: string, key: string, stableContext: string): string {
     const ciphertext = secrets.encryptForCluster(plaintext, key);
@@ -365,7 +368,18 @@ export async function generateBundle(
               : cellInputOptions;
           }
         }
+        let overlayHtml: string | undefined;
+        try {
+          const overlay = blockOverlay(c.options);
+          const template = overlay ? await repo.getOverlayTemplate(overlay.template_id) : null;
+          if (template && overlay) overlayHtml = overlayPlaybackDocument(renderBundleOverlay(template.html, overlay.data));
+        } catch (cause) {
+          span?.log.warn("overlay unavailable for block {id}: {message}", {
+            id: c.id, message: cause instanceof Error ? cause.message : String(cause),
+          });
+        }
         const bundleCell: BundleCell = {
+          ...(overlayHtml ? { overlay_html: overlayHtml } : {}),
           view_id: c.id,
           entity_id: c.entity_id,
           row: c.row,
@@ -388,8 +402,9 @@ export async function generateBundle(
         if (c.entity_id != null && !virtualLayouts.has(c.entity_id)) {
           const ent = await repo.getEntityById(c.entity_id);
           if (ent) {
-            // Cell-level click/hold actions (e.g. switch-to-fullscreen) must not
-            // fire again inside the fullscreen layout itself.
+            // Entity fullscreen views have no originating block. Keep block data
+            // and click/hold actions out of their reusable virtual cells.
+            const { overlay_html: _blockOverlay, ...entityCell } = bundleCell;
             const { events: _cellEvents, ...fullscreenInputOptions } =
               (bundleCell.input_options ?? {}) as Record<string, unknown>;
             virtualLayouts.set(c.entity_id, {
@@ -404,7 +419,7 @@ export async function generateBundle(
               resets_idle_timer: true,
               is_default: false,
               cells: [{
-                ...bundleCell,
+                ...entityCell,
                 view_id: `virtual:${ent.id}`,
                 row: 0,
                 col: 0,

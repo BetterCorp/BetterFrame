@@ -31,7 +31,9 @@ test("entity auth persists and legacy migration promotes only agreeing block con
       await repo.createLayoutCell({ layout_id: layout.id, row: 0, col: index, entity_id: index < 2 ? entity.id : conflicting.id, options: { smart_url: config, untouched: true } });
     }
     await repo.adapter.exec("ALTER TABLE entities DROP COLUMN smart_url_json");
-    for (const sql of TENANT_MIGRATIONS.slice(-2)) await repo.adapter.exec(sql);
+    const authMigration = TENANT_MIGRATIONS.findIndex(sql => sql === "ALTER TABLE entities ADD COLUMN IF NOT EXISTS smart_url_json JSONB");
+    assert.ok(authMigration >= 0);
+    for (const sql of TENANT_MIGRATIONS.slice(authMigration, authMigration + 2)) await repo.adapter.exec(sql);
     assert.deepEqual((await repo.getEntityById(entity.id))?.smart_url_json, first);
     assert.equal((await repo.getEntityById(conflicting.id))?.smart_url_json, null);
     assert.equal((await repo.legacyEntitySmartUrls(conflicting.id)).length, 2);

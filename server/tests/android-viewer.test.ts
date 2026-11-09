@@ -362,3 +362,93 @@ test("display dashboard access follows assigned IDs through live tenant paths wi
   assert.equal(displayDashboardRequestAllowed("/dashboard/page1", assigned, []), false);
   assert.equal(displayDashboardRequestAllowed("/dashboard/page1", new Set(), pages), false);
 });
+
+test("assigned overlays ship rendered live data and recover through the cached bundle", async () => {
+  const { repo, secrets, cells } = fixture();
+  const options = cells[0]!.options as Record<string, unknown>;
+  options["overlay"] = { template_id: "template", data: { progress: 12 } };
+  const withOverlay = { ...repo, getOverlayTemplate: async () => ({ id: "template", name: "Printer", html: "<b>{{progress}}</b>", sample_data: { progress: 99 } }) };
+  const first = await generateBundle(withOverlay as never, secrets as never, "viewer", "cluster");
+  assert.ok(first);
+  const overlay = first.layouts[0]?.cells[0]?.overlay_html;
+  assert.ok(overlay);
+  assert.match(overlay, /sandbox=""/);
+  assert.match(overlay, /&lt;b&gt;12&lt;\/b&gt;/);
+  assert.doesNotMatch(overlay, />99</);
+  options["overlay"] = { template_id: "template", data: { progress: 64 } };
+  const second = await generateBundle(withOverlay as never, secrets as never, "viewer", "cluster");
+  assert.notEqual(second?.version, first.version);
+  assert.equal(second?.layouts[0]?.cells[0]?.camera_id, first.layouts[0]?.cells[0]?.camera_id);
+  assert.match(second?.layouts[0]?.cells[0]?.overlay_html ?? "", /&lt;b&gt;64&lt;\/b&gt;/);
+});
+
+test("an overlay rendering failure cannot make the underlying kiosk bundle unavailable", async () => {
+  const { repo, secrets, cells } = fixture();
+  (cells[0]!.options as Record<string, unknown>)["overlay"] = { template_id: "template", data: { active: true } };
+  const withOverlay = { ...repo, getOverlayTemplate: async () => ({ html: "{{#if active}}{{missingHelper value}}{{/if}}", sample_data: { active: false } }) };
+  const bundle = await generateBundle(withOverlay as never, secrets as never, "viewer", "cluster");
+  assert.ok(bundle);
+  assert.equal(bundle.layouts[0]?.cells[0]?.overlay_html, undefined);
+  assert.equal(bundle.layouts[0]?.cells[0]?.camera_id, "camera");
+});
+
+test("stored-data and template-lookup failures omit only the overlay", async () => {
+  for (const failure of ["array", "string", "oversize", "lookup"] as const) {
+    const { repo, secrets, cells } = fixture();
+    const data = failure === "array" ? [] : failure === "string" ? "bad" : failure === "oversize" ? { text: "x".repeat(32769) } : {};
+    (cells[0]!.options as Record<string, unknown>)["overlay"] = { template_id: "template", data };
+    const withOverlay = { ...repo, getOverlayTemplate: async () => {
+      if (failure === "lookup") throw new Error("Template storage unavailable");
+      return { html: "{{progress}}" };
+    } };
+    const bundle = await generateBundle(withOverlay as never, secrets as never, "viewer", "cluster");
+    assert.ok(bundle, failure);
+    assert.equal(bundle.layouts[0]?.cells[0]?.overlay_html, undefined, failure);
+    assert.equal(bundle.layouts[0]?.cells[0]?.camera_id, "camera", failure);
+  }
+});
+
+test("entity fullscreen layouts never inherit an originating block overlay", async () => {
+  const { repo, secrets, cells } = fixture();
+  const first = cells[0]!;
+  (first.options as Record<string, unknown>)["overlay"] = { template_id: "template", data: { name: "First block" } };
+  const second = structuredClone(first);
+  second.id = "second-block";
+  second.col = 2;
+  (second.options as Record<string, unknown>)["overlay"] = { template_id: "template", data: { name: "Second block" } };
+  cells.push(second);
+  const withOverlay = { ...repo, getOverlayTemplate: async () => ({ html: "<b>{{name}}</b>" }) };
+  const bundle = await generateBundle(withOverlay as never, secrets as never, "viewer", "cluster");
+  assert.ok(bundle);
+  const assigned = bundle.displays[0]!.layouts.find(layout => layout.id === "layout")!;
+  assert.match(assigned.cells.find(cell => cell.view_id === "cell")?.overlay_html ?? "", /First block/);
+  assert.match(assigned.cells.find(cell => cell.view_id === "second-block")?.overlay_html ?? "", /Second block/);
+  const virtual = bundle.displays[0]!.layouts.find(layout => layout.id === "entity")!;
+  assert.ok(virtual);
+  assert.equal(virtual.cells[0]?.overlay_html, undefined);
+  assert.equal(virtual.cells[0]?.camera_id, "camera");
+  assert.equal("overlay_html" in virtual.cells[0]!, false);
+});
+
+
+test("a large layout shares one overlay deadline and still ships its base content", async () => {
+  const { repo, secrets, cells } = fixture();
+  const first = structuredClone(cells[0]!);
+  cells.length = 0;
+  for (let block = 0; block < 64; block++) {
+    const cell = structuredClone(first);
+    cell.id = `block-${block}`;
+    cell.col = block % 8;
+    cell.row = Math.floor(block / 8);
+    (cell.options as Record<string, unknown>)["overlay"] = { template_id: "template", data: { a: Array(1000).fill(0), block } };
+    cells.push(cell);
+  }
+  const withOverlay = { ...repo, getOverlayTemplate: async () => ({ html: "{{#each a}}{{#each ../a}}{{#each ../../a}}{{/each}}{{/each}}{{/each}}" }) };
+  const started = performance.now();
+  const bundle = await generateBundle(withOverlay as never, secrets as never, "viewer", "cluster");
+  assert.ok(performance.now() - started < 1500, "bundle must not spend 100 ms per block rendering overlays");
+  assert.ok(bundle);
+  const layout = bundle.displays[0]!.layouts.find(layout => layout.id === "layout")!;
+  assert.equal(layout.cells.length, 64);
+  assert.ok(layout.cells.every(cell => cell.camera_id === "camera" && cell.overlay_html === undefined));
+});

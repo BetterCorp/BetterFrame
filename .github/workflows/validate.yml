@@ -54,6 +54,10 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - name: Overlay preview in Chromium
+        run: |
+          npx playwright install --with-deps chromium
+          TSX_TSCONFIG_PATH=server/tsconfig.test.json node --import tsx scripts/test-overlay-preview.mjs
       - name: Node-RED routing and deployment syntax
         env:
           BF_NODERED_MANAGER_SECRET: 0123456789abcdef0123456789abcdef
@@ -77,6 +81,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwebkitgtk-6.0-dev libssl-dev xvfb xauth dbus-x11
       - run: cargo test --manifest-path client/Cargo.toml --workspace --locked
+      - name: Overlay updates preserve base content
+        # This fixture-only harness loads static local HTML. Hosted Ubuntu runners
+        # block WebKit's user-namespace sandbox; production keeps its sandbox enabled.
+        env:
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
+          GTK_A11Y: none
+        run: xvfb-run -a dbus-run-session -- cargo run --manifest-path client/Cargo.toml -- --test-overlays
       - name: Smart URL browser regressions
         env:
           GDK_BACKEND: x11

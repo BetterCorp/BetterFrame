@@ -464,7 +464,8 @@ class MainActivity : Activity(), ViewerSession.Listener {
             else getString(R.string.empty_layout))
         status.text = lastStatus
         if (cells == null) { releaseTiles(); return }
-        val desired = compatibleWebSessions((0 until cells.length()).map { cells.getJSONObject(it) })
+        val webLimit = value.optInt("maxWebViews", 32).coerceIn(0, 32)
+        val desired = compatibleWebSessions((0 until cells.length()).map { cells.getJSONObject(it) }, webLimit)
         val contentKeys = desired.associate { it.getString("id") to tileContentKey(it) }
         val menuState = ContentMenuState(value.optString("layoutId"), value.optString("expandedCellId"),
             value.optJSONArray("layouts")?.toString().orEmpty(), desired.map { cell ->
@@ -481,9 +482,12 @@ class MainActivity : Activity(), ViewerSession.Listener {
         // Release replaced/hidden resources before allocating a single new decoder or browser.
         tiles.keys.toList().forEach { id ->
             if (contentKeys[id] != tiles[id]?.first) {
-                tiles.remove(id)?.second?.let { it.release(); grid.removeView(it) }
+                tiles.remove(id)?.second?.let { it.releaseOverlay(); it.release(); grid.removeView(it) }
             }
         }
+        // Reclaim overlay slots on retained tiles before creating any new base browsers.
+        val overlayIds = desired.filter { hasOverlay(it) }.map { it.getString("id") }.toSet()
+        tiles.forEach { (id, entry) -> if (id !in overlayIds) entry.second.releaseOverlay() }
         grid.rows = value.optInt("rows", 1).coerceIn(1, 32)
         grid.cols = value.optInt("cols", 1).coerceIn(1, 32)
         grid.gap = value.optInt("gap", 4).coerceIn(0, 32)
@@ -505,7 +509,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
             val kind = cell.optString("kind")
             val allowed = when (kind) {
                 "camera" -> ++cameraCount <= 32
-                "web" -> ++webCount <= 32
+                "web" -> ++webCount <= webLimit
                 else -> true
             }
             val existing = tiles[id]?.second
@@ -520,6 +524,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
                 tiles[id] = contentKeys.getValue(id) to tile
                 grid.addView(tile)
             }
+            tile.updateOverlay(cell.optString("overlayHtml"))
             tile.layoutParams = CellGrid.Params(
                 cell.optInt("row", 0), cell.optInt("col", 0),
                 cell.optInt("rowSpan", 1), cell.optInt("colSpan", 1)
@@ -613,7 +618,7 @@ class MainActivity : Activity(), ViewerSession.Listener {
     private fun releaseTiles() {
         dismissContentDialogs()
         contentMenuState = null
-        tiles.values.forEach { it.second.release() }
+        tiles.values.forEach { it.second.releaseOverlay(); it.second.release() }
         tiles.clear()
         if (::grid.isInitialized) grid.removeAllViews()
     }
@@ -627,15 +632,18 @@ private data class MenuCellState(val id: String, val contentKey: String, val row
 /** Geometry changes resize existing browser/decoder surfaces without restarting content. */
 private fun tileContentKey(cell: JSONObject): String = JSONObject().apply {
     cell.keys().forEach { key ->
-        if (key != "row" && key != "col" && key != "rowSpan" && key != "colSpan") put(key, cell.get(key))
+        if (key != "overlayHtml" && key != "row" && key != "col" && key != "rowSpan" && key != "colSpan") put(key, cell.get(key))
     }
 }.toString()
 
-/** Resolve shared-origin conflicts before assigning the 32 WebViews and reconciling resources. */
-internal fun compatibleWebSessions(cells: List<JSONObject>): List<JSONObject> {
+private fun hasOverlay(cell: JSONObject): Boolean = cell.optString("overlayHtml").let { it.isNotBlank() && it != "null" }
+
+/** Base pages take priority; their overlays share the same total browser budget. */
+internal fun compatibleWebSessions(cells: List<JSONObject>, maxWebViews: Int = 32): List<JSONObject> {
     val sessions = mutableMapOf<String, Map<String, String>>()
+    val limit = maxWebViews.coerceIn(0, 32)
     var webCount = 0
-    return cells.map { cell ->
+    val compatible = cells.map { cell ->
         val web = cell.optJSONObject("web")
         if (cell.optString("kind") != "web" || web == null) return@map cell
         val html = web.optString("html")
@@ -646,7 +654,7 @@ internal fun compatibleWebSessions(cells: List<JSONObject>): List<JSONObject> {
         val message = when {
             origin != null && sessions[origin]?.let { it != assigned } == true ->
                 "Conflicting web session configuration · use a separate display or expand this tile"
-            webCount >= 32 -> "Web content limit reached; expand this tile to view"
+            webCount >= limit -> "Web content limit reached; expand this tile to view"
             else -> null
         }
         if (message == null) {
@@ -657,8 +665,14 @@ internal fun compatibleWebSessions(cells: List<JSONObject>): List<JSONObject> {
             // Compare before reconciliation so changing eligibility replaces the right resources.
             JSONObject(cell.toString()).put("kind", "placeholder")
                 .put("action", JSONObject().put("type", "expand"))
-                .put("message", message)
+                .put("message", message).apply { remove("overlayHtml") }
         }
+    }
+    var overlaySlots = limit - webCount
+    return compatible.map { cell ->
+        if (!hasOverlay(cell)) cell
+        else if (overlaySlots > 0) { overlaySlots--; cell }
+        else JSONObject(cell.toString()).apply { remove("overlayHtml") }
     }
 }
 

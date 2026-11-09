@@ -1061,4 +1061,10 @@ export const TENANT_MIGRATIONS: readonly string[] = [
               AND options->'smart_url' != 'null'::jsonb
             GROUP BY entity_id HAVING COUNT(DISTINCT (options->'smart_url')::text) = 1) legacy
     WHERE e.id = legacy.entity_id AND e.type = 'web' AND e.smart_url_json IS NULL`,
+  `CREATE TABLE overlay_templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    html TEXT NOT NULL,
+    sample_data JSONB NOT NULL DEFAULT '{}'
+  )`,
 ];

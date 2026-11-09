@@ -60,6 +60,7 @@ struct DisplayState {
     web_layer: gtk::Fixed,
     web_positions: Vec<WebCellPos>,
     grid_dims: (u32, u32),
+    overlay_layout: Option<crate::bundle::BundleLayout>,
     focus_overrides: HashMap<String, FocusOverride>,
     fullscreen_override: Option<FocusOverride>,
     display_cleared: bool,
@@ -1863,6 +1864,7 @@ fn render_bundle(
                 web_layer,
                 web_positions: Vec::new(),
                 grid_dims: (1, 1),
+                overlay_layout: None,
                 focus_overrides: HashMap::new(),
                 fullscreen_override: None,
                 display_cleared: false,
@@ -1880,6 +1882,11 @@ fn render_bundle(
     // Now render each display's initial layout.
     for bd in &displays {
         if unchanged_displays.contains(&bd.id) {
+            let active = DISPLAYS.with(|ds| ds.borrow().get(&bd.id).and_then(|st| st.current_layout_id.clone()));
+            if let Some(mut layout) = active.and_then(|id| bd.layouts.iter().find(|l| l.id == id).cloned()) {
+                apply_operator_overrides(&bd.id, &mut layout);
+                sync_block_overlays(&bd.id, &layout);
+            }
             continue;
         }
         let previous = DISPLAYS.with(|ds| {
@@ -2357,7 +2364,35 @@ fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: boo
         }
     });
 
+    sync_block_overlays(display_id, &layout);
     schedule_webview_positions(&display_id_owned);
+}
+
+/// Refresh only transparent overlay documents; leave camera and web tiles mounted.
+fn sync_block_overlays(display_id: &str, layout: &crate::bundle::BundleLayout) {
+    let mut positions = Vec::new();
+    for cell in &layout.cells {
+        let Some(html) = cell.overlay_html.as_deref() else { continue };
+        let key = format!("overlay:{display_id}:{}:{}", layout.id, cell_id(cell));
+        let old_html = DISPLAYS.with(|ds| ds.borrow().get(display_id)
+            .and_then(|st| st.overlay_layout.as_ref())
+            .and_then(|old| old.cells.iter().find(|c| cell_id(c) == cell_id(cell)))
+            .and_then(|c| c.overlay_html.clone()));
+        let wv = ensure_web(key.clone(), WebSource::Html(html), "", "", None, None, None);
+        if old_html.as_deref() != Some(html) {
+            webkit6::prelude::WebViewExt::load_html(&wv, html, None);
+        }
+        positions.push(WebCellPos { key, col: cell.col, row: cell.row,
+            col_span: cell.col_span, row_span: cell.row_span });
+    }
+    DISPLAYS.with(|ds| {
+        if let Some(st) = ds.borrow_mut().get_mut(display_id) {
+            st.web_positions.retain(|p| !p.key.starts_with("overlay:"));
+            st.web_positions.extend(positions);
+            st.overlay_layout = Some(layout.clone());
+        }
+    });
+    schedule_webview_positions(display_id);
 }
 
 fn cell_id(cell: &BundleCell) -> String {
@@ -2400,6 +2435,7 @@ fn apply_operator_overrides(display_id: &str, layout: &mut crate::bundle::Bundle
     };
     if cleared {
         for cell in &mut layout.cells {
+            cell.overlay_html = None;
             cell.content_type = "none".to_string();
             cell.camera_id = None;
         }
@@ -2407,6 +2443,7 @@ fn apply_operator_overrides(display_id: &str, layout: &mut crate::bundle::Bundle
     }
     if let Some(focus) = fullscreen {
         let mut cell = layout.cells.first().cloned().unwrap_or(BundleCell {
+            overlay_html: None,
             view_id: None,
             entity_id: None,
             row: 0,
@@ -2430,6 +2467,8 @@ fn apply_operator_overrides(display_id: &str, layout: &mut crate::bundle::Bundle
         cell.col = 0;
         cell.row_span = 1;
         cell.col_span = 1;
+        // A fullscreen operator camera is unbound to the first layout block.
+        cell.overlay_html = None;
         cell.content_type = "camera".to_string();
         cell.camera_id = Some(focus.camera_id);
         cell.stream_selector = Some(focus.stream);
@@ -3427,13 +3466,19 @@ fn ensure_web(
     };
     wv.set_vexpand(true);
     wv.set_hexpand(true);
+    if key.starts_with("overlay:") {
+        wv.set_can_target(false);
+        if let Some(settings) = webkit6::prelude::WebViewExt::settings(&wv) {
+            settings.set_enable_javascript(false);
+        }
+    }
     #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
     if let Some(settings) = webkit6::prelude::WebViewExt::settings(&wv) {
         settings.set_hardware_acceleration_policy(webkit6::HardwareAccelerationPolicy::Never);
     }
     webkit6::prelude::WebViewExt::set_background_color(
         &wv,
-        &gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 1.0),
+        &gtk::gdk::RGBA::new(0.0, 0.0, 0.0, if key.starts_with("overlay:") { 0.0 } else { 1.0 }),
     );
 
     // Hide the pointer inside every WebKit page. The default GTK CSS cursor:
@@ -3517,6 +3562,108 @@ fn ensure_web(
     });
     info!("warmed webview {key}");
     wv
+}
+
+/// Debug-only integration harness: WebKit must initialize on the process main thread.
+#[cfg(debug_assertions)]
+pub fn test_overlay_refresh() {
+    gtk::init().unwrap();
+    gstreamer::init().unwrap();
+    let app = Application::builder().application_id("cloud.betterframe.OverlayTest").build();
+    app.register(None::<&gtk::gio::Cancellable>).unwrap();
+    let pairing = ApplicationWindow::builder().application(&app).build();
+    let mut layout: crate::bundle::BundleLayout = serde_json::from_value(serde_json::json!({
+        "id":"layout", "name":"Layout", "grid_cols":1, "grid_rows":1,
+        "priority":"normal", "is_default":true, "resets_idle_timer":true,
+        "cells":[{"view_id":"block", "row":0, "col":0, "row_span":1, "col_span":1,
+            "content_type":"html", "html_content":"<p>Base</p>", "overlay_html":"<p>12%</p>"}]
+    })).unwrap();
+    let mut bundle: KioskBundle = serde_json::from_value(serde_json::json!({
+        "kiosk_id":"overlay-test", "kiosk_name":"Overlay test", "version":"1", "cameras":[],
+        "displays":[{"id":"overlay-test", "name":"Overlay display", "width_px":640, "height_px":360,
+            "idle_timeout_seconds":0, "sleep_timeout_seconds":0, "default_layout_id":"layout",
+            "layouts":[layout.clone()]}]
+    })).unwrap();
+    render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "test");
+    let base_key = web_cell_key("overlay-test", "layout", &layout.cells[0]);
+    let base = WARM_WEBVIEWS.with(|pool| pool.borrow()[&base_key].webview.clone());
+    let overlay_key = "overlay:overlay-test:layout:block";
+    let overlay = WARM_WEBVIEWS.with(|pool| pool.borrow()[overlay_key].webview.clone());
+    let unrealized = std::rc::Rc::new(std::cell::Cell::new(0));
+    let observed = unrealized.clone();
+    overlay.connect_unrealize(move |_| observed.set(observed.get() + 1));
+    let window = DISPLAYS.with(|ds| {
+        let ds = ds.borrow();
+        let st = &ds["overlay-test"];
+        st.window.set_default_size(640, 360);
+        st.window.clone()
+    });
+    let context = gtk::glib::MainContext::default();
+    let until = Instant::now() + Duration::from_secs(3);
+    while window.allocated_width() == 0 && Instant::now() < until {
+        if context.pending() { context.iteration(false); }
+        else { std::thread::sleep(Duration::from_millis(5)); }
+    }
+    assert!(apply_webview_positions("overlay-test"));
+    assert!(overlay.is_realized());
+    for _ in 0..5 { assert!(apply_webview_positions("overlay-test")); }
+    assert_eq!(unrealized.get(), 0, "unchanged position passes keep WebKit realized");
+    let extra_key = "html:overlay-test-second".to_string();
+    let extra = ensure_web(extra_key.clone(), WebSource::Html("<p>Second base</p>"), "", "", None, None, None);
+    DISPLAYS.with(|ds| ds.borrow_mut().get_mut("overlay-test").unwrap().web_positions.insert(1,
+        WebCellPos { key:extra_key.clone(), row:0,col:0,row_span:1,col_span:1 }));
+    assert!(apply_webview_positions("overlay-test"));
+    assert_eq!(overlay.prev_sibling(), Some(extra.upcast()));
+    assert_eq!(unrealized.get(), 0, "raising over a new base view keeps WebKit realized");
+    let warm = std::collections::HashSet::from([base_key.clone(), extra_key]);
+    recompute_web_states(&warm, &Default::default(), 0);
+    assert!(WARM_WEBVIEWS.with(|pool| pool.borrow().contains_key(overlay_key)));
+    layout.cells[0].overlay_html = Some("<p>64%</p>".into());
+    bundle.displays[0].layouts[0] = layout.clone();
+    bundle.version = "2".into();
+    render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "test");
+    assert!(apply_webview_positions("overlay-test"));
+    WARM_WEBVIEWS.with(|pool| {
+        assert_eq!(pool.borrow()[overlay_key].webview, overlay);
+        assert_eq!(pool.borrow()[&base_key].webview, base);
+    });
+    assert!(overlay.is_realized());
+    assert_eq!(unrealized.get(), 0, "full bundle refresh must reuse the realized overlay browser");
+    let mut removed = bundle.clone();
+    removed.version = "3".into();
+    removed.displays[0].layouts[0].cells[0].overlay_html = None;
+    render_bundle(&app, &pairing, removed, "http://127.0.0.1:1", "test");
+    WARM_WEBVIEWS.with(|pool| {
+        assert!(!pool.borrow().contains_key(overlay_key), "full refresh removes obsolete overlays");
+        assert_eq!(pool.borrow()[&base_key].webview, base);
+    });
+    render_bundle(&app, &pairing, bundle, "http://127.0.0.1:1", "test");
+    DISPLAYS.with(|ds| ds.borrow_mut().get_mut("overlay-test").unwrap().display_cleared = true);
+    let mut cleared = layout.clone();
+    apply_operator_overrides("overlay-test", &mut cleared);
+    assert!(cleared.cells.iter().all(|cell| cell.content_type == "none" && cell.overlay_html.is_none()));
+    sync_block_overlays("overlay-test", &cleared);
+    recompute_web_states(&warm, &Default::default(), 0);
+    DISPLAYS.with(|ds| {
+        let mut ds = ds.borrow_mut();
+        let st = ds.get_mut("overlay-test").unwrap();
+        st.display_cleared = false;
+        st.fullscreen_override = Some(FocusOverride { camera_id:"other-camera".into(), stream:"main".into(), generation:1 });
+    });
+    let mut fullscreen = layout.clone();
+    apply_operator_overrides("overlay-test", &mut fullscreen);
+    assert_eq!(fullscreen.cells[0].camera_id.as_deref(), Some("other-camera"));
+    assert!(fullscreen.cells[0].overlay_html.is_none());
+    assert!(layout.cells[0].overlay_html.is_some(), "operator overrides must retain configured block data for restore");
+    WARM_WEBVIEWS.with(|pool| {
+        assert!(!pool.borrow().contains_key(overlay_key));
+        assert_eq!(pool.borrow()[&base_key].webview, base);
+    });
+    window.close();
+    pairing.close();
+    DISPLAYS.with(|ds| { ds.borrow_mut().remove("overlay-test"); });
+    WARM_WEBVIEWS.with(|pool| pool.borrow_mut().clear());
+    println!("Overlay refresh keeps existing webviews and cleans removed layers");
 }
 
 #[cfg(test)]
@@ -3635,7 +3782,7 @@ mod display_tests {
         let mut state = DisplayState {
             window: ApplicationWindow::builder().build(), current_layout_id: Some("l".into()),
             last_activity: Instant::now(), is_asleep: false, content_overlay: gtk::Overlay::new(),
-            web_layer: gtk::Fixed::new(), web_positions: Vec::new(), grid_dims: (1,1),
+            web_layer: gtk::Fixed::new(), web_positions: Vec::new(), grid_dims: (1,1), overlay_layout: None,
             focus_overrides: HashMap::new(), fullscreen_override: None,
             display_cleared: false, override_generation: 0,
         };
@@ -3917,14 +4064,17 @@ mod display_tests {
     }
 }
 
-/// Walk an arbitrary layout's web/html cells and add their pool keys to `out`.
-/// Mirrors `cell_keys` for cameras.
+/// Add a layout's base and overlay browser keys before purging obsolete views.
+/// Overlays must survive until the refreshed display synchronizes their data.
 fn web_keys_for_layout(
     display_id: &str,
     layout: &crate::bundle::BundleLayout,
     out: &mut std::collections::HashSet<WebKey>,
 ) {
     for cell in &layout.cells {
+        if cell.overlay_html.is_some() {
+            out.insert(format!("overlay:{display_id}:{}:{}", layout.id, cell_id(cell)));
+        }
         let has_content = match cell.content_type.as_str() {
             "web" => cell.web_url.as_deref().is_some_and(|url| !url.trim().is_empty()),
             "html" => cell.html_content.as_deref().is_some_and(|html| !html.trim().is_empty()),
@@ -3957,10 +4107,17 @@ fn recompute_web_states(
     hot_set: &std::collections::HashSet<WebKey>,
     max_cooling_secs: u32,
 ) {
+    let active_overlays: std::collections::HashSet<WebKey> = DISPLAYS.with(|ds| ds.borrow().values()
+        .flat_map(|st| st.web_positions.iter().filter(|p| p.key.starts_with("overlay:")).map(|p| p.key.clone()))
+        .collect());
     let mut to_remove: Vec<WebKey> = Vec::new();
     WARM_WEBVIEWS.with(|w| {
         let mut warm = w.borrow_mut();
         for (key, entry) in warm.iter_mut() {
+            if key.starts_with("overlay:") {
+                if !active_overlays.contains(key) { to_remove.push(key.clone()); }
+                continue;
+            }
             if hot_set.contains(key) {
                 entry.state = WarmthState::Hot;
                 entry.cooling_until = None;
@@ -4296,6 +4453,7 @@ fn apply_webview_positions(display_id: &str) -> bool {
         WARM_WEBVIEWS.with(|m| {
             let pool = m.borrow();
 
+            let mut previous: Option<gtk::Widget> = None;
             for pos in &st.web_positions {
                 let Some(entry) = pool.get(&pos.key) else {
                     continue;
@@ -4316,6 +4474,12 @@ fn apply_webview_positions(display_id: &str) -> bool {
                     }
                     st.web_layer.put(&entry.webview, x, y);
                 }
+                // Same-parent sibling moves preserve realization and the current
+                // WebKit frame. Positions list base pages before their overlays.
+                if entry.webview.prev_sibling().as_ref() != previous.as_ref() {
+                    entry.webview.insert_after(&st.web_layer, previous.as_ref());
+                }
+                previous = Some(entry.webview.clone().upcast());
                 entry.webview.set_visible(true);
             }
 

@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gtk4::{gio, glib, prelude::*};
 use webkit6::prelude::*;
@@ -13,13 +13,15 @@ struct Runner {
     progress: RefCell<SmartUrlProgress>,
     server_url: String,
     kiosk_key: String,
+    started: Instant,
 }
 
 pub(super) struct Controller(Rc<Runner>);
 
 impl Controller {
+    /// Permanently cancel this view's auth flow, including delayed callbacks.
     pub(super) fn stop(&self) {
-        self.0.progress.borrow_mut().stop();
+        self.0.progress.borrow_mut().cancel();
     }
 }
 
@@ -50,28 +52,39 @@ pub(super) fn install(
         progress: RefCell::new(SmartUrlProgress::default()),
         server_url: server_url.into(),
         kiosk_key: kiosk_key.into(),
+        started: Instant::now(),
     });
     let controller = Controller(runner.clone());
     let state = runner.clone();
     webview.connect_load_changed(move |wv, event| match event {
         webkit6::LoadEvent::Started => state.progress.borrow_mut().load_started(),
-        webkit6::LoadEvent::Finished => {
-            observe_url(wv, &state);
-            drive(wv, &state);
-        }
+        webkit6::LoadEvent::Finished => check_url(wv, &state),
         _ => {}
     });
     let state = runner.clone();
     webview.connect_load_failed(move |_, _, _, error| {
         if !error.matches(webkit6::NetworkError::Cancelled) {
-            state.progress.borrow_mut().stop();
+            state.progress.borrow_mut().fail(state.started.elapsed());
         }
         false
     });
 
+    // A warm view can return to the screen without navigation or another
+    // Finished signal. Defer outside GTK's map signal: the pool may be borrowed.
+    let state = runner.clone();
+    webview.connect_map(move |wv| {
+        let weak = wv.downgrade();
+        let state = state.clone();
+        glib::idle_add_local_once(move || {
+            if let Some(wv) = weak.upgrade() {
+                check_url(&wv, &state);
+            }
+        });
+    });
+
     // Also detect client-side routing/session expiry without a full page load.
-    // One transition into the login prefix permits one retry. Staying on auth
-    // (including changed OAuth query parameters) never loops the automation.
+    // Staying on auth can retry after a cooldown, including failed attempts.
+    // Active sequences and redirect chains never start overlapping attempts.
     let interval = runner.config.session_check_interval_ms.unwrap_or(5000);
     if interval > 0
         && runner
@@ -87,10 +100,10 @@ pub(super) fn install(
                 let Some(wv) = weak.upgrade() else {
                     return glib::ControlFlow::Break;
                 };
-                if !wv.is_loading() {
-                    observe_url(&wv, &runner);
-                    drive(&wv, &runner);
+                if runner.progress.borrow().is_cancelled() {
+                    return glib::ControlFlow::Break;
                 }
+                check_url(&wv, &runner);
                 glib::ControlFlow::Continue
             },
         );
@@ -98,15 +111,29 @@ pub(super) fn install(
     Some(controller)
 }
 
+/// Recheck a loaded view after navigation, mapping, or a periodic timer.
+/// Loading and disposed views are skipped; an eligible flow advances one step.
+fn check_url(webview: &webkit6::WebView, runner: &Rc<Runner>) {
+    if webview.is_loading() || runner.progress.borrow().is_cancelled() {
+        return;
+    }
+    observe_url(webview, runner);
+    drive(webview, runner);
+}
+
+/// Feed the current page URL and the runner's monotonic elapsed time into auth state.
 fn observe_url(webview: &webkit6::WebView, runner: &Runner) {
     if let Some(url) = webview.uri() {
-        runner
-            .progress
-            .borrow_mut()
-            .observe_url(&url, runner.config.login_detect_url.as_deref());
+        runner.progress.borrow_mut().observe_url(
+            &url,
+            runner.config.login_detect_url.as_deref(),
+            runner.started.elapsed(),
+        );
     }
 }
 
+/// Arm a future login transition after a completed non-login page stays settled.
+/// The delayed confirmation requires the same URL and document generation.
 fn confirm_settled_page(webview: &webkit6::WebView, runner: &Rc<Runner>) {
     if !runner.progress.borrow().is_complete() {
         return;
@@ -135,6 +162,8 @@ fn confirm_settled_page(webview: &webkit6::WebView, runner: &Rc<Runner>) {
     });
 }
 
+/// Dispatch at most one eligible step, then wait for its callback or navigation.
+/// Completion and failure use the same monotonic clock as periodic auth checks.
 fn drive(webview: &webkit6::WebView, runner: &Rc<Runner>) {
     if webview.is_loading() {
         return;
@@ -142,7 +171,7 @@ fn drive(webview: &webkit6::WebView, runner: &Rc<Runner>) {
     let next = runner
         .progress
         .borrow_mut()
-        .take_step(runner.config.steps.len());
+        .take_step(runner.config.steps.len(), runner.started.elapsed());
     let Some((index, generation)) = next else {
         confirm_settled_page(webview, runner);
         return;
@@ -169,7 +198,11 @@ fn drive(webview: &webkit6::WebView, runner: &Rc<Runner>) {
             glib::timeout_add_local_once(Duration::from_millis(50), move || {
                 if let Some(wv) = weak.upgrade() {
                     if !wv.is_loading()
-                        && runner.progress.borrow_mut().finish_step(generation, true)
+                        && runner.progress.borrow_mut().finish_step(
+                            generation,
+                            true,
+                            runner.started.elapsed(),
+                        )
                     {
                         observe_url(&wv, &runner);
                         drive(&wv, &runner);
@@ -177,7 +210,7 @@ fn drive(webview: &webkit6::WebView, runner: &Rc<Runner>) {
                 }
             });
         } else {
-            runner.progress.borrow_mut().stop();
+            runner.progress.borrow_mut().fail(runner.started.elapsed());
             tracing::warn!(
                 "smart URL step {} has an invalid navigation target",
                 index + 1
@@ -201,11 +234,11 @@ fn drive(webview: &webkit6::WebView, runner: &Rc<Runner>) {
             glib::timeout_add_local_once(Duration::from_millis(50), move || {
                 let Some(wv) = weak.upgrade() else { return };
                 let success = result.as_ref().is_ok_and(|value| value.to_boolean());
-                if runner
-                    .progress
-                    .borrow_mut()
-                    .finish_step(generation, success)
-                {
+                if runner.progress.borrow_mut().finish_step(
+                    generation,
+                    success,
+                    runner.started.elapsed(),
+                ) {
                     drive(&wv, &runner);
                 } else if !success && !wv.is_loading() {
                     // Never log scripts, field values, or URLs containing tokens.
@@ -399,13 +432,35 @@ mod tests {
         }
     }
 
-    fn wait_until(mut ready: impl FnMut() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(20);
+    fn wait_until(ready: impl FnMut() -> bool) {
+        wait_with_timeout(Duration::from_secs(20), ready);
+    }
+
+    /// Pump GTK while waiting for a browser condition, bounded by `timeout`.
+    fn wait_with_timeout(timeout: Duration, mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + timeout;
         while !ready() && Instant::now() < deadline {
             pump(Duration::from_millis(10));
         }
         assert!(ready(), "WebKit regression scenario timed out");
         pump(Duration::from_millis(250));
+    }
+
+    /// Execute a fixture script and wait for its result without reloading the view.
+    fn evaluate(webview: &webkit6::WebView, script: &str) {
+        let result = Rc::new(RefCell::new(None));
+        let output = result.clone();
+        webview.evaluate_javascript(
+            script,
+            None,
+            None,
+            None::<&gio::Cancellable>,
+            move |value| {
+                *output.borrow_mut() = Some(value.is_ok());
+            },
+        );
+        wait_until(|| result.borrow().is_some());
+        assert_eq!(*result.borrow(), Some(true), "fixture script failed");
     }
 
     fn cell(fixture: &Fixture, block: &str, steps: serde_json::Value) -> crate::bundle::BundleCell {
@@ -432,6 +487,8 @@ mod tests {
         (key, wv)
     }
 
+    /// Exercise redirects, cached-view activation, periodic retries, and disposal
+    /// in real WebKit views. Requires a display; CI runs this test under Xvfb.
     #[test]
     #[ignore = "requires an X/Wayland display and WebKit subprocesses; run with xvfb-run"]
     fn smart_url_browser_regression() {
@@ -573,6 +630,91 @@ mod tests {
             1,
             "edited settings are also stopped when removed"
         );
+        super::super::purge_obsolete_webviews(&HashSet::new());
+
+        // Reusing a hidden warm page emits no Finished signal. With periodic
+        // checks disabled, mapping it again must still detect a SPA auth URL.
+        let mut mapped = cell(
+            &fixture,
+            "mapped",
+            serde_json::json!([
+                {"type":"javascript","script":"await fetch('/mapped-auth');"}
+            ]),
+        );
+        mapped.web_url = Some(format!("{}/healthy-map", fixture.root));
+        mapped.smart_url.as_mut().unwrap().session_check_interval_ms = Some(0);
+        let (_, mapped_wv) = browser(&mapped);
+        row.append(&mapped_wv);
+        wait_until(|| mapped_wv.is_mapped() && !mapped_wv.is_loading());
+        assert_eq!(fixture.count("/mapped-auth"), 0);
+        mapped_wv.set_visible(false);
+        evaluate(
+            &mapped_wv,
+            "history.replaceState(null, '', '/auth/cached?state=changed');",
+        );
+        assert_eq!(
+            fixture.count("/mapped-auth"),
+            0,
+            "hidden navigation did not reload the page"
+        );
+        assert_eq!(
+            browser(&mapped).1,
+            mapped_wv,
+            "the same cached view is retained"
+        );
+        mapped_wv.set_visible(true);
+        wait_until(|| fixture.count("/mapped-auth") == 1);
+        assert_eq!(
+            fixture.count("/healthy-map"),
+            1,
+            "showing the view did not reload its URL"
+        );
+        super::super::purge_obsolete_webviews(&HashSet::new());
+
+        // Recover from a failed auth attempt using only the periodic check:
+        // the URL stays on /auth and no load/map signal occurs after failure.
+        let mut periodic = cell(
+            &fixture,
+            "periodic",
+            serde_json::json!([
+                {"type":"javascript","script":"await fetch('/retry-attempt'); if (!document.querySelector('#login-ready')) throw new Error('not ready'); await fetch('/retry-success');"}
+            ]),
+        );
+        periodic.web_url = Some(format!("{}/auth/periodic", fixture.root));
+        let (_, periodic_wv) = browser(&periodic);
+        row.append(&periodic_wv);
+        wait_until(|| fixture.count("/retry-attempt") == 1);
+        pump(Duration::from_millis(400));
+        evaluate(
+            &periodic_wv,
+            "document.body.insertAdjacentHTML('beforeend', '<input id=login-ready>');",
+        );
+        pump(Duration::from_millis(500));
+        assert_eq!(
+            fixture.count("/retry-attempt"),
+            1,
+            "failed auth respects its retry delay"
+        );
+        wait_with_timeout(Duration::from_secs(40), || {
+            fixture.count("/retry-success") == 1
+        });
+        assert_eq!(
+            fixture.count("/retry-attempt"),
+            2,
+            "one periodic retry recovers the failed attempt"
+        );
+        assert_eq!(
+            fixture.count("/auth/periodic"),
+            1,
+            "periodic recovery did not reload the page"
+        );
+        assert_eq!(
+            fixture.count("/success"),
+            3,
+            "disposed views stay stopped after the retry deadline"
+        );
+        assert_eq!(fixture.count("/edited"), 1);
+        assert_eq!(fixture.count("/stay-run"), 1);
         super::super::purge_obsolete_webviews(&HashSet::new());
         window.close();
     }

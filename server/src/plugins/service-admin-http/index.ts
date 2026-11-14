@@ -5,6 +5,8 @@
  * shared modules (not BSB plugins).
  */
 import * as av from "anyvali";
+import type { Infer } from "anyvali";
+import { AdminRuntime, publishAdminRuntime, unpublishAdminRuntime } from "../../shared/admin/runtime.js";
 import {
   BSBService,
   type BSBServiceConstructor,
@@ -15,19 +17,14 @@ import {
 import { H3, getRequestHeader, serve } from "h3";
 import type { Server } from "srvx";
 
-import type { DbConfig } from "../../shared/db/config.js";
-import { initDb } from "../../shared/db/init.js";
 import type { Repository } from "../../shared/db/repository.js";
-import { purgeTenantKioskLogs } from "../../shared/kiosk-log-retention.js";
-import { initSecrets, type SecretsApi } from "../../shared/secrets.js";
-import { createAuth, type AuthApi } from "../../shared/auth.js";
+import { type SecretsApi } from "../../shared/secrets.js";
+import { type AuthApi } from "../../shared/auth.js";
 import {
-  initNoderedBridge,
   type NoderedBridge,
-  type NoderedTenantConfig,
 } from "../../shared/nodered-bridge.js";
-import { initFirmware, type FirmwareApi } from "../../shared/firmware.js";
-import { initOsUpdates, type OsUpdateApi } from "../../shared/os-updates.js";
+import { type FirmwareApi } from "../../shared/firmware.js";
+import { type OsUpdateApi } from "../../shared/os-updates.js";
 import { serverVersion } from "../../shared/version.js";
 
 import { registerMiddleware } from "./middleware.js";
@@ -43,7 +40,7 @@ import { registerCloudRoutes } from "./routes-cloud.js";
 import { registerTenantRoutes } from "./routes-tenants.js";
 import { registerAbleSignRoutes } from "./routes-ablesign.js";
 
-const ConfigSchema = av.object(
+export const ConfigSchema = av.object(
   {
     db: av.object(
       {
@@ -60,6 +57,7 @@ const ConfigSchema = av.object(
     host: av.string().default("127.0.0.1"),
     port: av.int().min(1).max(65535).default(18080),
     enableDemoTenant: av.bool().default(false),
+    sandboxMode: av.bool().default(false),
     dataDir: av.string().minLength(1).default("/var/lib/betterframe"),
     systemdCredsName: av.string().default("betterframe-secret"),
     kioskLogRetentionHours: av.int().min(1).max(8760).default(24),
@@ -85,6 +83,8 @@ const ConfigSchema = av.object(
   { unknownKeys: "strip" },
 );
 
+export type AdminConfig = Infer<typeof ConfigSchema>;
+
 export const Config = createConfigSchema(
   {
     name: "service-admin-http",
@@ -104,6 +104,8 @@ export const EventSchemas = createEventSchemas({
 });
 
 export interface AdminDeps {
+  bpTenant?: import("../../shared/types.js").Tenant;
+  sandboxMode?: boolean;
   enableDemoTenant?: boolean;
   repo: Repository;
   auth: AuthApi;
@@ -129,93 +131,18 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
   runAfterPlugins?: string[];
 
   private server?: Server;
-  private dbClose?: () => Promise<void>;
-  private logPurgeTimer?: ReturnType<typeof setInterval>;
-  private logPurgeRunning = false;
-  private purgeTimer?: ReturnType<typeof setInterval>;
-  private cameraHealthChecker?: { stop: () => void };
-  private artifactCleanup?: { stop: () => void };
-  private _deps?: AdminDeps;
-  private noderedReconcilePromise: Promise<void> = Promise.resolve();
-  private _repo?: Repository;
+  private runtime?: AdminRuntime;
 
   constructor(cfg: BSBServiceConstructor<InstanceType<typeof Config>, typeof EventSchemas>) {
     super(cfg);
   }
 
   async init(obs: Observable): Promise<void> {
-    const dataDir = this.config.dataDir;
-    const noderedUrl = this.config.noderedUrl;
-    const selfUrl = this.config.selfUrl;
-    const cookieName = this.config.cookieName;
-    const totpIssuer = this.config.totpIssuer;
-
-    const dbResult = await initDb(
-      this.config.db as DbConfig,
-      {
-        info: (m) => obs.log.info(m as any, {}),
-        warn: (m) => obs.log.warn(m as any, {}),
-      },
-    );
-    const repo = dbResult.repo;
-    this.dbClose = dbResult.close;
-
-    const secrets = initSecrets(
-      {
-        dataDir,
-        systemdCredsName: this.config.systemdCredsName,
-        systemdCredsDir: this.config.systemdCredsDir || undefined,
-      },
-      { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
-    );
-    const auth = createAuth(repo, secrets, {
-      sessionIdleSeconds: this.config.sessionIdleSeconds,
-      sessionMaxSeconds: this.config.sessionMaxSeconds,
-      loginLockoutThreshold: this.config.loginLockoutThreshold,
-      loginLockoutSeconds: this.config.loginLockoutSeconds,
-      argon2Memory: this.config.argon2Memory,
-      argon2TimeCost: this.config.argon2TimeCost,
-      argon2Parallelism: this.config.argon2Parallelism,
-      totpIssuer,
-      cookieName,
-    });
-
-    const nodered = initNoderedBridge(
-      { baseUrl: noderedUrl },
-      { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
-    );
-
-    const firmware = initFirmware(
-      {
-        dataDir,
-        signingKeyPem: this.config.firmwareSigningKey || (this.config.firmwareSigningKeyBase64
-          ? Buffer.from(this.config.firmwareSigningKeyBase64, "base64").toString("utf8")
-          : undefined),
-      },
-      { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
-    );
-    const osUpdates = initOsUpdates({ dataDir });
-
-    const deps: AdminDeps = {
-      repo,
-      auth,
-      secrets,
-      cookieName,
-      nodered,
-      firmware,
-      osUpdates,
-      dataDir,
-      clientFirmwarePublicKey: this.config.clientFirmwarePublicKey || (this.config.clientFirmwarePublicKeyBase64
-        ? Buffer.from(this.config.clientFirmwarePublicKeyBase64, "base64").toString("utf8")
-        : undefined),
-      firmwareImportApiKey: this.config.firmwareImportApiKey || undefined,
-      otaImportApiKey: this.config.otaImportApiKey || undefined,
-      enableDemoTenant: this.config.enableDemoTenant,
-      scheduleNoderedReconcile: () => {
-        void this.scheduleNoderedReconcile(repo, secrets, auth, nodered, selfUrl, obs);
-      },
-    };
-
+    const runtime = this.runtime = new AdminRuntime(this.config);
+    await runtime.init(obs);
+    publishAdminRuntime(runtime);
+    const deps = runtime.deps;
+    try {
     const self = this;
     const app = new H3({
       onRequest: (event) => {
@@ -312,178 +239,22 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       port: this.config.port,
     });
 
-    const { startCameraHealthChecker } = await import("../../shared/camera-health.js");
-    this.cameraHealthChecker = startCameraHealthChecker(repo, {}, {
-      info: (m) => obs.log.info(m as any, {}),
-      warn: (m) => obs.log.warn(m as any, {}),
-    });
-
-    const { startArtifactCleanup } = await import("../../shared/artifact-cleanup.js");
-    this.artifactCleanup = startArtifactCleanup(repo, {
-      info: (m) => obs.log.info(m as any, {}),
-      warn: (m) => obs.log.warn(m as any, {}),
-    });
-
-    deps.scheduleNoderedReconcile();
-
-    this._repo = repo;
-    this._deps = deps;
-    void this.runPurge(obs).catch(() => obs.log.warn("log cleanup failed"));
-    void this.runLogPurge(obs);
-  }
-
-  private async runPurge(obs: Observable): Promise<void> {
-    if (!this._repo) return;
-    const r = this._repo;
-    const el = await r.purgeEventLog(30, 100_000);
-    const al = await r.purgeAuditLog(90);
-    if (el + al > 0) {
-      obs.log.info("purge: {el} event_log, {al} audit_log", { el, al });
+    } catch (error) {
+      unpublishAdminRuntime(runtime);
+      await runtime.dispose();
+      throw error;
     }
-  }
-
-  private async runLogPurge(obs: Observable): Promise<void> {
-    if (!this._repo || this.logPurgeRunning) return;
-    this.logPurgeRunning = true;
-    try {
-      await purgeTenantKioskLogs(this._repo, this.config.kioskLogRetentionHours,
-        (message) => obs.log.warn(message as any, {}));
-    } catch { obs.log.warn("kiosk log cleanup failed"); }
-    finally { this.logPurgeRunning = false; }
   }
 
   async run(obs: Observable): Promise<void> {
-    this.logPurgeTimer = setInterval(() => { void this.runLogPurge(obs); }, 5 * 60 * 1000);
-    this.purgeTimer = setInterval(() => { void this.runPurge(obs).catch(() => obs.log.warn("log cleanup failed")); }, 6 * 60 * 60 * 1000);
-    void this.syncAllAbleSignAccounts(obs);
-  }
-
-  private async syncAllAbleSignAccounts(obs: Observable): Promise<void> {
-    if (!this._deps) return;
-    const { syncAbleSignAccount } = await import("../../shared/ablesign-sync.js");
-    const accounts = await this._deps.repo.listAbleSignAccounts();
-    if (accounts.length === 0) return;
-    obs.log.info("ablesign: background sync starting for {n} accounts", { n: accounts.length });
-    for (const acct of accounts) {
-      try {
-        await syncAbleSignAccount(acct, this._deps.repo, this._deps.secrets);
-      } catch (err) {
-        obs.log.warn("ablesign: sync failed for account {name}: {err}", {
-          name: acct.name,
-          err: (err as Error).message,
-        });
-      }
-    }
-    obs.log.info("ablesign: background sync complete");
-  }
-
-  private async scheduleNoderedReconcile(
-    repo: Repository,
-    secrets: SecretsApi,
-    auth: AuthApi,
-    nodered: NoderedBridge,
-    selfUrl: string,
-    obs: Observable,
-  ): Promise<void> {
-    this.noderedReconcilePromise = this.noderedReconcilePromise.then(async () => {
-      await this.provisionNoderedBridge(repo, secrets, auth, nodered, selfUrl, obs);
-    }).catch((err) => {
-      obs.log.warn("nodered: reconcile queue failed: {err}", { err: (err as Error).message });
-    });
-    await this.noderedReconcilePromise;
-  }
-
-  private async provisionNoderedBridge(
-    repo: Repository,
-    secrets: SecretsApi,
-    auth: AuthApi,
-    nodered: NoderedBridge,
-    selfUrl: string,
-    obs: Observable,
-  ): Promise<void> {
-    let tenantConfigs: NoderedTenantConfig[];
-    try {
-      tenantConfigs = await this.listNoderedTenantConfigs(repo, secrets, auth);
-    } catch (err) {
-      await repo.adapter.setSearchPath("public");
-      obs.log.warn("nodered: build tenant configs failed: {err}", { err: (err as Error).message });
-      return;
-    }
-
-    const delaysMs = [2000, 5000, 10000, 15000, 30000, 30000, 60000, 60000, 60000];
-    for (let attempt = 0; attempt < delaysMs.length; attempt += 1) {
-      await new Promise((r) => setTimeout(r, delaysMs[attempt]));
-      obs.log.info("nodered: reconciling tenant configs ({count} tenants) attempt {n} -> {url}", {
-        count: tenantConfigs.length,
-        n: attempt + 1,
-        url: selfUrl,
-      });
-      const result = await nodered.reconcileServerConfigs(selfUrl, tenantConfigs);
-      if (result === "updated") {
-        obs.log.info("nodered: tenant config reconcile updated flows at {url}", { url: selfUrl });
-        return;
-      }
-      if (result === "noop") {
-        obs.log.info("nodered: tenant config reconcile already up to date");
-        return;
-      }
-    }
-    obs.log.warn("nodered: tenant config reconcile gave up after retries");
-  }
-
-  private async listNoderedTenantConfigs(
-    repo: Repository,
-    secrets: SecretsApi,
-    auth: AuthApi,
-  ): Promise<NoderedTenantConfig[]> {
-    const tenants = await repo.listTenants();
-    const configs: NoderedTenantConfig[] = [];
-    for (const tenant of tenants) {
-      await repo.adapter.setSearchPath(tenant.schema_name);
-      const apiKey = await this.getOrMintNoderedApiKey(repo, secrets, auth, tenant.slug);
-      configs.push({
-        tenant_id: tenant.id,
-        tenant_slug: tenant.slug,
-        tenant_name: tenant.name,
-        api_key: apiKey,
-        active: tenant.is_active,
-      });
-    }
-    await repo.adapter.setSearchPath("public");
-    return configs;
-  }
-
-  private async getOrMintNoderedApiKey(
-    repo: Repository,
-    secrets: SecretsApi,
-    auth: AuthApi,
-    tenantSlug: string,
-  ): Promise<string> {
-    const key = "nodered_api_keys";
-    const stored = await repo.getSetupExtra(key);
-    const current = stored && typeof stored === "object" ? stored as Record<string, unknown> : {};
-    const enc = typeof current[tenantSlug] === "string" ? current[tenantSlug] : "";
-    if (enc.length > 0) {
-      return secrets.decryptString(enc, "nodered_api_key");
-    }
-    const { plaintext } = await auth.createApiKey({
-      name: "node-red-bridge",
-      scopes: ["admin"],
-      expiresAt: null,
-    });
-    current[tenantSlug] = secrets.encryptString(plaintext, "nodered_api_key");
-    await repo.setSetupExtra(key, current);
-    return plaintext;
+    await this.runtime?.run(obs);
   }
 
   async dispose(): Promise<void> {
-    if (this.purgeTimer) clearInterval(this.purgeTimer);
-    if (this.logPurgeTimer) clearInterval(this.logPurgeTimer);
-    this.cameraHealthChecker?.stop();
-    this.artifactCleanup?.stop();
-    if (this.server) {
-      await this.server.close();
+    if (this.server) await this.server.close();
+    if (this.runtime) {
+      unpublishAdminRuntime(this.runtime);
+      await this.runtime.dispose();
     }
-    await this.dbClose?.();
   }
 }

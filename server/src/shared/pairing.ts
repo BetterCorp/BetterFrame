@@ -255,7 +255,7 @@ export async function confirmPairing(
       const baseName = input.nameOverride || pc.kiosk_proposed_name || `kiosk-${input.code.toLowerCase()}`;
       let candidate = baseName;
       let suffix = 2;
-      while (await repo.getKioskByName(candidate)) {
+      while (await repo.kioskNameExists(candidate)) {
         candidate = `${baseName}-${suffix}`;
         suffix++;
         if (suffix > 100) throw new Error("could not generate unique kiosk name");

@@ -293,6 +293,8 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     );
     this.nodered = nodered;
 
+    repo.setCameraCredentialCodec(secrets);
+
     const auth = createAuth(repo, secrets, {
       sessionIdleSeconds: this.config.sessionIdleSeconds,
       sessionMaxSeconds: this.config.sessionMaxSeconds,

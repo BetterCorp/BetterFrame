@@ -158,6 +158,8 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
       { dataDir },
       { info: (m) => obs.log.info(m as any, {}), warn: (m) => obs.log.warn(m as any, {}) },
     );
+    repo.setCameraCredentialCodec(secrets);
+
     const auth = createAuth(repo, secrets, {
       sessionIdleSeconds: this.config.sessionIdleSeconds,
       sessionMaxSeconds: this.config.sessionMaxSeconds,

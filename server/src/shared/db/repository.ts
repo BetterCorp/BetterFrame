@@ -1,3 +1,9 @@
+import {
+  ownershipPredicate,
+  type ResourceOwner,
+} from "./resource-ownership.js";
+import { CAMERA_CREDENTIAL_PREFIX, encryptCameraCredential } from "../admin/camera-credentials.js";
+import type { SecretsApi } from "../secrets.js";
 import type { OverlayTemplate } from "../overlays.js";
 import type { LogFilters, LogPage, LogSummary } from "../kiosk-log-view.js";
 /**
@@ -111,7 +117,10 @@ type NotifyFn = (
   id?: string | number,
 ) => Promise<void>;
 
-function userPatchSql(patch: Partial<User>): { columns: string[]; values: unknown[] } {
+function userPatchSql(patch: Partial<User>): {
+  columns: string[];
+  values: unknown[];
+} {
   const columns: string[] = [];
   const values: unknown[] = [];
   const add = (column: string, value: unknown) => {
@@ -120,10 +129,14 @@ function userPatchSql(patch: Partial<User>): { columns: string[]; values: unknow
   };
   if ("password_hash" in patch) add("password_hash", patch.password_hash);
   if ("totp_enabled" in patch) add("totp_enabled", Boolean(patch.totp_enabled));
-  if ("totp_secret_encrypted" in patch) add("totp_secret_encrypted", patch.totp_secret_encrypted);
-  if ("recovery_codes_hashed" in patch) add("recovery_codes_hashed", J(patch.recovery_codes_hashed));
-  if ("must_change_password" in patch) add("must_change_password", Boolean(patch.must_change_password));
-  if ("failed_login_count" in patch) add("failed_login_count", patch.failed_login_count);
+  if ("totp_secret_encrypted" in patch)
+    add("totp_secret_encrypted", patch.totp_secret_encrypted);
+  if ("recovery_codes_hashed" in patch)
+    add("recovery_codes_hashed", J(patch.recovery_codes_hashed));
+  if ("must_change_password" in patch)
+    add("must_change_password", Boolean(patch.must_change_password));
+  if ("failed_login_count" in patch)
+    add("failed_login_count", patch.failed_login_count);
   if ("locked_until" in patch) add("locked_until", patch.locked_until);
   if ("last_login_at" in patch) add("last_login_at", patch.last_login_at);
   if ("is_active" in patch) add("is_active", Boolean(patch.is_active));
@@ -136,11 +149,35 @@ export class Repository {
   readonly adapter: DbAdapter;
   private readonly notify: NotifyFn;
   private _obs?: Observable;
+  private cameraCredentialCodec?: Pick<SecretsApi, "encryptString" | "decryptString">;
+  setCameraCredentialCodec(codec: Pick<SecretsApi, "encryptString" | "decryptString">): void { this.cameraCredentialCodec = codec; }
+  private encodeCameraCredential(value: string | null): string | null {
+    if (value === null || value.startsWith(CAMERA_CREDENTIAL_PREFIX) || !this.cameraCredentialCodec) return value;
+    return encryptCameraCredential(this.cameraCredentialCodec, value);
+  }
+  private decodeCameraCredential(value: string | null): string | null {
+    if (!value?.startsWith(CAMERA_CREDENTIAL_PREFIX)) return value;
+    if (!this.cameraCredentialCodec) throw new Error("Encrypted camera credentials require the installation key");
+    return this.cameraCredentialCodec.decryptString(value.slice(CAMERA_CREDENTIAL_PREFIX.length), "camera-password");
+  }
+  private cameraRow(row: Record<string, unknown>): Camera {
+    const camera = rowToCamera(row);
+    camera.onvif_password = this.decodeCameraCredential(camera.onvif_password);
+    camera.rtsp_url = this.decodeCameraCredential(camera.rtsp_url);
+    return camera;
+  }
+  private deviceRow(row: Record<string, unknown>): CameraDevice {
+    const device = rowToCameraDevice(row);
+    device.password = this.decodeCameraCredential(device.password);
+    return device;
+  }
 
   constructor(adapter: DbAdapter, notify: NotifyFn) {
     this.adapter = adapter;
     this.notify = async (table, op, id) => {
-      const deliver = () => { void Promise.resolve(notify(table, op, id)).catch(() => {}); };
+      const deliver = () => {
+        void Promise.resolve(notify(table, op, id)).catch(() => {});
+      };
       if (adapter.afterCommit) adapter.afterCommit(deliver);
       else deliver();
     };
@@ -160,7 +197,9 @@ export class Repository {
 
   /** Run a write statement. Params are passed as an array. */
   private async _run(sql: string, params: unknown[] = []): Promise<RunResult> {
-    const span = this._obs?.startSpan("db.run", { "db.statement": sql.slice(0, 100) });
+    const span = this._obs?.startSpan("db.run", {
+      "db.statement": sql.slice(0, 100),
+    });
     try {
       const result = await this.adapter.run(sql, params as any);
       span?.end();
@@ -172,8 +211,13 @@ export class Repository {
     }
   }
   /** Single-row query. */
-  private async _get<T = Row>(sql: string, params: unknown[] = []): Promise<T | undefined> {
-    const span = this._obs?.startSpan("db.get", { "db.statement": sql.slice(0, 100) });
+  private async _get<T = Row>(
+    sql: string,
+    params: unknown[] = [],
+  ): Promise<T | undefined> {
+    const span = this._obs?.startSpan("db.get", {
+      "db.statement": sql.slice(0, 100),
+    });
     try {
       const result = await this.adapter.get<T>(sql, params as any);
       span?.end();
@@ -185,8 +229,13 @@ export class Repository {
     }
   }
   /** Multi-row query. */
-  private async _all<T = Row>(sql: string, params: unknown[] = []): Promise<T[]> {
-    const span = this._obs?.startSpan("db.all", { "db.statement": sql.slice(0, 100) });
+  private async _all<T = Row>(
+    sql: string,
+    params: unknown[] = [],
+  ): Promise<T[]> {
+    const span = this._obs?.startSpan("db.all", {
+      "db.statement": sql.slice(0, 100),
+    });
     try {
       const result = await this.adapter.all<T>(sql, params as any);
       span?.end();
@@ -286,7 +335,7 @@ export class Repository {
   async countTenants(): Promise<number> {
     if (this.adapter.dialect() !== "postgres") return 0;
     const r = await this._get<{ c: number }>("SELECT COUNT(*) AS c FROM public.tenants");
-    return r?.c ?? 0;
+    return Number(r?.c ?? 0);
   }
 
   // ===========================================================================
@@ -310,7 +359,11 @@ export class Repository {
     if (state.is_complete) return true;
     if ((await this.countUsers()) > 0) return true;
     // No local users — copy global admin into tenant if one exists.
-    const ga = await this._get<{ id: string; username: string; password_hash: string }>(
+    const ga = await this._get<{
+      id: string;
+      username: string;
+      password_hash: string;
+    }>(
       "SELECT id, username, password_hash FROM public.global_admins WHERE is_active = true LIMIT 1",
     ).catch(() => undefined);
     if (ga) {
@@ -360,7 +413,7 @@ export class Repository {
 
   async countUsers(): Promise<number> {
     const r = await this._get<{ c: number }>("SELECT COUNT(*) AS c FROM users");
-    return r?.c ?? 0;
+    return Number(r?.c ?? 0);
   }
 
   async getUserById(id: string): Promise<User | null> {
@@ -577,8 +630,12 @@ export class Repository {
   // displays
   // ===========================================================================
 
-  async listDisplays(): Promise<Display[]> {
-    const rs = await this._all('SELECT * FROM displays ORDER BY "index"');
+  async listDisplays(owner?: ResourceOwner): Promise<Display[]> {
+    const filter = ownershipPredicate("displays", "displays", owner);
+    const rs = await this._all(
+      `SELECT * FROM displays WHERE ${filter.sql} ORDER BY "index"`,
+      filter.params,
+    );
     return rs.map((r) => rowToDisplay(r as Record<string, unknown>));
   }
 
@@ -600,14 +657,18 @@ export class Repository {
     return d;
   }
 
-  async createDisplayForKiosk(kioskId: string, input: {
-    name: string;
-    index?: number;
-    width_px?: number;
-    height_px?: number;
-  }): Promise<Display> {
+  async createDisplayForKiosk(
+    kioskId: string,
+    input: {
+      name: string;
+      index?: number;
+      width_px?: number;
+      height_px?: number;
+      skipTenantDefaults?: boolean;
+    },
+  ): Promise<Display> {
     return this.transact(async () => {
-      const idx = input.index ?? await this.nextDisplayIndexForKiosk(kioskId);
+      const idx = input.index ?? (await this.nextDisplayIndexForKiosk(kioskId));
       const id = uuidv7();
       await this._run(
         `INSERT INTO displays (id, name, "index", is_primary, kiosk_id, width_px, height_px)
@@ -622,11 +683,16 @@ export class Repository {
           input.height_px ?? 1080,
         ],
       );
-      const defaults = await this.getDisplayDefaults();
-      for (const layoutId of defaults.layoutIds) await this.attachLayoutToDisplay(id, layoutId);
-      if (defaults.defaultLayoutId) await this.updateDisplay(id, {
-        default_layout_id: defaults.defaultLayoutId, active_layout_id: defaults.defaultLayoutId,
-      });
+      const defaults = input.skipTenantDefaults
+        ? { layoutIds: [], defaultLayoutId: null }
+        : await this.getDisplayDefaults();
+      for (const layoutId of defaults.layoutIds)
+        await this.attachLayoutToDisplay(id, layoutId);
+      if (defaults.defaultLayoutId)
+        await this.updateDisplay(id, {
+          default_layout_id: defaults.defaultLayoutId,
+          active_layout_id: defaults.defaultLayoutId,
+        });
       void this.notify("displays", "create", id);
       const d = await this.getDisplayById(id);
       if (!d) throw new Error("display vanished after insert");
@@ -635,12 +701,29 @@ export class Repository {
   }
 
   /** Defaults apply once, when a display is created. Deleted layouts are ignored. */
-  async getDisplayDefaults(): Promise<{ layoutIds: string[]; defaultLayoutId: string | null }> {
-    const raw = await this.getSetupExtra("display_defaults") as { layoutIds?: unknown; defaultLayoutId?: unknown } | null;
-    const existing = new Set((await this.listLayouts()).map(l => l.id));
+  async getDisplayDefaults(): Promise<{
+    layoutIds: string[];
+    defaultLayoutId: string | null;
+  }> {
+    const raw = (await this.getSetupExtra("display_defaults")) as {
+      layoutIds?: unknown;
+      defaultLayoutId?: unknown;
+    } | null;
+    const existing = new Set((await this.listLayouts()).map((l) => l.id));
     const layoutIds = Array.isArray(raw?.layoutIds)
-      ? [...new Set(raw.layoutIds.filter((id): id is string => typeof id === "string" && existing.has(id)))] : [];
-    const defaultLayoutId = typeof raw?.defaultLayoutId === "string" && layoutIds.includes(raw.defaultLayoutId) ? raw.defaultLayoutId : null;
+      ? [
+          ...new Set(
+            raw.layoutIds.filter(
+              (id): id is string => typeof id === "string" && existing.has(id),
+            ),
+          ),
+        ]
+      : [];
+    const defaultLayoutId =
+      typeof raw?.defaultLayoutId === "string" &&
+      layoutIds.includes(raw.defaultLayoutId)
+        ? raw.defaultLayoutId
+        : null;
     return { layoutIds, defaultLayoutId };
   }
 
@@ -731,8 +814,12 @@ export class Repository {
   // layouts
   // ===========================================================================
 
-  async listLayouts(): Promise<Layout[]> {
-    const rs = await this._all("SELECT * FROM layouts ORDER BY name");
+  async listLayouts(owner?: ResourceOwner): Promise<Layout[]> {
+    const filter = ownershipPredicate("layouts", "layouts", owner);
+    const rs = await this._all(
+      `SELECT * FROM layouts WHERE ${filter.sql} ORDER BY name`,
+      filter.params,
+    );
     return rs.map((r) => rowToLayout(r as Record<string, unknown>));
   }
 
@@ -1134,26 +1221,34 @@ export class Repository {
         ORDER BY c.name`,
       layoutIds,
     );
-    return rs.map((r) => rowToCamera(r as Record<string, unknown>));
+    return rs.map((r) => this.cameraRow(r as Record<string, unknown>));
   }
 
   // ===========================================================================
   // cameras
   // ===========================================================================
 
-  async listCameraDevices(): Promise<CameraDevice[]> {
-    const rs = await this._all("SELECT * FROM camera_devices ORDER BY name");
-    return rs.map((r) => rowToCameraDevice(r as Record<string, unknown>));
+  async listCameraDevices(owner?: ResourceOwner): Promise<CameraDevice[]> {
+    const filter = ownershipPredicate(
+      "camera_devices",
+      "camera_devices",
+      owner,
+    );
+    const rs = await this._all(
+      `SELECT * FROM camera_devices WHERE ${filter.sql} ORDER BY name`,
+      filter.params,
+    );
+    return rs.map((r) => this.deviceRow(r as Record<string, unknown>));
   }
 
   async getCameraDeviceById(id: string): Promise<CameraDevice | null> {
     const r = await this._get("SELECT * FROM camera_devices WHERE id = ?", [id]);
-    return r ? rowToCameraDevice(r as Record<string, unknown>) : null;
+    return r ? this.deviceRow(r as Record<string, unknown>) : null;
   }
 
   async getCameraDeviceByEndpoint(host: string, port: number): Promise<CameraDevice | null> {
     const r = await this._get("SELECT * FROM camera_devices WHERE host = ? AND port = ?", [host, port]);
-    return r ? rowToCameraDevice(r as Record<string, unknown>) : null;
+    return r ? this.deviceRow(r as Record<string, unknown>) : null;
   }
 
   async createCameraDevice(input: {
@@ -1170,7 +1265,7 @@ export class Repository {
       `INSERT INTO camera_devices
          (id, name, host, port, username, password, discovery_runner, layout_defaults_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, input.name, input.host, input.port, input.username ?? null, input.password ?? null,
+      [id, input.name, input.host, input.port, input.username ?? null, this.encodeCameraCredential(input.password ?? null),
        input.discovery_runner ?? "server", J(input.layout_defaults_json ?? {})],
     );
     void this.notify("camera_devices", "create", id);
@@ -1184,13 +1279,13 @@ export class Repository {
     for (const [key, value] of Object.entries(patch)) {
       if (!allowed.has(key)) continue;
       sets.push(`${key} = ?`);
-      vals.push(key === "layout_defaults_json" ? J(value) : value === undefined ? null : value);
+      vals.push(key === "layout_defaults_json" ? J(value) : key === "password" ? this.encodeCameraCredential(value as string | null ?? null) : value === undefined ? null : value);
     }
     if (sets.length === 0) return;
     vals.push(id);
     await this.transact(async () => {
       await this._run(`UPDATE camera_devices SET ${sets.join(", ")} WHERE id = ?`, vals);
-      const device = await this.getCameraDeviceById(id);
+      const device = await this._get<CameraDevice>("SELECT host, port, username, password FROM camera_devices WHERE id = ?", [id]);
       if (device) {
         await this._run(
           `UPDATE cameras
@@ -1210,24 +1305,28 @@ export class Repository {
     void this.notify("cameras", "delete", id);
   }
 
-  async listCameras(): Promise<Camera[]> {
-    const rs = await this._all("SELECT * FROM cameras ORDER BY name");
-    return rs.map((r) => rowToCamera(r as Record<string, unknown>));
+  async listCameras(owner?: ResourceOwner): Promise<Camera[]> {
+    const filter = ownershipPredicate("cameras", "cameras", owner);
+    const rs = await this._all(
+      `SELECT * FROM cameras WHERE ${filter.sql} ORDER BY name`,
+      filter.params,
+    );
+    return rs.map((r) => this.cameraRow(r as Record<string, unknown>));
   }
 
   async listCamerasByDevice(deviceId: string): Promise<Camera[]> {
     const rs = await this._all("SELECT * FROM cameras WHERE device_id = ? ORDER BY name", [deviceId]);
-    return rs.map((r) => rowToCamera(r as Record<string, unknown>));
+    return rs.map((r) => this.cameraRow(r as Record<string, unknown>));
   }
 
   async getCameraById(id: string): Promise<Camera | null> {
     const r = await this._get("SELECT * FROM cameras WHERE id = ?", [id]);
-    return r ? rowToCamera(r as Record<string, unknown>) : null;
+    return r ? this.cameraRow(r as Record<string, unknown>) : null;
   }
 
   async getCameraByName(name: string): Promise<Camera | null> {
     const r = await this._get("SELECT * FROM cameras WHERE name = ?", [name]);
-    return r ? rowToCamera(r as Record<string, unknown>) : null;
+    return r ? this.cameraRow(r as Record<string, unknown>) : null;
   }
 
   async createCamera(input: {
@@ -1240,7 +1339,7 @@ export class Repository {
     onvif_host?: string | null;
     onvif_port?: number | null;
     onvif_username?: string | null;
-    onvif_password?: string | null; // already-encrypted ciphertext
+    onvif_password?: string | null; // Plain input or existing installation ciphertext.
     capabilities?: string[];
     stream_policy?: StreamPolicy;
   }): Promise<Camera> {
@@ -1257,11 +1356,11 @@ export class Repository {
         input.name,
         input.camera_number ?? null,
         input.type,
-        input.rtsp_url ?? null,
+        this.encodeCameraCredential(input.rtsp_url ?? null),
         input.onvif_host ?? null,
         input.onvif_port ?? null,
         input.onvif_username ?? null,
-        input.onvif_password ?? null,
+        this.encodeCameraCredential(input.onvif_password ?? null),
         J(input.capabilities ?? []),
         input.stream_policy ?? "auto",
       ],
@@ -1287,7 +1386,7 @@ export class Repository {
       [input.cloud_account_id, input.cloud_vendor_camera_id],
     );
     if (existing) {
-      const cam = rowToCamera(existing as Record<string, unknown>);
+      const cam = this.cameraRow(existing as Record<string, unknown>);
       await this._run(
         `UPDATE cameras SET name = ?, cloud_stream_url = ?, cloud_stream_type = ?, enabled = ? WHERE id = ?`,
         [input.name, input.cloud_stream_url, input.cloud_stream_type, Boolean(input.enabled), cam.id],
@@ -1315,7 +1414,7 @@ export class Repository {
       "SELECT * FROM cameras WHERE cloud_account_id = ? ORDER BY name",
       [accountId],
     );
-    return rs.map((r) => rowToCamera(r as Record<string, unknown>));
+    return rs.map((r) => this.cameraRow(r as Record<string, unknown>));
   }
 
   async deleteCloudCamerasNotIn(accountId: string, keepVendorIds: string[]): Promise<number> {
@@ -1405,9 +1504,18 @@ export class Repository {
   // labels (incl. join tables)
   // ===========================================================================
 
-  async listLabels(): Promise<Label[]> {
-    const rs = await this._all("SELECT * FROM labels ORDER BY name");
+  async listLabels(owner?: ResourceOwner): Promise<Label[]> {
+    const filter = ownershipPredicate("labels", "labels", owner);
+    const rs = await this._all(
+      `SELECT * FROM labels WHERE ${filter.sql} ORDER BY name`,
+      filter.params,
+    );
     return rs.map((r) => rowToLabel(r as Record<string, unknown>));
+  }
+
+  async getLabelById(id: string): Promise<Label | null> {
+    const row = await this._get("SELECT * FROM labels WHERE id = ?", [id]);
+    return row ? rowToLabel(row as Record<string, unknown>) : null;
   }
 
   async getLabelByName(name: string): Promise<Label | null> {
@@ -1610,8 +1718,12 @@ export class Repository {
   // ioBOX devices (tenant schema)
   // ===========================================================================
 
-  async listIoBoxes(): Promise<IoBox[]> {
-    const rs = await this._all("SELECT * FROM ioboxes ORDER BY name");
+  async listIoBoxes(owner?: ResourceOwner): Promise<IoBox[]> {
+    const filter = ownershipPredicate("ioboxes", "ioboxes", owner);
+    const rs = await this._all(
+      `SELECT * FROM ioboxes WHERE ${filter.sql} ORDER BY name`,
+      filter.params,
+    );
     return rs.map((r) => rowToIoBox(r as Record<string, unknown>));
   }
 
@@ -1855,14 +1967,24 @@ export class Repository {
   // kiosks
   // ===========================================================================
 
-  async listKiosks(): Promise<Kiosk[]> {
-    const rs = await this._all("SELECT * FROM kiosks ORDER BY name");
+  async listKiosks(owner?: ResourceOwner): Promise<Kiosk[]> {
+    const filter = ownershipPredicate("kiosks", "kiosks", owner);
+    const rs = await this._all(
+      `SELECT * FROM kiosks WHERE ${filter.sql} ORDER BY name`,
+      filter.params,
+    );
     return rs.map((r) => rowToKiosk(r as Record<string, unknown>));
   }
 
   async getKioskById(id: string): Promise<Kiosk | null> {
     const r = await this._get("SELECT * FROM kiosks WHERE id = ?", [id]);
     return r ? rowToKiosk(r as Record<string, unknown>) : null;
+  }
+
+  async kioskNameExists(name: string): Promise<boolean> {
+    return Boolean(
+      await this._get("SELECT 1 FROM kiosks WHERE name = ?", [name]),
+    );
   }
 
   async getKioskByName(name: string): Promise<Kiosk | null> {
@@ -2082,14 +2204,23 @@ export class Repository {
     );
   }
 
-  async listAudit(opts: {
-    limit?: number;
-    actor_type?: AuditActorType;
-    action_prefix?: string;
-  } = {}): Promise<AuditEntry[]> {
+  async listAudit(
+    opts: {
+      limit?: number;
+      actor_type?: AuditActorType;
+      action_prefix?: string;
+      owner?: ResourceOwner;
+    } = {},
+  ): Promise<AuditEntry[]> {
     const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000);
     const where: string[] = [];
     const args: unknown[] = [];
+    if (opts.owner) {
+      where.push(
+        "actor_type = 'user' AND actor_id = ? AND metadata->>'bp_issuer' = ?",
+      );
+      args.push(opts.owner.subject, opts.owner.issuer);
+    }
     if (opts.actor_type) {
       where.push("actor_type = ?");
       args.push(opts.actor_type);
@@ -2175,9 +2306,17 @@ export class Repository {
     return r ? rowToFirmwareRelease(r as Record<string, unknown>) : null;
   }
 
-  async listFirmwareReleases(): Promise<FirmwareRelease[]> {
+  async listFirmwareReleases(
+    owner?: ResourceOwner,
+  ): Promise<FirmwareRelease[]> {
+    const filter = ownershipPredicate(
+      "firmware_releases",
+      "firmware_releases",
+      owner,
+    );
     const rs = await this._all(
-      "SELECT * FROM firmware_releases ORDER BY uploaded_at DESC",
+      `SELECT * FROM firmware_releases WHERE ${filter.sql} ORDER BY uploaded_at DESC`,
+      filter.params,
     );
     return rs.map((r) => rowToFirmwareRelease(r as Record<string, unknown>));
   }
@@ -2371,9 +2510,17 @@ export class Repository {
     return r ? rowToOsUpdateRelease(r as Record<string, unknown>) : null;
   }
 
-  async listOsUpdateReleases(): Promise<OsUpdateRelease[]> {
+  async listOsUpdateReleases(
+    owner?: ResourceOwner,
+  ): Promise<OsUpdateRelease[]> {
+    const filter = ownershipPredicate(
+      "os_update_releases",
+      "os_update_releases",
+      owner,
+    );
     const rs = await this._all(
-      "SELECT * FROM os_update_releases ORDER BY uploaded_at DESC",
+      `SELECT * FROM os_update_releases WHERE ${filter.sql} ORDER BY uploaded_at DESC`,
+      filter.params,
     );
     return rs.map((r) => rowToOsUpdateRelease(r as Record<string, unknown>));
   }
@@ -2651,9 +2798,10 @@ export class Repository {
     return Number(r.changes);
   }
 
-
-
-  async queryEvents(filters: EventQueryFilters): Promise<{ events: EventLog[]; total: number }> {
+  async queryEvents(
+    filters: EventQueryFilters,
+    owner?: ResourceOwner,
+  ): Promise<{ events: EventLog[]; total: number }> {
     const where: string[] = [];
     const params: (string | number)[] = [];
 
@@ -2682,11 +2830,22 @@ export class Repository {
       params.push(filters.to);
     }
 
+    if (owner) {
+      const kiosk = ownershipPredicate("kiosks", "bp_kiosk", owner);
+      const camera = ownershipPredicate("cameras", "bp_camera", owner);
+      where.push(`(source_kiosk_id IS NOT NULL OR source_camera_id IS NOT NULL)
+        AND (source_kiosk_id IS NULL OR EXISTS (SELECT 1 FROM kiosks bp_kiosk WHERE bp_kiosk.id = source_kiosk_id AND ${kiosk.sql}))
+        AND (source_camera_id IS NULL OR EXISTS (SELECT 1 FROM cameras bp_camera WHERE bp_camera.id = source_camera_id AND ${camera.sql}))`);
+      params.push(...kiosk.params, ...camera.params);
+    }
     const clause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const limit = filters.limit ?? 50;
     const offset = filters.offset ?? 0;
 
-    const countRow = await this._get<Record<string, unknown>>(`SELECT COUNT(*) as cnt FROM event_log ${clause}`, params);
+    const countRow = await this._get<Record<string, unknown>>(
+      `SELECT COUNT(*) as cnt FROM event_log ${clause}`,
+      params,
+    );
     const total = Number(countRow?.["cnt"] ?? 0);
 
     const rs = await this._all(
@@ -2739,13 +2898,33 @@ export class Repository {
   }
 
   /** Summary-only, indexed keyset pagination: never count/transfer the entire history. */
-  async queryKioskLogs(filters: LogFilters): Promise<LogPage> {
+  async queryKioskLogs(
+    filters: LogFilters,
+    owner?: ResourceOwner,
+  ): Promise<LogPage> {
     const where = ["l.received_at <= ?"];
     const params: (string | number)[] = [filters.until];
-    if (filters.kiosk_id) { where.push("l.kiosk_id = ?"); params.push(filters.kiosk_id); }
-    if (filters.level) { where.push("l.level = ?"); params.push(filters.level); }
-    if (filters.source) { where.push("l.context->>'source' = ?"); params.push(filters.source); }
-    if (filters.from) { where.push("l.received_at >= ?"); params.push(filters.from); }
+    if (owner) {
+      const filter = ownershipPredicate("kiosks", "k", owner);
+      where.push(filter.sql);
+      params.push(...filter.params);
+    }
+    if (filters.kiosk_id) {
+      where.push("l.kiosk_id = ?");
+      params.push(filters.kiosk_id);
+    }
+    if (filters.level) {
+      where.push("l.level = ?");
+      params.push(filters.level);
+    }
+    if (filters.source) {
+      where.push("l.context->>'source' = ?");
+      params.push(filters.source);
+    }
+    if (filters.from) {
+      where.push("l.received_at >= ?");
+      params.push(filters.from);
+    }
     if (filters.search) {
       // Treat %, _ and backslash literally rather than as LIKE wildcards.
       const search = "%" + filters.search.replace(/[\\%_]/g, "\\$&") + "%";
@@ -2769,10 +2948,18 @@ export class Repository {
        WHERE ${where.join(" AND ")} ORDER BY l.received_at DESC, l.id DESC LIMIT ?`,
       [...params, filters.limit + 1],
     );
-    const logs = rows.slice(0, filters.limit).map(row => ({
-      ...row, logged_at: row.logged_at instanceof Date ? row.logged_at.toISOString() : String(row.logged_at),
-      received_at: row.received_at instanceof Date ? row.received_at.toISOString() : String(row.received_at),
-      characters: Number(row.characters), lines: Number(row.lines),
+    const logs = rows.slice(0, filters.limit).map((row) => ({
+      ...row,
+      logged_at:
+        row.logged_at instanceof Date
+          ? row.logged_at.toISOString()
+          : String(row.logged_at),
+      received_at:
+        row.received_at instanceof Date
+          ? row.received_at.toISOString()
+          : String(row.received_at),
+      characters: Number(row.characters),
+      lines: Number(row.lines),
     })) as unknown as LogSummary[];
     return { logs, hasMore: rows.length > filters.limit };
   }
@@ -2828,7 +3015,7 @@ export class Repository {
         ORDER BY c.name`,
       [...labelIds, ...labelIds],
     );
-    return rs.map((r) => rowToCamera(r as Record<string, unknown>));
+    return rs.map((r) => this.cameraRow(r as Record<string, unknown>));
   }
 
   async layoutsForLabelIds(labelIds: string[]): Promise<Layout[]> {
@@ -2905,7 +3092,8 @@ export class Repository {
     for (const [k, v] of Object.entries(patch)) {
       if (k === "id" || k === "created_at") continue;
       sets.push(`${k} = ?`);
-      if (k === "capabilities") vals.push(J(v));
+      if (k === "onvif_password" || k === "rtsp_url") vals.push(this.encodeCameraCredential(v as string | null ?? null));
+      else if (k === "capabilities") vals.push(J(v));
       else if (typeof v === "boolean") vals.push(v);
       else vals.push(v === undefined ? null : v);
     }
@@ -2938,8 +3126,12 @@ export class Repository {
   // entities — reusable content pool (camera/html/web) bound to layout cells
   // ===========================================================================
 
-  async listEntities(): Promise<Entity[]> {
-    const rs = await this._all("SELECT * FROM entities ORDER BY name");
+  async listEntities(owner?: ResourceOwner): Promise<Entity[]> {
+    const filter = ownershipPredicate("entities", "entities", owner);
+    const rs = await this._all(
+      `SELECT * FROM entities WHERE ${filter.sql} ORDER BY name`,
+      filter.params,
+    );
     return rs.map((r) => rowToEntity(r as Record<string, unknown>));
   }
 
@@ -3090,7 +3282,12 @@ export class Repository {
     if (await this.getEntityByName(name)) {
       name = `${camera.name} (cam ${camera.id.slice(0, 8)})`;
     }
-    return this.createEntity({ name, type: "camera", camera_id: camera.id, managed: true });
+    return this.createEntity({
+      name,
+      type: "camera",
+      camera_id: camera.id,
+      managed: true,
+    });
   }
 
   async updateKiosk(id: string, patch: Partial<Kiosk>): Promise<void> {
@@ -3213,7 +3410,14 @@ export class Repository {
     void this.notify("kiosk_gpio_bindings", "delete", id);
   }
 
-  async updateLabel(id: string, patch: { name?: string; description?: string | null; color?: string | null }): Promise<void> {
+  async updateLabel(
+    id: string,
+    patch: {
+      name?: string;
+      description?: string | null;
+      color?: string | null;
+    },
+  ): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -3231,7 +3435,10 @@ export class Repository {
   // ===========================================================================
 
   async getActiveOnvifOwners(): Promise<Map<string, string>> {
-    const rs = await this._all<{ camera_id: string; subscribed_by_kiosk_id: string }>(
+    const rs = await this._all<{
+      camera_id: string;
+      subscribed_by_kiosk_id: string;
+    }>(
       `SELECT DISTINCT camera_id, subscribed_by_kiosk_id FROM camera_event_subscriptions
        WHERE subscribed_by_kiosk_id IS NOT NULL AND status = 'active'`,
     );
@@ -3358,8 +3565,16 @@ export class Repository {
   // cloud_accounts
   // ===========================================================================
 
-  async listCloudAccounts(): Promise<CloudAccount[]> {
-    const rs = await this._all("SELECT * FROM cloud_accounts ORDER BY vendor, name");
+  async listCloudAccounts(owner?: ResourceOwner): Promise<CloudAccount[]> {
+    const filter = ownershipPredicate(
+      "cloud_accounts",
+      "cloud_accounts",
+      owner,
+    );
+    const rs = await this._all(
+      `SELECT * FROM cloud_accounts WHERE ${filter.sql} ORDER BY vendor, name`,
+      filter.params,
+    );
     return rs.map((r) => rowToCloudAccount(r as Record<string, unknown>));
   }
 
@@ -3404,8 +3619,16 @@ export class Repository {
   // AbleSign accounts + screens
   // ===========================================================================
 
-  async listAbleSignAccounts(): Promise<any[]> {
-    return this._all("SELECT * FROM ablesign_accounts ORDER BY created_at DESC");
+  async listAbleSignAccounts(owner?: ResourceOwner): Promise<any[]> {
+    const filter = ownershipPredicate(
+      "ablesign_accounts",
+      "ablesign_accounts",
+      owner,
+    );
+    return this._all(
+      `SELECT * FROM ablesign_accounts WHERE ${filter.sql} ORDER BY created_at DESC`,
+      filter.params,
+    );
   }
 
   async getAbleSignAccount(id: string): Promise<any | undefined> {

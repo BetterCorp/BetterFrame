@@ -148,7 +148,7 @@ test("tenant schema bootstrap mirrors platform admins", async () => {
     transaction: async (fn: () => unknown) => fn(),
     withSearchPath: async (_schema: string, fn: () => unknown) => fn(),
     setSearchPath: async () => {},
-    get: async () => ({ version: Number.MAX_SAFE_INTEGER }),
+    get: async (sql: string) => sql.includes("bp_tenant_bindings") ? undefined : ({ version: Number.MAX_SAFE_INTEGER }),
     run: async (sql: string) => {
       writes.push(sql);
       return { lastInsertRowid: 0n, changes: 0 };

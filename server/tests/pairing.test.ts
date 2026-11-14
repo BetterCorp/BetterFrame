@@ -85,7 +85,7 @@ for (const legacyKey of [undefined, "unreadable-legacy-ciphertext"]) {
       transact: async (fn: () => unknown) => fn(),
       getPairingCode: async () => pc,
       getSetupExtra: async () => { assert.fail(`must not read legacy key: ${legacyKey}`); },
-      getKioskByName: async () => null,
+      kioskNameExists: async () => false,
       createKiosk: async () => ({ id: "kiosk-1", name: "Lobby" }),
       createDisplayForKiosk: async () => {},
       updateKiosk: async (_id: string, values: any) => { storedKey = values.encrypt_key_encrypted; },

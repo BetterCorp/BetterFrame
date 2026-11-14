@@ -89,6 +89,16 @@
         "dispose": null
       },
       "tests": []
+    },
+    {
+      "id": "service-betterportal-frame",
+      "skip": true,
+      "default": {
+        "config": {},
+        "setup": null,
+        "dispose": null
+      },
+      "tests": []
     }
   ]
 }

@@ -14,7 +14,7 @@ pub(super) fn trust_report() -> Option<TrustReport> {
 
 fn reconcile(cas: &[crate::bundle::TrustedCa]) -> Result<bool, String> {
     validate(cas)?;
-    let directory = webview_data_dir().parent().unwrap().join("Trust");
+    let directory = state_dir().join("Trust");
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     if cas.is_empty() && !directory.join("ownership.json").exists() {
         let report = TrustReport { revision: revision(cas), state: "applied".into(), message: String::new() };
@@ -50,19 +50,15 @@ fn reconcile(cas: &[crate::bundle::TrustedCa]) -> Result<bool, String> {
     }
 }
 
-/// Run as the displaying user, never the agent's SYSTEM identity.
-pub(super) fn start_trust_worker() {
-    std::thread::spawn(|| loop {
-        let cas = load_bundle().map(|bundle| bundle.trusted_cas).unwrap_or_default();
-        match reconcile(&cas) {
-            // The agent restarts the renderer with a fresh WebView2 network process.
-            Ok(true) => std::process::exit(0),
-            Ok(false) => {},
-            Err(error) => {
-                let report = TrustReport { revision: revision(&cas), state: "error".into(), message: error.chars().take(1024).collect() };
-                if let Ok(bytes) = serde_json::to_vec(&report) { let _ = fs::write(state_dir().join("trusted-ca-status.json"), bytes); }
-            }
+/// The elevated agent owns machine trust; an unelevated agent reports manual action.
+pub(super) fn reconcile_cached() -> bool {
+    let cas = load_trusted_cas();
+    match reconcile(&cas) {
+        Ok(changed) => changed,
+        Err(error) => {
+            let report = TrustReport { revision: revision(&cas), state: "error".into(), message: error.chars().take(1024).collect() };
+            if let Ok(bytes) = serde_json::to_vec(&report) { let _ = fs::write(state_dir().join("trusted-ca-status.json"), bytes); }
+            false
         }
-        std::thread::sleep(Duration::from_secs(60));
-    });
+    }
 }

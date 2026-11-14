@@ -55,7 +55,7 @@ def validate(cas, workdir):
             raise ValueError("CA fingerprint mismatch")
         cert = Path(workdir) / "validate.pem"
         cert.write_text(pem)
-        details = subprocess.run(["/usr/bin/openssl", "x509", "-in", str(cert), "-noout", "-text", "-subject", "-issuer", "-nameopt", "RFC2253"], check=True, capture_output=True, text=True, timeout=10).stdout
+        details = subprocess.run(["/usr/bin/openssl", "x509", "-in", str(cert), "-noout", "-ext", "basicConstraints", "-subject", "-issuer", "-nameopt", "RFC2253"], check=True, capture_output=True, text=True, timeout=10).stdout
         if not re.search(r"X509v3 Basic Constraints:[^\n]*\n\s*(?:[^\n]*, )?CA:TRUE", details):
             raise ValueError("Certificate must be a CA")
         subject = re.search(r"^subject=(.*)$", details, re.M)

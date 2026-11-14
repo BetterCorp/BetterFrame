@@ -12,13 +12,13 @@ function Fingerprint($Certificate) {
 function Item($Certificate) {
     return @{ pem = "-----BEGIN CERTIFICATE-----`n" + [Convert]::ToBase64String($Certificate.RawData, 'InsertLineBreaks') + "`n-----END CERTIFICATE-----`n"; fingerprint_sha256 = (Fingerprint $Certificate) }
 }
-function Installed($Certificate) { return Test-Path "Cert:\CurrentUser\Root\$($Certificate.Thumbprint)" }
+function Installed($Certificate) { return Test-Path "Cert:\LocalMachine\Root\$($Certificate.Thumbprint)" }
 try {
     $first = New-SelfSignedCertificate -Type Custom -Subject ('CN=BF managed test ' + [Guid]::NewGuid()) -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -KeyUsage CertSign,CRLSign -TextExtension @('2.5.29.19={critical}{text}ca=1') -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddDays(1)
     $created += $first
     $external = New-SelfSignedCertificate -Type Custom -Subject ('CN=BF external test ' + [Guid]::NewGuid()) -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -KeyUsage CertSign,CRLSign -TextExtension @('2.5.29.19={critical}{text}ca=1') -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddDays(1)
     $created += $external
-    $root = [Security.Cryptography.X509Certificates.X509Store]::new('Root', 'CurrentUser')
+    $root = [Security.Cryptography.X509Certificates.X509Store]::new('Root', 'LocalMachine')
     $root.Open('ReadWrite'); $root.Add($external); $root.Close()
     $env:BF_CA_STATE = $directory
     $env:BF_CA_REQUEST = Join-Path $directory 'request.json'
@@ -29,6 +29,7 @@ try {
         & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script
         Assert-True ($LASTEXITCODE -eq $Expected) "Installer exit $LASTEXITCODE, expected $Expected; report: $(Get-Content -LiteralPath $env:BF_CA_REPORT -Raw)"
     }
+    Write-Host "Testing managed machine-root installation"
     Apply @((Item $first), (Item $external)) 10
     Assert-True (Installed $first) 'Managed root missing'
     Apply @((Item $first), (Item $external)) 0
@@ -44,8 +45,8 @@ try {
     Write-Host 'Windows CA installation, idempotence, validation and removal passed.'
 } finally {
     foreach ($cert in $created) {
-        foreach ($store in @('Root', 'My')) {
-            $path = "Cert:\CurrentUser\$store\$($cert.Thumbprint)"
+        foreach ($store in @('LocalMachine\Root', 'CurrentUser\My')) {
+            $path = "Cert:\$store\$($cert.Thumbprint)"
             if (Test-Path $path) { Remove-Item $path -Force }
         }
     }

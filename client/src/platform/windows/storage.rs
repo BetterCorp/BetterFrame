@@ -184,11 +184,14 @@ fn complete_demo_exit_at(directory: &std::path::Path, browser: &std::path::Path)
         *latest = ClientState::unpaired(&latest.server_url);
         Ok(())
     })?;
+    let trust = directory.join("trusted-cas.json");
+    if trust.exists() { fs::remove_file(trust).map_err(|error| error.to_string())?; }
     let bundle = directory.join("bundle.json");
     if bundle.exists() { fs::remove_file(bundle).map_err(|error| error.to_string())?; }
     if browser.exists() { fs::remove_dir_all(browser).map_err(|error| error.to_string())?; }
     // Commit the exit last. A crash or cleanup error leaves a retryable journal,
     // regardless of whether the credentials have already been cleared.
+    let _ = super::trusted_cas::reconcile_cached();
     fs::remove_file(marker).map_err(|error| error.to_string())
 }
 
@@ -197,6 +200,17 @@ pub(super) fn load_bundle() -> Option<KioskBundle> {
         .and_then(|()| read_protected_or_plain(&bundle_path()))
         .ok()
         .and_then(|bytes| deserialize_cached_bundle(&bytes))
+}
+
+pub(super) fn load_trusted_cas() -> Vec<crate::bundle::TrustedCa> {
+    let path = state_dir().join("trusted-cas.json");
+    if path.exists() {
+        read_protected_or_plain(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+    } else { load_bundle().map(|bundle| bundle.trusted_cas).unwrap_or_default() }
+}
+
+pub(super) fn save_trusted_cas(cas: &[crate::bundle::TrustedCa]) -> Result<(), String> {
+    write_protected(&state_dir().join("trusted-cas.json"), &serde_json::to_vec(cas).map_err(|error| error.to_string())?)
 }
 
 pub(super) fn save_bundle(bundle: &KioskBundle) -> Result<(), String> {

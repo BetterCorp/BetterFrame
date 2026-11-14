@@ -146,6 +146,7 @@ jobs:
           "PKG_CONFIG_PATH=$pkgConfigPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "LIB=C:\Program Files\gstreamer\1.0\msvc_x86_64\lib;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Windows trusted CA lifecycle
+        timeout-minutes: 3
         shell: pwsh
         run: ./scripts/test-windows-trusted-cas.ps1
       - name: Build and test Windows client

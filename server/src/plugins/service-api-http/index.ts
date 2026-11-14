@@ -1299,7 +1299,9 @@ export function registerKioskRoutes(
     // Re-read kiosk so we see the freshly-persisted applied_version above when
     // computing whether the server still has a newer config to deliver.
     const fresh = await repo.getKioskById(kiosk.id);
-    if (viewer) return { ok: true, now: new Date().toISOString(), viewer_profile: "android-viewer-v1" };
+    // Trust must converge even when this player has no display/layout bundle.
+    const trusted_cas = (await repo.trustedCasForKiosk(kiosk.id)).map(({ pem, fingerprint_sha256 }) => ({ pem, fingerprint_sha256 }));
+    if (viewer) return { ok: true, now: new Date().toISOString(), viewer_profile: "android-viewer-v1", trusted_cas };
     const updateSchedule = normalizeUpdateSchedule(await repo.getSetupExtra("update_schedule"));
     let pendingConfig: { version: number; config: unknown } | undefined;
     const isWindowsClient = Array.isArray(fresh?.capabilities) && fresh.capabilities.includes("windows");
@@ -1322,6 +1324,7 @@ export function registerKioskRoutes(
     return {
       ok: true,
       now: new Date().toISOString(),
+      trusted_cas,
       firmware_channel: effectiveFirmwareChannel(fresh),
       firmware_target_version: fresh?.firmware_target_version ?? null,
       os_update_channel: fresh?.os_update_channel ?? "stable",

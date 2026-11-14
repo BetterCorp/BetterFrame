@@ -742,7 +742,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
     }
 
     private fun heartbeat(): Boolean {
-        trustReport = syncTrustedCas(state.optString("bundle").takeIf { it.isNotBlank() }?.let { JSONObject(it).optJSONArray("trusted_cas") } ?: JSONArray())
+        trustReport = syncTrustedCas(state.optJSONArray("trusted_cas") ?: state.optString("bundle").takeIf { it.isNotBlank() }?.let { JSONObject(it).optJSONArray("trusted_cas") } ?: JSONArray())
         val metrics = app.resources.displayMetrics
         val displays = JSONArray().put(powerStateReport().put("index", 0).put("name", "Android display")
             .put("width_px", metrics.widthPixels).put("height_px", metrics.heightPixels))
@@ -753,13 +753,18 @@ class ViewerSession internal constructor(context: Context, private val listener:
                 if (!authorized(it)) return@use false
                 // A dropped response body is a transport failure, not evidence
                 // that a previously verified server no longer supports viewers.
-                val profile = try { json(it).optString("viewer_profile") } catch (_: JSONException) { null }
+                val response = try { json(it) } catch (_: JSONException) { null }
+                val profile = response?.optString("viewer_profile")
                 ensureActive()
                 if (profile != VIEWER_PROFILE) {
                     clearCachedBundle()
                     blockDisplay(PROFILE_REQUIRED)
                     false
                 } else {
+                    response?.optJSONArray("trusted_cas")?.let { cas ->
+                        state.put("trusted_cas", cas); persist()
+                        trustReport = syncTrustedCas(cas)
+                    }
                     profileVerified = true
                     true
                 }
@@ -797,7 +802,6 @@ class ViewerSession internal constructor(context: Context, private val listener:
             }
             if (!authorized(it)) return
             val bundle = json(it)
-            trustReport = syncTrustedCas(bundle.optJSONArray("trusted_cas") ?: JSONArray())
             val raw = bundle.toString()
             val plan = JSONObject(NativeCore.renderPlan(raw, null, null))
             awaitingAssignment = plan.optString("error") == NO_LAYOUTS_ASSIGNED

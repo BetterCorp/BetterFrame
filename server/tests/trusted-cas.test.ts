@@ -10,6 +10,7 @@ import { parseTrustedCa, trustedCaAssignment, trustedCaRevision } from "../src/s
 import { registerTrustedCaRoutes } from "../src/plugins/service-admin-http/routes-trusted-cas.js";
 import { registerMiddleware } from "../src/plugins/service-admin-http/middleware.js";
 import { TrustedCasPage } from "../src/web-templates/trusted-ca-pages.js";
+import { registerKioskRoutes } from "../src/plugins/service-api-http/index.js";
 import { generateBundle } from "../src/shared/bundle.js";
 import { PgAdapter } from "../src/shared/db/pg-adapter.js";
 import { Repository } from "../src/shared/db/repository.js";
@@ -168,4 +169,26 @@ test("PostgreSQL CA assignments and reports remain tenant-local and survive reop
       await reopened.deleteTrustedCa(ca.id); assert.deepEqual(await reopened.trustedCasForKiosk("player"), []);
     });
   } finally { for (const schema of schemas) await adapter.exec(`DROP SCHEMA IF EXISTS ${schema} CASCADE`); await adapter.close(); }
+});
+
+test("heartbeats provision and remove CAs without displays, layouts or a content bundle", async () => {
+  for (const viewer of [false, true]) {
+    let assigned = [ca]; const reports: unknown[] = [];
+    const profile = { id: "player", name: "Player", enabled: true, capabilities: viewer ? ["android-viewer"] : ["linux"], managed_image: false };
+    const app = new H3();
+    app.use(event => { event.context.verifiedKiosk = { id: "player" }; event.context.kioskProfile = profile; });
+    registerKioskRoutes(app, {
+      getKioskById: async () => profile, touchKiosk: async () => {}, getSetupExtra: async () => null, listDisplaysForKiosk: async () => [],
+      trustedCasForKiosk: async (id: string) => { assert.equal(id, "player"); return assigned; },
+      reportTrustedCas: async (_id: string, report: unknown) => { reports.push(report); },
+    } as never, {} as never, {} as never, {} as never, {} as never, {} as never, { publishTelemetry() {} } as never, "");
+    const send = () => app.request("http://bf.test/api/kiosk/heartbeat", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ displays: [], trusted_ca_status: { revision: trustedCaRevision([]), state: "applied", message: "" } }) });
+    const first = await send(); assert.equal(first.status, 200);
+    assert.deepEqual(((await first.json()) as { trusted_cas: unknown }).trusted_cas, [{ pem: ca.pem, fingerprint_sha256: ca.fingerprint_sha256 }]);
+    assigned = [];
+    const removed = await send(); assert.equal(removed.status, 200);
+    assert.deepEqual(((await removed.json()) as { trusted_cas: unknown }).trusted_cas, []);
+    assert.equal(reports.length, 2);
+  }
 });

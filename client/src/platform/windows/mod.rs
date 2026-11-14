@@ -389,6 +389,7 @@ async fn run_agent(server_url: String, app: Arc<Mutex<Option<Child>>>) -> Result
         latest.server_url = server_url;
         Ok(())
     })?;
+    let _ = trusted_cas::reconcile_cached();
     // The renderer reads protected cached state independently. Start it before
     // regional discovery so an offline upgrade keeps showing the saved display.
     start_app(&app)?;
@@ -434,12 +435,16 @@ async fn run_agent(server_url: String, app: Arc<Mutex<Option<Child>>>) -> Result
     }
     {
         let state = state.clone();
+        let app_for_trust = app.clone();
         tokio::spawn(async move {
             loop {
                 let snapshot = state.lock().unwrap().clone();
                 if let Some(key) = snapshot.kiosk_key.as_deref() {
                     match heartbeat(&snapshot.server_url, key, &snapshot).await {
                         Ok(next) => {
+                            if tokio::task::spawn_blocking(trusted_cas::reconcile_cached).await.unwrap_or(false) {
+                                if let Err(error) = restart_app(&app_for_trust) { warn!("restart renderer after CA change: {error}"); }
+                            }
                             match update_state(|latest| {
                                 latest.managed_config_applied_version = next.managed_config_applied_version;
                                 latest.managed_config_error = next.managed_config_error;
@@ -955,6 +960,7 @@ async fn heartbeat(
         .json::<HeartbeatResponse>()
         .await
         .map_err(|e| HeartbeatError::Other(format!("heartbeat response: {e}")))?;
+    if let Some(cas) = body.trusted_cas { save_trusted_cas(&cas).map_err(HeartbeatError::Other)?; }
     let mut next = state.clone();
     if let Some(pending) = body.pending_config {
         match apply_pending_config(&pending) {

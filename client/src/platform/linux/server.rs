@@ -490,6 +490,7 @@ fn remove_pairing_state_files(dir: &PathBuf) {
         "kiosk.key",
         "server.url",
         "bundle.json",
+        "trusted-cas.json",
         "cluster.key",
         "encrypt.key",
         "local.key",
@@ -978,7 +979,7 @@ pub fn heartbeat(
     let network_interfaces = read_network_interfaces();
     let managed_report = MANAGED_CONFIG_REPORT.lock().ok().and_then(|g| g.clone());
     let mut payload = serde_json::json!({
-        "trusted_ca_status": crate::linux_trusted_cas::sync(&load_cached_bundle().map(|b| b.trusted_cas).unwrap_or_default()),
+        "trusted_ca_status": crate::linux_trusted_cas::sync(&load_trusted_cas()),
         "bundle_version": bundle_version,
         "kiosk_app_version": kiosk_app_version(),
         "firmware_target": crate::firmware::FIRMWARE_TARGET,
@@ -1054,6 +1055,15 @@ pub fn heartbeat(
                         "_check says key still valid, ignoring bf_kiosk_deleted from heartbeat"
                     );
                 }
+                if let Some(value) = body.get("trusted_cas") {
+                    if let Ok(cas) = serde_json::from_value::<Vec<crate::bundle::TrustedCa>>(value.clone()) {
+                        if let Ok(bytes) = serde_json::to_vec(&cas) {
+                            if crate::at_rest::write_encrypted(&state_dir().join("trusted-cas.json"), &bytes).is_ok() {
+                                let _ = crate::linux_trusted_cas::sync(&cas);
+                            }
+                        }
+                    }
+                }
                 crate::update_recovery::record_heartbeat(server, &body, policy_request);
                 let fw = body.get("firmware_channel").and_then(|v| v.as_str());
                 let os = body.get("os_update_channel").and_then(|v| v.as_str());
@@ -1076,6 +1086,16 @@ pub fn heartbeat(
             Ok(true)
         })
         .unwrap_or(false)
+}
+
+pub fn load_trusted_cas() -> Vec<crate::bundle::TrustedCa> {
+    let path = state_dir().join("trusted-cas.json");
+    if path.exists() {
+        crate::at_rest::read_maybe_encrypted(&path)
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+    } else {
+        load_cached_bundle().map(|bundle| bundle.trusted_cas).unwrap_or_default()
+    }
 }
 
 pub fn update_policy_path() -> PathBuf {

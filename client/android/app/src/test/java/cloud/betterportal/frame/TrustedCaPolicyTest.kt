@@ -12,7 +12,7 @@ class TrustedCaPolicyTest {
     private fun certificate(): JSONObject {
         val directory = Files.createTempDirectory("bf-ca-unit").toFile()
         try {
-            val process = ProcessBuilder("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=BF Android unit test", "-addext", "basicConstraints=critical,CA:TRUE", "-keyout", directory.resolve("key").path, "-out", directory.resolve("cert").path).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
+            val process = ProcessBuilder("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=BF Android unit test", "-addext", "basicConstraints=critical,CA:TRUE", "-keyout", directory.resolve("key").path, "-out", directory.resolve("cert").path).redirectErrorStream(true).redirectOutput(directory.resolve("openssl.log")).start()
             check(process.waitFor() == 0)
             val pem = directory.resolve("cert").readText()
             val cert = CertificateFactory.getInstance("X.509").generateCertificate(pem.byteInputStream()) as X509Certificate

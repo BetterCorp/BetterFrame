@@ -25,6 +25,7 @@ export function TrustedCasPage(props: { user?: string; error?: string; cas: Trus
     </tbody></table></div> : <p>No CA certificates have been added.</p>}
     <h2>Player assignments</h2>
     <p>Save an empty selection to remove BetterFrame-installed certificates. Changes apply when the player next connects. Older players need an app update.</p>
+    <p>Windows automatic provisioning requires an elevated BetterFrame agent and applies to all users on that player. Unelevated agents require manual certificate installation.</p>
     <p>Managed Android players install automatically. On other Android devices, download the assigned certificate and install it through Android Settings → Security → Encryption &amp; credentials → Install a CA certificate. Removal also requires Settings on those devices.</p>
     {props.kiosks.map(kiosk => {
       const assigned = props.assignments.filter(a => a.kiosk_id === kiosk.id).map(a => a.ca_id);

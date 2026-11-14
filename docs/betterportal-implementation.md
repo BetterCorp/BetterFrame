@@ -108,6 +108,29 @@ migrate the database named by `BF_TEST_PG_URL` itself. Without it PostgreSQL cas
 skip, which does not satisfy the migration gate. `pretest` regenerates BP route
 runtime files so tests also work on a fresh checkout before the first build.
 
+## Master integration, 2026-11-14
+
+Merged master `bcf3f0d`, including block overlays, entity-owned web authentication,
+smart URL rechecks and Linux setup fixes. The native BP overlay editor and web-auth
+configuration controls remain workflow-parity items; existing legacy functionality
+and machine API contracts are retained in the updated route inventory.
+
+Master published tenant migrations 151–153 for entity authentication and overlays.
+The parallel BP test build had independently used 151–166 for resource ownership.
+The merged sequence preserves master's positions, makes ownership DDL idempotent,
+and appends a reconciliation checkpoint after the historical BP positions. This
+allows both existing histories to reach the same schema without deleting data or
+renumbering applied migration records. PostgreSQL regression tests cover upgrades
+from versions 153 and 166 in both the default and a registered tenant schema,
+preserving configured authentication, legacy backfill, ownership and overlays.
+
+Camera credential writes now encrypt at the repository boundary when the installation
+codec is configured. Existing ciphertext is retained, blank discovery passwords omit
+the password patch, and decrypted read models cannot downgrade stored credentials.
+BP layout switches forward the tenant-scoped `layout.changed` notification after
+successful command delivery, independently of later kiosk telemetry; rejected,
+offline and sandbox requests emit no change event.
+
 ## Remaining before full parity and cutover
 
 - Owner links the parallel service in BP; mount pages/dependencies, assign grants,

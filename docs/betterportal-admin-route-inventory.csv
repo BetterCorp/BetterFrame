@@ -1,8 +1,8 @@
 method,legacy_path,source,source_line,proposed_disposition,wave
 GET,/,server/src/plugins/service-admin-http/index.ts,225,Explicit installation/admin landing behavior; preserve device paths,6
-GET,/admin,server/src/plugins/service-admin-http/routes-admin.ts,763,BP overview page and individually mapped legacy GET redirect at cutover,2-6
-GET,/admin/,server/src/plugins/service-admin-http/routes-admin.ts,735,BP overview page and individually mapped legacy GET redirect at cutover,2-6
-GET,/admin/_tenant_switcher,server/src/plugins/service-admin-http/routes-admin.ts,3278,BP client owns tenant selection; retire Frame cookie switch after cutover,2-4
+GET,/admin,server/src/plugins/service-admin-http/routes-admin.ts,766,BP overview page and individually mapped legacy GET redirect at cutover,2-6
+GET,/admin/,server/src/plugins/service-admin-http/routes-admin.ts,738,BP overview page and individually mapped legacy GET redirect at cutover,2-6
+GET,/admin/_tenant_switcher,server/src/plugins/service-admin-http/routes-admin.ts,3262,BP client owns tenant selection; retire Frame cookie switch after cutover,2-4
 GET,/admin/ablesign,server/src/plugins/service-admin-http/routes-ablesign.ts,38,Port BP read/page or fragment as appropriate; classify representation before page redirect,4
 POST,/admin/ablesign/:id/delete,server/src/plugins/service-admin-http/routes-ablesign.ts,91,Port to typed BP operation; audit external callers before retiring legacy path,4
 GET,/admin/ablesign/:id/screens,server/src/plugins/service-admin-http/routes-ablesign.ts,70,Port BP read/page or fragment as appropriate; classify representation before page redirect,4
@@ -51,128 +51,135 @@ POST,/admin/account/password,server/src/plugins/service-admin-http/routes-accoun
 POST,/admin/account/totp/begin,server/src/plugins/service-admin-http/routes-account.ts,83,Move human identity/account security to bound BP auth provider; retain legacy only through rollback window,4-7
 POST,/admin/account/totp/confirm,server/src/plugins/service-admin-http/routes-account.ts,116,Move human identity/account security to bound BP auth provider; retain legacy only through rollback window,4-7
 POST,/admin/account/totp/disable,server/src/plugins/service-admin-http/routes-account.ts,167,Move human identity/account security to bound BP auth provider; retain legacy only through rollback window,4-7
-GET,/admin/audit,server/src/plugins/service-admin-http/routes-admin.ts,947,Port BP read/page or fragment as appropriate; classify representation before page redirect,4
-GET,/admin/backup,server/src/plugins/service-admin-http/routes-admin.ts,934,Port BP read/page or fragment as appropriate; classify representation before page redirect,4
-POST,/admin/backup/download,server/src/plugins/service-admin-http/routes-admin.ts,942,Retain 409 rejection of obsolete SQLite archive; design PostgreSQL backup/restore separately,4
-POST,/admin/backup/restore,server/src/plugins/service-admin-http/routes-admin.ts,942,Retain 409 rejection of obsolete SQLite archive; design PostgreSQL backup/restore separately,4
-GET,/admin/camera-devices/:id,server/src/plugins/service-admin-http/routes-admin.ts,1258,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/camera-devices/:id,server/src/plugins/service-admin-http/routes-admin.ts,1275,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/camera-devices/:id/delete,server/src/plugins/service-admin-http/routes-admin.ts,1387,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/camera-devices/:id/labels,server/src/plugins/service-admin-http/routes-admin.ts,1360,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/camera-devices/:id/labels/remove,server/src/plugins/service-admin-http/routes-admin.ts,1376,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/camera-devices/:id/sync,server/src/plugins/service-admin-http/routes-admin.ts,1306,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/cameras,server/src/plugins/service-admin-http/routes-admin.ts,1001,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-GET,/admin/cameras/:id,server/src/plugins/service-admin-http/routes-admin.ts,2200,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/cameras/:id,server/src/plugins/service-admin-http/routes-admin.ts,2244,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/cameras/:id/delete,server/src/plugins/service-admin-http/routes-admin.ts,2426,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/cameras/:id/events,server/src/plugins/service-admin-http/routes-admin.ts,2441,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/cameras/:id/labels,server/src/plugins/service-admin-http/routes-admin.ts,2334,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/cameras/:id/labels/remove,server/src/plugins/service-admin-http/routes-admin.ts,2354,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/cameras/:id/refresh-events,server/src/plugins/service-admin-http/routes-admin.ts,2368,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/cameras/:id/subscribe-events,server/src/plugins/service-admin-http/routes-admin.ts,2413,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/cameras/discover,server/src/plugins/service-admin-http/routes-admin.ts,1090,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/cameras/discover,server/src/plugins/service-admin-http/routes-admin.ts,1139,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/cameras/discover/add,server/src/plugins/service-admin-http/routes-admin.ts,1188,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/cameras/discover/snapshot/:token,server/src/plugins/service-admin-http/routes-admin.ts,1098,Port raw/fragment operation with explicit auth/dependency; do not blanket redirect,3
-GET,/admin/cameras/new,server/src/plugins/service-admin-http/routes-admin.ts,1019,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/cameras/new,server/src/plugins/service-admin-http/routes-admin.ts,1024,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/audit,server/src/plugins/service-admin-http/routes-admin.ts,950,Port BP read/page or fragment as appropriate; classify representation before page redirect,4
+GET,/admin/backup,server/src/plugins/service-admin-http/routes-admin.ts,937,Port BP read/page or fragment as appropriate; classify representation before page redirect,4
+POST,/admin/backup/download,server/src/plugins/service-admin-http/routes-admin.ts,945,Retain 409 rejection of obsolete SQLite archive; design PostgreSQL backup/restore separately,4
+POST,/admin/backup/restore,server/src/plugins/service-admin-http/routes-admin.ts,945,Retain 409 rejection of obsolete SQLite archive; design PostgreSQL backup/restore separately,4
+GET,/admin/camera-devices/:id,server/src/plugins/service-admin-http/routes-admin.ts,1261,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/camera-devices/:id,server/src/plugins/service-admin-http/routes-admin.ts,1278,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/camera-devices/:id/delete,server/src/plugins/service-admin-http/routes-admin.ts,1390,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/camera-devices/:id/labels,server/src/plugins/service-admin-http/routes-admin.ts,1363,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/camera-devices/:id/labels/remove,server/src/plugins/service-admin-http/routes-admin.ts,1379,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/camera-devices/:id/sync,server/src/plugins/service-admin-http/routes-admin.ts,1309,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/cameras,server/src/plugins/service-admin-http/routes-admin.ts,1004,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+GET,/admin/cameras/:id,server/src/plugins/service-admin-http/routes-admin.ts,2184,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/cameras/:id,server/src/plugins/service-admin-http/routes-admin.ts,2228,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/cameras/:id/delete,server/src/plugins/service-admin-http/routes-admin.ts,2410,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/cameras/:id/events,server/src/plugins/service-admin-http/routes-admin.ts,2425,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/cameras/:id/labels,server/src/plugins/service-admin-http/routes-admin.ts,2318,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/cameras/:id/labels/remove,server/src/plugins/service-admin-http/routes-admin.ts,2338,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/cameras/:id/refresh-events,server/src/plugins/service-admin-http/routes-admin.ts,2352,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/cameras/:id/subscribe-events,server/src/plugins/service-admin-http/routes-admin.ts,2397,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/cameras/discover,server/src/plugins/service-admin-http/routes-admin.ts,1093,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/cameras/discover,server/src/plugins/service-admin-http/routes-admin.ts,1142,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/cameras/discover/add,server/src/plugins/service-admin-http/routes-admin.ts,1191,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/cameras/discover/snapshot/:token,server/src/plugins/service-admin-http/routes-admin.ts,1101,Port raw/fragment operation with explicit auth/dependency; do not blanket redirect,3
+GET,/admin/cameras/new,server/src/plugins/service-admin-http/routes-admin.ts,1022,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/cameras/new,server/src/plugins/service-admin-http/routes-admin.ts,1027,Port to typed BP operation; audit external callers before retiring legacy path,3
 GET,/admin/cloud-accounts,server/src/plugins/service-admin-http/routes-cloud.ts,25,Port BP read/page or fragment as appropriate; classify representation before page redirect,4
 POST,/admin/cloud-accounts/:id/delete,server/src/plugins/service-admin-http/routes-cloud.ts,94,Port to typed BP operation; audit external callers before retiring legacy path,4
 POST,/admin/cloud-accounts/:id/sync,server/src/plugins/service-admin-http/routes-cloud.ts,87,Port to typed BP operation; audit external callers before retiring legacy path,4
 POST,/admin/cloud-accounts/add,server/src/plugins/service-admin-http/routes-cloud.ts,50,Port to typed BP operation; audit external callers before retiring legacy path,4
-GET,/admin/displays,server/src/plugins/service-admin-http/routes-admin.ts,2065,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/displays/:displayId/layout,server/src/plugins/service-admin-http/routes-admin.ts,3105,BP operation plus retained legacy Node-RED compatibility route,3
-POST,/admin/displays/:displayId/layout/:layoutId,server/src/plugins/service-admin-http/routes-admin.ts,3106,BP operation plus retained legacy Node-RED compatibility route,3
-GET,/admin/displays/:id,server/src/plugins/service-admin-http/routes-admin.ts,2086,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/displays/:id,server/src/plugins/service-admin-http/routes-admin.ts,2105,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/displays/:id/layouts,server/src/plugins/service-admin-http/routes-admin.ts,2146,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/displays/:id/layouts/:layoutId/remove,server/src/plugins/service-admin-http/routes-admin.ts,2161,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/displays/:id/power/standby,server/src/plugins/service-admin-http/routes-admin.ts,3135,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/displays/:id/power/wake,server/src/plugins/service-admin-http/routes-admin.ts,3136,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/entities,server/src/plugins/service-admin-http/routes-admin.ts,1396,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-GET,/admin/entities/:id,server/src/plugins/service-admin-http/routes-admin.ts,1465,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/entities/:id,server/src/plugins/service-admin-http/routes-admin.ts,1477,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/entities/:id/delete,server/src/plugins/service-admin-http/routes-admin.ts,1509,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/entities/:id/snapshot,server/src/plugins/service-admin-http/routes-admin.ts,1520,BP operation plus retained legacy Node-RED compatibility route,3
-GET,/admin/entities/new,server/src/plugins/service-admin-http/routes-admin.ts,1406,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/entities/new,server/src/plugins/service-admin-http/routes-admin.ts,1414,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/entities/sync-dashboards,server/src/plugins/service-admin-http/routes-admin.ts,3661,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/displays,server/src/plugins/service-admin-http/routes-admin.ts,2049,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/displays/:displayId/layout,server/src/plugins/service-admin-http/routes-admin.ts,3089,BP operation plus retained legacy Node-RED compatibility route,3
+POST,/admin/displays/:displayId/layout/:layoutId,server/src/plugins/service-admin-http/routes-admin.ts,3090,BP operation plus retained legacy Node-RED compatibility route,3
+GET,/admin/displays/:id,server/src/plugins/service-admin-http/routes-admin.ts,2070,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/displays/:id,server/src/plugins/service-admin-http/routes-admin.ts,2089,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/displays/:id/layouts,server/src/plugins/service-admin-http/routes-admin.ts,2130,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/displays/:id/layouts/:layoutId/remove,server/src/plugins/service-admin-http/routes-admin.ts,2145,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/displays/:id/power/standby,server/src/plugins/service-admin-http/routes-admin.ts,3119,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/displays/:id/power/wake,server/src/plugins/service-admin-http/routes-admin.ts,3120,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/entities,server/src/plugins/service-admin-http/routes-admin.ts,1399,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+GET,/admin/entities/:id,server/src/plugins/service-admin-http/routes-admin.ts,1474,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/entities/:id,server/src/plugins/service-admin-http/routes-admin.ts,1487,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/entities/:id/delete,server/src/plugins/service-admin-http/routes-admin.ts,1525,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/entities/:id/snapshot,server/src/plugins/service-admin-http/routes-admin.ts,1536,BP operation plus retained legacy Node-RED compatibility route,3
+GET,/admin/entities/new,server/src/plugins/service-admin-http/routes-admin.ts,1409,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/entities/new,server/src/plugins/service-admin-http/routes-admin.ts,1417,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/entities/sync-dashboards,server/src/plugins/service-admin-http/routes-admin.ts,3645,Port to typed BP operation; audit external callers before retiring legacy path,3
 GET,/admin/firmware,server/src/plugins/service-admin-http/routes-firmware.ts,46,Port BP read/page or fragment as appropriate; classify representation before page redirect,4
 POST,/admin/firmware/:id/yank,server/src/plugins/service-admin-http/routes-firmware.ts,224,Port to typed BP operation; audit external callers before retiring legacy path,4
 GET,/admin/firmware/rollouts,server/src/plugins/service-admin-http/routes-firmware.ts,302,Port BP read/page or fragment as appropriate; classify representation before page redirect,4
 POST,/admin/firmware/rollouts/:id/state,server/src/plugins/service-admin-http/routes-firmware.ts,372,Port to typed BP operation; audit external callers before retiring legacy path,4
 POST,/admin/firmware/rollouts/new,server/src/plugins/service-admin-http/routes-firmware.ts,318,Port to typed BP operation; audit external callers before retiring legacy path,4
 POST,/admin/firmware/upload,server/src/plugins/service-admin-http/routes-firmware.ts,58,Port to typed BP operation; audit external callers before retiring legacy path,4
-GET,/admin/health,server/src/plugins/service-admin-http/routes-admin.ts,962,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-GET,/admin/iobox,server/src/plugins/service-admin-http/routes-admin.ts,769,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-GET,/admin/iobox/:id,server/src/plugins/service-admin-http/routes-admin.ts,863,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/iobox/:id,server/src/plugins/service-admin-http/routes-admin.ts,877,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/iobox/:id/firmware,server/src/plugins/service-admin-http/routes-admin.ts,891,Port to typed BP operation; audit external callers before retiring legacy path,4
-POST,/admin/iobox/:id/mappings,server/src/plugins/service-admin-http/routes-admin.ts,905,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/iobox/:id/mappings/:mappingId/delete,server/src/plugins/service-admin-http/routes-admin.ts,923,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/iobox/models,server/src/plugins/service-admin-http/routes-admin.ts,781,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/iobox/models,server/src/plugins/service-admin-http/routes-admin.ts,787,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/iobox/models/:id,server/src/plugins/service-admin-http/routes-admin.ts,806,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/iobox/models/:id,server/src/plugins/service-admin-http/routes-admin.ts,814,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/iobox/serials,server/src/plugins/service-admin-http/routes-admin.ts,835,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/iobox/serials,server/src/plugins/service-admin-http/routes-admin.ts,844,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/kiosks,server/src/plugins/service-admin-http/routes-admin.ts,1583,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-GET,/admin/kiosks/:id,server/src/plugins/service-admin-http/routes-admin.ts,2469,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/kiosks/:id,server/src/plugins/service-admin-http/routes-admin.ts,2556,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/kiosks/:id/delete,server/src/plugins/service-admin-http/routes-admin.ts,2856,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/health,server/src/plugins/service-admin-http/routes-admin.ts,965,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+GET,/admin/iobox,server/src/plugins/service-admin-http/routes-admin.ts,772,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+GET,/admin/iobox/:id,server/src/plugins/service-admin-http/routes-admin.ts,866,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/iobox/:id,server/src/plugins/service-admin-http/routes-admin.ts,880,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/iobox/:id/firmware,server/src/plugins/service-admin-http/routes-admin.ts,894,Port to typed BP operation; audit external callers before retiring legacy path,4
+POST,/admin/iobox/:id/mappings,server/src/plugins/service-admin-http/routes-admin.ts,908,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/iobox/:id/mappings/:mappingId/delete,server/src/plugins/service-admin-http/routes-admin.ts,926,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/iobox/models,server/src/plugins/service-admin-http/routes-admin.ts,784,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/iobox/models,server/src/plugins/service-admin-http/routes-admin.ts,790,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/iobox/models/:id,server/src/plugins/service-admin-http/routes-admin.ts,809,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/iobox/models/:id,server/src/plugins/service-admin-http/routes-admin.ts,817,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/iobox/serials,server/src/plugins/service-admin-http/routes-admin.ts,838,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/iobox/serials,server/src/plugins/service-admin-http/routes-admin.ts,847,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/kiosks,server/src/plugins/service-admin-http/routes-admin.ts,1599,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+GET,/admin/kiosks/:id,server/src/plugins/service-admin-http/routes-admin.ts,2453,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/kiosks/:id,server/src/plugins/service-admin-http/routes-admin.ts,2540,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/kiosks/:id/delete,server/src/plugins/service-admin-http/routes-admin.ts,2840,Port to typed BP operation; audit external callers before retiring legacy path,3
 GET,/admin/kiosks/:id/diagnostics,server/src/plugins/service-admin-http/routes-logs.ts,20,"BP tenant-scoped diagnostic log page; preserve filters, polling cleanup and no-store",3
 POST,/admin/kiosks/:id/firmware,server/src/plugins/service-admin-http/routes-firmware.ts,237,Port to typed BP operation; audit external callers before retiring legacy path,4
 POST,/admin/kiosks/:id/firmware/push,server/src/plugins/service-admin-http/routes-firmware.ts,285,Port to typed BP operation; audit external callers before retiring legacy path,4
-POST,/admin/kiosks/:id/gpio,server/src/plugins/service-admin-http/routes-admin.ts,2517,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/kiosks/:id/gpio/:bindingId/delete,server/src/plugins/service-admin-http/routes-admin.ts,2543,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/kiosks/:id/labels,server/src/plugins/service-admin-http/routes-admin.ts,2812,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/kiosks/:id/labels/remove,server/src/plugins/service-admin-http/routes-admin.ts,2838,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/kiosks/:id/local-key/rotate,server/src/plugins/service-admin-http/routes-admin.ts,3209,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/kiosks/:id/logs,server/src/plugins/service-admin-http/routes-admin.ts,2867,BP view with authorized editor/debug transport; prove bridge before retiring legacy login,5
-POST,/admin/kiosks/:id/managed-config,server/src/plugins/service-admin-http/routes-admin.ts,2703,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/kiosks/:id/operator-console,server/src/plugins/service-admin-http/routes-admin.ts,2578,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/kiosks/:id/operator-console/enroll,server/src/plugins/service-admin-http/routes-admin.ts,2636,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/kiosks/:id/operator-console/stations,server/src/plugins/service-admin-http/routes-admin.ts,2672,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/kiosks/:id/operator-console/stations/:stationId/revoke,server/src/plugins/service-admin-http/routes-admin.ts,2681,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/kiosks/:id/gpio,server/src/plugins/service-admin-http/routes-admin.ts,2501,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/kiosks/:id/gpio/:bindingId/delete,server/src/plugins/service-admin-http/routes-admin.ts,2527,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/kiosks/:id/labels,server/src/plugins/service-admin-http/routes-admin.ts,2796,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/kiosks/:id/labels/remove,server/src/plugins/service-admin-http/routes-admin.ts,2822,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/kiosks/:id/local-key/rotate,server/src/plugins/service-admin-http/routes-admin.ts,3193,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/kiosks/:id/logs,server/src/plugins/service-admin-http/routes-admin.ts,2851,BP view with authorized editor/debug transport; prove bridge before retiring legacy login,5
+POST,/admin/kiosks/:id/managed-config,server/src/plugins/service-admin-http/routes-admin.ts,2687,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/kiosks/:id/operator-console,server/src/plugins/service-admin-http/routes-admin.ts,2562,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/kiosks/:id/operator-console/enroll,server/src/plugins/service-admin-http/routes-admin.ts,2620,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/kiosks/:id/operator-console/stations,server/src/plugins/service-admin-http/routes-admin.ts,2656,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/kiosks/:id/operator-console/stations/:stationId/revoke,server/src/plugins/service-admin-http/routes-admin.ts,2665,Port to typed BP operation; audit external callers before retiring legacy path,3
 POST,/admin/kiosks/:id/os-update,server/src/plugins/service-admin-http/routes-os-updates.ts,50,Port to typed BP operation; audit external callers before retiring legacy path,4
 POST,/admin/kiosks/:id/os-update/push,server/src/plugins/service-admin-http/routes-os-updates.ts,96,Port to typed BP operation; audit external callers before retiring legacy path,4
-POST,/admin/kiosks/:id/power/standby,server/src/plugins/service-admin-http/routes-admin.ts,3168,BP operation plus retained legacy Node-RED compatibility route,3
-POST,/admin/kiosks/:id/power/wake,server/src/plugins/service-admin-http/routes-admin.ts,3179,BP operation plus retained legacy Node-RED compatibility route,3
-POST,/admin/kiosks/:id/reboot,server/src/plugins/service-admin-http/routes-admin.ts,3200,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/kiosks/:id/tailscale,server/src/plugins/service-admin-http/routes-admin.ts,3190,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/kiosks/:id/terminal,server/src/plugins/service-admin-http/routes-admin.ts,2921,BP view with authorized editor/debug transport; prove bridge before retiring legacy login,5
-POST,/admin/kiosks/:id/volume,server/src/plugins/service-admin-http/routes-admin.ts,3225,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/kiosks/:id/windows-policy,server/src/plugins/service-admin-http/routes-admin.ts,2772,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/kiosks/pair,server/src/plugins/service-admin-http/routes-admin.ts,1592,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/labels,server/src/plugins/service-admin-http/routes-admin.ts,2172,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/labels/:id/delete,server/src/plugins/service-admin-http/routes-admin.ts,2192,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/labels/new,server/src/plugins/service-admin-http/routes-admin.ts,2177,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/layouts,server/src/plugins/service-admin-http/routes-admin.ts,1640,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-GET,/admin/layouts/:id,server/src/plugins/service-admin-http/routes-admin.ts,1692,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/layouts/:id,server/src/plugins/service-admin-http/routes-admin.ts,1712,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/layouts/:id/cells,server/src/plugins/service-admin-http/routes-admin.ts,1738,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/layouts/:id/cells/:cellId,server/src/plugins/service-admin-http/routes-admin.ts,1898,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/layouts/:id/cells/:cellId/delete,server/src/plugins/service-admin-http/routes-admin.ts,2031,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/layouts/:id/cells/:cellId/edit,server/src/plugins/service-admin-http/routes-admin.ts,1883,Port raw/fragment operation with explicit auth/dependency; do not blanket redirect,3
-POST,/admin/layouts/:id/cells/:cellId/move,server/src/plugins/service-admin-http/routes-admin.ts,2018,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/layouts/:id/cells/:cellId/resize,server/src/plugins/service-admin-http/routes-admin.ts,1982,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/layouts/:id/clone,server/src/plugins/service-admin-http/routes-admin.ts,2048,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/layouts/:id/delete,server/src/plugins/service-admin-http/routes-admin.ts,2055,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/layouts/:id/device,server/src/plugins/service-admin-http/routes-admin.ts,1843,Port to typed BP operation; audit external callers before retiring legacy path,3
-POST,/admin/layouts/:id/quick-layout,server/src/plugins/service-admin-http/routes-admin.ts,1808,Port to typed BP operation; audit external callers before retiring legacy path,3
-GET,/admin/layouts/new,server/src/plugins/service-admin-http/routes-admin.ts,1651,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
-POST,/admin/layouts/new,server/src/plugins/service-admin-http/routes-admin.ts,1656,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/kiosks/:id/power/standby,server/src/plugins/service-admin-http/routes-admin.ts,3152,BP operation plus retained legacy Node-RED compatibility route,3
+POST,/admin/kiosks/:id/power/wake,server/src/plugins/service-admin-http/routes-admin.ts,3163,BP operation plus retained legacy Node-RED compatibility route,3
+POST,/admin/kiosks/:id/reboot,server/src/plugins/service-admin-http/routes-admin.ts,3184,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/kiosks/:id/tailscale,server/src/plugins/service-admin-http/routes-admin.ts,3174,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/kiosks/:id/terminal,server/src/plugins/service-admin-http/routes-admin.ts,2905,BP view with authorized editor/debug transport; prove bridge before retiring legacy login,5
+POST,/admin/kiosks/:id/volume,server/src/plugins/service-admin-http/routes-admin.ts,3209,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/kiosks/:id/windows-policy,server/src/plugins/service-admin-http/routes-admin.ts,2756,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/kiosks/pair,server/src/plugins/service-admin-http/routes-admin.ts,1608,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/labels,server/src/plugins/service-admin-http/routes-admin.ts,2156,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/labels/:id/delete,server/src/plugins/service-admin-http/routes-admin.ts,2176,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/labels/new,server/src/plugins/service-admin-http/routes-admin.ts,2161,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/layouts,server/src/plugins/service-admin-http/routes-admin.ts,1656,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+GET,/admin/layouts/:id,server/src/plugins/service-admin-http/routes-admin.ts,1708,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/layouts/:id,server/src/plugins/service-admin-http/routes-admin.ts,1728,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/layouts/:id/cells,server/src/plugins/service-admin-http/routes-admin.ts,1754,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/layouts/:id/cells/:cellId,server/src/plugins/service-admin-http/routes-admin.ts,1914,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/layouts/:id/cells/:cellId/delete,server/src/plugins/service-admin-http/routes-admin.ts,2015,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/layouts/:id/cells/:cellId/edit,server/src/plugins/service-admin-http/routes-admin.ts,1899,Port raw/fragment operation with explicit auth/dependency; do not blanket redirect,3
+POST,/admin/layouts/:id/cells/:cellId/move,server/src/plugins/service-admin-http/routes-admin.ts,2002,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/layouts/:id/cells/:cellId/resize,server/src/plugins/service-admin-http/routes-admin.ts,1966,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/layouts/:id/clone,server/src/plugins/service-admin-http/routes-admin.ts,2032,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/layouts/:id/delete,server/src/plugins/service-admin-http/routes-admin.ts,2039,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/layouts/:id/device,server/src/plugins/service-admin-http/routes-admin.ts,1859,Port to typed BP operation; audit external callers before retiring legacy path,3
+POST,/admin/layouts/:id/quick-layout,server/src/plugins/service-admin-http/routes-admin.ts,1824,Port to typed BP operation; audit external callers before retiring legacy path,3
+GET,/admin/layouts/new,server/src/plugins/service-admin-http/routes-admin.ts,1667,Port BP read/page or fragment as appropriate; classify representation before page redirect,3
+POST,/admin/layouts/new,server/src/plugins/service-admin-http/routes-admin.ts,1672,Port to typed BP operation; audit external callers before retiring legacy path,3
 GET,/admin/logs,server/src/plugins/service-admin-http/routes-logs.ts,19,"BP tenant-scoped diagnostic log page; preserve filters, polling cleanup and no-store",3
 GET,/admin/logs/:id,server/src/plugins/service-admin-http/routes-logs.ts,21,BP tenant-scoped diagnostic detail JSON operation; preserve no-store and expired/missing 404,3
-GET,/admin/nodered,server/src/plugins/service-admin-http/routes-admin.ts,3139,BP view with authorized editor/debug transport; prove bridge before retiring legacy login,5
+GET,/admin/nodered,server/src/plugins/service-admin-http/routes-admin.ts,3123,BP view with authorized editor/debug transport; prove bridge before retiring legacy login,5
 GET,/admin/os-updates,server/src/plugins/service-admin-http/routes-os-updates.ts,30,Port BP read/page or fragment as appropriate; classify representation before page redirect,4
 POST,/admin/os-updates/:id/yank,server/src/plugins/service-admin-http/routes-os-updates.ts,38,Port to typed BP operation; audit external callers before retiring legacy path,4
 GET,/admin/os-updates/rollouts,server/src/plugins/service-admin-http/routes-os-updates.ts,103,Port BP read/page or fragment as appropriate; classify representation before page redirect,4
 POST,/admin/os-updates/rollouts/:id/state,server/src/plugins/service-admin-http/routes-os-updates.ts,170,Port to typed BP operation; audit external callers before retiring legacy path,4
 POST,/admin/os-updates/rollouts/new,server/src/plugins/service-admin-http/routes-os-updates.ts,119,Port to typed BP operation; audit external callers before retiring legacy path,4
-GET,/admin/settings,server/src/plugins/service-admin-http/routes-admin.ts,3250,Port BP read/page or fragment as appropriate; classify representation before page redirect,4
-POST,/admin/settings/display-defaults,server/src/plugins/service-admin-http/routes-admin.ts,3257,BP administrator settings mutation; preserve validation and display-default propagation,4
-POST,/admin/settings/update-schedule,server/src/plugins/service-admin-http/routes-admin.ts,3270,Port to typed BP operation; audit external callers before retiring legacy path,4
+GET,/admin/overlays,server/src/plugins/service-admin-http/routes-overlays.ts,24,Port BP overlay template list/editor page with explicit route grants and resource ownership,3
+GET,/admin/overlays/:id,server/src/plugins/service-admin-http/routes-overlays.ts,25,Port BP overlay template list/editor page with explicit route grants and resource ownership,3
+POST,/admin/overlays/:id,server/src/plugins/service-admin-http/routes-overlays.ts,35,Port typed BP overlay template mutation with route grants and ownership; retain legacy until parity,3
+POST,/admin/overlays/:id/delete,server/src/plugins/service-admin-http/routes-overlays.ts,60,Port typed BP overlay template mutation with route grants and ownership; retain legacy until parity,3
+GET,/admin/overlays/blocks/:cellId,server/src/plugins/service-admin-http/routes-overlays.ts,65,Port BP layout-cell overlay fragment and typed update; enforce layout and template ownership,3
+POST,/admin/overlays/blocks/:cellId,server/src/plugins/service-admin-http/routes-overlays.ts,69,Port BP layout-cell overlay fragment and typed update; enforce layout and template ownership,3
+POST,/admin/overlays/preview,server/src/plugins/service-admin-http/routes-overlays.ts,29,Port typed BP preview operation returning an isolated document; preserve iframe sandbox and validation,3
+GET,/admin/settings,server/src/plugins/service-admin-http/routes-admin.ts,3234,Port BP read/page or fragment as appropriate; classify representation before page redirect,4
+POST,/admin/settings/display-defaults,server/src/plugins/service-admin-http/routes-admin.ts,3241,BP administrator settings mutation; preserve validation and display-default propagation,4
+POST,/admin/settings/update-schedule,server/src/plugins/service-admin-http/routes-admin.ts,3254,Port to typed BP operation; audit external callers before retiring legacy path,4
 GET,/admin/tenants,server/src/plugins/service-admin-http/routes-tenants.ts,21,BP owns tenant CRUD; retire Frame tenant management UI/API after caller audit; ensure local resources automatically for verified BP tenants,2-7
 POST,/admin/tenants,server/src/plugins/service-admin-http/routes-tenants.ts,35,BP owns tenant CRUD; retire Frame tenant management UI/API after caller audit; ensure local resources automatically for verified BP tenants,2-7
 GET,/admin/tenants/:id,server/src/plugins/service-admin-http/routes-tenants.ts,93,BP owns tenant CRUD; retire Frame tenant management UI/API after caller audit; ensure local resources automatically for verified BP tenants,2-7
@@ -180,29 +187,31 @@ POST,/admin/tenants/:id,server/src/plugins/service-admin-http/routes-tenants.ts,
 POST,/admin/tenants/:id/delete,server/src/plugins/service-admin-http/routes-tenants.ts,143,BP owns tenant CRUD; retire Frame tenant management UI/API after caller audit; ensure local resources automatically for verified BP tenants,2-7
 POST,/admin/tenants/switch,server/src/plugins/service-admin-http/routes-tenants.ts,163,BP client owns tenant selection; retire Frame cookie switch after cutover,2-4
 GET,/api/admin/_check,server/src/plugins/service-admin-http/index.ts,197,Retain legacy gate during transition; add separately authorized BP editor session gate,5
-GET,/api/admin/cameras,server/src/plugins/service-admin-http/routes-admin.ts,3304,Preserve machine contract; share domain operation with BP where visual,3-4
-GET,/api/admin/cameras/:id,server/src/plugins/service-admin-http/routes-admin.ts,3375,Preserve machine contract; share domain operation with BP where visual,3-4
-POST,/api/admin/cameras/:id/enabled,server/src/plugins/service-admin-http/routes-admin.ts,3530,Preserve machine contract; share domain operation with BP where visual,3-4
-POST,/api/admin/cameras/:id/onvif,server/src/plugins/service-admin-http/routes-admin.ts,3546,Preserve machine contract; share domain operation with BP where visual,3-4
-GET,/api/admin/cameras/:id/proxy,server/src/plugins/service-admin-http/routes-admin.ts,3319,Preserve machine contract; share domain operation with BP where visual,3-4
-GET,/api/admin/displays,server/src/plugins/service-admin-http/routes-admin.ts,3385,Preserve machine contract; share domain operation with BP where visual,3-4
-GET,/api/admin/displays/:id,server/src/plugins/service-admin-http/routes-admin.ts,3390,Preserve machine contract; share domain operation with BP where visual,3-4
-POST,/api/admin/displays/:id/default-layout,server/src/plugins/service-admin-http/routes-admin.ts,3500,Preserve machine contract; share domain operation with BP where visual,3-4
-GET,/api/admin/entities,server/src/plugins/service-admin-http/routes-admin.ts,3483,Preserve machine contract; share domain operation with BP where visual,3-4
-GET,/api/admin/entities/:id,server/src/plugins/service-admin-http/routes-admin.ts,3488,Preserve machine contract; share domain operation with BP where visual,3-4
-POST,/api/admin/entities/:id/name,server/src/plugins/service-admin-http/routes-admin.ts,3642,Preserve machine contract; share domain operation with BP where visual,3-4
+POST,/api/admin/blocks/:cellId/overlay,server/src/plugins/service-admin-http/routes-overlays.ts,93,Retain Node-RED machine API contract; add separately authorized BP overlay operation before retiring legacy human auth,3
+GET,/api/admin/cameras,server/src/plugins/service-admin-http/routes-admin.ts,3288,Preserve machine contract; share domain operation with BP where visual,3-4
+GET,/api/admin/cameras/:id,server/src/plugins/service-admin-http/routes-admin.ts,3359,Preserve machine contract; share domain operation with BP where visual,3-4
+POST,/api/admin/cameras/:id/enabled,server/src/plugins/service-admin-http/routes-admin.ts,3514,Preserve machine contract; share domain operation with BP where visual,3-4
+POST,/api/admin/cameras/:id/onvif,server/src/plugins/service-admin-http/routes-admin.ts,3530,Preserve machine contract; share domain operation with BP where visual,3-4
+GET,/api/admin/cameras/:id/proxy,server/src/plugins/service-admin-http/routes-admin.ts,3303,Preserve machine contract; share domain operation with BP where visual,3-4
+GET,/api/admin/displays,server/src/plugins/service-admin-http/routes-admin.ts,3369,Preserve machine contract; share domain operation with BP where visual,3-4
+GET,/api/admin/displays/:id,server/src/plugins/service-admin-http/routes-admin.ts,3374,Preserve machine contract; share domain operation with BP where visual,3-4
+POST,/api/admin/displays/:id/default-layout,server/src/plugins/service-admin-http/routes-admin.ts,3484,Preserve machine contract; share domain operation with BP where visual,3-4
+GET,/api/admin/entities,server/src/plugins/service-admin-http/routes-admin.ts,3467,Preserve machine contract; share domain operation with BP where visual,3-4
+GET,/api/admin/entities/:id,server/src/plugins/service-admin-http/routes-admin.ts,3472,Preserve machine contract; share domain operation with BP where visual,3-4
+POST,/api/admin/entities/:id/name,server/src/plugins/service-admin-http/routes-admin.ts,3626,Preserve machine contract; share domain operation with BP where visual,3-4
 POST,/api/admin/firmware/import,server/src/plugins/service-admin-http/routes-firmware.ts,116,Preserve machine contract; share domain operation with BP where visual,3-4
 POST,/api/admin/iobox/firmware/import,server/src/plugins/service-admin-http/routes-firmware.ts,173,Preserve machine contract; share domain operation with BP where visual,3-4
-GET,/api/admin/kiosks,server/src/plugins/service-admin-http/routes-admin.ts,3437,Preserve machine contract; share domain operation with BP where visual,3-4
-GET,/api/admin/kiosks/:id,server/src/plugins/service-admin-http/routes-admin.ts,3456,Preserve machine contract; share domain operation with BP where visual,3-4
-POST,/api/admin/kiosks/:id/enabled,server/src/plugins/service-admin-http/routes-admin.ts,3520,Preserve machine contract; share domain operation with BP where visual,3-4
-GET,/api/admin/layouts,server/src/plugins/service-admin-http/routes-admin.ts,3469,Preserve machine contract; share domain operation with BP where visual,3-4
-GET,/api/admin/layouts/:id,server/src/plugins/service-admin-http/routes-admin.ts,3474,Preserve machine contract; share domain operation with BP where visual,3-4
-POST,/api/admin/layouts/:id/priority,server/src/plugins/service-admin-http/routes-admin.ts,3628,Preserve machine contract; share domain operation with BP where visual,3-4
+GET,/api/admin/kiosks,server/src/plugins/service-admin-http/routes-admin.ts,3421,Preserve machine contract; share domain operation with BP where visual,3-4
+GET,/api/admin/kiosks/:id,server/src/plugins/service-admin-http/routes-admin.ts,3440,Preserve machine contract; share domain operation with BP where visual,3-4
+POST,/api/admin/kiosks/:id/enabled,server/src/plugins/service-admin-http/routes-admin.ts,3504,Preserve machine contract; share domain operation with BP where visual,3-4
+GET,/api/admin/layouts,server/src/plugins/service-admin-http/routes-admin.ts,3453,Preserve machine contract; share domain operation with BP where visual,3-4
+GET,/api/admin/layouts/:id,server/src/plugins/service-admin-http/routes-admin.ts,3458,Preserve machine contract; share domain operation with BP where visual,3-4
+POST,/api/admin/layouts/:id/priority,server/src/plugins/service-admin-http/routes-admin.ts,3612,Preserve machine contract; share domain operation with BP where visual,3-4
 POST,/api/admin/os/import,server/src/plugins/service-admin-http/routes-os-updates.ts,183,Preserve machine contract; share domain operation with BP where visual,3-4
-POST,/api/displays/:id/clear,server/src/plugins/service-admin-http/routes-admin.ts,3428,Preserve machine contract; share domain operation with BP where visual,3-4
-POST,/api/displays/:id/focus,server/src/plugins/service-admin-http/routes-admin.ts,3398,Preserve machine contract; share domain operation with BP where visual,3-4
-POST,/api/displays/:id/restore,server/src/plugins/service-admin-http/routes-admin.ts,3428,Preserve machine contract; share domain operation with BP where visual,3-4
+GET,/api/admin/overlay-templates,server/src/plugins/service-admin-http/routes-overlays.ts,92,Retain Node-RED machine API contract; add separately authorized BP overlay operation before retiring legacy human auth,3
+POST,/api/displays/:id/clear,server/src/plugins/service-admin-http/routes-admin.ts,3412,Preserve machine contract; share domain operation with BP where visual,3-4
+POST,/api/displays/:id/focus,server/src/plugins/service-admin-http/routes-admin.ts,3382,Preserve machine contract; share domain operation with BP where visual,3-4
+POST,/api/displays/:id/restore,server/src/plugins/service-admin-http/routes-admin.ts,3412,Preserve machine contract; share domain operation with BP where visual,3-4
 GET,/auth/login,server/src/plugins/service-admin-http/routes-auth.ts,27,Move human identity/account security to bound BP auth provider; retain legacy only through rollback window,4-7
 POST,/auth/login,server/src/plugins/service-admin-http/routes-auth.ts,33,Move human identity/account security to bound BP auth provider; retain legacy only through rollback window,4-7
 POST,/auth/logout,server/src/plugins/service-admin-http/routes-auth.ts,244,Move human identity/account security to bound BP auth provider; retain legacy only through rollback window,4-7

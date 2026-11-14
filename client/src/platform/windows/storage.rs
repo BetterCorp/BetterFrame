@@ -566,6 +566,7 @@ fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
                         .cells
                         .into_iter()
                         .map(|cell| crate::bundle::BundleCell {
+                            overlay_html: None,
                             view_id: cell.view_id,
                             entity_id: cell.entity_id,
                             row: cell.row,

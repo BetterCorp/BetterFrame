@@ -87,6 +87,11 @@ pub use core::commands::ServerCommand as ServerMsg;
 
 #[cfg(target_os = "linux")]
 fn main() {
+    #[cfg(debug_assertions)]
+    if std::env::args().any(|arg| arg == "--test-overlays") {
+        ui::test_overlay_refresh();
+        return;
+    }
     use gstreamer::prelude::PluginFeatureExtManual;
     use gtk4::prelude::{ApplicationExt, ApplicationExtManual};
     use tracing::info;

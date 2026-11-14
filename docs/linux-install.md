@@ -136,6 +136,41 @@ Reboot when convenient or start your display manager manually. To change setup
 mode/user, restore the old startup configuration first, then remove
 `/etc/betterframe/linux-install` and rerun setup with the appropriate user.
 
+## Ubuntu WebKit sandbox
+
+On hosts exposing AppArmor's unprivileged user-namespace restriction (including
+Ubuntu 24.04), setup installs and loads `/etc/apparmor.d/betterframe` for
+`/opt/betterframe/kiosk/betterframe-kiosk`. This allows WebKit's sandbox to create
+its user namespace when a layout renders web or HTML content. The profile is
+installed even when the restriction is currently disabled, so it is ready if the
+restriction returns after a reboot or is re-enabled. WebKit sandboxing stays
+enabled, and setup preserves the host's global AppArmor settings.
+
+The exception is attached to the executable path, not to verified executable
+contents. The runtime user owns both the executable and its directory so app
+updates can replace it atomically. That user can therefore replace the profiled
+binary and run arbitrary code with `userns` permission. Treat the runtime account
+as trusted for this capability.
+
+If an older installation crashes on layout assignment with `bwrap: setting up
+uid map: Permission denied`, AppArmor denials for `unprivileged_userns`, and
+`Failed to fully launch dbus-proxy`, use the updated installer with the existing
+app binary, reusing the saved installation choices:
+
+```sh
+sudo ./setup.sh --yes --binary /opt/betterframe/kiosk/betterframe-kiosk
+```
+
+This retains the installed app version instead of downloading a BF app release.
+Setup may still download prerequisites and MediaMTX. Restart BetterFrame after
+loading the profile so the new process receives it. No new app release or reboot
+is required.
+
+See the [Ubuntu 24.04 release notes](https://documentation.ubuntu.com/release-notes/24.04/#unprivileged-user-namespace-restrictions)
+for the application-specific `userns` permission, and
+[Ubuntu's explanation of the restriction's limitations](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007)
+for the trade-offs of unconfined profiles.
+
 ## MediaMTX gateway
 
 Setup asks whether to install MediaMTX for Operator Console preview and optional

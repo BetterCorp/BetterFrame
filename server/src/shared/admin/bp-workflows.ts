@@ -15,8 +15,7 @@ export async function changePower(
 ): Promise<void> {
   if (kind === "kiosks" && !(await deps.repo.getKioskById(id)))
     throw createError({ statusCode: 404, statusMessage: "Kiosk not found" });
-  const display =
-    kind === "displays" ? await deps.repo.getDisplayById(id) : null;
+  const display = kind === "displays" ? await deps.repo.getDisplayById(id) : null;
   if (kind === "displays" && !display)
     throw createError({ statusCode: 404, statusMessage: "Display not found" });
   const kioskId = display?.kiosk_id ?? (kind === "kiosks" ? id : undefined);
@@ -70,15 +69,15 @@ export async function switchLayout(
   layoutId: string,
 ): Promise<void> {
   const display = await deps.repo.getDisplayById(displayId);
-  if (!display)
-    throw createError({ statusCode: 404, statusMessage: "Display not found" });
+  if (!display) throw createError({ statusCode: 404, statusMessage: "Display not found" });
   if (!display.is_enabled || !display.kiosk_id)
     throw createError({
       statusCode: 409,
       statusMessage: "Display is disabled or unassigned",
     });
   const attached = await deps.repo.listLayoutsForDisplay(displayId);
-  if (!attached.some((layout) => layout.id === layoutId))
+  const layout = attached.find((layout) => layout.id === layoutId);
+  if (!layout)
     throw createError({
       statusCode: 404,
       statusMessage: "Layout is not assigned to this display",
@@ -86,8 +85,7 @@ export async function switchLayout(
   if (deps.sandboxMode)
     throw createError({
       statusCode: 409,
-      statusMessage:
-        "Live device commands are disabled in this test deployment",
+      statusMessage: "Live device commands are disabled in this test deployment",
     });
   if (
     !getCoordinator().sendToKiosk(
@@ -97,5 +95,18 @@ export async function switchLayout(
     )
   )
     throw createError({ statusCode: 409, statusMessage: "Kiosk is offline" });
+  const tenant = deps.bpTenant;
+  if (tenant)
+    deps.nodered.forward(
+      "layout.changed",
+      {
+        display_id: displayId,
+        kiosk_id: display.kiosk_id,
+        layout_id: layoutId,
+        layout_name: layout.name,
+        source: "server",
+      },
+      { tenant_id: tenant.id, tenant_slug: tenant.slug, tenant_name: tenant.name },
+    );
   await bpAudit(deps, ctx, "frame.displays.layout", displayId);
 }

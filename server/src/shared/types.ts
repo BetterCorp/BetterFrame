@@ -154,6 +154,8 @@ export interface Entity {
   /** True for entities auto-created by camera sync, cloud cams, AbleSign. Read-only in UI. */
   managed: boolean;
   input_options_json: Record<string, unknown>;
+  /** Entity-owned authentication, never overridden by a layout block. */
+  smart_url_json?: import("../schemas/wire/smart-url.js").SmartUrlConfig | null;
   created_at: string;
 }
 export type DesiredPowerState = "follow_layout" | "on" | "standby";

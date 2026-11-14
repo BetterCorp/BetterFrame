@@ -159,6 +159,8 @@ pub struct BundleLayout {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleCell {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_html: Option<String>,
     #[serde(default, deserialize_with = "de_flexible_id_opt")]
     pub view_id: Option<String>,
     #[serde(default, deserialize_with = "de_flexible_id_opt")]

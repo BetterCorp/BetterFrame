@@ -1,0 +1,15 @@
+<script type="text/javascript">
+RED.nodes.registerType("bf-overlay", {
+  category: "BetterFrame", color: "#a6d4ff",
+  defaults: { name: { value: "" }, config: { value: "", type: "bf-server-config", required: true }, block_id: { value: "" } },
+  inputs: 1, outputs: 1, icon: "betterframe.svg",
+  label: function() { return this.name || "bf overlay"; }, paletteLabel: "bf overlay"
+});
+</script>
+<script type="text/html" data-template-name="bf-overlay">
+<div class="form-row"><label for="node-input-name">Name</label><input id="node-input-name" /></div>
+<div class="form-row"><label for="node-input-config">BF</label><input id="node-input-config" /></div>
+<div class="form-row"><label for="node-input-block_id">Block ID</label><input id="node-input-block_id" /></div>
+<div class="form-tips">Assign a template in the block editor first. Sends msg.payload as the complete JSON data object. Override the block using msg.block_id.</div>
+</script>
+<script type="text/html" data-help-name="bf-overlay"><p>Update an assigned block overlay without changing its template. Sample data is used only in the template preview.</p></script>

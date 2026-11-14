@@ -277,6 +277,7 @@ test(
       log,
     );
     handle.repo.setCameraCredentialCodec({
+      encryptString: (value: string) => `encrypted:${value}`,
       decryptString: (value: string) => value.slice(10),
     });
     const ctx = identity();

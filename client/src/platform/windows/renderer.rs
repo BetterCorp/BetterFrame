@@ -327,6 +327,7 @@ impl HasWindowHandle for NativeWindowHandle {
 }
 
 struct WebCellSpec {
+    overlay: bool,
     key: String,
     bounds: WebRect,
     url: Option<String>,
@@ -337,40 +338,50 @@ struct WebCellSpec {
 fn web_cell_key(hwnd: HWND, layout: &str, bundle: &str, view: &str, content: &str, server: &str) -> String {
     // Navigation policy and relative URLs capture the server at creation time.
     // Keep the window prefix used for cleanup, but recreate views after migration.
-    format!("{hwnd}:{}", serde_json::to_string(&(layout, bundle, view, content, server)).unwrap())
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    (layout, bundle, view, content, server).hash(&mut hash);
+    format!("{hwnd}:{:016x}", hash.finish())
 }
 
 pub(super) fn sync_webviews(
     hwnd: HWND,
     canvas: RECT,
     layout: &BundleLayout,
-    bundle_version: &str,
+    _bundle_version: &str,
     state: &ClientState,
 ) {
     let cols = layout.grid_cols.max(1) as i32;
     let rows = layout.grid_rows.max(1) as i32;
-    let specs: Vec<WebCellSpec> = layout
-        .cells
-        .iter()
-        .enumerate()
-        .filter_map(|(index, cell)| {
-            if cell.content_type != "web" && cell.content_type != "html" {
-                return None;
-            }
-            let target = cell_rect(canvas, cols, rows, cell);
-            let view_id = cell.view_id.clone().unwrap_or_else(|| index.to_string());
-            Some(WebCellSpec {
-                key: web_cell_key(hwnd, &layout.id, bundle_version, &view_id, &cell.content_type, &state.server_url),
+    let mut specs: Vec<WebCellSpec> = Vec::new();
+    for (index, cell) in layout.cells.iter().enumerate() {
+        let target = cell_rect(canvas, cols, rows, cell);
+        let view_id = cell.view_id.clone().unwrap_or_else(|| index.to_string());
+        if cell.content_type == "web" || cell.content_type == "html" {
+            // Overlay/bundle changes must not reload an unrelated web page.
+            let content = crate::core::layout::web_content_key(cell);
+            specs.push(WebCellSpec {
+                overlay: false,
+                key: web_cell_key(hwnd, &layout.id, &content, &view_id, &cell.content_type, &state.server_url),
                 bounds: web_rect(target),
-                url: cell
-                    .web_url
-                    .as_deref()
-                    .and_then(|url| resolve_web_url(url, &state.server_url)),
+                url: cell.web_url.as_deref().and_then(|url| resolve_web_url(url, &state.server_url)),
                 html: cell.html_content.clone(),
                 local_storage: cell.local_storage.clone(),
-            })
-        })
-        .collect();
+            });
+        }
+    }
+    // Create overlays after all normal web cells so they compose on top.
+    for (index, cell) in layout.cells.iter().enumerate() {
+        if let Some(html) = &cell.overlay_html {
+            let view_id = cell.view_id.clone().unwrap_or_else(|| index.to_string());
+            specs.push(WebCellSpec {
+                overlay: true,
+                key: web_cell_key(hwnd, &layout.id, html, &view_id, "overlay", &state.server_url),
+                bounds: web_rect(cell_rect(canvas, cols, rows, cell)),
+                url: None, html: Some(html.clone()), local_storage: None,
+            });
+        }
+    }
     let wanted: HashSet<String> = specs.iter().map(|spec| spec.key.clone()).collect();
 
     for spec in specs {
@@ -379,6 +390,7 @@ pub(super) fn sync_webviews(
             if let Some(view) = views.get(&spec.key) {
                 let _ = view.set_bounds(spec.bounds);
                 let _ = view.set_visible(true);
+                if spec.overlay { raise_overlay(view); }
                 true
             } else {
                 false
@@ -430,6 +442,16 @@ pub(super) fn sync_webviews(
     });
 }
 
+fn raise_overlay(view: &WebView) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOP, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE};
+    // Disable input on this child so the parent retains camera click actions.
+    let hwnd = view.hwnd().0 as isize;
+    unsafe {
+        windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow(hwnd, 0);
+        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+}
+
 fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result<WebView, String> {
     let script = initialization_script(spec.local_storage.as_ref());
 
@@ -439,6 +461,7 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
             .map_err(|_| "WebView2 initialization already in progress".to_string())?;
         let mut builder = WebViewBuilder::new_with_web_context(&mut context)
             .with_bounds(spec.bounds)
+            .with_transparent(spec.overlay)
             .with_initialization_script(script)
             .with_devtools(false);
         let mut authenticated_load = None;
@@ -476,6 +499,7 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
         let view = builder
             .build_as_child(&NativeWindowHandle(hwnd))
             .map_err(|error| error.to_string())?;
+        if spec.overlay { raise_overlay(&view); }
         if let Some((url, headers)) = authenticated_load {
             view.load_url_with_headers(url, headers)
                 .map_err(|error| error.to_string())?;

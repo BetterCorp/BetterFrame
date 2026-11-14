@@ -41,6 +41,7 @@ pub struct LayoutChoice {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderCell {
+    pub overlay_html: Option<String>,
     pub id: String,
     pub label: String,
     pub row: u32,
@@ -160,6 +161,7 @@ pub fn render_plan(
                 _ => "cover",
             }
             .into(),
+            overlay_html: cell.overlay_html.clone(),
             kind: "placeholder",
             camera: None,
             web: None,

@@ -92,6 +92,8 @@ pub fn display_render_unchanged(
                 (camera.id.as_str(), if visible { camera_render_inputs(camera) } else { camera_pipeline_inputs(camera) })
             })
             .collect();
+        let mut layout = layout.clone();
+        for cell in &mut layout.cells { cell.overlay_html = None; }
         Some(serde_json::json!({
             "width": display.width_px,
             "height": display.height_px,
@@ -128,6 +130,13 @@ pub fn configured_cell_action(cell: &BundleCell, kind: &str) -> Option<(String, 
     ))
 }
 
+/// Stable content identity across independently seeded/deserialized storage maps.
+pub fn web_content_key(cell: &BundleCell) -> String {
+    let storage = cell.local_storage.as_ref().map(|entries|
+        entries.iter().collect::<std::collections::BTreeMap<_, _>>());
+    serde_json::to_string(&(&cell.web_url, &cell.html_content, storage)).unwrap()
+}
+
 pub fn resolve_web_url(value: &str, server_url: &str) -> Option<String> {
     let value = value.trim();
     if Url::parse(value).is_ok() {
@@ -151,6 +160,50 @@ pub fn same_origin(url: &str, server_url: &str) -> bool {
 mod tests {
     use super::*;
     use crate::bundle::BundleDisplayWithLayouts;
+
+    #[test]
+    fn web_content_identity_orders_storage_and_tracks_actual_value_changes() {
+        let cell: BundleCell = serde_json::from_value(serde_json::json!({
+            "view_id":"web", "row":0,"col":0,"row_span":1,"col_span":1,
+            "content_type":"web", "web_url":"https://player.example/",
+            "local_storage":{"screenToken":"token", "screenId":"id"}
+        })).unwrap();
+        let key = web_content_key(&cell);
+        assert_eq!(key, r#"["https://player.example/",null,{"screenId":"id","screenToken":"token"}]"#);
+        for _ in 0..32 {
+            let mut refreshed = cell.clone();
+            refreshed.local_storage = Some([
+                ("screenToken".into(), "token".into()), ("screenId".into(), "id".into())
+            ].into_iter().collect());
+            refreshed.overlay_html = Some("updated overlay".into());
+            assert_eq!(key, web_content_key(&refreshed));
+            refreshed.local_storage.as_mut().unwrap().insert("screenToken".into(), "new token".into());
+            assert_ne!(key, web_content_key(&refreshed));
+        }
+    }
+
+    #[test]
+    fn overlay_updates_preserve_content_and_reach_android() {
+        let previous: KioskBundle = serde_json::from_value(serde_json::json!({
+            "kiosk_id":"k", "kiosk_name":"Kiosk", "version":"1", "cameras":[],
+            "displays":[{"id":"d", "name":"Display", "width_px":640,"height_px":360,
+                "idle_timeout_seconds":0,"sleep_timeout_seconds":0,
+                "layouts":[{"id":"active","name":"Active","grid_cols":1,"grid_rows":1,
+                    "priority":"normal","is_default":true,"resets_idle_timer":true,
+                    "cells":[{"view_id":"block","row":0,"col":0,"row_span":1,"col_span":1,
+                        "content_type":"html","html_content":"<b>Underlying page</b>","overlay_html":"old"}]}]}]
+        })).unwrap();
+        let mut next = previous.clone();
+        next.displays[0].layouts[0].cells[0].overlay_html = Some("updated".into());
+        assert!(display_render_unchanged(&previous, &next, "d", Some("active")));
+        let plan = crate::android::render_plan(&next, None, None).unwrap();
+        assert_eq!(plan.cells[0].overlay_html.as_deref(), Some("updated"));
+        assert_eq!(plan.cells[0].web.as_ref().unwrap().html.as_deref(), Some("<b>Underlying page</b>"));
+        next.displays[0].layouts[0].cells[0].overlay_html = None;
+        assert!(display_render_unchanged(&previous, &next, "d", Some("active")));
+        next.displays[0].layouts[0].cells[0].html_content = Some("Changed page".into());
+        assert!(!display_render_unchanged(&previous, &next, "d", Some("active")));
+    }
 
     #[test]
     fn refresh_only_invalidates_the_active_display_content() {

@@ -126,6 +126,23 @@ export const PUBLIC_MIGRATIONS: readonly string[] = [
  *
  * Mirrors the FINAL SQLite schema (after all migrations) with PG-native types.
  */
+const TENANT_WEB_FEATURE_MIGRATIONS: readonly string[] = [
+  `ALTER TABLE entities ADD COLUMN IF NOT EXISTS smart_url_json JSONB`,
+  `UPDATE entities e SET smart_url_json = legacy.config::jsonb
+     FROM (SELECT entity_id, MIN((options->'smart_url')::text) AS config
+             FROM layout_cells
+            WHERE entity_id IS NOT NULL AND options->'smart_url' IS NOT NULL
+              AND options->'smart_url' != 'null'::jsonb
+            GROUP BY entity_id HAVING COUNT(DISTINCT (options->'smart_url')::text) = 1) legacy
+    WHERE e.id = legacy.entity_id AND e.type = 'web' AND e.smart_url_json IS NULL`,
+  `CREATE TABLE overlay_templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    html TEXT NOT NULL,
+    sample_data JSONB NOT NULL DEFAULT '{}'
+  )`,
+];
+
 export const TENANT_MIGRATIONS: readonly string[] = [
   // ---- users ---------------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS users (
@@ -1060,8 +1077,11 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     `CREATE UNIQUE INDEX ${table}_local_short_key_unique ON ${table}(local_short_key)`,
   ]),
   `ALTER TABLE kiosks ADD COLUMN IF NOT EXISTS windows_update_push TEXT`,
+  // Authentication belongs to the entity. Only migrate unambiguous legacy
+  // block configurations; retain conflicting block options for manual recovery.
+  ...TENANT_WEB_FEATURE_MIGRATIONS,
   // BP resource ownership is independent of legacy human accounts and permissions.
-  `CREATE TABLE bp_resource_owners (
+  `CREATE TABLE IF NOT EXISTS bp_resource_owners (
     resource_type TEXT NOT NULL,
     resource_id TEXT NOT NULL,
     owner_issuer TEXT NOT NULL,
@@ -1069,8 +1089,8 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (resource_type, resource_id)
   )`,
-  `CREATE INDEX bp_resource_owners_principal ON bp_resource_owners(owner_issuer, owner_subject, resource_type, resource_id)`,
-  `CREATE FUNCTION delete_bp_resource_owner() RETURNS trigger LANGUAGE plpgsql AS $$
+  `CREATE INDEX IF NOT EXISTS bp_resource_owners_principal ON bp_resource_owners(owner_issuer, owner_subject, resource_type, resource_id)`,
+  `CREATE OR REPLACE FUNCTION delete_bp_resource_owner() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN
       EXECUTE format('DELETE FROM %I.bp_resource_owners WHERE resource_type = $1 AND resource_id = $2', TG_TABLE_SCHEMA)
         USING TG_TABLE_NAME, OLD.id::text;
@@ -1092,7 +1112,17 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     "ablesign_accounts",
   ].map(
     (table) =>
-      `CREATE TRIGGER ${table}_bp_owner_cleanup AFTER DELETE ON ${table} FOR EACH ROW EXECUTE FUNCTION delete_bp_resource_owner()`,
+      `DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = '${table}'::regclass AND tgname = '${table}_bp_owner_cleanup') THEN
+          CREATE TRIGGER ${table}_bp_owner_cleanup AFTER DELETE ON ${table} FOR EACH ROW EXECUTE FUNCTION delete_bp_resource_owner();
+        END IF;
+      END $$`,
   ),
-  `CREATE TABLE bp_owner_bootstraps (migration_id TEXT PRIMARY KEY, owner_issuer TEXT NOT NULL, owner_subject TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
+  `CREATE TABLE IF NOT EXISTS bp_owner_bootstraps (migration_id TEXT PRIMARY KEY, owner_issuer TEXT NOT NULL, owner_subject TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
+  // Parallel BP builds already applied ownership at these migration numbers.
+  // Reconcile the skipped master features after all historical BP positions;
+  // every statement is idempotent and preserves already-configured entities.
+  TENANT_WEB_FEATURE_MIGRATIONS.map((sql) =>
+    sql.replace("CREATE TABLE overlay_templates", "CREATE TABLE IF NOT EXISTS overlay_templates"),
+  ).join(";\n"),
 ];

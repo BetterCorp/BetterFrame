@@ -1238,9 +1238,9 @@ fn capture_jpeg_blocking(
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    // 5s ceiling: rtspsrc handshake + a couple of decoded frames. jpegenc
-    // emits one JPEG, filesink writes it. num-buffers=1 on filesink stops
-    // the pipeline after the first sample so we don't dangle.
+    // jpegenc snapshot mode sends EOS after one encoded frame so filesink
+    // writes a single JPEG and the pipeline exits. filesink has no
+    // num-buffers property.
     let mut args = vec![
         "-q".to_string(),
         "rtspsrc".to_string(),
@@ -1261,22 +1261,27 @@ fn capture_jpeg_blocking(
         "videoconvert".to_string(),
         "!".to_string(),
         "jpegenc".to_string(),
+        "snapshot=true".to_string(),
         "!".to_string(),
         "filesink".to_string(),
-        "num-buffers=1".to_string(),
         format!("location={}", tmp.display()),
     ]);
-    let status = Command::new("gst-launch-1.0")
+    let result = Command::new("gst-launch-1.0")
         .args(&args)
         .stderr(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .status()
-        .map_err(|e| format!("gst-launch-1.0 spawn: {e}"))?;
-    let result = if status.success() {
-        std::fs::read(&tmp).map_err(|e| format!("read snapshot: {e}"))
-    } else {
-        Err(format!("gst-launch-1.0 exit {status:?}"))
-    };
+        .spawn()
+        .map_err(|e| format!("gst-launch-1.0 spawn: {e}"))
+        .and_then(|mut child| {
+            wait_for_snapshot(&mut child, std::time::Duration::from_secs(5))
+        })
+        .and_then(|status| {
+            if status.success() {
+                std::fs::read(&tmp).map_err(|e| format!("read snapshot: {e}"))
+            } else {
+                Err(format!("gst-launch-1.0 exit {status:?}"))
+            }
+        });
     let _ = std::fs::remove_file(&tmp);
     result.and_then(|bytes| {
         if bytes.is_empty() {
@@ -1285,6 +1290,32 @@ fn capture_jpeg_blocking(
             Ok(bytes)
         }
     })
+}
+
+/// A camera that never supplies a frame must not leave a blocking worker and
+/// GStreamer child behind. Kill and reap on timeout or a failed wait.
+fn wait_for_snapshot(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+) -> Result<std::process::ExitStatus, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("gst-launch-1.0 wait: {error}"));
+            }
+        }
+        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("gst-launch-1.0 timed out after {} seconds", timeout.as_secs()));
+        };
+        std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
+    }
 }
 
 /// Receives ONVIF push notification (WS-BaseNotification Notify) from cameras.
@@ -1409,6 +1440,25 @@ fn _request_marker(_: Request) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_timeout_kills_and_reaps_a_stalled_capture() {
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let started = std::time::Instant::now();
+        let error = wait_for_snapshot(&mut child, std::time::Duration::from_millis(50)).unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        assert!(!child.try_wait().unwrap().unwrap().success());
+    }
+
+    #[test]
+    fn snapshot_wait_preserves_success_and_failure_status() {
+        for (program, success) in [("true", true), ("false", false)] {
+            let mut child = std::process::Command::new(program).spawn().unwrap();
+            let status = wait_for_snapshot(&mut child, std::time::Duration::from_secs(3)).unwrap();
+            assert_eq!(status.success(), success);
+        }
+    }
 
     #[tokio::test]
     async fn smart_keys_require_the_full_local_auth_key_before_resolution() {

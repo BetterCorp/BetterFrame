@@ -1,3 +1,4 @@
+import { blockOverlay, createOverlayBatchRenderer, overlayPlaybackDocument } from "./overlays.js";
 /**
  * Bundle generation — display-chain routing.
  *
@@ -78,6 +79,7 @@ export interface BundleCamera {
 }
 
 export interface BundleCell {
+  overlay_html?: string;
   view_id: string;
   entity_id: string | null;
   row: number;
@@ -261,11 +263,29 @@ export async function generateBundle(
   let cameras = [...cameraById.values()].sort((a, b) => a.name.localeCompare(b.name));
   const deviceNames = new Map((await repo.listCameraDevices()).map((device) => [device.id, device.name]));
   const stableEncryptedValues = new Map<string, string>();
+  const renderBundleOverlay = createOverlayBatchRenderer();
 
   function encryptForBundle(plaintext: string, key: string, stableContext: string): string {
     const ciphertext = secrets.encryptForCluster(plaintext, key);
     stableEncryptedValues.set(ciphertext, stableSecretFingerprint(stableContext, plaintext));
     return ciphertext;
+  }
+
+  function entitySmartUrl(ent: Entity): BundleCell["smart_url"] {
+    const raw = ent.type === "web" ? ent.smart_url_json : null;
+    if (!raw?.steps.length || viewer) return undefined;
+    return {
+      ...raw,
+      steps: raw.steps.map((source) => {
+        const step = { ...source };
+        const key = kioskEncryptKey ?? clusterKey;
+        if (step.value != null && step.type === "fill" && key) {
+          step.value_encrypted = encryptForBundle(step.value, key, `smart-url:entity:${ent.id}:${String(step.selector ?? "")}`);
+          delete step.value;
+        }
+        return step;
+      }),
+    };
   }
 
   async function resolveEntityContent(ent: Entity): Promise<{
@@ -329,6 +349,7 @@ export async function generateBundle(
         let contentType = c.content_type;
         let cellLocalStorage: Record<string, string> | undefined;
         let cellInputOptions: Record<string, unknown> | undefined = c.input_options_json;
+        let cellSmartUrl: BundleCell["smart_url"];
         let cameraId = c.camera_id;
         let webUrl = c.web_url;
         let htmlContent = c.html_content;
@@ -341,12 +362,24 @@ export async function generateBundle(
             webUrl = resolved.webUrl;
             htmlContent = resolved.htmlContent;
             cellLocalStorage = resolved.localStorage;
+            cellSmartUrl = entitySmartUrl(ent);
             cellInputOptions = Object.keys(ent.input_options_json ?? {}).length > 0
               ? ent.input_options_json
               : cellInputOptions;
           }
         }
+        let overlayHtml: string | undefined;
+        try {
+          const overlay = blockOverlay(c.options);
+          const template = overlay ? await repo.getOverlayTemplate(overlay.template_id) : null;
+          if (template && overlay) overlayHtml = overlayPlaybackDocument(renderBundleOverlay(template.html, overlay.data));
+        } catch (cause) {
+          span?.log.warn("overlay unavailable for block {id}: {message}", {
+            id: c.id, message: cause instanceof Error ? cause.message : String(cause),
+          });
+        }
         const bundleCell: BundleCell = {
+          ...(overlayHtml ? { overlay_html: overlayHtml } : {}),
           view_id: c.id,
           entity_id: c.entity_id,
           row: c.row,
@@ -360,26 +393,8 @@ export async function generateBundle(
           html_content: htmlContent,
           cooling_timeout_seconds: c.cooling_timeout_seconds,
           fit: c.fit,
-          // Smart URL: encrypted credentials use per-kiosk key so each
-          // kiosk's bundle has uniquely encrypted values.
-          smart_url: viewer && c.options?.["smart_url"] ? { steps: [] } : c.options?.["smart_url"] ? (() => {
-            const raw = c.options["smart_url"] as any;
-            const steps = Array.isArray(raw.steps) ? raw.steps.map((s: any) => {
-              const step = { ...s };
-              // Encrypt plaintext values with per-kiosk key for transport.
-              const ek = kioskEncryptKey ?? clusterKey;
-              if (step.value && step.type === "fill" && ek) {
-                step.value_encrypted = encryptForBundle(step.value, ek, `smart-url:${c.id}:${String(step.selector ?? "")}`);
-                delete step.value;
-              }
-              return step;
-            }) : [];
-            return {
-              steps,
-              login_detect_url: raw.login_detect_url,
-              session_check_interval_ms: raw.session_check_interval_ms,
-            };
-          })() : undefined,
+          // Blocks cannot override entity authentication.
+          smart_url: cellSmartUrl,
           local_storage: cellLocalStorage,
           input_options: cellInputOptions,
         };
@@ -387,8 +402,9 @@ export async function generateBundle(
         if (c.entity_id != null && !virtualLayouts.has(c.entity_id)) {
           const ent = await repo.getEntityById(c.entity_id);
           if (ent) {
-            // Cell-level click/hold actions (e.g. switch-to-fullscreen) must not
-            // fire again inside the fullscreen layout itself.
+            // Entity fullscreen views have no originating block. Keep block data
+            // and click/hold actions out of their reusable virtual cells.
+            const { overlay_html: _blockOverlay, ...entityCell } = bundleCell;
             const { events: _cellEvents, ...fullscreenInputOptions } =
               (bundleCell.input_options ?? {}) as Record<string, unknown>;
             virtualLayouts.set(c.entity_id, {
@@ -403,7 +419,7 @@ export async function generateBundle(
               resets_idle_timer: true,
               is_default: false,
               cells: [{
-                ...bundleCell,
+                ...entityCell,
                 view_id: `virtual:${ent.id}`,
                 row: 0,
                 col: 0,
@@ -460,6 +476,7 @@ export async function generateBundle(
           html_content: resolved.htmlContent,
           cooling_timeout_seconds: null,
           fit: "contain",
+          smart_url: entitySmartUrl(ent),
           local_storage: resolved.localStorage,
           input_options: viewer ? undefined : ent.input_options_json,
         }],

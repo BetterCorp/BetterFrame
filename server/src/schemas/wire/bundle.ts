@@ -76,6 +76,7 @@ const smartUrl = av.object(
 const bundleCell = av.object(
   {
     view_id: id,
+    overlay_html: av.optional(av.string().maxLength(4 * 1024 * 1024)),
     entity_id: av.nullable(id),
     row: av.int().min(0).max(63),
     col: av.int().min(0).max(63),

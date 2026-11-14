@@ -321,3 +321,18 @@ betterframe/
 - Same docs use `BSBService<typeof Config, ...>` — should be `InstanceType<typeof Config>`. The actual canonical pattern is in `node_modules/@bsb/base/lib/plugins/service-default0/`.
 - `@anyvali/js` Python SDK uses `object_()`/`int_()`/`bool_()` (underscores avoid keyword conflicts), but the **JS SDK uses `object()`/`int()`/`bool()`** without underscores. Only `enum_()` and `null_()` keep the underscore in JS.
 - BSB log methods (`obs.log.info` etc.) require **literal-typed** message strings. String concatenation (`"a " + "b"`) widens to `string` and breaks the `SmartLogMeta<T>` placeholder extraction.
+
+## block overlays (2026-11-07)
+- Reusable tenant-scoped `overlay_templates`: HTML/CSS with Handlebars, plus sample JSON used only by the editor preview. No authored JavaScript or canvas engine.
+- `/admin/overlays` edits templates with a sandboxed, resizable iframe preview. Preview and playback share the same rendered document. CSS calculations/custom properties support percentage bars and other numeric visuals.
+- Layout-cell `options.overlay` stores `{template_id,data}`. Node-RED `bf-overlay` replaces live data via `POST /api/admin/blocks/:cellId/overlay`; it retains each block's state in PostgreSQL.
+- Bundles include optional `overlay_html` containing a sandboxed document. Linux, Windows and Android compose transparent layers and preserve base content on overlay-only updates. Invalid template output omits only that overlay.
+- Browser regression: `TSX_TSCONFIG_PATH=server/tsconfig.test.json node --import tsx scripts/test-overlay-preview.mjs` after `npx playwright install chromium`. Optional `BF_CHROMIUM_PATH` selects an existing Chromium executable.
+
+### Overlay review hardening (2026-11-09)
+- Render/compile operations have a 100 ms VM deadline; the Handlebars buffer compiler checks a 512 KiB budget before appending fragments, including intermediate loop output. Compiled templates have a bounded 32-entry cache. Bundle generation shares one 100 ms budget across all overlays and memoizes successful/failed renders in a bounded cache.
+- Windows web content keys order local storage with BTreeMap. Linux reorders already-parented children without unrealizing WebKit layers. Bundle purge includes overlay keys so full refreshes retain their browsers until data synchronization; the GTK harness covers reuse and removal through render_bundle.
+- Guard all overlay decoding/lookup/rendering during bundle generation. Invalid stored data remains editable; HTML/htmx validation failures preserve the submitted draft, while API errors stay JSON.
+- The fixture-only GTK CI step disables WebKit's sandbox because hosted Ubuntu blocks its user namespace. Production sandbox configuration is unchanged.
+- Block overlays clear with an operator display and never transfer into unbound entity/camera fullscreen views. The cached block configuration remains intact for restore.
+- Android base pages and overlay browsers share the same 32-WebView limit, with base pages taking priority. Release displaced overlays before allocating new base browsers.

@@ -2,8 +2,9 @@ import {
   ownershipPredicate,
   type ResourceOwner,
 } from "./resource-ownership.js";
-import { CAMERA_CREDENTIAL_PREFIX } from "../admin/camera-credentials.js";
+import { CAMERA_CREDENTIAL_PREFIX, encryptCameraCredential } from "../admin/camera-credentials.js";
 import type { SecretsApi } from "../secrets.js";
+import type { OverlayTemplate } from "../overlays.js";
 import type { LogFilters, LogPage, LogSummary } from "../kiosk-log-view.js";
 /**
  * Repository — typed accessor over the DB adapter.
@@ -148,8 +149,12 @@ export class Repository {
   readonly adapter: DbAdapter;
   private readonly notify: NotifyFn;
   private _obs?: Observable;
-  private cameraCredentialCodec?: Pick<SecretsApi, "decryptString">;
-  setCameraCredentialCodec(codec: Pick<SecretsApi, "decryptString">): void { this.cameraCredentialCodec = codec; }
+  private cameraCredentialCodec?: Pick<SecretsApi, "encryptString" | "decryptString">;
+  setCameraCredentialCodec(codec: Pick<SecretsApi, "encryptString" | "decryptString">): void { this.cameraCredentialCodec = codec; }
+  private encodeCameraCredential(value: string | null): string | null {
+    if (value === null || value.startsWith(CAMERA_CREDENTIAL_PREFIX) || !this.cameraCredentialCodec) return value;
+    return encryptCameraCredential(this.cameraCredentialCodec, value);
+  }
   private decodeCameraCredential(value: string | null): string | null {
     if (!value?.startsWith(CAMERA_CREDENTIAL_PREFIX)) return value;
     if (!this.cameraCredentialCodec) throw new Error("Encrypted camera credentials require the installation key");
@@ -1000,6 +1005,27 @@ export class Repository {
   }
 
   // ===========================================================================
+  // Overlay templates are stored inside the active tenant schema.
+  async listOverlayTemplates(): Promise<OverlayTemplate[]> {
+    return this._all<OverlayTemplate>("SELECT * FROM overlay_templates ORDER BY name");
+  }
+
+  async getOverlayTemplate(id: string): Promise<OverlayTemplate | null> {
+    return (await this._get<OverlayTemplate>("SELECT * FROM overlay_templates WHERE id = ?", [id])) ?? null;
+  }
+
+  async saveOverlayTemplate(input: OverlayTemplate): Promise<void> {
+    await this._run(`INSERT INTO overlay_templates (id, name, html, sample_data) VALUES (?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET name = excluded.name, html = excluded.html, sample_data = excluded.sample_data`,
+      [input.id, input.name, input.html, J(input.sample_data)]);
+    void this.notify("overlay_templates", "update", input.id);
+  }
+
+  async deleteOverlayTemplate(id: string): Promise<void> {
+    await this._run("DELETE FROM overlay_templates WHERE id = ?", [id]);
+    void this.notify("overlay_templates", "delete", id);
+  }
+
   // layout cells
   // ===========================================================================
 
@@ -1239,7 +1265,7 @@ export class Repository {
       `INSERT INTO camera_devices
          (id, name, host, port, username, password, discovery_runner, layout_defaults_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, input.name, input.host, input.port, input.username ?? null, input.password ?? null,
+      [id, input.name, input.host, input.port, input.username ?? null, this.encodeCameraCredential(input.password ?? null),
        input.discovery_runner ?? "server", J(input.layout_defaults_json ?? {})],
     );
     void this.notify("camera_devices", "create", id);
@@ -1253,7 +1279,7 @@ export class Repository {
     for (const [key, value] of Object.entries(patch)) {
       if (!allowed.has(key)) continue;
       sets.push(`${key} = ?`);
-      vals.push(key === "layout_defaults_json" ? J(value) : value === undefined ? null : value);
+      vals.push(key === "layout_defaults_json" ? J(value) : key === "password" ? this.encodeCameraCredential(value as string | null ?? null) : value === undefined ? null : value);
     }
     if (sets.length === 0) return;
     vals.push(id);
@@ -1313,7 +1339,7 @@ export class Repository {
     onvif_host?: string | null;
     onvif_port?: number | null;
     onvif_username?: string | null;
-    onvif_password?: string | null; // already-encrypted ciphertext
+    onvif_password?: string | null; // Plain input or existing installation ciphertext.
     capabilities?: string[];
     stream_policy?: StreamPolicy;
   }): Promise<Camera> {
@@ -1330,11 +1356,11 @@ export class Repository {
         input.name,
         input.camera_number ?? null,
         input.type,
-        input.rtsp_url ?? null,
+        this.encodeCameraCredential(input.rtsp_url ?? null),
         input.onvif_host ?? null,
         input.onvif_port ?? null,
         input.onvif_username ?? null,
-        input.onvif_password ?? null,
+        this.encodeCameraCredential(input.onvif_password ?? null),
         J(input.capabilities ?? []),
         input.stream_policy ?? "auto",
       ],
@@ -3066,7 +3092,8 @@ export class Repository {
     for (const [k, v] of Object.entries(patch)) {
       if (k === "id" || k === "created_at") continue;
       sets.push(`${k} = ?`);
-      if (k === "capabilities") vals.push(J(v));
+      if (k === "onvif_password" || k === "rtsp_url") vals.push(this.encodeCameraCredential(v as string | null ?? null));
+      else if (k === "capabilities") vals.push(J(v));
       else if (typeof v === "boolean") vals.push(v);
       else vals.push(v === undefined ? null : v);
     }
@@ -3108,6 +3135,13 @@ export class Repository {
     return rs.map((r) => rowToEntity(r as Record<string, unknown>));
   }
 
+  /** Preserved legacy variants are shown for recovery, never used by playback. */
+  async legacyEntitySmartUrls(id: string): Promise<NonNullable<Entity["smart_url_json"]>[]> {
+    const rows = await this._all(`SELECT DISTINCT options->'smart_url' AS config FROM layout_cells
+      WHERE entity_id = ? AND jsonb_typeof(options->'smart_url') = 'object'`, [id]);
+    return rows.map((row) => row["config"] as NonNullable<Entity["smart_url_json"]>);
+  }
+
   async getEntityById(id: string): Promise<Entity | null> {
     const r = await this._get("SELECT * FROM entities WHERE id = ?", [id]);
     return r ? rowToEntity(r as Record<string, unknown>) : null;
@@ -3136,11 +3170,12 @@ export class Repository {
     dashboard_id?: string | null;
     ablesign_screen_id?: string | null;
     managed?: boolean;
+    smart_url_json?: Entity["smart_url_json"];
   }): Promise<Entity> {
     const id = uuidv7();
     await this._run(
-      `INSERT INTO entities (id, name, type, description, camera_id, html_content, web_url, dashboard_id, ablesign_screen_id, managed)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO entities (id, name, type, description, camera_id, html_content, web_url, dashboard_id, ablesign_screen_id, managed, smart_url_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.name,
@@ -3152,6 +3187,7 @@ export class Repository {
         input.type === "dashboard" ? (input.dashboard_id ?? null) : null,
         input.type === "ablesign" ? (input.ablesign_screen_id ?? null) : null,
         input.managed ?? false,
+        input.type === "web" ? J(input.smart_url_json ?? null) : null,
       ],
     );
     void this.notify("entities", "create", id);
@@ -3179,13 +3215,14 @@ export class Repository {
       web_url?: string | null;
       dashboard_id?: string | null;
       input_options_json?: Record<string, unknown>;
+      smart_url_json?: Entity["smart_url_json"];
     },
   ): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
       sets.push(`${k} = ?`);
-      vals.push(k === "input_options_json" ? J(v ?? {}) : v === undefined ? null : v);
+      vals.push(k === "input_options_json" ? J(v ?? {}) : k === "smart_url_json" ? J(v ?? null) : v === undefined ? null : v);
     }
     if (sets.length === 0) return;
     vals.push(id);

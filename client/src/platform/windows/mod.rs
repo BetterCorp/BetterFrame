@@ -55,7 +55,7 @@ use wry::raw_window_handle::{
     HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle,
 };
 use wry::{
-    Rect as WebRect, WebContext, WebView, WebViewBuilder, WebViewBuilderExtWindows,
+    Rect as WebRect, WebContext, WebView, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows,
     dpi::{PhysicalPosition, PhysicalSize},
 };
 

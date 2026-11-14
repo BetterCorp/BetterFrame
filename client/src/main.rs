@@ -3,6 +3,10 @@
 pub use betterframe_client_core as core;
 pub use core::bundle;
 mod network;
+mod trusted_cas;
+#[cfg(target_os = "linux")]
+#[path = "platform/linux/trusted_cas.rs"]
+mod linux_trusted_cas;
 mod diagnostic_logs;
 #[cfg(target_os = "linux")]
 #[path = "platform/linux/journal_logs.rs"]

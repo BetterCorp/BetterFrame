@@ -658,6 +658,7 @@ fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
         cameras,
         gpio_bindings: Vec::new(),
         operator_console: crate::bundle::OperatorConsoleConfig::default(),
+        trusted_cas: Vec::new(),
         version: legacy.version,
     }
 }

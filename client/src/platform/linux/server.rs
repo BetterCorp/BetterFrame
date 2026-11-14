@@ -525,6 +525,7 @@ pub fn reset_pairing_and_restart(reason: &str) -> ! {
         remove_pairing_state_files(&home.join(".betterframe-kiosk"));
     }
 
+    let _ = crate::linux_trusted_cas::sync(&[]);
     tracing::info!("config wiped, exiting for systemd restart");
     std::process::exit(1);
 }
@@ -977,6 +978,7 @@ pub fn heartbeat(
     let network_interfaces = read_network_interfaces();
     let managed_report = MANAGED_CONFIG_REPORT.lock().ok().and_then(|g| g.clone());
     let mut payload = serde_json::json!({
+        "trusted_ca_status": crate::linux_trusted_cas::sync(&load_cached_bundle().map(|b| b.trusted_cas).unwrap_or_default()),
         "bundle_version": bundle_version,
         "kiosk_app_version": kiosk_app_version(),
         "firmware_target": crate::firmware::FIRMWARE_TARGET,

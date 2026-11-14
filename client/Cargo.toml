@@ -28,10 +28,10 @@ url = "2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 base64 = "0.22"
 aes-gcm = "0.10"
+sha2 = "0.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 roxmltree = "0.20"
-sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["pem"] }
 urlencoding = "2"
 sha1 = "0.10"

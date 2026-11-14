@@ -16,6 +16,7 @@ pub(super) fn run_app() -> Result<(), String> {
     };
     fs::create_dir_all(webview_data_dir())
         .map_err(|error| format!("create WebView2 data directory: {error}"))?;
+    trusted_cas::start_trust_worker();
     gstreamer::init().map_err(|error| format!("GStreamer initialization failed: {error}"))?;
     let policy = load_policy();
     let displays = query_native_displays();

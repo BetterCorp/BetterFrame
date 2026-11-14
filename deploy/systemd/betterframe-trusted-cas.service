@@ -1,0 +1,21 @@
+[Unit]
+Description=BetterFrame managed certificate authorities
+After=local-fs.target
+Before=betterframe-kiosk.service
+RequiresMountsFor=/var/lib/betterframe
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/betterframe-trusted-cas.py
+User=root
+Group=root
+UMask=0022
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/betterframe -/usr/local/share/ca-certificates -/etc/ssl/certs -/etc/pki/ca-trust
+NoNewPrivileges=yes
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

@@ -62,7 +62,15 @@ pub struct KioskBundle {
     pub gpio_bindings: Vec<BundleGpioBinding>,
     #[serde(default)]
     pub operator_console: OperatorConsoleConfig,
+    #[serde(default)]
+    pub trusted_cas: Vec<TrustedCa>,
     pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct TrustedCa {
+    pub pem: String,
+    pub fingerprint_sha256: String,
 }
 
 impl KioskBundle {

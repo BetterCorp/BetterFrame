@@ -1121,6 +1121,8 @@ export function registerKioskRoutes(
       }),
     });
 
+    if (body.trusted_ca_status) await repo.reportTrustedCas(kiosk.id, body.trusted_ca_status);
+
     // Managed-config echo: kiosk reports the version it has successfully
     // applied. Persist for the admin UI to render. Error string clears on a
     // successful apply (kiosk omits it). verifyKioskKey returns just {id};

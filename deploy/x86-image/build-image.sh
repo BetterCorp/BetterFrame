@@ -95,6 +95,7 @@ mount -t tmpfs tmpfs "${WORK}/root/run"
 cp "$KIOSK_BIN" "${WORK}/root/tmp/betterframe-kiosk"
 mkdir -p "${WORK}/root/tmp/bf-files"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-kiosk.service" "${WORK}/root/tmp/bf-files/"
+cp "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.py" "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.service" "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.path" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-log-upload.service" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-journal-storage.service" "${REPO_ROOT}/deploy/systemd/var-log-journal.mount" "${REPO_ROOT}/deploy/journald/flush-storage.conf" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/journald/betterframe.conf" "${WORK}/root/tmp/bf-files/betterframe-journald.conf"
@@ -158,7 +159,7 @@ apt-get -y install --no-install-recommends \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
   gstreamer1.0-libav gstreamer1.0-tools v4l-utils wlr-randr \
   gstreamer1.0-vaapi va-driver-all mesa-va-drivers vainfo intel-gpu-tools \
-  polkitd rauc dosfstools nftables cloud-guest-utils e2fsprogs openssl udev tpm2-tools qemu-guest-agent
+  polkitd rauc dosfstools nftables cloud-guest-utils e2fsprogs openssl python3 udev tpm2-tools qemu-guest-agent
 
 locale-gen en_US.UTF-8 || true
 update-locale LANG=en_US.UTF-8 || true
@@ -186,6 +187,9 @@ install -d -m 755 /etc/betterframe
 printf '%s\n' "@VERSION@" > /etc/betterframe/os-version
 printf '%s\n' "betterframe-x86_64-generic" > /etc/betterframe/os-compatibility
 
+install -m 755 /tmp/bf-files/betterframe-trusted-cas.py /usr/local/sbin/betterframe-trusted-cas.py
+install -m 644 /tmp/bf-files/betterframe-trusted-cas.service /tmp/bf-files/betterframe-trusted-cas.path /etc/systemd/system/
+systemctl enable betterframe-trusted-cas.service betterframe-trusted-cas.path
 install -m 644 /tmp/bf-files/betterframe-kiosk.service /etc/systemd/system/betterframe-kiosk.service
 install -m 644 /tmp/bf-files/betterframe-log-upload.service /etc/systemd/system/betterframe-log-upload.service
 install -d -m 755 /etc/systemd/journald.conf.d /var/log/journal

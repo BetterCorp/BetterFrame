@@ -1,3 +1,4 @@
+import { MAX_TRUSTED_CAS, type TrustedCa, type TrustedCaStatus } from "../trusted-cas.js";
 import type { OverlayTemplate } from "../overlays.js";
 import type { LogFilters, LogPage, LogSummary } from "../kiosk-log-view.js";
 /**
@@ -205,6 +206,59 @@ export class Repository {
   /** Ad-hoc transaction. */
   async transact<T>(fn: () => Promise<T>): Promise<T> {
     return this.adapter.transaction(fn);
+  }
+
+  async listTrustedCas(): Promise<TrustedCa[]> {
+    return this._all<TrustedCa>("SELECT * FROM trusted_cas ORDER BY fingerprint_sha256");
+  }
+
+  async getTrustedCa(id: string): Promise<TrustedCa | null> {
+    return await this._get<TrustedCa>("SELECT * FROM trusted_cas WHERE id = ?", [id]) ?? null;
+  }
+
+  async saveTrustedCa(ca: TrustedCa): Promise<void> {
+    await this._run(`INSERT INTO trusted_cas (id, name, pem, fingerprint_sha256, subject, not_before, not_after)
+      VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (fingerprint_sha256) DO NOTHING`,
+      [ca.id, ca.name, ca.pem, ca.fingerprint_sha256, ca.subject, ca.not_before, ca.not_after]);
+    void this.notify("trusted_cas", "create", ca.id);
+  }
+
+  async deleteTrustedCa(id: string): Promise<void> {
+    await this._run("DELETE FROM trusted_cas WHERE id = ?", [id]);
+    void this.notify("trusted_cas", "delete", id);
+  }
+
+  async trustedCasForKiosk(kioskId: string): Promise<TrustedCa[]> {
+    return this._all<TrustedCa>(`SELECT ca.* FROM trusted_cas ca JOIN kiosk_trusted_cas a ON a.ca_id = ca.id
+      WHERE a.kiosk_id = ? ORDER BY ca.fingerprint_sha256`, [kioskId]);
+  }
+
+  async assignTrustedCas(kioskId: string, ids: string[]): Promise<void> {
+    if (ids.length > MAX_TRUSTED_CAS) throw new Error("Select at most 32 CA certificates");
+    await this.transact(async () => {
+      const kiosk = await this._get("SELECT id FROM kiosks WHERE id = ? FOR UPDATE", [kioskId]);
+      if (!kiosk) throw new Error("Player not found");
+      for (const id of ids) {
+        if (!await this.getTrustedCa(id)) throw new Error("CA certificate not found in this tenant");
+      }
+      await this._run("DELETE FROM kiosk_trusted_cas WHERE kiosk_id = ?", [kioskId]);
+      for (const id of new Set(ids)) await this._run("INSERT INTO kiosk_trusted_cas (kiosk_id, ca_id) VALUES (?, ?)", [kioskId, id]);
+    });
+    void this.notify("kiosk_trusted_cas", "update", kioskId);
+  }
+
+  async listTrustedCaAssignments(): Promise<Array<{ kiosk_id: string; ca_id: string }>> {
+    return this._all("SELECT kiosk_id, ca_id FROM kiosk_trusted_cas ORDER BY kiosk_id, ca_id");
+  }
+
+  async reportTrustedCas(kioskId: string, report: TrustedCaStatus): Promise<void> {
+    await this._run(`INSERT INTO kiosk_trust_status (kiosk_id, revision, state, message) VALUES (?, ?, ?, ?)
+      ON CONFLICT (kiosk_id) DO UPDATE SET revision = EXCLUDED.revision, state = EXCLUDED.state,
+      message = EXCLUDED.message, reported_at = now()`, [kioskId, report.revision, report.state, report.message]);
+  }
+
+  async listTrustedCaReports(): Promise<Array<TrustedCaStatus & { kiosk_id: string; reported_at: string }>> {
+    return this._all("SELECT * FROM kiosk_trust_status ORDER BY kiosk_id");
   }
 
   // ===========================================================================

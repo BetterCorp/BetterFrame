@@ -89,6 +89,8 @@ internal object EnrollmentCleanup {
         worker.execute {
             try {
                 job.persisted.get()
+                val trustCleanup = TrustedCas(context).sync(JSONArray())
+                check(trustCleanup.optString("state") != "error") { trustCleanup.optString("message") }
                 // A stale reader may join just after another instance completed.
                 if (store.read().optString(MARKER) != job.token) { finish(true); return@execute }
                 main.post {
@@ -131,12 +133,15 @@ class ViewerSession internal constructor(context: Context, private val listener:
         fun onServerAddress(address: String) {}
         fun onStatus(message: String)
         fun onPairing(code: String)
+        fun onTrustChanged() {}
         fun onPlan(plan: JSONObject)
         fun onIdleReturn() {}
         fun onStandbyChanged(standby: Boolean) {}
     }
     private val app = context.applicationContext
     private val store = ProtectedStore(app)
+    private val trustedCas = TrustedCas(app)
+    private var trustReport = JSONObject()
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadScheduledExecutor()
     // Projection is independent of potentially slow network I/O, so local touch/remote actions stay responsive.
@@ -730,13 +735,20 @@ class ViewerSession internal constructor(context: Context, private val listener:
             .put("power_session_id", powerSessionId).put("power_revision", powerRevision)
     }
 
+    private fun syncTrustedCas(cas: JSONArray): JSONObject {
+        val report = trustedCas.sync(cas, ::active)
+        if (report.optBoolean("changed")) ui(activeEpoch) { listener.onTrustChanged() }
+        return report
+    }
+
     private fun heartbeat(): Boolean {
+        trustReport = syncTrustedCas(state.optString("bundle").takeIf { it.isNotBlank() }?.let { JSONObject(it).optJSONArray("trusted_cas") } ?: JSONArray())
         val metrics = app.resources.displayMetrics
         val displays = JSONArray().put(powerStateReport().put("index", 0).put("name", "Android display")
             .put("width_px", metrics.widthPixels).put("height_px", metrics.heightPixels))
         return request("/api/kiosk/heartbeat", JSONObject().put("displays", displays).put("capabilities", capabilities())
             .put("kiosk_app_version", BuildConfig.VERSION_NAME).put("os_version", "Android ${Build.VERSION.RELEASE}")
-            .put("bundle_version", state.optString("bundle_version"))).use {
+            .put("bundle_version", state.optString("bundle_version")).put("trusted_ca_status", trustReport)).use {
                 profileVerified = false
                 if (!authorized(it)) return@use false
                 // A dropped response body is a transport failure, not evidence
@@ -785,6 +797,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
             }
             if (!authorized(it)) return
             val bundle = json(it)
+            trustReport = syncTrustedCas(bundle.optJSONArray("trusted_cas") ?: JSONArray())
             val raw = bundle.toString()
             val plan = JSONObject(NativeCore.renderPlan(raw, null, null))
             awaitingAssignment = plan.optString("error") == NO_LAYOUTS_ASSIGNED

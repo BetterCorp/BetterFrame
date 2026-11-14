@@ -72,6 +72,7 @@ use crate::core::state::ClientState;
 mod host;
 mod renderer;
 mod storage;
+mod trusted_cas;
 
 use host::*;
 use renderer::*;
@@ -925,6 +926,7 @@ async fn heartbeat(
         .post(format!("{server_url}/api/kiosk/heartbeat"))
         .bearer_auth(key)
         .json(&serde_json::json!({
+            "trusted_ca_status": trusted_cas::trust_report(),
             "bundle_version": state.bundle_version.as_deref(),
             "kiosk_app_version": kiosk_app_version(),
             "firmware_target": "windows-x64",

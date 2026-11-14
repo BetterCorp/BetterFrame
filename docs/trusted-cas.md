@@ -42,3 +42,9 @@ Heartbeats are authoritative for trust. Each client persists that assignment apa
 from its content cache; a stale content bundle cannot reintroduce a removed root.
 The bundle's trust list is only an offline/bootstrap fallback before the first
 trust-aware heartbeat. Unassigning layouts does not prevent certificate removals.
+
+The Linux path service delegates certificate management to the configured local
+runtime account. That account must be trusted to request machine CA changes; the
+helper limits requests to valid self-signed public roots and fixed paths, but it
+does not authenticate a different local process running under the same account.
+Managed images use the dedicated, non-login bfkiosk account.

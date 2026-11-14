@@ -4,7 +4,7 @@ function Write-AtomicJson($Path, $Value) {
     $temporary = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
     try {
         [IO.File]::WriteAllText($temporary, (ConvertTo-Json -InputObject $Value -Depth 8 -Compress), [Text.UTF8Encoding]::new($false))
-        if ([IO.File]::Exists($Path)) { [IO.File]::Replace($temporary, $Path, $null) }
+        if ([IO.File]::Exists($Path)) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) }
         else { [IO.File]::Move($temporary, $Path) }
     } finally { if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) } }
 }

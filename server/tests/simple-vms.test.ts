@@ -60,7 +60,11 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     const callback = `http://bf.test/api/simplevms/default/${source.id}`;
     assert.equal((await app.request(`${callback}/events`, { method: "POST", body: JSON.stringify(snapshot()) })).status, 401);
     const initial = snapshot(); initial.groups[0]!.cameraIds = ["entrance"];
-    assert.equal((await app.request(`${callback}/events`, { method: "POST", headers, body: JSON.stringify(initial) })).status, 200);
+    const delivered = await app.request(`${callback}/events`, { method: "POST", headers, body: JSON.stringify(initial) });
+    assert.equal(delivered.status, 200);
+    const acknowledgement = await delivered.json() as { grants: Array<{ kioskId: string; cameraIds: string[] }> };
+    assert.deepEqual(acknowledgement.grants.find(grant => grant.kioskId === android.id)?.cameraIds, ["entrance"]);
+    assert.deepEqual(new Set(acknowledgement.grants.find(grant => grant.kioskId === owner.id)?.cameraIds), new Set(["entrance", "yard"]));
     assert.deepEqual(await (await app.request(`${callback}/access?kioskId=${linked.id}`, { headers })).json(), { allowed: true });
     assert.deepEqual(await (await app.request(`${callback}/access?kioskId=${other.id}`, { headers })).json(), { allowed: false });
     assert.deepEqual(await (await app.request(`${callback}/access?kioskId=${android.id}&cameraId=entrance`, { headers })).json(), { allowed: true });

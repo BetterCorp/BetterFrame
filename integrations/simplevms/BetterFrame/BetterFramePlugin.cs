@@ -13,6 +13,7 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
 {
   private PluginContext _context = null!;
   private CatalogOutbox _outbox = null!;
+  private ReaderAccessCache _access = null!;
   private readonly Channel<bool> _changes = Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
   private CancellationTokenSource? _stop;
   private Task[] _tasks = [];
@@ -24,7 +25,9 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
   public OneOf<Success, Error> Initialize(PluginContext context)
   {
     if (context.CameraRegistry == null || context.EventBus == null || context.StreamTap == null) throw new InvalidOperationException("BetterFrame requires native camera registry, events and stream taps");
-    _context = context; _outbox = new CatalogOutbox(Path.Combine(context.Environment.DataPath, "betterframe")); return new Success();
+    _context = context;
+    var directory = Path.Combine(context.Environment.DataPath, "betterframe");
+    _outbox = new CatalogOutbox(directory); _access = new ReaderAccessCache(directory); return new Success();
   }
   private string Config(string key, string fallback = "") => _context.Config.Get(key, fallback);
   private DisplayGroup[] Groups() => CatalogBuilder.ParseGroups(Config("groups", "[]"));
@@ -89,6 +92,10 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
         var acknowledged = body.RootElement.GetProperty("revision").GetInt64();
         if (acknowledged < pending.Revision) throw new InvalidOperationException("Snapshot not acknowledged");
         _outbox.Acknowledge(acknowledged);
+        if (body.RootElement.TryGetProperty("grants", out var grants)) {
+          _access.Replace(destination.AbsoluteUri, grants.EnumerateArray().SelectMany(g => g.GetProperty("cameraIds").EnumerateArray()
+            .Select(camera => g.GetProperty("kioskId").GetString() + "/" + camera.GetString())).ToArray());
+        }
         if (acknowledged > pending.Revision) Changed(true, false); // Recorder state restored from an older backup.
       } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
       catch { await Task.Delay(TimeSpan.FromSeconds(5), ct); retry = !_changes.Reader.TryPeek(out _); }
@@ -141,9 +148,18 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
       var address = new UriBuilder(destination) { Path = destination.AbsolutePath[..^6] + "access", Query = "kioskId=" + Uri.EscapeDataString(kioskId) + "&cameraId=" + Uri.EscapeDataString(cameraId) };
       using var request = new HttpRequestMessage(HttpMethod.Get, address.Uri);
       request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Config("integrationToken"));
-      using var response = await _http.SendAsync(request, ct); response.EnsureSuccessStatusCode();
-      using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-      return json.RootElement.GetProperty("allowed").GetBoolean();
+      try {
+        using var response = await _http.SendAsync(request, ct);
+        if ((int)response.StatusCode is 401 or 403 or 404) { _access.Record(destination.AbsoluteUri, scope, false); return false; }
+        response.EnsureSuccessStatusCode();
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+        var allowed = json.RootElement.GetProperty("allowed").GetBoolean();
+        _access.Record(destination.AbsoluteUri, scope, allowed); return allowed;
+      } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+      catch (Exception error) when (error is HttpRequestException or TaskCanceledException) {
+        // A valid signed credential can reuse a durable grant during an authority outage.
+        return _access.Allows(destination.AbsoluteUri, scope);
+      }
     } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
     catch { return false; }
   }

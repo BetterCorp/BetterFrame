@@ -19,6 +19,22 @@ namespace BetterFrame.Tests;
 
 public sealed class IntegrationTests
 {
+  [Test] public void ReaderGrantsAndRevocationsSurviveRestartWhileUnknownReadersRemainDenied()
+  {
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    try {
+      var cache = new ReaderAccessCache(directory); cache.Record("authority", "kiosk/camera", true);
+      cache = new ReaderAccessCache(directory);
+      Assert.That(cache.Allows("authority", "kiosk/camera"), Is.True);
+      Assert.That(cache.Allows("authority", "other/camera"), Is.False);
+      Assert.That(cache.Allows("other-authority", "kiosk/camera"), Is.False);
+      cache.Record("authority", "kiosk/camera", false);
+      cache = new ReaderAccessCache(directory); Assert.That(cache.Allows("authority", "kiosk/camera"), Is.False);
+      cache.Replace("authority", ["kiosk/camera", "new/camera"]);
+      Assert.That(cache.Allows("authority", "kiosk/camera"), Is.False);
+      Assert.That(cache.Allows("authority", "new/camera"), Is.True);
+    } finally { Directory.Delete(directory, true); }
+  }
   [Test] public async Task NativeSettingsManageNamedGroupsAndCameraMembershipWithoutChangingRecording()
   {
     var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
@@ -220,6 +236,14 @@ public sealed class IntegrationTests
         await using var stream = await response.Content.ReadAsStreamAsync(stop.Token); var box = new byte[8]; await stream.ReadExactlyAsync(box, stop.Token);
         Assert.That(Encoding.ASCII.GetString(box, 4, 4), Is.EqualTo("ftyp"));
       }
+      receiver.Stop(); // BF is unavailable; a previously authorized camera must still play.
+      using (var offlineRequest = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{httpPort}/bf/{a}/High/live")) {
+        using var offline = await client.SendAsync(offlineRequest, HttpCompletionOption.ResponseHeadersRead, stop.Token);
+        Assert.That((int)offline.StatusCode, Is.EqualTo(200));
+        await using var stream = await offline.Content.ReadAsStreamAsync(stop.Token); var box = new byte[8]; await stream.ReadExactlyAsync(box, stop.Token);
+        Assert.That(Encoding.ASCII.GetString(box, 4, 4), Is.EqualTo("ftyp"));
+      }
+      receiver.Start();
       var revoked = client.GetAsync($"http://127.0.0.1:{httpPort}/bf/{a}/High/live", stop.Token);
       await Access(false); using (var denied = await revoked) Assert.That((int)denied.StatusCode, Is.EqualTo(401));
     } finally { await plugin.StopAsync(default); receiver.Stop(); Directory.Delete(directory, true); }

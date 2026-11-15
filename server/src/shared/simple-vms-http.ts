@@ -4,6 +4,30 @@ import { applySimpleVmsSnapshot, getSimpleVmsSource, simpleVmsTokenMatches } fro
 import { getCoordinator } from "./coordinator-registry.js";
 import { isAndroidViewer, viewerAssignment } from "./android-viewer.js";
 
+async function assignedViewerCameraIds(repo: Repository, kiosk: import("./types.js").Kiosk): Promise<Set<string>> {
+  const assignment = await viewerAssignment(repo, kiosk);
+  const ids = new Set<string>();
+  for (const layoutId of assignment.layoutIds) for (const cell of await repo.layoutCells(layoutId)) {
+    const entity = cell.entity_id ? await repo.getEntityById(cell.entity_id) : null;
+    const id = entity ? entity.type === "camera" ? entity.camera_id : null : cell.content_type === "camera" ? cell.camera_id : null;
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+async function readerGrants(repo: Repository, source: import("./simple-vms.js").SimpleVmsSource) {
+  source = await getSimpleVmsSource(repo, source.id) ?? source;
+  const linked = await repo.adapter.all<{ kiosk_id: string }>("SELECT kiosk_id FROM simple_vms_linked_kiosks WHERE source_id = ?", [source.id]);
+  const cameras = await repo.adapter.all<{ external_id: string; camera_id: string }>("SELECT m.external_id, m.camera_id FROM simple_vms_cameras m JOIN cameras c ON c.id = m.camera_id WHERE m.source_id = ? AND c.enabled = true", [source.id]);
+  const grants = [];
+  for (const id of [source.owner_kiosk_id, ...linked.map(k => k.kiosk_id)]) {
+    const kiosk = await repo.getKioskById(id); if (!source.enabled || !kiosk?.enabled) continue;
+    const assigned = isAndroidViewer(kiosk) ? await assignedViewerCameraIds(repo, kiosk) : null;
+    grants.push({ kioskId: id, cameraIds: cameras.filter(c => !assigned || assigned.has(c.camera_id)).map(c => c.external_id) });
+  }
+  return grants;
+}
+
 async function boundedJson(request: Request): Promise<unknown> {
   const reader = request.body?.getReader();
   if (!reader) throw new Error("Missing body");
@@ -39,15 +63,7 @@ export function registerSimpleVmsIngress(app: H3, repo: Repository): void {
         const camera = cameraId.length <= 128 ? await repo.adapter.get<{ camera_id: string }>("SELECT m.camera_id FROM simple_vms_cameras m JOIN cameras c ON c.id = m.camera_id WHERE m.source_id = ? AND m.external_id = ? AND c.enabled = true", [source.id, cameraId]) : null;
         allowed = !!camera;
         if (allowed && camera && isAndroidViewer(kiosk)) {
-          allowed = false;
-          const assignment = await viewerAssignment(repo, kiosk!);
-          for (const layoutId of assignment.layoutIds) {
-            for (const cell of await repo.layoutCells(layoutId)) {
-              const entity = cell.entity_id ? await repo.getEntityById(cell.entity_id) : null;
-              const assigned = entity ? entity.type === "camera" ? entity.camera_id : null : cell.content_type === "camera" ? cell.camera_id : null;
-              if (assigned === camera.camera_id) allowed = true;
-            }
-          }
+          allowed = (await assignedViewerCameraIds(repo, kiosk!)).has(camera.camera_id);
         }
       }
       return Response.json({ allowed }, { headers: { "cache-control": "no-store" } });
@@ -70,7 +86,7 @@ export function registerSimpleVmsIngress(app: H3, repo: Repository): void {
           const linked = await repo.adapter.all<{ kiosk_id: string }>("SELECT kiosk_id FROM simple_vms_linked_kiosks WHERE source_id = ?", [sourceId]);
           for (const kioskId of [source.owner_kiosk_id, ...linked.map(k => k.kiosk_id)]) getCoordinator().notifyKioskBundleChanged(kioskId);
         }
-        return Response.json(result);
+        return Response.json({ ...result, grants: await readerGrants(repo, source) });
       } catch { return Response.json({ error: "SimpleVMS snapshot could not be applied" }, { status: 422 }); }
     });
   });

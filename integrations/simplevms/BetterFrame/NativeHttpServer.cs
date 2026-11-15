@@ -41,9 +41,11 @@ public sealed class NativeHttpServer(PluginContext context, Func<Guid, string, C
       if (cameraScope != null && !cameraScope(request.Request.Headers.Authorization.ToString(), cameraId)) { request.Response.StatusCode = 404; return; }
       if (!await authorize(cameraId, profile, token)) { request.Response.StatusCode = 404; return; }
       if (!await _liveSlots.WaitAsync(0, token)) { request.Response.StatusCode = 503; return; }
+      using var lease = CancellationTokenSource.CreateLinkedTokenSource(token);
+      Task? revalidation = null;
       IDataStream? stream = null;
       try {
-        var tap = await context.StreamTap!.TapAsync(cameraId, profile, token);
+        var tap = await context.StreamTap!.TapAsync(cameraId, profile, lease.Token);
         if (tap.IsT1) { request.Response.StatusCode = 503; return; }
         stream = tap.AsT0;
         var hevc = stream.Info.FormatParameters is H265Parameters;
@@ -55,21 +57,21 @@ public sealed class NativeHttpServer(PluginContext context, Func<Guid, string, C
         };
         request.Response.ContentType = "video/mp4";
         request.Response.Headers["X-BetterFrame-Mime"] = init.Info.MimeType;
-        await request.Response.Body.WriteAsync(init.Segment, token);
-        var started = false; var lastAuthorization = DateTimeOffset.UtcNow;
-        await foreach (var fragment in muxer.MuxAsync(token)) {
+        await request.Response.Body.WriteAsync(init.Segment, lease.Token);
+        revalidation = RevalidateLiveAsync(request.Request.Headers.Authorization.ToString(), cameraId, profile, lease);
+        var started = false;
+        await foreach (var fragment in muxer.MuxAsync(lease.Token)) {
           if (!started && !fragment.IsSyncPoint && !fragment.IsHeader) continue;
           started |= fragment.IsSyncPoint;
-          if (DateTimeOffset.UtcNow - lastAuthorization > TimeSpan.FromSeconds(10)) {
-            if (!await validateCredentials(request.Request.Headers.Authorization.ToString(), token) || !await authorize(cameraId, profile, token)) break;
-            lastAuthorization = DateTimeOffset.UtcNow;
-          }
-          using var write = CancellationTokenSource.CreateLinkedTokenSource(token); write.CancelAfter(TimeSpan.FromSeconds(3));
+          using var write = CancellationTokenSource.CreateLinkedTokenSource(lease.Token); write.CancelAfter(TimeSpan.FromSeconds(3));
           await request.Response.Body.WriteAsync(fragment.Data, write.Token); await request.Response.Body.FlushAsync(write.Token);
         }
       } finally {
-        if (stream is IAsyncDisposable asynchronous) await asynchronous.DisposeAsync(); else (stream as IDisposable)?.Dispose();
-        _liveSlots.Release();
+        lease.Cancel();
+        // The watcher cancels the lease on denial or failure; always observe it and release demand.
+        if (revalidation != null) { try { await revalidation; } catch (Exception) { } }
+        try { if (stream is IAsyncDisposable asynchronous) await asynchronous.DisposeAsync(); else (stream as IDisposable)?.Dispose(); }
+        finally { _liveSlots.Release(); }
       }
     });
     app.MapGet("/bf/{cameraId:guid}/{profile}/recordings", async (Guid cameraId, string profile, HttpContext request, CancellationToken token) => {
@@ -136,6 +138,15 @@ public sealed class NativeHttpServer(PluginContext context, Func<Guid, string, C
     _ready.TrySetResult();
     try { await Task.Delay(Timeout.Infinite, ct); }
     finally { await app.StopAsync(CancellationToken.None); }
+  }
+  private async Task RevalidateLiveAsync(string authorization, Guid cameraId, string profile, CancellationTokenSource lease)
+  {
+    try {
+      while (!lease.IsCancellationRequested) {
+        await Task.Delay(TimeSpan.FromSeconds(10), lease.Token);
+        if (!await validateCredentials(authorization, lease.Token) || !await authorize(cameraId, profile, lease.Token)) break;
+      }
+    } finally { lease.Cancel(); }
   }
   private static string RequestedProfile(HttpContext request, string fallback)
   {

@@ -394,6 +394,48 @@ public sealed class IntegrationTests
       Assert.That(tap.Count, Is.EqualTo(0));
     } finally { stop.Cancel(); try { await running; } catch (OperationCanceledException) { } }
   }
+  [TestCase(true)] [TestCase(false)]
+  public async Task BrowserMediaKeepsPumpingDuringSlowRevalidationAndReleasesDemandOnDenial(bool allowed)
+  {
+    using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start(); var port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+    var tap = new Tap(); var calls = 0; long received = 0;
+    var checking = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var verdict = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+    var context = new PluginContext { Config = new Config(), Environment = new Environment(directory), LoggerFactory = new Logs(), StreamTap = tap };
+    var server = new NativeHttpServer(context, (_, _, _) => Task.FromResult(true), async (_, ct) => {
+      if (Interlocked.Increment(ref calls) == 1) return true;
+      checking.TrySetResult(); return await verdict.Task.WaitAsync(ct);
+    });
+    var running = server.RunAsync($"http://127.0.0.1:{port}", stop.Token); await server.Ready.WaitAsync(stop.Token);
+    using var client = new HttpClient(new SocketsHttpHandler { MaxResponseDrainSize = 0, ResponseDrainTimeout = TimeSpan.Zero });
+    try {
+      using var response = await client.GetAsync($"http://127.0.0.1:{port}/bf/{Guid.NewGuid()}/High/live", HttpCompletionOption.ResponseHeadersRead, stop.Token);
+      await using var stream = await response.Content.ReadAsStreamAsync(stop.Token);
+      var reading = Task.Run(async () => {
+        var buffer = new byte[4096]; int count;
+        try { while ((count = await stream.ReadAsync(buffer, stop.Token)) != 0) Interlocked.Add(ref received, count); }
+        catch (IOException) { } // A revoked chunked response is aborted.
+        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+      });
+      await checking.Task.WaitAsync(stop.Token);
+      var frames = Volatile.Read(ref tap.Frames); var bytes = Interlocked.Read(ref received);
+      await Task.Delay(300, stop.Token);
+      Assert.That(Volatile.Read(ref tap.Frames), Is.GreaterThan(frames), "A pending authority check must not pause native consumption");
+      Assert.That(Interlocked.Read(ref received), Is.GreaterThan(bytes), "A pending authority check must not pause browser writes");
+      verdict.SetResult(allowed);
+      if (allowed) {
+        bytes = Interlocked.Read(ref received); await Task.Delay(300, stop.Token);
+        Assert.That(Interlocked.Read(ref received), Is.GreaterThan(bytes)); Assert.That(tap.Count, Is.EqualTo(1));
+      } else {
+        for (var i = 0; i < 100 && tap.Count != 0; i++) await Task.Delay(10, stop.Token);
+        Assert.That(tap.Count, Is.Zero, "A completed denial must release demand even with the client still open");
+      }
+      stop.Cancel(); await reading.WaitAsync(TimeSpan.FromSeconds(3));
+    } finally { stop.Cancel(); try { await running; } catch (OperationCanceledException) { } }
+    Assert.That(tap.Count, Is.Zero);
+  }
   [TestCase(false, false, false, 413)] [TestCase(true, false, false, 413)]
   [TestCase(false, false, true, 404)] [TestCase(true, true, false, 409)]
   public async Task RecordingExportsSelectOneAuthorizedProfileWithCompleteCoverage(bool mainGaps, bool subGaps, bool denySub, int expectedStatus)
@@ -491,7 +533,7 @@ public sealed class IntegrationTests
   ] };
   private sealed class Tap : IStreamTap
   {
-    public int Count;
+    public int Count; public int Frames;
     public Task<OneOf<IDataStream, Error>> TapAsync(Guid camera, string profile, CancellationToken ct) { Interlocked.Increment(ref Count); return Task.FromResult<OneOf<IDataStream, Error>>(new Stream(this)); }
     private sealed class Stream(Tap owner) : IDataStream<H264NalUnit>, IDisposable
     {
@@ -502,7 +544,7 @@ public sealed class IntegrationTests
         yield return new H264NalUnit { Data = parameters.Sps, Timestamp = 0, MediaTimestamp = 0, IsHeader = true, IsSyncPoint = true, NalType = H264NalType.Sps };
         yield return new H264NalUnit { Data = parameters.Pps, Timestamp = 0, MediaTimestamp = 0, IsHeader = true, IsSyncPoint = true, NalType = H264NalType.Pps };
         ulong timestamp = 0;
-        while (!ct.IsCancellationRequested) { yield return new H264NalUnit { Data = new byte[] { 0x65, 1, 2 }, Timestamp = timestamp, MediaTimestamp = timestamp, IsSyncPoint = true, IsHeader = false, NalType = H264NalType.Idr }; timestamp += 3600; await Task.Delay(10, ct); }
+        while (!ct.IsCancellationRequested) { Interlocked.Increment(ref owner.Frames); yield return new H264NalUnit { Data = new byte[] { 0x65, 1, 2 }, Timestamp = timestamp, MediaTimestamp = timestamp, IsSyncPoint = true, IsHeader = false, NalType = H264NalType.Idr }; timestamp += 3600; await Task.Delay(10, ct); }
       }
       public void Dispose() => Interlocked.Decrement(ref owner.Count);
     }

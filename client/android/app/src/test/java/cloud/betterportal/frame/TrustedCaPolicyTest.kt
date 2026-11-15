@@ -52,11 +52,15 @@ class TrustedCaPolicyTest {
         val ca = certificate(); val fp = ca.getString("fingerprint_sha256"); val store = Store(); store.owner = false
         assertEquals("manual_action", store.sync(JSONArray().put(ca)).getString("state"))
         store.installed.add(fp)
-        assertEquals("applied", store.sync(JSONArray().put(ca)).getString("state"))
+        val installed = store.sync(JSONArray().put(ca))
+        assertEquals("applied", installed.getString("state")); assertTrue(installed.getBoolean("changed"))
+        assertFalse(store.sync(JSONArray().put(ca)).getBoolean("changed"))
         assertEquals("manual_action", store.sync(JSONArray()).getString("state"))
         assertTrue(store.installed.contains(fp))
         store.installed.remove(fp)
-        assertEquals("applied", store.sync(JSONArray()).getString("state"))
+        val removed = store.sync(JSONArray())
+        assertEquals("applied", removed.getString("state")); assertTrue(removed.getBoolean("changed"))
+        assertFalse(store.sync(JSONArray()).getBoolean("changed"))
     }
     @Test fun becomingDeviceOwnerRetainsManualRemovalTrackingUntilTheRootDisappears() {
         val ca = certificate(); val fp = ca.getString("fingerprint_sha256"); val store = Store(); store.owner = false

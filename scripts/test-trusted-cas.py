@@ -8,6 +8,7 @@ import ssl
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("trust", ROOT / "deploy/systemd/betterframe-trusted-cas.py")
@@ -168,6 +169,15 @@ class TrustedCaTests(unittest.TestCase):
         errors = []
         self.assertEqual(trust.validate([self.ca], self.state, errors, now=0), {})
         self.assertEqual(len(errors), 1)
+
+    def test_rejected_dedicated_restart_request_is_an_error(self):
+        def rejecting_systemctl(command, **options):
+            result = subprocess.CompletedProcess(command, 1)
+            if options.get("check"): result.check_returncode()
+            return result
+        with patch.object(trust.subprocess, "run", rejecting_systemctl):
+            with self.assertRaises(subprocess.CalledProcessError):
+                trust.restart_player(self.root / "missing-install-config")
 
     def test_failed_restart_is_retried_after_trust_is_already_clean(self):
         request = self.root / "request.json"

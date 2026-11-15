@@ -130,10 +130,8 @@ def read_request(path):
         return json.loads(raw)
 
 
-def restart_player():
-    subprocess.run(["/usr/bin/systemctl", "try-restart", "--no-block", "betterframe-kiosk.service"], check=False, timeout=10)
-    # Standalone desktop installs use the user's graphical service.
-    config = Path("/etc/betterframe/linux-install")
+def restart_player(config=Path("/etc/betterframe/linux-install")):
+    # A desktop install need not have the dedicated kiosk unit at all.
     if config.is_file():
         fields = config.read_text().split()
         if len(fields) >= 2 and fields[1] == "desktop" and re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_-]*[$]?", fields[0]):
@@ -141,6 +139,8 @@ def restart_player():
             uid = pwd.getpwnam(fields[0]).pw_uid
             if uid > 0 and Path("/run/user/" + str(uid) + "/bus").exists():
                 subprocess.run(["/usr/sbin/runuser", "-u", fields[0], "--", "/usr/bin/env", "XDG_RUNTIME_DIR=/run/user/" + str(uid), "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/" + str(uid) + "/bus", "/usr/bin/systemctl", "--user", "try-restart", "--no-block", "betterframe.service"], check=True, timeout=10)
+            return
+    subprocess.run(["/usr/bin/systemctl", "try-restart", "--no-block", "betterframe-kiosk.service"], check=True, timeout=10)
 
 
 def main(state_dir=STATE, request=REQUEST, ca_dir=CA_DIR, update=None, restart=restart_player):

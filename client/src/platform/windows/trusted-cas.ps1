@@ -59,7 +59,7 @@ public static class BetterFrameCaSignature {
         $saved = Get-Content -LiteralPath $journal -Raw | ConvertFrom-Json
         $changed = [bool]$saved.dirty
         foreach ($entry in $saved.owned.PSObject.Properties) { $owned[$entry.Name] = [string]$entry.Value }
-        foreach ($entry in $saved.previous.PSObject.Properties) { $previous[$entry.Name] = $true }
+        foreach ($entry in $saved.previous.PSObject.Properties) { $previous[$entry.Name] = [string]$entry.Value }
     }
     $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
     $canWrite = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -80,8 +80,14 @@ public static class BetterFrameCaSignature {
     }
     foreach ($fp in $desired.Keys) {
         $found = @($store.Certificates | Where-Object { (Hash-Bytes $_.RawData) -ceq $fp }).Count -gt 0
-        if ($found) { continue } # Never claim ownership of a pre-existing root.
-        if (-not $canWrite) { $previous[$fp] = $true; $manual = $true; continue }
+        if ($found) {
+            if ($previous.ContainsKey($fp) -and $previous[$fp] -ne 'present') { $changed = $true; $previous[$fp] = 'present' }
+            continue # Never claim ownership of a pre-existing root.
+        }
+        if (-not $canWrite) {
+            if ($previous.ContainsKey($fp) -and $previous[$fp] -eq 'present') { $changed = $true }
+            $previous[$fp] = 'missing'; $manual = $true; continue
+        }
         $owned[$fp] = $desired[$fp].Thumbprint
         Write-AtomicJson $journal @{ owned = $owned; previous = $previous; dirty = $true }
         $store.Add($desired[$fp]); $changed = $true
@@ -90,8 +96,13 @@ public static class BetterFrameCaSignature {
         if ($fp -cnotmatch '^[0-9a-f]{64}$') { throw 'Corrupt manual CA journal' }
         if ($desired.ContainsKey($fp)) { continue }
         $present = @($store.Certificates | Where-Object { (Hash-Bytes $_.RawData) -ceq $fp }).Count -gt 0
-        if ($present) { $manual = $true }
-        else { $previous.Remove($fp) }
+        if ($present) {
+            if ($previous[$fp] -ne 'present') { $changed = $true }
+            $previous[$fp] = 'present'; $manual = $true
+        } else {
+            if ($previous[$fp] -ne 'missing') { $changed = $true }
+            $previous.Remove($fp)
+        }
     }
     Write-AtomicJson $journal @{ owned = $owned; previous = $previous; dirty = $false }
     if ($validityErrors.Count) { $report.state = 'error'; $report.message = ($validityErrors -join '; '); if ($report.message.Length -gt 1024) { $report.message = $report.message.Substring(0, 1024) } }

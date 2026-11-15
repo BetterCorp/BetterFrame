@@ -66,12 +66,14 @@ try {
     Assert-True (@($manualJournal.previous.PSObject.Properties).Count -eq 1) 'Manual tracking claimed the pre-existing root'
     Assert-True ($null -ne $manualJournal.previous.PSObject.Properties[(Fingerprint $first)]) 'Manually requested root was not tracked'
     $root.Open('ReadWrite'); $root.Add($first); $root.Close()
+    Apply @((Item $first), (Item $external)) 10 $manualScript
     Apply @((Item $first), (Item $external)) 0 $manualScript
     Assert-True ((Get-Content -LiteralPath $env:BF_CA_REPORT -Raw | ConvertFrom-Json).state -eq 'applied') 'Manual installation was not detected'
     Apply @() 0 $manualScript
     Assert-True ((Get-Content -LiteralPath $env:BF_CA_REPORT -Raw | ConvertFrom-Json).state -eq 'manual_action') 'Unassignment failed to request manual removal'
     Assert-True (Installed $first) 'Manual root was silently removed'
     $root.Open('ReadWrite'); $root.Remove($first); $root.Close()
+    Apply @() 10 $manualScript
     Apply @() 0 $manualScript
     Assert-True (Installed $external) 'Pre-existing root was removed'
     $report = Get-Content -LiteralPath $env:BF_CA_REPORT -Raw | ConvertFrom-Json

@@ -58,16 +58,28 @@ internal object TrustedCaPolicy {
                 else { owned.remove(fp); journal() }
             }
             for ((fp, cert) in desired) {
-                if (present.contains(fp)) continue
-                if (!managed) { previous.put(fp, true); manual = true; continue }
+                if (present.contains(fp)) {
+                    if (previous.has(fp) && previous.optString(fp) != "present") { changed = true; previous.put(fp, "present") }
+                    continue
+                }
+                if (!managed) {
+                    if (previous.optString(fp) == "present") changed = true
+                    previous.put(fp, "missing"); manual = true; continue
+                }
                 owned.put(fp, Base64.getEncoder().encodeToString(cert.encoded))
                 journal(); changed = true; install(cert)
             }
             // Manual requests remain ours to report even if device ownership
             // changes later; ownership alone does not remove user-installed CAs.
             for (fp in previous.keys().asSequence().toList()) {
-                if (!desired.containsKey(fp) && present.contains(fp)) manual = true
-                else if (!desired.containsKey(fp)) previous.remove(fp)
+                if (desired.containsKey(fp)) continue
+                if (present.contains(fp)) {
+                    if (previous.optString(fp) != "present") changed = true
+                    previous.put(fp, "present"); manual = true
+                } else {
+                    if (previous.optString(fp) != "missing") changed = true
+                    previous.remove(fp)
+                }
             }
             state.put("previous", previous).put("owned", owned).put("dirty", false); persist(state)
             return JSONObject().put("revision", revision).put("state", if (errors.isNotEmpty()) "error" else if (manual) "manual_action" else "applied").put("changed", changed)

@@ -591,7 +591,7 @@ export async function generateBundle(
       effectiveStreams = effectiveStreams.map(stream => ({ ...stream,
         rtsp_uri: simpleVmsStreamUri(address, vms.external_id, stream.profile_token ?? "") }));
     }
-    const playbackCreds = vms ? simpleVmsViewerCredentials(vms.viewer_username, secrets.decryptString(vms.viewer_password_encrypted, "simple-vms-viewer"), kioskId) : resolvePlaybackCredentials(cam, effectiveStreams);
+    const playbackCreds = vms ? simpleVmsViewerCredentials(vms.viewer_username, secrets.decryptString(vms.viewer_password_encrypted, "simple-vms-viewer"), kioskId, vms.external_id) : resolvePlaybackCredentials(cam, effectiveStreams);
     // Encrypt camera password with per-kiosk key if available (stronger
     // isolation — compromised SD only exposes this kiosk's cameras). Falls
     // back to shared cluster_key for kiosks that paired before per-kiosk

@@ -20,7 +20,7 @@ export function SimpleVmsSettingsPage(props: { user?: string; kiosk: Kiosk; kios
       <div class="form-group"><label>Viewer username</label><input class="form-input" name="viewer_username" required maxlength="128" value={s?.viewer_username ?? "betterframe"} /></div>
       <div class="form-group"><label>Viewer password</label><input class="form-input" type="password" name="viewer_password" required={!s} autocomplete="new-password" /><p class="form-hint">Separate from camera credentials. Leave blank to preserve the saved password.</p></div>
       <div class="form-group"><label>Integration token</label><input class="form-input" type="password" name="ingest_token" required={!s} minlength="32" maxlength="256" autocomplete="new-password" /><p class="form-hint">Configure the same token in the SimpleVMS plugin. Leave blank to preserve it.</p></div>
-      <fieldset><legend>Linked kiosks</legend>{props.kiosks.filter(k => k.id !== props.kiosk.id && k.enabled && !k.capabilities.includes("android-viewer")).map(k =>
+      <fieldset><legend>Linked kiosks</legend>{props.kiosks.filter(k => k.id !== props.kiosk.id && k.enabled).map(k =>
         <label style="display:block"><input type="checkbox" name={`linked_${k.id}`} value="1" checked={props.linked.includes(k.id)} /> {k.name}</label>)}</fieldset>
       <button class="btn btn-primary" type="submit">Save connection</button>
     </form>

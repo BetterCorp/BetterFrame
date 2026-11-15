@@ -41,7 +41,7 @@ export async function saveSimpleVmsSource(repo: Repository, secrets: SecretsApi,
   if (linked.length && !external) throw new Error("Set an external SimpleVMS address before linking kiosks");
   for (const id of [ownerId, ...linked]) {
     const kiosk = await repo.getKioskById(id);
-    if (!kiosk?.enabled || kiosk.capabilities.includes("android-viewer")) throw new Error("Select enabled native kiosks in this tenant");
+    if (!kiosk?.enabled || (id === ownerId && kiosk.capabilities.includes("android-viewer"))) throw new Error("Select an enabled recorder kiosk and enabled linked kiosks in this tenant");
   }
   return withSimpleVmsSync(() => repo.transact(async () => {
     const previous = await repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE owner_kiosk_id = ? FOR UPDATE", [ownerId]);
@@ -172,6 +172,7 @@ export async function simpleVmsCamerasForKiosk(repo: Repository, kioskId: string
 }
 
 /** Each kiosk gets its own reader credential; SimpleVMS checks current link authorization. */
-export function simpleVmsViewerCredentials(username: string, password: string, kioskId: string) {
-  return { username: `${username}/${kioskId}`, password: createHmac("sha256", password).update(kioskId).digest("base64url") };
+export function simpleVmsViewerCredentials(username: string, password: string, kioskId: string, cameraId: string) {
+  const scope = `${kioskId}/${cameraId}`;
+  return { username: `${username}/${scope}`, password: createHmac("sha256", password).update(scope).digest("base64url") };
 }

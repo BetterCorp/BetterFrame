@@ -14,7 +14,7 @@ namespace BetterCorp.BetterFrame;
 
 /// <summary>Browser live remuxing and recording export from native SimpleVMS. No transcoding.</summary>
 public sealed class NativeHttpServer(PluginContext context, Func<Guid, string, CancellationToken, Task<bool>> authorize,
-  Func<string, CancellationToken, Task<bool>> validateCredentials)
+  Func<string, CancellationToken, Task<bool>> validateCredentials, Func<string, Guid, bool>? cameraScope = null)
 {
   private readonly SemaphoreSlim _liveSlots = new(32);
   private readonly SemaphoreSlim _exportSlots = new(2);
@@ -37,6 +37,7 @@ public sealed class NativeHttpServer(PluginContext context, Func<Guid, string, C
     });
     app.MapGet("/bf/{cameraId:guid}/{profile}/live", async (Guid cameraId, string profile, HttpContext request, CancellationToken token) => {
       profile = Uri.UnescapeDataString(profile);
+      if (cameraScope != null && !cameraScope(request.Request.Headers.Authorization.ToString(), cameraId)) { request.Response.StatusCode = 404; return; }
       if (!await authorize(cameraId, profile, token)) { request.Response.StatusCode = 404; return; }
       if (!await _liveSlots.WaitAsync(0, token)) { request.Response.StatusCode = 503; return; }
       IDataStream? stream = null;
@@ -72,6 +73,7 @@ public sealed class NativeHttpServer(PluginContext context, Func<Guid, string, C
     });
     app.MapGet("/bf/{cameraId:guid}/{profile}/recordings", async (Guid cameraId, string profile, HttpContext request, CancellationToken token) => {
       profile = Uri.UnescapeDataString(profile);
+      if (cameraScope != null && !cameraScope(request.Request.Headers.Authorization.ToString(), cameraId)) { request.Response.StatusCode = 404; return; }
       if (!await authorize(cameraId, profile, token)) { request.Response.StatusCode = 404; return; }
       if (!DateTimeOffset.TryParse(request.Request.Query["start"], CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var start)
         || start < DateTimeOffset.UnixEpoch || !int.TryParse(request.Request.Query["duration"], out var duration) || duration is < 1 or > 600) { request.Response.StatusCode = 400; return; }

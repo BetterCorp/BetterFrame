@@ -13,6 +13,7 @@ using System.Net;
 using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Shared.Models.Events;
+using System.Security.Cryptography;
 
 namespace BetterFrame.Tests;
 
@@ -179,6 +180,50 @@ public sealed class IntegrationTests
       for (var i = 0; i < 100 && tap.Count != 0; i++) await Task.Delay(10, stop.Token);
       Assert.That(tap.Count, Is.EqualTo(0));
     } finally { stop.Cancel(); try { await running; } catch (OperationCanceledException) { } }
+  }
+  [Test] public async Task PluginReaderCredentialsCannotBeReusedForAnotherCameraOrAfterUnlinking()
+  {
+    using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    static int Port() { var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start(); var port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop(); return port; }
+    var callbackPort = Port(); var httpPort = Port();
+    using var receiver = new HttpListener(); receiver.Prefixes.Add($"http://127.0.0.1:{callbackPort}/"); receiver.Start();
+    var settings = new Config(); settings.Set("callbackUrl", $"http://127.0.0.1:{callbackPort}/events"); settings.Set("integrationToken", new string('x', 40));
+    settings.Set("rtspPort", Port().ToString()); settings.Set("httpListenUrl", $"http://127.0.0.1:{httpPort}");
+    settings.Set("viewerUsername", "reader"); settings.Set("viewerPassword", "test-root-reader-password");
+    var a = Guid.NewGuid(); var b = Guid.NewGuid(); var kiosk = Guid.NewGuid(); var tap = new Tap();
+    var registry = new Registry { Cameras = [Camera(a, "A"), Camera(b, "B")] }; var plugin = new BetterFramePlugin();
+    plugin.Initialize(new PluginContext { Config = settings, Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = registry, EventBus = new Bus(), StreamTap = tap });
+    Assert.That((await plugin.StartAsync(stop.Token)).IsT0, Is.True);
+    try {
+      var initial = await receiver.GetContextAsync().WaitAsync(stop.Token);
+      var catalog = await JsonSerializer.DeserializeAsync<Catalog>(initial.Request.InputStream, CatalogBuilder.Json, stop.Token);
+      await initial.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes($"{{\"revision\":{catalog!.Revision}}}"), stop.Token); initial.Response.Close();
+      var scope = $"{kiosk}/{a}";
+      var password = Convert.ToBase64String(HMACSHA256.HashData(Encoding.UTF8.GetBytes(settings.Get("viewerPassword", "")), Encoding.UTF8.GetBytes(scope))).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+      using var client = new HttpClient(new SocketsHttpHandler { MaxResponseDrainSize = 0, ResponseDrainTimeout = TimeSpan.Zero });
+      client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes($"reader/{scope}:{password}")));
+      async Task Access(bool allowed) {
+        var request = await receiver.GetContextAsync().WaitAsync(stop.Token);
+        Assert.That(request.Request.Url!.AbsolutePath, Is.EqualTo("/access"));
+        Assert.That(request.Request.QueryString["cameraId"], Is.EqualTo(a.ToString()));
+        Assert.That(request.Request.QueryString["kioskId"], Is.EqualTo(kiosk.ToString()));
+        await request.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(allowed ? "{\"allowed\":true}" : "{\"allowed\":false}"), stop.Token); request.Response.Close();
+      }
+      var mismatch = client.GetAsync($"http://127.0.0.1:{httpPort}/bf/{b}/High/live", stop.Token);
+      await Access(true); using (var denied = await mismatch) Assert.That((int)denied.StatusCode, Is.EqualTo(404));
+      Assert.That(tap.Count, Is.EqualTo(0));
+      using var validRequest = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{httpPort}/bf/{a}/High/live");
+      var live = client.SendAsync(validRequest, HttpCompletionOption.ResponseHeadersRead, stop.Token); await Access(true);
+      using (var response = await live) {
+        Assert.That((int)response.StatusCode, Is.EqualTo(200));
+        await using var stream = await response.Content.ReadAsStreamAsync(stop.Token); var box = new byte[8]; await stream.ReadExactlyAsync(box, stop.Token);
+        Assert.That(Encoding.ASCII.GetString(box, 4, 4), Is.EqualTo("ftyp"));
+      }
+      var revoked = client.GetAsync($"http://127.0.0.1:{httpPort}/bf/{a}/High/live", stop.Token);
+      await Access(false); using (var denied = await revoked) Assert.That((int)denied.StatusCode, Is.EqualTo(401));
+    } finally { await plugin.StopAsync(default); receiver.Stop(); Directory.Delete(directory, true); }
+    Assert.That(tap.Count, Is.EqualTo(0));
   }
   private static async Task<string> ReadResponse(Stream stream, CancellationToken ct)
   {

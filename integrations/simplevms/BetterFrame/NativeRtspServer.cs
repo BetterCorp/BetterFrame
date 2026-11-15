@@ -13,7 +13,7 @@ namespace BetterCorp.BetterFrame;
 
 /// <summary>Bounded native RTSP/TCP output. One StreamTap lease per viewer; no second camera capture.</summary>
 public sealed class NativeRtspServer(IStreamTap tap, Func<Guid, string, CancellationToken, Task<bool>> authorize, Func<(string User, string Password)> credentials,
-  Func<string, CancellationToken, Task<bool>>? validateCredentials = null)
+  Func<string, CancellationToken, Task<bool>>? validateCredentials = null, Func<string, Guid, bool>? cameraScope = null)
 {
   private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _sessions = new();
   private readonly SemaphoreSlim _slots = new(64);
@@ -82,6 +82,7 @@ public sealed class NativeRtspServer(IStreamTap tap, Func<Guid, string, Cancella
               var parts = new Uri(request.Uri).AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
               if (parts.Length < 3 || parts[0] != "bf" || !Guid.TryParse(parts[1], out var requestedId)) { await Send(cseq, 404); continue; }
               var requestedProfile = Uri.UnescapeDataString(parts[2]);
+              if (cameraScope != null && !cameraScope(actual, requestedId)) { await Send(cseq, 404); continue; }
               if (capture != null && (cameraId != requestedId || profile != requestedProfile)) { await Send(cseq, 400); continue; }
               if (!await authorize(requestedId, requestedProfile, lease.Token)) { await Send(cseq, 404); continue; }
               cameraId = requestedId; profile = requestedProfile;

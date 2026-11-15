@@ -2,6 +2,7 @@ import { getRouterParam, type H3 } from "h3";
 import type { Repository } from "./db/repository.js";
 import { applySimpleVmsSnapshot, getSimpleVmsSource, simpleVmsTokenMatches } from "./simple-vms.js";
 import { getCoordinator } from "./coordinator-registry.js";
+import { isAndroidViewer, viewerAssignment } from "./android-viewer.js";
 
 async function boundedJson(request: Request): Promise<unknown> {
   const reader = request.body?.getReader();
@@ -32,7 +33,24 @@ export function registerSimpleVmsIngress(app: H3, repo: Repository): void {
       const kioskId = new URL(event.req.url).searchParams.get("kioskId") ?? "";
       const kiosk = kioskId.length <= 128 ? await repo.getKioskById(kioskId) : null;
       const linked = kiosk && await repo.adapter.get("SELECT 1 FROM simple_vms_linked_kiosks WHERE source_id = ? AND kiosk_id = ?", [source.id, kioskId]);
-      return Response.json({ allowed: !!(source.enabled && kiosk?.enabled && (kioskId === source.owner_kiosk_id || linked)) }, { headers: { "cache-control": "no-store" } });
+      let allowed = !!(source.enabled && kiosk?.enabled && (kioskId === source.owner_kiosk_id || linked));
+      const cameraId = new URL(event.req.url).searchParams.get("cameraId");
+      if (allowed && cameraId) {
+        const camera = cameraId.length <= 128 ? await repo.adapter.get<{ camera_id: string }>("SELECT m.camera_id FROM simple_vms_cameras m JOIN cameras c ON c.id = m.camera_id WHERE m.source_id = ? AND m.external_id = ? AND c.enabled = true", [source.id, cameraId]) : null;
+        allowed = !!camera;
+        if (allowed && camera && isAndroidViewer(kiosk)) {
+          allowed = false;
+          const assignment = await viewerAssignment(repo, kiosk!);
+          for (const layoutId of assignment.layoutIds) {
+            for (const cell of await repo.layoutCells(layoutId)) {
+              const entity = cell.entity_id ? await repo.getEntityById(cell.entity_id) : null;
+              const assigned = entity ? entity.type === "camera" ? entity.camera_id : null : cell.content_type === "camera" ? cell.camera_id : null;
+              if (assigned === camera.camera_id) allowed = true;
+            }
+          }
+        }
+      }
+      return Response.json({ allowed }, { headers: { "cache-control": "no-store" } });
     });
   });
   app.post("/api/simplevms/:tenantSlug/:sourceId/events", async event => {

@@ -10,6 +10,8 @@ RequiresMountsFor=/var/lib/betterframe
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/betterframe-trusted-cas.py
+ExecStartPost=/usr/bin/systemctl reset-failed betterframe-trusted-cas.path
+ExecStartPost=/usr/bin/systemctl start --no-block betterframe-trusted-cas.path
 User=root
 Group=root
 UMask=0022

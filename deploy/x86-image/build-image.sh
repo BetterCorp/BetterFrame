@@ -95,7 +95,7 @@ mount -t tmpfs tmpfs "${WORK}/root/run"
 cp "$KIOSK_BIN" "${WORK}/root/tmp/betterframe-kiosk"
 mkdir -p "${WORK}/root/tmp/bf-files"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-kiosk.service" "${WORK}/root/tmp/bf-files/"
-cp "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.py" "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.service" "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.path" "${WORK}/root/tmp/bf-files/"
+cp "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.py" "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.service" "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.path" "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.timer" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-log-upload.service" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/systemd/betterframe-journal-storage.service" "${REPO_ROOT}/deploy/systemd/var-log-journal.mount" "${REPO_ROOT}/deploy/journald/flush-storage.conf" "${WORK}/root/tmp/bf-files/"
 cp "${REPO_ROOT}/deploy/journald/betterframe.conf" "${WORK}/root/tmp/bf-files/betterframe-journald.conf"
@@ -188,8 +188,8 @@ printf '%s\n' "@VERSION@" > /etc/betterframe/os-version
 printf '%s\n' "betterframe-x86_64-generic" > /etc/betterframe/os-compatibility
 
 install -m 755 /tmp/bf-files/betterframe-trusted-cas.py /usr/local/sbin/betterframe-trusted-cas.py
-install -m 644 /tmp/bf-files/betterframe-trusted-cas.service /tmp/bf-files/betterframe-trusted-cas.path /etc/systemd/system/
-systemctl enable betterframe-trusted-cas.service betterframe-trusted-cas.path
+install -m 644 /tmp/bf-files/betterframe-trusted-cas.service /tmp/bf-files/betterframe-trusted-cas.path /tmp/bf-files/betterframe-trusted-cas.timer /etc/systemd/system/
+systemctl enable betterframe-trusted-cas.service betterframe-trusted-cas.path betterframe-trusted-cas.timer
 install -m 644 /tmp/bf-files/betterframe-kiosk.service /etc/systemd/system/betterframe-kiosk.service
 install -m 644 /tmp/bf-files/betterframe-log-upload.service /etc/systemd/system/betterframe-log-upload.service
 install -d -m 755 /etc/systemd/journald.conf.d /var/log/journal

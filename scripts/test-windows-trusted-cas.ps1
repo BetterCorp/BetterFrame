@@ -39,7 +39,7 @@ try {
     # Fault injection after the root removal checks that errors still signal restart.
     $fault = Join-Path $directory 'fail-final-journal.ps1'
     $source = Get-Content -LiteralPath $script -Raw
-    $finalJournal = 'Write-AtomicJson $journal @{ owned = $owned; dirty = $false }'
+    $finalJournal = 'Write-AtomicJson $journal @{ owned = $owned; previous = $previous; dirty = $false }'
     Assert-True ($source.Contains($finalJournal)) 'Final journal fault location changed'
     $source.Replace($finalJournal, 'throw "injected final journal failure"') | Set-Content -LiteralPath $fault -Encoding utf8
     Apply @() 11 $fault
@@ -55,6 +55,25 @@ try {
     Assert-True (-not (Installed $expired)) 'An expired root was installed'
     Apply @() 10
     Apply @() 0
+    # Simulate an unelevated agent with the production read-only store path.
+    $manualScript = Join-Path $directory 'unelevated-agent.ps1'
+    $permissionCheck = '$canWrite = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)'
+    Assert-True ($source.Contains($permissionCheck)) 'Agent permission check changed'
+    $source.Replace($permissionCheck, '$canWrite = $false') | Set-Content -LiteralPath $manualScript -Encoding utf8
+    Apply @((Item $first), (Item $external)) 0 $manualScript
+    Assert-True ((Get-Content -LiteralPath $env:BF_CA_REPORT -Raw | ConvertFrom-Json).state -eq 'manual_action') 'Missing root did not request manual installation'
+    $manualJournal = Get-Content -LiteralPath (Join-Path $directory 'ownership.json') -Raw | ConvertFrom-Json
+    Assert-True (@($manualJournal.previous.PSObject.Properties).Count -eq 1) 'Manual tracking claimed the pre-existing root'
+    Assert-True ($null -ne $manualJournal.previous.PSObject.Properties[(Fingerprint $first)]) 'Manually requested root was not tracked'
+    $root.Open('ReadWrite'); $root.Add($first); $root.Close()
+    Apply @((Item $first), (Item $external)) 0 $manualScript
+    Assert-True ((Get-Content -LiteralPath $env:BF_CA_REPORT -Raw | ConvertFrom-Json).state -eq 'applied') 'Manual installation was not detected'
+    Apply @() 0 $manualScript
+    Assert-True ((Get-Content -LiteralPath $env:BF_CA_REPORT -Raw | ConvertFrom-Json).state -eq 'manual_action') 'Unassignment failed to request manual removal'
+    Assert-True (Installed $first) 'Manual root was silently removed'
+    $root.Open('ReadWrite'); $root.Remove($first); $root.Close()
+    Apply @() 0 $manualScript
+    Assert-True (Installed $external) 'Pre-existing root was removed'
     $report = Get-Content -LiteralPath $env:BF_CA_REPORT -Raw | ConvertFrom-Json
     Assert-True ($report.state -eq 'applied' -and $report.revision -eq 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855') 'Empty assignment report mismatch'
     Write-Host 'Windows CA installation, idempotence, validation and removal passed.'

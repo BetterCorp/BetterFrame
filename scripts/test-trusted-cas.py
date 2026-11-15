@@ -189,7 +189,7 @@ class TrustedCaTests(unittest.TestCase):
             self.assertEqual(restarted, [True])
 
     def test_standalone_setup_embeds_identical_helper_and_units(self):
-        for function, file in [("write_trusted_ca_helper", "betterframe-trusted-cas.py"), ("write_trusted_ca_service", "betterframe-trusted-cas.service"), ("write_trusted_ca_path", "betterframe-trusted-cas.path")]:
+        for function, file in [("write_trusted_ca_helper", "betterframe-trusted-cas.py"), ("write_trusted_ca_service", "betterframe-trusted-cas.service"), ("write_trusted_ca_path", "betterframe-trusted-cas.path"), ("write_trusted_ca_timer", "betterframe-trusted-cas.timer")]:
             result = subprocess.run(["bash", "-c", 'source "$1"; "$2"', "test", str(ROOT / "setup.sh"), function], check=True, capture_output=True, text=True)
             self.assertEqual(result.stdout, (ROOT / "deploy/systemd" / file).read_text())
 

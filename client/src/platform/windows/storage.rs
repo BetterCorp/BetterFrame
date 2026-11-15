@@ -209,7 +209,7 @@ pub(super) fn load_trusted_cas() -> Result<Vec<crate::bundle::TrustedCa>, String
             let path = bundle_path();
             if !path.try_exists().map_err(|error| error.to_string())? { return Ok(Vec::new()); }
             let bytes = read_protected_or_plain(&path)?;
-            deserialize_cached_bundle(&bytes).map(|bundle| bundle.trusted_cas).ok_or_else(|| "Decode legacy bundle failed".into())
+            trusted_cas_from_bundle(&bytes)
         })
 }
 
@@ -550,6 +550,14 @@ struct LegacyWindowsStream {
     rtsp_uri: String,
 }
 
+fn trusted_cas_from_bundle(bytes: &[u8]) -> Result<Vec<crate::bundle::TrustedCa>, String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    if let Some(cas) = value.get("trusted_cas") {
+        return serde_json::from_value(cas.clone()).map_err(|error| format!("Decode trusted CAs: {error}"));
+    }
+    deserialize_cached_bundle(bytes).map(|bundle| bundle.trusted_cas).ok_or_else(|| "Decode legacy bundle failed".into())
+}
+
 fn deserialize_cached_bundle(bytes: &[u8]) -> Option<KioskBundle> {
     serde_json::from_slice(bytes).ok().or_else(|| {
         serde_json::from_slice::<LegacyWindowsBundle>(bytes)
@@ -811,6 +819,19 @@ mod tests {
         complete_demo_exit_at(&directory, &browser, || {}).unwrap();
         assert_eq!(load_state_file(&state).unwrap().kiosk_key.as_deref(), Some("new-demo-key"));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn malformed_bundle_trust_never_falls_back_to_an_empty_legacy_assignment() {
+        let legacy = serde_json::json!({ "kiosk_id": "1", "kiosk_name": "Lobby", "version": "7", "displays": [], "cameras": [] });
+        assert!(trusted_cas_from_bundle(&serde_json::to_vec(&legacy).unwrap()).unwrap().is_empty());
+        for malformed in [serde_json::json!(null), serde_json::json!([{"pem": 42, "fingerprint_sha256": "a".repeat(64)}])] {
+            let mut bundle = legacy.clone(); bundle["trusted_cas"] = malformed;
+            assert!(deserialize_cached_bundle(&serde_json::to_vec(&bundle).unwrap()).is_some(), "Fixture must reproduce the permissive legacy fallback");
+            assert!(trusted_cas_from_bundle(&serde_json::to_vec(&bundle).unwrap()).is_err());
+        }
+        let mut empty = legacy; empty["trusted_cas"] = serde_json::json!([]);
+        assert!(trusted_cas_from_bundle(&serde_json::to_vec(&empty).unwrap()).unwrap().is_empty());
     }
 
     #[test]

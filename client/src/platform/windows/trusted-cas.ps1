@@ -53,10 +53,13 @@ public static class BetterFrameCaSignature {
     }
     $journal = Join-Path $env:BF_CA_STATE 'ownership.json'
     $owned = @{}
+    $previous = @{}
+    $manual = $false
     if (Test-Path -LiteralPath $journal) {
         $saved = Get-Content -LiteralPath $journal -Raw | ConvertFrom-Json
         $changed = [bool]$saved.dirty
         foreach ($entry in $saved.owned.PSObject.Properties) { $owned[$entry.Name] = [string]$entry.Value }
+        foreach ($entry in $saved.previous.PSObject.Properties) { $previous[$entry.Name] = $true }
     }
     $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
     $canWrite = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -70,21 +73,29 @@ public static class BetterFrameCaSignature {
         if ($fp -cnotmatch '^[0-9a-f]{64}$') { throw 'Corrupt CA ownership journal' }
         if ($desired.ContainsKey($fp)) { continue }
         foreach ($cert in @($store.Certificates)) {
-            if ((Hash-Bytes $cert.RawData) -ceq $fp) { Require-Administrator; Write-AtomicJson $journal @{ owned = $owned; dirty = $true }; $store.Remove($cert); $changed = $true }
+            if ((Hash-Bytes $cert.RawData) -ceq $fp) { Require-Administrator; Write-AtomicJson $journal @{ owned = $owned; previous = $previous; dirty = $true }; $store.Remove($cert); $changed = $true }
         }
         $owned.Remove($fp)
-        Write-AtomicJson $journal @{ owned = $owned; dirty = $true }
+        Write-AtomicJson $journal @{ owned = $owned; previous = $previous; dirty = $true }
     }
     foreach ($fp in $desired.Keys) {
         $found = @($store.Certificates | Where-Object { (Hash-Bytes $_.RawData) -ceq $fp }).Count -gt 0
         if ($found) { continue } # Never claim ownership of a pre-existing root.
-        Require-Administrator
+        if (-not $canWrite) { $previous[$fp] = $true; $manual = $true; continue }
         $owned[$fp] = $desired[$fp].Thumbprint
-        Write-AtomicJson $journal @{ owned = $owned; dirty = $true }
+        Write-AtomicJson $journal @{ owned = $owned; previous = $previous; dirty = $true }
         $store.Add($desired[$fp]); $changed = $true
     }
-    Write-AtomicJson $journal @{ owned = $owned; dirty = $false }
+    foreach ($fp in @($previous.Keys)) {
+        if ($fp -cnotmatch '^[0-9a-f]{64}$') { throw 'Corrupt manual CA journal' }
+        if ($desired.ContainsKey($fp)) { continue }
+        $present = @($store.Certificates | Where-Object { (Hash-Bytes $_.RawData) -ceq $fp }).Count -gt 0
+        if ($present) { $manual = $true }
+        else { $previous.Remove($fp) }
+    }
+    Write-AtomicJson $journal @{ owned = $owned; previous = $previous; dirty = $false }
     if ($validityErrors.Count) { $report.state = 'error'; $report.message = ($validityErrors -join '; '); if ($report.message.Length -gt 1024) { $report.message = $report.message.Substring(0, 1024) } }
+    elseif ($manual) { $report.state = 'manual_action'; $report.message = 'Install assigned roots or remove previously requested roots manually in the machine Trusted Root Certification Authorities store.' }
     else { $report.state = 'applied' }
 } catch {
     if ($_.Exception -is [UnauthorizedAccessException]) { $report.state = 'manual_action' }
@@ -94,6 +105,5 @@ public static class BetterFrameCaSignature {
 }
 Write-AtomicJson $env:BF_CA_REPORT $report
 if ($report.state -eq 'error') { if ($changed) { exit 11 }; exit 1 }
-if ($report.state -eq 'manual_action') { exit 0 }
 if ($changed) { exit 10 }
 exit 0

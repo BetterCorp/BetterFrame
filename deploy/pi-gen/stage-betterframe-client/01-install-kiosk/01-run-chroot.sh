@@ -50,8 +50,8 @@ install -d -o bfkiosk -g bfkiosk -m 750 /var/lib/betterframe/recordings
 
 # --- Systemd unit + PAM + rollback hook ---
 install -m 755 /tmp/bf-files/betterframe-trusted-cas.py /usr/local/sbin/betterframe-trusted-cas.py
-install -m 644 /tmp/bf-files/betterframe-trusted-cas.service /tmp/bf-files/betterframe-trusted-cas.path /etc/systemd/system/
-systemctl enable betterframe-trusted-cas.service betterframe-trusted-cas.path
+install -m 644 /tmp/bf-files/betterframe-trusted-cas.service /tmp/bf-files/betterframe-trusted-cas.path /tmp/bf-files/betterframe-trusted-cas.timer /etc/systemd/system/
+systemctl enable betterframe-trusted-cas.service betterframe-trusted-cas.path betterframe-trusted-cas.timer
 install -m 644 /tmp/bf-files/betterframe-kiosk.service /etc/systemd/system/betterframe-kiosk.service
 install -m 644 /tmp/bf-files/betterframe-log-upload.service /etc/systemd/system/betterframe-log-upload.service
 install -d -m 755 /etc/systemd/journald.conf.d /var/log/journal

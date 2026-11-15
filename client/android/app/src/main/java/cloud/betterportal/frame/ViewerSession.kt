@@ -760,15 +760,15 @@ class ViewerSession internal constructor(context: Context, private val listener:
                 if (!authorized(it)) return@use false
                 // A dropped response body is a transport failure, not evidence
                 // that a previously verified server no longer supports viewers.
-                val response = try { json(it) } catch (_: JSONException) { null }
-                val profile = response?.optString("viewer_profile")
+                val response = json(it)
+                val profile = response.optString("viewer_profile")
                 ensureActive()
                 if (profile != VIEWER_PROFILE) {
                     clearCachedBundle()
                     blockDisplay(PROFILE_REQUIRED)
                     false
                 } else {
-                    response?.optJSONArray("trusted_cas")?.let { cas ->
+                    response.optJSONArray("trusted_cas")?.let { cas ->
                         state.put("trusted_cas", cas); persist()
                         trustReport = syncTrustedCas(cas)
                     }

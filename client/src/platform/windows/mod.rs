@@ -1000,7 +1000,8 @@ async fn report_layout_change(
 }
 
 fn start_app(slot: &Arc<Mutex<Option<Child>>>) -> Result<(), String> {
-    if slot.lock().unwrap().is_some() {
+    let mut guard = slot.lock().unwrap();
+    if guard.is_some() {
         return Ok(());
     }
     let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
@@ -1008,7 +1009,7 @@ fn start_app(slot: &Arc<Mutex<Option<Child>>>) -> Result<(), String> {
         .arg("app")
         .spawn()
         .map_err(|e| format!("start app: {e}"))?;
-    *slot.lock().unwrap() = Some(child);
+    *guard = Some(child);
     Ok(())
 }
 

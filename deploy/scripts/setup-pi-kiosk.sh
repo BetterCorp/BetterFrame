@@ -332,8 +332,8 @@ for name in ['default','left_ptr','arrow','watch','hand2','text','xterm',
   echo "==> Installing PAM + systemd unit + firmware rollback hook"
   install -m 644 "${REPO_ROOT}/deploy/pam.d/cage" /etc/pam.d/cage
   install -m 755 "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.py" /usr/local/sbin/betterframe-trusted-cas.py
-  install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.service" "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.path" /etc/systemd/system/
-  systemctl enable betterframe-trusted-cas.service betterframe-trusted-cas.path
+  install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.service" "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.path" "${REPO_ROOT}/deploy/systemd/betterframe-trusted-cas.timer" /etc/systemd/system/
+  systemctl enable betterframe-trusted-cas.service betterframe-trusted-cas.path betterframe-trusted-cas.timer
   install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-kiosk.service" \
     /etc/systemd/system/betterframe-kiosk.service
   install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-mediamtx.service" \

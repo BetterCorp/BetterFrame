@@ -939,6 +939,8 @@ RequiresMountsFor=/var/lib/betterframe
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/betterframe-trusted-cas.py
+ExecStartPost=/usr/bin/systemctl reset-failed betterframe-trusted-cas.path
+ExecStartPost=/usr/bin/systemctl start --no-block betterframe-trusted-cas.path
 User=root
 Group=root
 UMask=0022
@@ -969,8 +971,22 @@ Unit=betterframe-trusted-cas.service
 WantedBy=multi-user.target
 BF_TRUSTED_CA_EOF
 }
+write_trusted_ca_timer() {
+    cat <<'BF_TRUSTED_CA_EOF'
+[Unit]
+Description=Retry BetterFrame certificate provisioning and recover its watcher
+
+[Timer]
+OnBootSec=6min
+OnUnitActiveSec=6min
+Unit=betterframe-trusted-cas.service
+
+[Install]
+WantedBy=timers.target
+BF_TRUSTED_CA_EOF
+}
 start_trusted_ca_service() {
-    if ((START)) && ! systemctl start betterframe-trusted-cas.service betterframe-trusted-cas.path; then
+    if ((START)) && ! systemctl start betterframe-trusted-cas.service betterframe-trusted-cas.path betterframe-trusted-cas.timer; then
         printf 'Warning: certificate service could not start; inspect its status.json and journal. Continuing app installation.\n' >&2
     fi
 }
@@ -1080,8 +1096,9 @@ PYOWN
     write_trusted_ca_helper | reconcile_file /usr/local/sbin/betterframe-trusted-cas.py 755 root root
     write_trusted_ca_service | reconcile_file /etc/systemd/system/betterframe-trusted-cas.service 644 root root
     write_trusted_ca_path | reconcile_file /etc/systemd/system/betterframe-trusted-cas.path 644 root root
+    write_trusted_ca_timer | reconcile_file /etc/systemd/system/betterframe-trusted-cas.timer 644 root root
     systemctl daemon-reload
-    systemctl enable betterframe-trusted-cas.service betterframe-trusted-cas.path
+    systemctl enable betterframe-trusted-cas.service betterframe-trusted-cas.path betterframe-trusted-cas.timer
     start_trusted_ca_service
     runuser -u "$INSTALL_USER" -- mkdir -p -- "$unit_dir" "$autostart_dir"
     if [[ $MEDIA_GATEWAY == on ]]; then

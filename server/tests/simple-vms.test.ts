@@ -114,6 +114,7 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     await repo.attachLayoutToDisplay(linkedDisplay.id, custom.id);
     await repo.attachLayoutToDisplay(androidDisplay.id, custom.id);
     assert.equal((await generateBundle(repo, secrets, linked.id, undefined))!.layouts.find(layout => layout.id === custom.id)!.cells.length, 2);
+    await repo.updateDisplay(linkedDisplay.id, { default_layout_id: managedLayout.id });
     await saveSimpleVmsSource(repo, secrets, owner.id, { ...config, linkedKioskIds: [], viewerPassword: "", ingestToken: "" });
     assert.deepEqual(await (await app.request(`${callback}/access?kioskId=${linked.id}`, { headers })).json(), { allowed: false });
     assert.equal((await repo.listLayoutsForDisplay(linkedDisplay.id)).length, 1);
@@ -126,6 +127,17 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
       assert.ok(!revokedBundle.layouts.some(layout => layout.id === (cell.entity_id ?? "missing")));
     }
     assert.equal((await repo.listLayoutCells(custom.id)).length, 2, "Kiosk access does not change the custom layout definition");
+    assert.equal((await repo.getDisplayById(linkedDisplay.id))?.default_layout_id, null);
+    await saveSimpleVmsSource(repo, secrets, owner.id, config);
+    assert.equal((await repo.getDisplayById(linkedDisplay.id))?.default_layout_id, managedLayout.id, "Relinking restores the previous managed default");
+    await repo.updateDisplay(display.id, { default_layout_id: managedLayout.id });
+    await saveSimpleVmsSource(repo, secrets, owner.id, { ...config, enabled: false });
+    assert.equal((await repo.getDisplayById(display.id))?.default_layout_id, null);
+    await repo.attachLayoutToDisplay(linkedDisplay.id, custom.id);
+    await repo.updateDisplay(linkedDisplay.id, { default_layout_id: custom.id });
+    await saveSimpleVmsSource(repo, secrets, owner.id, config);
+    assert.equal((await repo.getDisplayById(display.id))?.default_layout_id, managedLayout.id, "Re-enabling restores the previous managed default");
+    assert.equal((await repo.getDisplayById(linkedDisplay.id))?.default_layout_id, custom.id, "A different default chosen during disconnection takes precedence");
     const empty = snapshot(3); empty.cameras = []; empty.groups = [];
     await applySimpleVmsSnapshot(repo, source.id, empty);
     assert.equal(await repo.getLayoutById(managedLayout.id), null);

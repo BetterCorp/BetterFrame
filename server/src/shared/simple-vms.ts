@@ -93,7 +93,7 @@ export async function reconcileSimpleVmsAssignments(repo: Repository, sourceId?:
   await withSimpleVmsSync(async () => {
     const sources = sourceId ? [await getSimpleVmsSource(repo, sourceId)].filter((s): s is SimpleVmsSource => !!s)
       : await repo.adapter.all<SimpleVmsSource>("SELECT * FROM simple_vms_sources");
-    for (const source of sources) {
+    for (const source of sources) await repo.transact(async () => {
       const layouts = await repo.adapter.all<{ layout_id: string }>("SELECT layout_id FROM simple_vms_groups WHERE source_id = ? AND layout_id IS NOT NULL", [source.id]);
       const eligible = new Set<string>();
       if (source.enabled) {
@@ -102,11 +102,23 @@ export async function reconcileSimpleVmsAssignments(repo: Repository, sourceId?:
       }
       for (const { layout_id } of layouts) {
         for (const display of await repo.listDisplaysForLayout(layout_id)) {
-          if (!display.kiosk_id || !eligible.has(display.kiosk_id)) await repo.detachLayoutFromDisplay(display.id, layout_id);
+          if (!display.kiosk_id || !eligible.has(display.kiosk_id)) {
+            if (display.default_layout_id === layout_id) await repo.adapter.run(`INSERT INTO simple_vms_display_defaults(display_id, source_id, layout_id)
+              VALUES (?, ?, ?) ON CONFLICT(display_id) DO UPDATE SET source_id = excluded.source_id, layout_id = excluded.layout_id`, [display.id, source.id, layout_id]);
+            await repo.detachLayoutFromDisplay(display.id, layout_id);
+          }
         }
-        for (const kioskId of eligible) for (const display of await repo.listDisplaysForKiosk(kioskId)) await repo.attachLayoutToDisplay(display.id, layout_id);
+        for (const kioskId of eligible) for (const display of await repo.listDisplaysForKiosk(kioskId)) {
+          await repo.attachLayoutToDisplay(display.id, layout_id);
+          const remembered = await repo.adapter.get("SELECT 1 FROM simple_vms_display_defaults WHERE display_id = ? AND source_id = ? AND layout_id = ?", [display.id, source.id, layout_id]);
+          if (remembered) {
+            // Preserve a different default chosen while the recorder was disconnected.
+            await repo.adapter.run("UPDATE displays SET default_layout_id = ? WHERE id = ? AND default_layout_id IS NULL", [layout_id, display.id]);
+            await repo.adapter.run("DELETE FROM simple_vms_display_defaults WHERE display_id = ? AND source_id = ? AND layout_id = ?", [display.id, source.id, layout_id]);
+          }
+        }
       }
-    }
+    });
   });
 }
 

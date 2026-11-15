@@ -36,7 +36,7 @@ public static class CatalogBuilder
         return new Profile(s.Profile, s.Profile, index == 0 ? "main" : index == streams.Length - 1 ? "sub" : "other", s.Codec!, width, height, s.Fps ?? 0);
       }).ToArray();
       return new Camera(camera.Id.ToString(), camera.Name, true, profiles);
-    }).ToArray();
+    }).Where(camera => camera.Profiles.Length > 0).ToArray();
     var present = result.Select(c => c.Id).ToHashSet();
     return new(1, instance, revision, name, result, groups.OrderBy(g => g.Id).Select(g => new Group(g.Id.ToString(), g.Name,
       g.CameraIds.Select(id => id.ToString()).Where(present.Contains).ToArray())).ToArray());

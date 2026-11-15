@@ -150,6 +150,19 @@ public sealed class IntegrationTests
     Assert.That(JsonSerializer.Serialize(catalog), Does.Not.Contain("secret"));
     Assert.That(catalog.Cameras[0].Profiles.Select(p => p.Role), Is.EqualTo(new[] { "main", "sub" }));
   }
+  [Test] public void UnsupportedCamerasAreExcludedFromCatalogAndGroupMembership()
+  {
+    var playable = Camera(Guid.NewGuid(), "Playable");
+    var unsupported = new CameraInfo { Id = Guid.NewGuid(), Name = "Unsupported", Address = "unused", ProviderId = "onvif", Capabilities = [], Streams = [
+      new() { Id = Guid.NewGuid(), Profile = "JPEG", Kind = StreamKind.Quality, FormatId = "mjpeg", Codec = "mjpeg", IsRootStream = true, Uri = "unused" },
+      new() { Id = Guid.NewGuid(), Profile = "Derived", Kind = StreamKind.Quality, FormatId = "h264", Codec = "h264", IsRootStream = false, Uri = "unused" }
+    ] };
+    var catalog = CatalogBuilder.Build("instance", 1, "NVR", [playable, unsupported], [new DisplayGroup(Guid.NewGuid(), "Mixed", [unsupported.Id, playable.Id])]);
+    Assert.That(catalog.Cameras.Select(camera => camera.Id), Is.EqualTo(new[] { playable.Id.ToString() }));
+    Assert.That(catalog.Groups.Single().CameraIds, Is.EqualTo(new[] { playable.Id.ToString() }));
+    catalog = CatalogBuilder.Build("instance", 2, "NVR", [unsupported], [new DisplayGroup(Guid.NewGuid(), "Unsupported only", [unsupported.Id])]);
+    Assert.That(catalog.Cameras, Is.Empty); Assert.That(catalog.Groups.Single().CameraIds, Is.Empty);
+  }
   [Test] public void OutboxSurvivesRestartAndLostAcknowledgements()
   {
     var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());

@@ -63,12 +63,12 @@ internal object TrustedCaPolicy {
                 owned.put(fp, Base64.getEncoder().encodeToString(cert.encoded))
                 journal(); changed = true; install(cert)
             }
-            if (!managed) {
-                for (fp in previous.keys().asSequence().toList()) {
-                    if (!desired.containsKey(fp) && present.contains(fp)) manual = true
-                    else if (!desired.containsKey(fp)) previous.remove(fp)
-                }
-            } else for (fp in previous.keys().asSequence().toList()) if (!desired.containsKey(fp)) previous.remove(fp)
+            // Manual requests remain ours to report even if device ownership
+            // changes later; ownership alone does not remove user-installed CAs.
+            for (fp in previous.keys().asSequence().toList()) {
+                if (!desired.containsKey(fp) && present.contains(fp)) manual = true
+                else if (!desired.containsKey(fp)) previous.remove(fp)
+            }
             state.put("previous", previous).put("owned", owned).put("dirty", false); persist(state)
             return JSONObject().put("revision", revision).put("state", if (errors.isNotEmpty()) "error" else if (manual) "manual_action" else "applied").put("changed", changed)
                 .put("message", if (errors.isNotEmpty()) errors.joinToString("; ").take(1024) else if (manual) "Install assigned CAs or remove previously assigned CAs through Android Settings. Download certificates from BetterFrame’s Trusted CAs page." else "")

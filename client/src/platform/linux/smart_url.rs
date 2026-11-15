@@ -817,7 +817,7 @@ mod tests {
                 "navigate":[{"type":"navigate","url":"/done"},{"type":"wait_for","selector":"#done"},{"type":"javascript","script":"await fetch('/group-navigation');"}],
                 "failure":[{"type":"javascript","script":"throw new Error('failed');"},{"type":"javascript","script":"await fetch('/should-not-run');"}]}
         })).unwrap();
-        let actions = super::super::web_actions::Actions::new(&action_wv, config, Some(readiness), "http://frame.invalid", "test-key");
+        let actions = super::super::web_actions::Actions::new(&action_wv, config, Some(readiness.clone()), "http://frame.invalid", "test-key");
         row.append(&action_wv);
         wait_until(|| fixture.count("/on-load") == 1);
         assert!(action_wv.uri().unwrap().ends_with("/done"));
@@ -835,6 +835,7 @@ mod tests {
         wait_until(|| result.borrow().is_some());
         assert!(result.borrow().as_ref().unwrap().is_ok());
         assert_eq!(fixture.count("/group-navigation"), 1);
+        wait_until(|| readiness.ready(&action_wv));
         result.replace(None);
         let completed = result.clone();
         actions.invoke("failure", "r1", move |r| { completed.replace(Some(r)); }).unwrap();

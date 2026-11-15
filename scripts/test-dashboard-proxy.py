@@ -30,6 +30,10 @@ class DashboardProxyTests(unittest.TestCase):
                 def log_message(self, *_):
                     pass
 
+                def do_POST(self):
+                    self.body_text = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode()
+                    self.do_GET()
+
                 def do_GET(self):
                     cookie = self.headers.get("Cookie", "")
                     status, headers = 200, {}
@@ -51,7 +55,9 @@ class DashboardProxyTests(unittest.TestCase):
                                 status = 403
                         else:
                             status = 401
-                    body = json.dumps({"path": self.path, "tenant": self.headers.get("X-BetterFrame-Tenant"),
+                    body = json.dumps({"kind": kind, "method": self.command,
+                                       "authorization": self.headers.get("Authorization"),
+                                       "body": getattr(self, "body_text", None), "path": self.path, "tenant": self.headers.get("X-BetterFrame-Tenant"),
                                        "upgrade": self.headers.get("Upgrade"),
                                        "scope": self.headers.get("X-BetterFrame-Display-Scope"),
                                        "kiosk": self.headers.get("X-BetterFrame-Kiosk-Id")}).encode()
@@ -101,12 +107,12 @@ class DashboardProxyTests(unittest.TestCase):
             server.server_close()
         cls.temp.cleanup()
 
-    def request(self, path, cookie=None, extra=None):
+    def request(self, path, cookie=None, extra=None, method="GET", body=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         headers = {"Host": "frame-eu.betterportal.net", **(extra or {})}
         if cookie:
             headers["Cookie"] = cookie
-        connection.request("GET", path, headers=headers)
+        connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
         body = response.read()
         result = response.status, dict(response.getheaders()), body
@@ -151,6 +157,27 @@ class DashboardProxyTests(unittest.TestCase):
         self.assertEqual(json.loads(body)["upgrade"], "websocket")
         _, _, body = self.request("/dashboard/page1", "admin-a", {"X-BetterFrame-Display-Scope": "forged"})
         self.assertIsNone(json.loads(body)["scope"])
+
+    def test_web_action_posts_reach_the_correct_authenticated_service(self):
+        body = '{"layout_id":"layout","cell_id":"block"}'
+        path = "/api/displays/display/web-actions/custom"
+        status, _, response = self.request(path, "admin-a", {
+            "Authorization": "Bearer test-admin-key", "X-BetterFrame-Tenant": "a",
+            "Content-Type": "application/json",
+        }, method="POST", body=body)
+        data = json.loads(response)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["kind"], "admin")
+        self.assertEqual(data["method"], "POST")
+        self.assertEqual(data["path"], path)
+        self.assertEqual(data["tenant"], "a")
+        self.assertEqual(data["authorization"], "Bearer test-admin-key")
+        self.assertEqual(data["body"], body)
+        self.assertEqual(self.request(path, method="POST", body=body)[0], 401)
+        status, _, response = self.request("/api/kiosk/web-actions/result", "kiosk-a", method="POST", body="{}")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(response)["kind"], "api")
+        self.assertEqual(self.request("/api/unknown")[0], 404)
 
     def test_desktop_enrollment_check_remains_available_with_credentials(self):
         self.assertEqual(self.request("/api/kiosk/_check")[0], 401)

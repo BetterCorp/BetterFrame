@@ -8,7 +8,7 @@ Devices obtain BetterFrame update metadata and artifacts from the configured BF 
 
 Linux app, Linux RAUC OS, and ioBOX OTA already serve stored bytes from BF. Firmware imports upload signed bytes directly. OS imports currently ask BF to fetch a release URL once and store its content; device downloads do not proxy or redirect to that upstream. Linux API clients reject redirects, and ioBOX verifies the configured HTTPS origin.
 
-Remaining gaps are Linux installer downloads (including MediaMTX), OS release ingestion tied to GitHub download URLs, and a unified catalog across all artifact types and Android APK installers. Windows now has a native independent updater service and direct signed-MSI publication to BF; see [Windows updates](windows-updates.md). Android release installs are manual or Google Play; ordinary installations cannot silently replace the package without platform authorization.
+Remaining gaps are Linux installer downloads, OS release ingestion tied to GitHub download URLs, and a unified catalog across all artifact types and Android APK installers. MediaMTX is no longer installed; native SimpleVMS supplies media. Windows now has a native independent updater service and direct signed-MSI publication to BF; see [Windows updates](windows-updates.md). Android release installs are manual or Google Play; ordinary installations cannot silently replace the package without platform authorization.
 
 ## Delivery service
 

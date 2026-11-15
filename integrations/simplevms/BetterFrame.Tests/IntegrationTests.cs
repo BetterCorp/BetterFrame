@@ -218,6 +218,24 @@ public sealed class IntegrationTests
     Assert.That(catalog.Groups.SelectMany(group => group.CameraIds).All(included.Contains), Is.True);
     Assert.That(CatalogBuilder.Build("instance", 0, "NVR", cameras, groups).Cameras.Select(camera => camera.Id), Is.EqualTo(catalog.Cameras.Select(camera => camera.Id)));
   }
+  [Test] public void CatalogFieldsMatchIngressLimitsWithoutChangingProfileIdentity()
+  {
+    var token = new string('p', 128);
+    StreamProfile Profile(string id, string resolution, decimal fps) => new() { Id = Guid.NewGuid(), Profile = id, Kind = StreamKind.Quality,
+      FormatId = "h264", Codec = "h264", Resolution = resolution, Fps = fps, IsRootStream = true, Uri = "unused" };
+    var camera = new CameraInfo { Id = Guid.NewGuid(), Name = new string('n', 256), Address = "unused", ProviderId = "onvif", Capabilities = [],
+      Streams = [Profile(new string('p', 129), "1920x1080", 25), Profile("", "1920x1080", 25), Profile(token, "99999x99999", 2000), Profile(token, "640x360", 25), Profile("negative", "-1x-1", -1)] };
+    var unnamed = new CameraInfo { Id = Guid.NewGuid(), Name = "", Address = "unused", ProviderId = "onvif", Capabilities = [], Streams = [Profile("valid", "640x360", 25)] };
+    var catalog = CatalogBuilder.Build("instance", 1, new string('r', 256), [camera, unnamed], [new DisplayGroup(Guid.NewGuid(), new string('g', 256), [camera.Id])]);
+    Assert.That(catalog.Name, Has.Length.EqualTo(255)); Assert.That(catalog.Groups.Single().Name, Has.Length.EqualTo(255));
+    var exported = catalog.Cameras.Single(item => item.Id == camera.Id.ToString());
+    Assert.That(exported.Name, Has.Length.EqualTo(255)); Assert.That(exported.Profiles, Has.Length.EqualTo(2));
+    var main = exported.Profiles.Single(profile => profile.Id == token);
+    Assert.That(main.Name, Is.EqualTo(token)); Assert.That(main.Width, Is.EqualTo(32768)); Assert.That(main.Height, Is.EqualTo(32768)); Assert.That(main.Fps, Is.EqualTo(1000));
+    var negative = exported.Profiles.Single(profile => profile.Id == "negative");
+    Assert.That(negative.Width, Is.Zero); Assert.That(negative.Height, Is.Zero); Assert.That(negative.Fps, Is.Zero);
+    Assert.That(catalog.Cameras.Single(item => item.Id == unnamed.Id.ToString()).Name, Is.EqualTo(unnamed.Id.ToString()));
+  }
   [Test] public void OutboxSurvivesRestartAndLostAcknowledgements()
   {
     var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());

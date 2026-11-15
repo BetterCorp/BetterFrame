@@ -110,7 +110,7 @@ the runtime user along with its containing directory so app updates can atomical
 replace it. State stays in `/var/lib/betterframe/kiosk`; pairing and keys are
 preserved. The app also imports its existing `~/.betterframe-kiosk` state when
 needed. Changed startup files are backed up with `.before-setup.TIMESTAMP-PID`.
-The saved runtime user, mode, channel, and media gateway choice are in `/etc/betterframe/linux-install`.
+The saved runtime user, mode, and channel are in `/etc/betterframe/linux-install`.
 Remove other custom BF startup commands if your manual install used different
 service/autostart names; setup manages `betterframe.service`,
 `betterframe-kiosk.service`, and `betterframe.desktop`.
@@ -162,7 +162,7 @@ sudo ./setup.sh --yes --binary /opt/betterframe/kiosk/betterframe-kiosk
 ```
 
 This retains the installed app version instead of downloading a BF app release.
-Setup may still download prerequisites and MediaMTX. Restart BetterFrame after
+Setup may still download prerequisites. Restart BetterFrame after
 loading the profile so the new process receives it. No new app release or reboot
 is required.
 
@@ -171,29 +171,26 @@ for the application-specific `userns` permission, and
 [Ubuntu's explanation of the restriction's limitations](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007)
 for the trade-offs of unconfined profiles.
 
-## MediaMTX gateway
+## Native SimpleVMS media
 
-Setup asks whether to install MediaMTX for Operator Console preview and optional
-SimpleVMS recording, recommends yes, and remembers your choice. `--yes` defaults
-to on for new installs and reuses the saved choice for existing installs. Use
-`--media-gateway on` to enable/repair it or `--media-gateway off` to disable it
-while preserving recordings. Older installations without a saved choice are
-prompted once when running interactively.
+Operator Console preview and recording export use the native SimpleVMS
+BetterFrame plugin. Configure cameras, recording policies, and display groups
+in SimpleVMS, then connect the recorder to its owner kiosk in BF. See the
+[integration guide](../integrations/simplevms/README.md) for plugin setup,
+linked kiosks, media addresses, and network access.
 
-When enabled, setup installs the same pinned version and configuration as the
-managed images. It verifies the published archive checksum, installs a system
-service running as the selected user, preserves recordings in
-`/var/lib/betterframe/recordings`, and checks the local gateway API before
-reporting it ready. Reruns repair missing, masked, stopped, or failed services.
-This supplies Operator Console preview and SimpleVMS's gateway dependency;
-enabling recording remains a BF configuration choice. Setup prepares the existing
-recording directory and its permissions; it never formats a disk, mounts a new
-partition, or automatically starts recording.
+Setup no longer installs MediaMTX or prompts for a gateway choice. Existing
+scripts may pass `--media-gateway off` for compatibility; enabling that legacy
+gateway is unsupported. Existing recordings and configuration are preserved,
+but are not converted into native SimpleVMS history.
 
-Check `sudo systemctl status betterframe-mediamtx.service` or
-`sudo journalctl -u betterframe-mediamtx.service -n 100`. Its API listens only on
-`127.0.0.1:9997`. `--no-start` requires an existing gateway service to be stopped
-and defers its readiness check until you start it.
+During an upgrade, an existing gateway service stays available while the new
+app's startup is unconfirmed, preserving immediate and deferred rollback.
+After the app confirms healthy startup, setup retires that service. If startup
+is deferred until login/boot, rerun setup after successful startup to retire
+it. Native BF does not use the retained service.
+
+## App rollback and updates
 
 App rollback is armed before replacing the executable and stays armed when
 startup is deferred until login/boot. The health deadline starts with the first

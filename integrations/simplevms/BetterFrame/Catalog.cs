@@ -30,20 +30,20 @@ public static class CatalogBuilder
     // Groups generate layouts; ungrouped cameras remain available for custom layouts.
     // Never export upstream credentials or addresses.
     var result = cameras.OrderBy(c => c.Id).Select(camera => {
-      var streams = camera.Streams.Where(s => s.IsRootStream && s.Codec?.ToLowerInvariant() is "h264" or "h265" or "hevc")
-        .OrderByDescending(s => Pixels(s.Resolution)).ThenBy(s => s.Profile, StringComparer.Ordinal).Take(32).ToArray();
+      var streams = camera.Streams.Where(s => s.IsRootStream && s.Profile is { Length: > 0 and <= 128 } && s.Codec?.ToLowerInvariant() is "h264" or "h265" or "hevc")
+        .OrderByDescending(s => Pixels(s.Resolution)).ThenBy(s => s.Profile, StringComparer.Ordinal).DistinctBy(s => s.Profile, StringComparer.Ordinal).Take(32).ToArray();
       var profiles = streams.Select((s, index) => {
         var dimensions = (s.Resolution ?? "").Split('x', '×');
         int.TryParse(dimensions.ElementAtOrDefault(0), out var width);
         int.TryParse(dimensions.ElementAtOrDefault(1), out var height);
-        return new Profile(s.Profile, s.Profile, index == 0 ? "main" : index == streams.Length - 1 ? "sub" : "other", s.Codec!, width, height, s.Fps ?? 0);
+        return new Profile(s.Profile, s.Profile, index == 0 ? "main" : index == streams.Length - 1 ? "sub" : "other", s.Codec!, Math.Clamp(width, 0, 32768), Math.Clamp(height, 0, 32768), Math.Clamp(s.Fps ?? 0, 0, 1000));
       }).ToArray();
-      return new Camera(camera.Id.ToString(), camera.Name, true, profiles);
+      return new Camera(camera.Id.ToString(), Label(camera.Name, camera.Id.ToString()), true, profiles);
     }).Where(camera => camera.Profiles.Length > 0).Take(MaxCameras).ToArray();
     Catalog Prefix(int count) {
       var selected = result.Take(count).ToArray();
       var present = selected.Select(c => c.Id).ToHashSet();
-      return new(1, instance, revision, name, selected, groups.OrderBy(g => g.Id).Select(g => new Group(g.Id.ToString(), g.Name,
+      return new(1, instance, revision, Label(name, "SimpleVMS"), selected, groups.OrderBy(g => g.Id).Select(g => new Group(g.Id.ToString(), Label(g.Name, g.Id.ToString()),
         g.CameraIds.Select(id => id.ToString()).Where(present.Contains).ToArray())).ToArray());
     }
     var catalog = Prefix(result.Length);
@@ -59,6 +59,7 @@ public static class CatalogBuilder
     if (JsonSerializer.SerializeToUtf8Bytes(catalog, Json).Length > MaxCatalogBytes) throw new ArgumentException("Display-group metadata exceeds the catalog size limit");
     return catalog;
   }
+  private static string Label(string value, string fallback) => string.IsNullOrWhiteSpace(value) ? fallback : value[..Math.Min(255, value.Length)];
   private static long Pixels(string? value)
   {
     var dimensions = (value ?? "").Split('x', '×');

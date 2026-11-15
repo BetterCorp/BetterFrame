@@ -383,6 +383,7 @@ export async function generateBundle(
               : cellInputOptions;
           }
         }
+        if (contentType === "camera" && cameraId && managedCameraIds.has(cameraId) && !vmsCameras.has(cameraId)) continue;
         let overlayHtml: string | undefined;
         try {
           const overlay = blockOverlay(c.options);
@@ -456,7 +457,7 @@ export async function generateBundle(
         priority: l.priority,
         cooling_timeout_seconds: l.cooling_timeout_seconds,
         idle_timeout_seconds: l.idle_timeout_seconds,
-        preload_camera_ids: viewer ? [] : l.preload_camera_ids,
+        preload_camera_ids: viewer ? [] : l.preload_camera_ids.filter(id => !managedCameraIds.has(id) || vmsCameras.has(id)),
         resets_idle_timer: l.resets_idle_timer,
         is_default: defaultLayoutId === l.id,
         cells: bundleCells,

@@ -109,10 +109,23 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     assert.ok(!JSON.stringify(ownBundle).includes(config.viewerPassword));
     const custom = await repo.createLayout({ name: "My layout" });
     await repo.createLayoutCell({ layout_id: custom.id, row: 0, col: 0, camera_id: camera.id, content_type: "camera" });
+    await repo.createLayoutCell({ layout_id: custom.id, row: 0, col: 1, entity_id: (await repo.getEntityForCamera(camera.id))!.id });
+    await repo.updateLayout(custom.id, { preload_camera_ids: [camera.id] });
+    await repo.attachLayoutToDisplay(linkedDisplay.id, custom.id);
+    await repo.attachLayoutToDisplay(androidDisplay.id, custom.id);
+    assert.equal((await generateBundle(repo, secrets, linked.id, undefined))!.layouts.find(layout => layout.id === custom.id)!.cells.length, 2);
     await saveSimpleVmsSource(repo, secrets, owner.id, { ...config, linkedKioskIds: [], viewerPassword: "", ingestToken: "" });
     assert.deepEqual(await (await app.request(`${callback}/access?kioskId=${linked.id}`, { headers })).json(), { allowed: false });
-    assert.equal((await repo.listLayoutsForDisplay(linkedDisplay.id)).length, 0);
+    assert.equal((await repo.listLayoutsForDisplay(linkedDisplay.id)).length, 1);
     assert.equal((await simpleVmsCamerasForKiosk(repo, linked.id)).length, 0);
+    for (const kioskId of [linked.id, android.id]) {
+      const revokedBundle = (await generateBundle(repo, secrets, kioskId, undefined))!;
+      assert.equal(revokedBundle.cameras.length, 0);
+      assert.deepEqual(revokedBundle.layouts.find(layout => layout.id === custom.id)!.cells, []);
+      assert.deepEqual(revokedBundle.layouts.find(layout => layout.id === custom.id)!.preload_camera_ids, []);
+      assert.ok(!revokedBundle.layouts.some(layout => layout.id === (cell.entity_id ?? "missing")));
+    }
+    assert.equal((await repo.listLayoutCells(custom.id)).length, 2, "Kiosk access does not change the custom layout definition");
     const empty = snapshot(3); empty.cameras = []; empty.groups = [];
     await applySimpleVmsSnapshot(repo, source.id, empty);
     assert.equal(await repo.getLayoutById(managedLayout.id), null);

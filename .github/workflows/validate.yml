@@ -59,6 +59,8 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
           TSX_TSCONFIG_PATH=server/tsconfig.test.json node --import tsx scripts/test-overlay-preview.mjs
+      - name: Web action group editor in Chromium
+        run: TSX_TSCONFIG_PATH=server/tsconfig.test.json node --import tsx scripts/test-web-actions-editor.mjs
       - name: Node-RED routing and deployment syntax
         env:
           BF_NODERED_MANAGER_SECRET: 0123456789abcdef0123456789abcdef

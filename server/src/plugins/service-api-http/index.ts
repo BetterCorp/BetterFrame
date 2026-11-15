@@ -18,7 +18,7 @@ import {
   createEventSchemas,
   type Observable,
 } from "@bsb/base";
-import { H3, serve, readBody, getRequestHeader, getRouterParam, createError } from "h3";
+import { H3, serve, assertBodySize, readBody, getRequestHeader, getRouterParam, createError } from "h3";
 import type { Server } from "srvx";
 
 import type { DbConfig } from "../../shared/db/config.js";
@@ -1055,6 +1055,20 @@ export function registerKioskRoutes(
     });
   });
 
+  app.post("/api/kiosk/web-actions/result", async event => {
+    await assertBodySize(event, 4096);
+    const kiosk = await requireKiosk(event, repo, auth);
+    const body = await readBody<Record<string, unknown>>(event);
+    const display = typeof body?.["display_id"] === "string" ? await repo.getDisplayById(body["display_id"]) : null;
+    if (!display || display.kiosk_id !== kiosk.id) throw createError({ statusCode: 403 });
+    const fields = { request_id: String(body?.["request_id"] ?? "").slice(0,64),
+      display_id: display.id, cell_id: String(body?.["cell_id"] ?? "").slice(0,64),
+      group: String(body?.["group"] ?? "").slice(0,64), ok: body?.["ok"] === true,
+      error: String(body?.["error"] ?? "").slice(0,256) };
+    event.context.obs?.log.info("web action result {request_id}", fields);
+    return { ok: true };
+  });
+
   // Heartbeat
   app.post("/api/kiosk/heartbeat", async (event) => {
     const kiosk = await requireKiosk(event, repo, auth);
@@ -1078,6 +1092,7 @@ export function registerKioskRoutes(
     const viewer = isAndroidViewer(profile);
     const orderedPower = viewer && (body.capabilities?.includes("android-standby-v1") || profile?.capabilities?.includes("android-standby-v1"));
     if (viewer && body.displays.length > 1) throw createError({ statusCode: 400, statusMessage: "Android viewer supports one display" });
+    if (!viewer && body.capabilities) await repo.updateKiosk(kiosk.id, { capabilities: [...new Set(body.capabilities)] } as any);
     if (viewer && body.capabilities) {
       // The restrictive identity cannot be removed by a later heartbeat.
       await repo.updateKiosk(kiosk.id, { capabilities: [...new Set(["android-viewer", ...body.capabilities])] } as any);

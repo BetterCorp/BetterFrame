@@ -57,6 +57,7 @@ function tokenMatchesExpected(token: string, expected: string | undefined): bool
 }
 
 const OPERATOR_MUTATIONS = [
+  /^\/api\/displays\/[^/]+\/web-actions\/[A-Za-z][A-Za-z0-9_.-]{0,63}$/,
   /^\/api\/displays\/[^/]+\/(?:focus|clear|restore)$/,
   /^\/admin\/displays\/[^/]+\/layout(?:\/[^/]+)?$/,
   /^\/admin\/displays\/[^/]+\/power\/(?:standby|wake)$/,

@@ -1,3 +1,5 @@
+import { registerWebActionRoutes } from "./routes-web-actions.js";
+import { parseWebActions, webActionsFormDraft } from "../../shared/web-actions.js";
 import { registerSimpleVmsAdminRoutes, simpleVmsManagedPage } from "./routes-simple-vms.js";
 import { simpleVmsLayoutAllowed } from "../../shared/simple-vms-access.js";
 import { registerTrustedCaRoutes } from "./routes-trusted-cas.js";
@@ -9,7 +11,7 @@ import { kioskDebugEnabled, kioskDebugRequirement } from "../../shared/kiosk-cha
  * Admin page routes — overview, cameras, kiosks, labels, etc.
  */
 import { randomUUID } from "node:crypto";
-import { type H3, readBody, getRouterParam, getRequestHeader } from "h3";
+import { type H3, assertBodySize, readBody, getRouterParam, getRequestHeader } from "h3";
 import { debugHtmlPage, htmlPage } from "./html-response.js";
 import type { AdminDeps } from "./index.js";
 import { confirmPairing } from "../../shared/pairing.js";
@@ -734,6 +736,7 @@ async function shiftCellsForInsertion(
 }
 
 export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
+  registerWebActionRoutes(app, deps);
   registerOverlayRoutes(app, deps);
   registerSimpleVmsAdminRoutes(app, deps);
   registerTrustedCaRoutes(app, deps);
@@ -1924,9 +1927,15 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   // Update a cell's entity binding + dimensions. Legacy content_type/web/html
   // columns are managed by assignCellEntity for bundle compatibility.
   app.post("/admin/layouts/:id/cells/:cellId", async (event) => {
+    await assertBodySize(event, 512 * 1024);
     const layoutId = (getRouterParam(event, "id") ?? "");
     const cellId = (getRouterParam(event, "cellId") ?? "");
+    const cell = await deps.repo.getLayoutCellById(cellId);
+    if (!cell || cell.layout_id !== layoutId) return jsonResponse({ error: "block_not_found" }, 404);
     const body = await readBody<Record<string, string>>(event);
+    let webActions;
+    try { if (body?.["web_actions_present"] === "1") webActions = parseWebActions(webActionsFormDraft(body)); }
+    catch (error) { return jsonResponse({ error: error instanceof Error ? error.message : "Invalid web actions" }, 422); }
 
     const entityIdRaw = body?.["entity_id"];
     const entityId =
@@ -1935,6 +1944,11 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
     // stream_selector + spans + fit are still settable on the cell.
     const dimsPatch: Record<string, unknown> = {};
+    if (webActions !== undefined) {
+      const options = { ...cell.options };
+      if (webActions) options["web_actions"] = webActions; else delete options["web_actions"];
+      dimsPatch["options"] = options;
+    }
     const streamSelector = body?.["stream_selector"];
     if (streamSelector === "auto" || streamSelector === "main" || streamSelector === "sub") {
       dimsPatch["stream_selector"] = streamSelector;

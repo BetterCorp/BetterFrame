@@ -1,3 +1,5 @@
+import { WebActionsEditor } from "./web-actions-editor.js";
+import type { WebActions } from "../shared/web-actions.js";
 import { smartUrlFormDraft } from "../shared/smart-url.js";
 import { effectiveFirmwareChannel, kioskDebugEnabled, kioskDebugRequirement } from "../shared/kiosk-channels.js";
 /**
@@ -3250,7 +3252,7 @@ export function renderCellSidebar(
     <div id="layout-cell-sidebar" class="layout-editor-sidebar">
       {renderMiniMap(cells, String(c.id))}
       <h3>Block Configuration</h3>
-      <form class="layout-cell-edit-form" hx-post={cellGetUrl} hx-target="#layout-cell-sidebar" hx-swap="outerHTML">
+      <form class="layout-cell-edit-form" {...{"hx-on::response-error": "var box=this.querySelector('[data-web-actions-error]');if(box){try{box.textContent=JSON.parse(event.detail.xhr.responseText).error}catch(e){box.textContent='Unable to save block'}}"}} hx-post={cellGetUrl} hx-target="#layout-cell-sidebar" hx-swap="outerHTML">
         <div class="form-group">
           <label>Entity</label>
           <select name="entity_id" class="form-input">
@@ -3287,6 +3289,9 @@ export function renderCellSidebar(
         {c.entity_id != null && entityById.get(c.entity_id)?.type === "web" && (
           <div class="form-hint">Authentication is configured on the <a href={`/admin/entities/${c.entity_id}`}>web entity</a>.</div>
         )}
+
+        {c.entity_id != null && ["web", "html", "dashboard", "ablesign"].includes(entityById.get(c.entity_id)?.type ?? "") &&
+          <WebActionsEditor config={c.options?.["web_actions"] as WebActions | undefined} />}
 
         <div class="form-group span-grid">
           <div>

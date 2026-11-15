@@ -13,6 +13,7 @@ pub fn web_cell_key(display_id: &str, layout_id: &str, cell: &BundleCell) -> Str
         "url": cell.web_url.as_deref().map(str::trim),
         "html": cell.html_content,
         "smart_url": cell.smart_url,
+        "web_actions_revision": cell.web_actions.as_ref().map(|config| &config.revision),
         "local_storage": cell.local_storage,
         "input_options": cell.input_options,
     });
@@ -62,6 +63,23 @@ pub struct SmartUrlProgress {
 }
 
 impl SmartUrlProgress {
+    /// Start an explicitly requested group, independently of login detection.
+    pub fn start_sequence(&mut self) {
+        self.generation += 1;
+        self.next = 0;
+        self.triggered = true;
+        self.complete = false;
+        self.failed = false;
+        self.cancelled = false;
+        self.busy = false;
+        self.retry_armed = false;
+        self.retry_after = None;
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.triggered && !self.complete && !self.failed && !self.cancelled
+    }
+
     /// Invalidate the old document's callbacks while preserving the step cursor.
     pub fn load_started(&mut self) {
         // Progress lives outside the document. A redirect invalidates callbacks
@@ -174,6 +192,40 @@ mod tests {
             "smart_url":{"steps":[{"type":"navigate","url":"/lovelace/2"}]}
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn explicit_groups_run_without_login_and_stop_after_one_sequence() {
+        let mut run = SmartUrlProgress::default();
+        run.start_sequence();
+        assert!(run.is_running());
+        let (_, generation) = run.take_step(2, Duration::ZERO).unwrap();
+        run.load_started();
+        assert!(!run.finish_step(generation, false, Duration::ZERO));
+        let (index, current) = run.take_step(2, Duration::ZERO).unwrap();
+        assert_eq!(index, 1);
+        assert!(run.finish_step(current, true, Duration::ZERO));
+        assert_eq!(run.take_step(2, Duration::ZERO), None);
+        assert!(!run.is_running());
+        run.observe_url("http://app/auth", None, Duration::from_secs(1000));
+        assert_eq!(run.take_step(2, Duration::from_secs(1000)), None);
+        run.start_sequence();
+        assert_eq!(run.take_step(2, Duration::ZERO).unwrap().0, 0);
+    }
+
+    #[test]
+    fn action_revision_changes_browser_identity_without_ciphertext_churn() {
+        let mut cell = web_cell();
+        let original = web_cell_key("d", "l", &cell);
+        cell.web_actions = Some(serde_json::from_value(serde_json::json!({
+            "revision":"first", "groups":{"custom":[{"type":"fill","selector":"#x","value_encrypted":"nonce-one"}]}
+        })).unwrap());
+        let configured = web_cell_key("d", "l", &cell);
+        assert_ne!(configured, original);
+        cell.web_actions.as_mut().unwrap().groups.get_mut("custom").unwrap()[0].value_encrypted = Some("nonce-two".into());
+        assert_eq!(configured, web_cell_key("d", "l", &cell));
+        cell.web_actions.as_mut().unwrap().revision = "edited".into();
+        assert_ne!(configured, web_cell_key("d", "l", &cell));
     }
 
     #[test]

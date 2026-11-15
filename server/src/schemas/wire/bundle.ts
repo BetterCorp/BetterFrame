@@ -91,6 +91,7 @@ const bundleCell = av.object(
     cooling_timeout_seconds: av.nullable(av.int().min(0)),
     fit: av.enum_(["cover", "contain", "fill"] as const),
     smart_url: av.optional(smartUrl),
+    web_actions: av.optional(av.object({ revision: av.string(), on_load: av.array(smartUrlStep), groups: av.record(av.array(smartUrlStep)) }, { unknownKeys: "reject" })),
     local_storage: av.optional(av.record(av.string())),
   },
   { unknownKeys: "reject" },

@@ -3383,9 +3383,12 @@ fn resolved_web_actions(cell: &BundleCell) -> Option<crate::bundle::WebActions> 
     for step in config.on_load.iter_mut().chain(config.groups.values_mut().flatten()) {
         if step.value.is_none() {
             if let Some(value) = step.value_encrypted.as_ref().and_then(|encrypted| key.as_deref().and_then(|key| onvif_events::decrypt_cluster_public(encrypted,key))) {
-                step.value = Some(value); step.value_encrypted = None;
+                step.value = Some(value);
             }
         }
+        // Runtime controllers compare resolved values; nonce changes cannot
+        // replace a controller, including while a key remains unavailable.
+        step.value_encrypted = None;
     }
     Some(config)
 }
@@ -3500,6 +3503,13 @@ fn ensure_web(
             if let Some(e) = m.borrow_mut().get_mut(&key) {
                 if e.event_meta != event_meta {
                     e.last_reported_url = None;
+                }
+                if e.event_meta.as_ref().map(|meta| (&meta.actions, &meta.server_url, &meta.kiosk_key))
+                    != event_meta.as_ref().map(|meta| (&meta.actions, &meta.server_url, &meta.kiosk_key))
+                {
+                    e.actions = event_meta.as_ref().and_then(|meta| meta.actions.clone()).map(|config| {
+                        web_actions::Actions::new(&wv, config, e.smart_url.as_ref().map(|auth| auth.readiness()), server_url, kiosk_key)
+                    });
                 }
                 e.event_meta = event_meta.clone();
                 if e.state == WarmthState::Cooling {

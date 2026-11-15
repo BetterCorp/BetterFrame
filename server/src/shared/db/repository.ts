@@ -1159,6 +1159,17 @@ export class Repository {
     void this.notify("layout_cells", "update", cellId);
   }
 
+  /** Merge one independently edited option atomically; other option writers use this too. */
+  async updateLayoutCellOption(id: string, key: "web_actions" | "overlay", value: unknown | null): Promise<void> {
+    await assertSimpleVmsWritable(this.adapter, "cell", id);
+    if (value == null) {
+      await this._run("UPDATE layout_cells SET options = COALESCE(options, '{}'::jsonb) - ?::text WHERE id = ?", [key, id]);
+    } else {
+      await this._run("UPDATE layout_cells SET options = jsonb_set(COALESCE(options, '{}'::jsonb), ARRAY[?::text], ?::jsonb, true) WHERE id = ?", [key, J(value), id]);
+    }
+    void this.notify("layout_cells", "update", id);
+  }
+
   async updateLayoutCell(id: string, patch: Partial<LayoutCell>): Promise<void> {
     await assertSimpleVmsWritable(this.adapter, "cell", id);
     const sets: string[] = [];

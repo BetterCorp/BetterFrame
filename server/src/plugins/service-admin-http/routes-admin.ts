@@ -1944,11 +1944,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
     // stream_selector + spans + fit are still settable on the cell.
     const dimsPatch: Record<string, unknown> = {};
-    if (webActions !== undefined) {
-      const options = { ...cell.options };
-      if (webActions) options["web_actions"] = webActions; else delete options["web_actions"];
-      dimsPatch["options"] = options;
-    }
+    if (webActions !== undefined) await deps.repo.updateLayoutCellOption(cellId, "web_actions", webActions);
     const streamSelector = body?.["stream_selector"];
     if (streamSelector === "auto" || streamSelector === "main" || streamSelector === "sub") {
       dimsPatch["stream_selector"] = streamSelector;

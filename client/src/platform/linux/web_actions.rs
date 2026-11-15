@@ -9,7 +9,7 @@ use std::{
 };
 use webkit6::prelude::*;
 
-pub(super) struct Actions(Rc<State>);
+pub(super) struct Actions(Rc<State>, Option<glib::SignalHandlerId>);
 
 struct State {
     view: glib::WeakRef<webkit6::WebView>,
@@ -39,7 +39,7 @@ impl Actions {
             current: RefCell::new(None),
         });
         let weak = Rc::downgrade(&state);
-        view.connect_map(move |_| {
+        let mapped = view.connect_map(move |_| {
             if let Some(state) = weak.upgrade() {
                 state.pending_load.set(true);
             }
@@ -71,7 +71,7 @@ impl Actions {
             }
             glib::ControlFlow::Continue
         });
-        Self(state)
+        Self(state, Some(mapped))
     }
 
     pub(super) fn invoke(
@@ -120,5 +120,15 @@ impl State {
             &view, steps, &self.server, &self.key, auth_ready, done,
         );
         self.current.replace(Some(controller));
+    }
+}
+
+impl Drop for Actions {
+    fn drop(&mut self) {
+        if let Some(view) = self.0.view.upgrade() {
+            if let Some(handler) = self.1.take() {
+                view.disconnect(handler);
+            }
+        }
     }
 }

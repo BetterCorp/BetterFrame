@@ -938,6 +938,46 @@ mod tests {
         pump(Duration::from_secs(2));
         assert_eq!(fixture.count("/after-failed-auth"), 0, "failed entity authentication never releases on-load actions");
         drop(failed_actions);
+
+        // A cached view must recover resolved action values without remapping.
+        // Changing only an unreadable nonce must preserve an in-flight group.
+        let recovery_key = "recovered-action-values".to_string();
+        let mut recovery_cell: crate::bundle::BundleCell = serde_json::from_value(serde_json::json!({
+            "view_id":"recovered", "row":0,"col":0,"row_span":1,"col_span":1,"content_type":"html",
+            "web_actions":{"revision":"recovery", "on_load":[], "groups":{
+                "fill":[{"type":"fill","selector":"#recovered","value_encrypted":"unreadable-nonce-one"}],
+                "deferred":[{"type":"wait","delay_ms":1500},{"type":"javascript","script":"document.body.dataset.completed='yes';"}]}}
+        })).unwrap();
+        let recovery_meta = |cell: &crate::bundle::BundleCell| super::super::WebEventMeta {
+            server_url: fixture.root.clone(), kiosk_key:"test-key".into(), tenant_slug:"default".into(),
+            kiosk_id:"test".into(), display_id:"display".into(), view_id:cell.view_id.clone(), entity_id:None,
+            actions:super::super::resolved_web_actions(cell),
+        };
+        let recovery_html = "<input id=recovered value=kept>";
+        let recovered_wv = super::super::ensure_web(recovery_key.clone(), super::super::WebSource::Html(recovery_html),
+            &fixture.root, "test-key", None, None, Some(recovery_meta(&recovery_cell)));
+        row.append(&recovered_wv);
+        wait_until(|| recovered_wv.is_mapped() && !recovered_wv.is_loading());
+        result.replace(None);
+        let completed = result.clone();
+        super::super::WARM_WEBVIEWS.with(|pool| pool.borrow().get(&recovery_key).unwrap().actions.as_ref().unwrap()
+            .invoke("deferred", "recovery", move |r| { completed.replace(Some(r)); })).unwrap();
+        pump(Duration::from_millis(100));
+        recovery_cell.web_actions.as_mut().unwrap().groups.get_mut("fill").unwrap()[0].value_encrypted = Some("unreadable-nonce-two".into());
+        assert_eq!(super::super::ensure_web(recovery_key.clone(), super::super::WebSource::Html(recovery_html),
+            &fixture.root, "test-key", None, None, Some(recovery_meta(&recovery_cell))), recovered_wv);
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok(), "nonce changes preserve the current controller");
+        recovery_cell.web_actions.as_mut().unwrap().groups.get_mut("fill").unwrap()[0].value = Some("restored".into());
+        assert_eq!(super::super::ensure_web(recovery_key.clone(), super::super::WebSource::Html(recovery_html),
+            &fixture.root, "test-key", None, None, Some(recovery_meta(&recovery_cell))), recovered_wv);
+        result.replace(None);
+        let completed = result.clone();
+        super::super::WARM_WEBVIEWS.with(|pool| pool.borrow().get(&recovery_key).unwrap().actions.as_ref().unwrap()
+            .invoke("fill", "recovery", move |r| { completed.replace(Some(r)); })).unwrap();
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok(), "the cached controller receives newly resolved values");
+        evaluate(&recovered_wv, "if (document.querySelector('#recovered').value !== 'restored') throw new Error('stale actions');");
         super::super::purge_obsolete_webviews(&HashSet::new());
         window.close();
     }

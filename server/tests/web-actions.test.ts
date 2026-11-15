@@ -18,7 +18,7 @@ function fixture() {
     adapter: { dialect: () => "sqlite", get: async (sql: string) => allowed || !sql.startsWith("SELECT source_id") ? null : { source_id: "source" } },
     isSetupComplete: async () => true,
     getDisplayById: async (id: string) => id === "display" ? { id, kiosk_id: "kiosk" } : null,
-    getLayoutCellById: async (id: string) => id === cell.id ? cell : null,
+    getLayoutCellById: async (id: string) => id === cell.id ? structuredClone(cell) : null,
     getEntityById: async () => entity,
     getKioskById: async () => ({ capabilities: supported ? ["web-action-groups-v1"] : [] }),
     layoutsForDisplayId: async () => assigned ? [{ id: "layout" }] : [],
@@ -102,16 +102,25 @@ test("block saves preserve other options, reject invalid actions before mutation
   const original=getCoordinator();t.after(()=>setCoordinator(original));
   const f=fixture(), patches:Record<string,unknown>[]=[];
   let assigned=0;
-  const app=new H3(); registerAdminRoutes(app,{repo:{...f.repo,assignCellEntity:async()=>{assigned++;},updateLayoutCell:async(_:string,patch:Record<string,unknown>)=>{patches.push(patch);}}} as never);
+  const app=new H3(); registerAdminRoutes(app,{repo:{...f.repo,
+    assignCellEntity:async()=>{assigned++; (f.cell.options as Record<string,unknown>).overlay={data:{progress:42}};},
+    updateLayoutCellOption:async(_:string,key:string,value:unknown)=>{
+      const options:Record<string,unknown>={...f.cell.options};
+      if (value == null) delete options[key]; else options[key]=value;
+      f.cell.options=options as typeof f.cell.options;
+    },
+    updateLayoutCell:async(_:string,patch:Record<string,unknown>)=>{patches.push(patch);},
+  }} as never);
   const post=(body:Record<string,string>)=>app.request("http://bf.test/admin/layouts/layout/cells/block",{method:"POST",body:new URLSearchParams(body)});
   assert.equal((await post({web_actions_present:"1",web_group_0_name:"named",web_group_0_step_0_type:"click",web_group_0_step_0_value:"#run"})).status,302);
-  assert.deepEqual(patches[0]?.options,{fit:"cover",web_actions:{on_load:[],groups:{named:[{type:"click",selector:"#run"}]}}});
+  assert.ok(patches.every(patch=>!("options" in patch)));
+  assert.deepEqual(f.cell.options,{fit:"cover",overlay:{data:{progress:42}},web_actions:{on_load:[],groups:{named:[{type:"click",selector:"#run"}]}}});
   assert.equal(assigned,1);
   assert.equal((await post({web_actions_present:"1",web_group_0_name:"invalid name"})).status,422);
   assert.equal(assigned,1);
   patches.length=0;
   assert.equal((await post({web_actions_present:"1"})).status,302);
-  assert.deepEqual(patches[0]?.options,{fit:"cover"});
+  assert.deepEqual(f.cell.options,{fit:"cover",overlay:{data:{progress:42}}});
 });
 
 test("editor escapes authored scripts and keeps entity authentication separate",()=>{
@@ -191,4 +200,19 @@ test("bundle secret fingerprints depend on the server key, including entity auth
   const first=(await make(7))!;
   assert.equal(first.version,(await make(7))!.version,"random encryption remains stable under the same fingerprint key");
   assert.notEqual(first.version,(await make(8))!.version,"the version input cannot be guessed without the server-held key");
+});
+
+test("layout read API redacts automation fill credentials without changing authored data or other values", async () => {
+  const source={id:"block",options:{overlay:{data:{value:42}},web_actions:{on_load:[{type:"fill",selector:"#user",value:"private-user"}],groups:{custom:[{type:"fill",selector:"#secret",value:"private-password",value_encrypted:"private-cipher"},{type:"wait",delay_ms:0}]}},value:"ordinary"}};
+  const app=new H3();
+  registerAdminRoutes(app,{repo:{getLayoutById:async()=>({id:"layout"}),layoutCells:async()=>[source],listDisplaysForLayout:async()=>[]}} as never);
+  const response=await app.request("http://bf.test/api/admin/layouts/layout");
+  assert.equal(response.status,200);
+  const data=await response.json() as any;
+  const options=data.layout.cells[0].options;
+  assert.deepEqual(options.web_actions.on_load,[{type:"fill",selector:"#user"}]);
+  assert.deepEqual(options.web_actions.groups.custom,[{type:"fill",selector:"#secret"},{type:"wait",delay_ms:0}]);
+  assert.equal(options.overlay.data.value,42);
+  assert.equal(options.value,"ordinary");
+  assert.equal(source.options.web_actions.groups.custom[0]!.value,"private-password");
 });

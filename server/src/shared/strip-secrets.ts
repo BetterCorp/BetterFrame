@@ -27,14 +27,14 @@ export function stripSecrets<T>(value: T): T {
   return stripInner(value) as T;
 }
 
-function stripInner(v: unknown): unknown {
+function stripInner(v: unknown, automation = false): unknown {
   if (v === null || v === undefined) return v;
-  if (Array.isArray(v)) return v.map((item) => stripInner(item));
+  if (Array.isArray(v)) return v.map((item) => stripInner(item, automation));
   if (typeof v === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-      if (SECRET_KEYS.has(k)) continue;
-      out[k] = stripInner(val);
+      if (SECRET_KEYS.has(k) || (automation && (v as Record<string, unknown>)["type"] === "fill" && (k === "value" || k === "value_encrypted"))) continue;
+      out[k] = stripInner(val, automation || ["web_actions", "smart_url", "smart_url_json"].includes(k));
     }
     return out;
   }

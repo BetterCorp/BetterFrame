@@ -238,7 +238,8 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
       var groups = Groups().Where(g => values.GetValueOrDefault("deleteGroup_" + g.Id) != "true")
         .Select(g => g with { Name = values.GetValueOrDefault("groupName_" + g.Id, g.Name).Trim() }).ToList();
       if (!string.IsNullOrWhiteSpace(values.GetValueOrDefault("newGroupName"))) groups.Add(new(Guid.NewGuid(), values["newGroupName"].Trim(), []));
-      SaveGroups(groups.ToArray());
+      try { SaveGroups(groups.ToArray()); }
+      catch (ArgumentException error) { return Error.Create(0x10bf, 2, Result.BadRequest, error.Message); }
       foreach (var item in values.Where(v => Fields.Any(f => f.Key == v.Key))) _context.Config.Set(item.Key, item.Value);
     }
     Changed(true); return new Success();
@@ -254,15 +255,24 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
   public IReadOnlyDictionary<string, string> GetValues(Guid cameraId) => Groups().ToDictionary(g => "member_" + g.Id, g => g.CameraIds.Contains(cameraId) ? "true" : "false");
   public OneOf<Success, Error> ValidateValue(Guid cameraId, string key, string value)
   {
-    if (!Groups().Any(g => key == "member_" + g.Id) || value is not ("true" or "false")) throw new ArgumentException("Unknown display group");
-    return new Success();
+    try {
+      var group = Groups().SingleOrDefault(g => key == "member_" + g.Id);
+      if (group == null || value is not ("true" or "false")) throw new ArgumentException("Unknown display group");
+      if (value == "true" && !group.CameraIds.Contains(cameraId) && group.CameraIds.Length >= 32) throw new ArgumentException("A display group supports at most 32 cameras; remove a camera before adding another");
+      return new Success();
+    } catch (ArgumentException error) { return Error.Create(0x10bf, 2, Result.BadRequest, error.Message); }
   }
   public OneOf<Success, Error> ApplyValues(Guid cameraId, IReadOnlyDictionary<string, string> values)
   {
     lock (_gate) {
-      foreach (var item in values) ValidateValue(cameraId, item.Key, item.Value);
-      SaveGroups(Groups().Select(g => values.TryGetValue("member_" + g.Id, out var included)
-        ? g with { CameraIds = included == "true" ? g.CameraIds.Append(cameraId).Distinct().ToArray() : g.CameraIds.Where(id => id != cameraId).ToArray() } : g).ToArray());
+      foreach (var item in values) {
+        var validation = ValidateValue(cameraId, item.Key, item.Value);
+        if (validation.IsT1) return validation.AsT1;
+      }
+      try {
+        SaveGroups(Groups().Select(g => values.TryGetValue("member_" + g.Id, out var included)
+          ? g with { CameraIds = included == "true" ? g.CameraIds.Append(cameraId).Distinct().ToArray() : g.CameraIds.Where(id => id != cameraId).ToArray() } : g).ToArray());
+      } catch (ArgumentException error) { return Error.Create(0x10bf, 2, Result.BadRequest, error.Message); }
     }
     Changed(); return new Success();
   }

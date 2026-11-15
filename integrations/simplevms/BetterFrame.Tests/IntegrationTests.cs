@@ -105,6 +105,29 @@ public sealed class IntegrationTests
       Assert.That(settings.Values.Keys.Any(k => k.Contains("record", StringComparison.OrdinalIgnoreCase)), Is.False);
     } finally { Directory.Delete(directory, true); }
   }
+  [Test] public void FullGroupsRejectAdditionalMembersBeforeChangingAnyGroup()
+  {
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    try {
+      var settings = new Config(); var plugin = new BetterFramePlugin();
+      plugin.Initialize(new PluginContext { Config = settings, Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = new Registry(), EventBus = new Bus(), StreamTap = new Tap() });
+      var cameras = Enumerable.Range(0, 33).Select(_ => Guid.NewGuid()).ToArray();
+      var full = new DisplayGroup(Guid.NewGuid(), "Full", cameras.Take(32).ToArray()); var other = new DisplayGroup(Guid.NewGuid(), "Other", []);
+      settings.Set("groups", JsonSerializer.Serialize(new[] { full, other }, CatalogBuilder.Json)); var original = settings.Get("groups", "");
+      Assert.That(plugin.ValidateValue(cameras[32], "member_" + full.Id, "true").IsT1, Is.True);
+      Assert.That(plugin.ValidateValue(cameras[0], "member_" + full.Id, "true").IsT0, Is.True);
+      Assert.That(plugin.ApplyValues(cameras[32], new Dictionary<string, string> { ["member_" + other.Id] = "true", ["member_" + full.Id] = "true" }).IsT1, Is.True);
+      Assert.That(settings.Get("groups", ""), Is.EqualTo(original));
+      Assert.That(plugin.ValidateValue(cameras[32], "unknown", "true").IsT1, Is.True);
+      Assert.That(plugin.ApplyValues(cameras[0], new Dictionary<string, string> { ["member_" + full.Id] = "false" }).IsT0, Is.True);
+      Assert.That(plugin.ApplyValues(cameras[32], new Dictionary<string, string> { ["member_" + full.Id] = "true" }).IsT0, Is.True);
+      Assert.That(CatalogBuilder.ParseGroups(settings.Get("groups", "")).Single(group => group.Id == full.Id).CameraIds, Has.Length.EqualTo(32));
+      settings.Set("groups", JsonSerializer.Serialize(Enumerable.Range(0, 1024).Select(index => new DisplayGroup(Guid.NewGuid(), $"Group {index}", [])), CatalogBuilder.Json));
+      original = settings.Get("groups", "");
+      Assert.That(plugin.ApplyValues(new Dictionary<string, string> { ["newGroupName"] = "One too many", ["name"] = "Must not persist" }).IsT1, Is.True);
+      Assert.That(settings.Get("groups", ""), Is.EqualTo(original)); Assert.That(settings.Get("name", ""), Is.Empty);
+    } finally { Directory.Delete(directory, true); }
+  }
 
   [Test] public async Task PluginPushesInitialAndChangedCatalogsRetriesDeliveryAndDoesNotPoll()
   {

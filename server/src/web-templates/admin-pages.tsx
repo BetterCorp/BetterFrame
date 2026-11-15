@@ -3731,6 +3731,8 @@ export function renderDisplayLayouts(
                     <button
                       type="button"
                       class="btn btn-sm btn-danger"
+                      disabled={!!l.simple_vms_source_id}
+                      title={l.simple_vms_source_id ? "Managed by the SimpleVMS connection" : "Detach layout"}
                       {...{
                         "hx-post": `/admin/displays/${String(displayId)}/layouts/${String(l.id)}/remove`,
                         "hx-target": target,

@@ -18,6 +18,8 @@ public sealed class NativeHttpServer(PluginContext context, Func<Guid, string, C
 {
   private readonly SemaphoreSlim _liveSlots = new(32);
   private readonly SemaphoreSlim _exportSlots = new(2);
+  private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+  public Task Ready => _ready.Task;
   public async Task RunAsync(string address, CancellationToken ct)
   {
     var builder = WebApplication.CreateSlimBuilder(); builder.WebHost.UseUrls(address);
@@ -119,6 +121,7 @@ public sealed class NativeHttpServer(PluginContext context, Func<Guid, string, C
       } finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); _exportSlots.Release(); }
     });
     await app.StartAsync(ct);
+    _ready.TrySetResult();
     try { await Task.Delay(Timeout.Infinite, ct); }
     finally { await app.StopAsync(CancellationToken.None); }
   }

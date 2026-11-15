@@ -34,15 +34,26 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
     if (revoke) _rtsp?.Invalidate();
     _changes.Writer.TryWrite(true);
   }
-  public Task<OneOf<Success, Error>> StartAsync(CancellationToken ct)
+  public async Task<OneOf<Success, Error>> StartAsync(CancellationToken ct)
   {
     _stop = CancellationTokenSource.CreateLinkedTokenSource(ct); var token = _stop.Token;
     _rtsp = new NativeRtspServer(_context.StreamTap!, CanViewAsync, () => (Config("viewerUsername", "betterframe"), Config("viewerPassword")), ValidateViewerAsync);
+    var http = new NativeHttpServer(_context, CanViewAsync, ValidateViewerAsync);
+    var rtspRun = _rtsp.RunAsync(Config("listenAddress", "127.0.0.1"), int.Parse(Config("rtspPort", "8554")), Config("tlsCertificate"), Config("tlsKey"), token);
+    var httpRun = http.RunAsync(Config("httpListenUrl", "http://127.0.0.1:8555"), token);
     _tasks = [Watch<CameraAdded>(token), Watch<CameraUpdated>(token), Watch<CameraRemoved>(token), Watch<CameraConfigChanged>(token),
       Watch<StreamStarted>(token, false), Watch<CameraRecordingChanged>(token),
-      SynchronizeAsync(token), _rtsp.RunAsync(Config("listenAddress", "127.0.0.1"), int.Parse(Config("rtspPort", "8554")), Config("tlsCertificate"), Config("tlsKey"), token),
-      new NativeHttpServer(_context, CanViewAsync, ValidateViewerAsync).RunAsync(Config("httpListenUrl", "http://127.0.0.1:8555"), token)];
-    Changed(true); return Task.FromResult<OneOf<Success, Error>>(new Success());
+      SynchronizeAsync(token), rtspRun, httpRun];
+    try {
+      var ready = Task.WhenAll(_rtsp.ListeningPort, http.Ready);
+      var first = await Task.WhenAny(ready, rtspRun, httpRun).WaitAsync(token);
+      await first;
+      if (first != ready) throw new InvalidOperationException("Native media stopped during startup");
+      Changed(true); return new Success();
+    } catch {
+      _stop.Cancel(); try { await Task.WhenAll(_tasks); } catch { }
+      return Error.Create(0x10bf, 1, Result.BadRequest, "BetterFrame media listeners could not start; check bind addresses, ports and certificates");
+    }
   }
   private async Task Watch<T>(CancellationToken ct, bool revoke = true) where T : ISystemEvent
   { await foreach (var unused in _context.EventBus!.SubscribeAsync<T>(ct)) Changed(revoke: revoke); }
@@ -137,7 +148,7 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
   public async Task<OneOf<Success, Error>> StopAsync(CancellationToken ct)
   {
     _stop?.Cancel(); try { await Task.WhenAll(_tasks).WaitAsync(ct); } catch (OperationCanceledException) { }
-    _stop?.Dispose(); _http.Dispose(); return new Success();
+    _stop?.Dispose(); _stop = null; return new Success();
   }
   private static readonly (string Key, string Label, string Type, string Default)[] Fields = [
     ("name", "NVR name", "string", "SimpleVMS"), ("callbackUrl", "BetterFrame callback URL", "string", ""),

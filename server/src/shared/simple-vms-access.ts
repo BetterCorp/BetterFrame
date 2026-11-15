@@ -16,7 +16,7 @@ export async function assertSimpleVmsWritable(db: DbAdapter, kind: "camera" | "d
     cell: "SELECT 1 FROM layout_cells c JOIN simple_vms_groups g ON g.layout_id = c.layout_id WHERE c.id = ?",
     entity: "SELECT 1 FROM entities e JOIN simple_vms_cameras c ON c.camera_id = e.camera_id WHERE e.id = ?",
   };
-  if (await db.get(queries[kind], [id])) throw new Error("This resource is managed by SimpleVMS; edit it in SimpleVMS");
+  if (await db.get(queries[kind], [id])) throw Object.assign(new Error("This resource is managed by SimpleVMS; edit it in SimpleVMS"), { status: 409, statusCode: 409 });
 }
 
 export async function simpleVmsLayoutAllowed(db: DbAdapter, layoutId: string, kioskId: string): Promise<boolean> {

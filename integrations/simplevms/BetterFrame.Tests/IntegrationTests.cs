@@ -64,6 +64,13 @@ public sealed class IntegrationTests
       var response = Encoding.UTF8.GetBytes($"{{\"revision\":{catalog.Revision}}}"); changed.Response.ContentType = "application/json";
       await changed.Response.OutputStream.WriteAsync(response, timeout.Token); changed.Response.Close();
       var calls = registry.Calls; await Task.Delay(200, timeout.Token); Assert.That(registry.Calls, Is.EqualTo(calls));
+      await plugin.StopAsync(default);
+      Assert.That((await plugin.StartAsync(timeout.Token)).IsT0, Is.True);
+      var restarted = await receiver.GetContextAsync().WaitAsync(timeout.Token);
+      var replay = await JsonSerializer.DeserializeAsync<Catalog>(restarted.Request.InputStream, CatalogBuilder.Json, timeout.Token);
+      Assert.That(replay!.Revision, Is.GreaterThan(catalog.Revision));
+      var acknowledgement = Encoding.UTF8.GetBytes($"{{\"revision\":{replay.Revision}}}");
+      await restarted.Response.OutputStream.WriteAsync(acknowledgement, timeout.Token); restarted.Response.Close();
     } finally { await plugin.StopAsync(default); receiver.Stop(); Directory.Delete(directory, true); }
   }
   [Test] public void CatalogExportsUngroupedCamerasWithoutUpstreamSecretsAndPreservesGroupOrder()
@@ -89,6 +96,8 @@ public sealed class IntegrationTests
       box.Enqueue(catalog with { Name = "Renamed" }); box.Acknowledge(1);
       Assert.That(box.Pending!.Revision, Is.EqualTo(2)); box.Acknowledge(2);
       Assert.That(new CatalogOutbox(directory).Pending, Is.Null);
+      box.Acknowledge(100); box.Enqueue(catalog with { Name = "Recovered" });
+      Assert.That(box.Pending!.Revision, Is.EqualTo(101));
     } finally { Directory.Delete(directory, true); }
   }
   [TestCase(false)] [TestCase(true)] public void FragmentedRtpReassemblesOriginalNal(bool hevc)
@@ -144,6 +153,33 @@ public sealed class IntegrationTests
     } finally { stop.Cancel(); try { await running; } catch (OperationCanceledException) { } }
     Assert.That(tap.Count, Is.EqualTo(0));
   }
+  [Test] public async Task BrowserMediaAuthenticatesRemuxesNativeFramesAndReleasesDemand()
+  {
+    using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start(); var port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+    var tap = new Tap();
+    var context = new PluginContext { Config = new Config(), Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = new Registry(), EventBus = new Bus(), StreamTap = tap };
+    var server = new NativeHttpServer(context, (_, _, _) => Task.FromResult(true), (header, _) => Task.FromResult(header == "Basic authorized"));
+    var running = server.RunAsync($"http://127.0.0.1:{port}", stop.Token); await server.Ready.WaitAsync(stop.Token);
+    using var client = new HttpClient(new SocketsHttpHandler { MaxResponseDrainSize = 0, ResponseDrainTimeout = TimeSpan.Zero });
+    var address = $"http://127.0.0.1:{port}/bf/{Guid.NewGuid()}/High/live";
+    try {
+      using (var denied = await client.GetAsync(address, stop.Token)) Assert.That((int)denied.StatusCode, Is.EqualTo(401));
+      Assert.That(tap.Count, Is.EqualTo(0));
+      using (var request = new HttpRequestMessage(HttpMethod.Get, address)) {
+        request.Headers.TryAddWithoutValidation("Authorization", "Basic authorized");
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, stop.Token);
+        Assert.That((int)response.StatusCode, Is.EqualTo(200));
+        Assert.That(response.Headers.GetValues("X-BetterFrame-Mime").Single(), Does.Contain("avc1"));
+        await using var stream = await response.Content.ReadAsStreamAsync(stop.Token);
+        var box = new byte[8]; await stream.ReadExactlyAsync(box, stop.Token);
+        Assert.That(Encoding.ASCII.GetString(box, 4, 4), Is.EqualTo("ftyp")); Assert.That(tap.Count, Is.EqualTo(1));
+      }
+      for (var i = 0; i < 100 && tap.Count != 0; i++) await Task.Delay(10, stop.Token);
+      Assert.That(tap.Count, Is.EqualTo(0));
+    } finally { stop.Cancel(); try { await running; } catch (OperationCanceledException) { } }
+  }
   private static async Task<string> ReadResponse(Stream stream, CancellationToken ct)
   {
     using var buffer = new MemoryStream(); var one = new byte[1];
@@ -165,9 +201,12 @@ public sealed class IntegrationTests
     public Task<OneOf<IDataStream, Error>> TapAsync(Guid camera, string profile, CancellationToken ct) { Interlocked.Increment(ref Count); return Task.FromResult<OneOf<IDataStream, Error>>(new Stream(this)); }
     private sealed class Stream(Tap owner) : IDataStream<H264NalUnit>, IDisposable
     {
-      public StreamInfo Info { get; } = new() { DataFormat = "h264", FormatParameters = new H264Parameters { Sps = new byte[] { 0x67, 0x42, 0, 0x1e }, Pps = new byte[] { 0x68, 0xce, 6, 0xe2 } } };
+      public StreamInfo Info { get; } = new() { DataFormat = "h264", FormatParameters = new H264Parameters { Sps = new byte[] { 0x67, 0x42, 0x00, 0x2a, 0x96, 0x35, 0x40, 0xf0, 0x04, 0x4f, 0xcb, 0x37, 0x01, 0x01, 0x01, 0x40, 0x00, 0x01, 0xc2, 0x00, 0x00, 0x57, 0xe4, 0x01 }, Pps = new byte[] { 0x68, 0xce, 6, 0xe2 } } };
       public Type FrameType => typeof(H264NalUnit);
       public async IAsyncEnumerable<H264NalUnit> ReadAsync([EnumeratorCancellation] CancellationToken ct) {
+        var parameters = (H264Parameters)Info.FormatParameters!;
+        yield return new H264NalUnit { Data = parameters.Sps, Timestamp = 0, MediaTimestamp = 0, IsHeader = true, IsSyncPoint = true, NalType = H264NalType.Sps };
+        yield return new H264NalUnit { Data = parameters.Pps, Timestamp = 0, MediaTimestamp = 0, IsHeader = true, IsSyncPoint = true, NalType = H264NalType.Pps };
         ulong timestamp = 0;
         while (!ct.IsCancellationRequested) { yield return new H264NalUnit { Data = new byte[] { 0x65, 1, 2 }, Timestamp = timestamp, MediaTimestamp = timestamp, IsSyncPoint = true, IsHeader = false, NalType = H264NalType.Idr }; timestamp += 3600; await Task.Delay(10, ct); }
       }

@@ -240,6 +240,7 @@ export function rowToLayoutTemplate(r: Row): LayoutTemplate {
 
 export function rowToLayout(r: Row): Layout {
   return {
+    simple_vms_source_id: sn(r["simple_vms_source_id"]),
     local_short_key: sn(r["local_short_key"]) ?? undefined,
     id: s(r["id"]),
     name: s(r["name"]),

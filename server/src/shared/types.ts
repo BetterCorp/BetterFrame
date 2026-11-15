@@ -324,6 +324,7 @@ export interface LayoutRegion {
 }
 
 export interface Layout {
+  simple_vms_source_id?: string | null;
   local_short_key?: string;
   id: string;
   name: string;

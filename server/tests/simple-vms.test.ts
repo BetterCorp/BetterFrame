@@ -79,6 +79,7 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     const updated = snapshot(2); updated.cameras[0]!.name = "Front entrance";
     await applySimpleVmsSnapshot(repo, source.id, updated);
     assert.equal((await repo.getCameraById(camera.id))?.name, "Front entrance");
+    assert.equal((await repo.getEntityForCamera(camera.id))?.name, "Front entrance");
     assert.equal((await repo.listLayouts())[0]?.id, managedLayout.id);
     assert.deepEqual(await applySimpleVmsSnapshot(repo, source.id, snapshot()), { revision: 2, applied: false });
     assert.equal((await simpleVmsCamerasForKiosk(repo, owner.id)).length, 2);

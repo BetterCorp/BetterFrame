@@ -1480,6 +1480,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = (getRouterParam(event, "id") ?? "");
     const ent = await deps.repo.getEntityById(id);
     if (!ent) return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
+    if (ent.type === "camera" && ent.camera_id) {
+      const managedPage = await simpleVmsManagedPage(deps.repo, user.username, "camera", ent.camera_id);
+      if (managedPage) return managedPage;
+    }
     return htmlPage(EntityEditPage({
       user: user.username,
       entity: ent,

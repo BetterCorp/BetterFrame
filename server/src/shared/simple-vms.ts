@@ -112,6 +112,12 @@ export async function applySimpleVmsSnapshot(repo: Repository, sourceId: string,
       }
       cameraIds.set(cam.id, id);
       await repo.updateCamera(id, { name: cam.name, enabled: cam.enabled, rtsp_url: null, event_source: "server", capabilities: [] });
+      const entity = await repo.getEntityForCamera(id);
+      if (entity) {
+        const conflict = await repo.getEntityByName(cam.name);
+        const name = conflict && conflict.id !== entity.id ? `${cam.name} (cam ${id.slice(-8)})` : cam.name;
+        await repo.updateEntity(entity.id, { name });
+      }
       await repo.deleteCameraStreams(id);
       for (const profile of cam.profiles) await repo.createCameraStream({
         camera_id: id, role: profile.role, name: profile.name, profile_token: profile.id,

@@ -733,12 +733,12 @@ export class Repository {
   // ===========================================================================
 
   async listLayouts(): Promise<Layout[]> {
-    const rs = await this._all("SELECT * FROM layouts ORDER BY name");
+    const rs = await this._all("SELECT l.*, (SELECT source_id FROM simple_vms_groups g WHERE g.layout_id = l.id) AS simple_vms_source_id FROM layouts l ORDER BY name");
     return rs.map((r) => rowToLayout(r as Record<string, unknown>));
   }
 
   async getLayoutById(id: string): Promise<Layout | null> {
-    const r = await this._get("SELECT * FROM layouts WHERE id = ?", [id]);
+    const r = await this._get("SELECT l.*, (SELECT source_id FROM simple_vms_groups g WHERE g.layout_id = l.id) AS simple_vms_source_id FROM layouts l WHERE l.id = ?", [id]);
     return r ? rowToLayout(r as Record<string, unknown>) : null;
   }
 
@@ -754,7 +754,7 @@ export class Repository {
   /** All layouts attached to the given display, via display_layouts. */
   async listLayoutsForDisplay(displayId: string): Promise<Layout[]> {
     const rs = await this._all(
-      `SELECT l.* FROM layouts l
+      `SELECT l.*, (SELECT source_id FROM simple_vms_groups g WHERE g.layout_id = l.id) AS simple_vms_source_id FROM layouts l
          JOIN display_layouts dl ON dl.layout_id = l.id
         WHERE dl.display_id = ?
         ORDER BY l.name`,
@@ -842,7 +842,7 @@ export class Repository {
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
-      if (k === "id" || k === "display_id") continue; // display_id deprecated
+      if (k === "id" || k === "display_id" || k === "simple_vms_source_id") continue; // display_id deprecated; source is derived
       sets.push(`${k} = ?`);
       if (k === "preload_camera_ids" || k === "regions" || k === "input_options_json") vals.push(J(v));
       else if (typeof v === "boolean") vals.push(v);

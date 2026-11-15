@@ -133,7 +133,7 @@ public sealed class NativeRtspServer(IStreamTap tap, Func<Guid, string, Cancella
   public static bool ConstantEquals(string a, string b) => CryptographicOperations.FixedTimeEquals(SHA256.HashData(Encoding.UTF8.GetBytes(a)), SHA256.HashData(Encoding.UTF8.GetBytes(b)));
   public static string Sdp(object parameters, string uri)
   {
-    var prefix = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=SimpleVMS\r\nt=0 0\r\na=control:*\r\nm=video 0 RTP/AVP 96\r\n";
+    var prefix = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=SimpleVMS\r\nc=IN IP4 0.0.0.0\r\nt=0 0\r\na=control:*\r\nm=video 0 RTP/AVP 96\r\n";
     string B64(ReadOnlyMemory<byte> data) => Convert.ToBase64String(data.Span);
     return prefix + (parameters switch {
       H264Parameters h => $"a=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;sprop-parameter-sets={B64(h.Sps)},{B64(h.Pps)}\r\n",

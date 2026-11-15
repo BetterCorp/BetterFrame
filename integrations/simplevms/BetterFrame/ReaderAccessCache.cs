@@ -22,8 +22,12 @@ public sealed class ReaderAccessCache
   {
     lock (_gate) {
       var key = Key(authority, scope);
-      if (generation.HasValue && generation.Value != _generation) return _scopes.GetValueOrDefault(key);
-      _generation++;
+      // Denials always win; unrelated successful readers must not suppress a revocation.
+      if (allowed && generation.HasValue && generation.Value != _generation) {
+        if (_dirty) Save();
+        return _scopes.GetValueOrDefault(key);
+      }
+      if (!allowed) _generation++;
       if (!_scopes.TryGetValue(key, out var previous) || previous != allowed) { _scopes[key] = allowed; _dirty = true; }
       if (_dirty) Save();
       return allowed;

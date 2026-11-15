@@ -47,18 +47,25 @@ public sealed class IntegrationTests
       Assert.That(cache.Record("authority", "kiosk/camera", true, requestGeneration), Is.False);
       Assert.That(new ReaderAccessCache(directory).Allows("authority", "kiosk/camera"), Is.False);
       Assert.That(cache.Record("authority", "kiosk/camera", true, cache.Generation), Is.True);
+      var concurrent = cache.Generation;
+      Assert.That(cache.Record("authority", "other/camera", true, concurrent), Is.True);
+      Assert.That(cache.Record("authority", "another/camera", true, concurrent), Is.True);
+      cache.Replace("authority", ["kiosk/camera"]);
+      Assert.That(cache.Record("authority", "kiosk/camera", false, concurrent), Is.False);
+      Assert.That(new ReaderAccessCache(directory).Allows("authority", "kiosk/camera"), Is.False);
     } finally { Directory.Delete(directory, true); }
   }
-  [Test] public void RepeatedDenialsRetryFailedDurableRevocationWrites()
+  [TestCase(true)] [TestCase(false)] public void ConcurrentResponsesRetryFailedDurableRevocationWrites(bool lateAllowed)
   {
     var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
     try {
       var cache = new ReaderAccessCache(directory); cache.Record("authority", "kiosk/camera", true);
+      var concurrent = cache.Generation;
       Directory.CreateDirectory(Path.Combine(directory, "access.json.tmp"));
-      Assert.Throws<UnauthorizedAccessException>(() => cache.Record("authority", "kiosk/camera", false));
+      Assert.Throws<UnauthorizedAccessException>(() => cache.Record("authority", "kiosk/camera", false, concurrent));
       Assert.That(cache.Allows("authority", "kiosk/camera"), Is.False);
       Directory.Delete(Path.Combine(directory, "access.json.tmp"));
-      cache.Record("authority", "kiosk/camera", false);
+      Assert.That(cache.Record("authority", "kiosk/camera", lateAllowed, concurrent), Is.False);
       Assert.That(new ReaderAccessCache(directory).Allows("authority", "kiosk/camera"), Is.False);
     } finally { Directory.Delete(directory, true); }
   }

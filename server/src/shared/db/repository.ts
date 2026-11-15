@@ -636,10 +636,10 @@ export class Repository {
     });
   }
 
-  /** Defaults apply once, when a display is created. Deleted layouts are ignored. */
+  /** Defaults apply once, when a display is created. Deleted and recorder-scoped layouts are ignored. */
   async getDisplayDefaults(): Promise<{ layoutIds: string[]; defaultLayoutId: string | null }> {
     const raw = await this.getSetupExtra("display_defaults") as { layoutIds?: unknown; defaultLayoutId?: unknown } | null;
-    const existing = new Set((await this.listLayouts()).map(l => l.id));
+    const existing = new Set((await this.listLayouts()).filter(l => !l.simple_vms_source_id).map(l => l.id));
     const layoutIds = Array.isArray(raw?.layoutIds)
       ? [...new Set(raw.layoutIds.filter((id): id is string => typeof id === "string" && existing.has(id)))] : [];
     const defaultLayoutId = typeof raw?.defaultLayoutId === "string" && layoutIds.includes(raw.defaultLayoutId) ? raw.defaultLayoutId : null;

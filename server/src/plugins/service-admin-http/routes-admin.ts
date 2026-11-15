@@ -3251,7 +3251,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const cloudAccounts = await deps.repo.listCloudAccounts();
     const ablesignAccounts = await deps.repo.listAbleSignAccounts();
     const updateSchedule = normalizeUpdateSchedule(await deps.repo.getSetupExtra("update_schedule"));
-    return htmlPage(SettingsPage({ cloudAccounts, ablesignAccounts, updateSchedule, layouts: await deps.repo.listLayouts(), displayDefaults: await deps.repo.getDisplayDefaults() }));
+    return htmlPage(SettingsPage({ cloudAccounts, ablesignAccounts, updateSchedule, layouts: (await deps.repo.listLayouts()).filter(l => !l.simple_vms_source_id), displayDefaults: await deps.repo.getDisplayDefaults() }));
   });
 
   app.post("/admin/settings/display-defaults", async (event) => {
@@ -3259,7 +3259,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const raw = body?.["layout_ids"];
     const layoutIds = [...new Set((Array.isArray(raw) ? raw : raw ? [raw] : []).map(String))];
     const defaultLayoutId = String(body?.["default_layout_id"] ?? "") || null;
-    const existing = new Set((await deps.repo.listLayouts()).map(l => l.id));
+    const existing = new Set((await deps.repo.listLayouts()).filter(l => !l.simple_vms_source_id).map(l => l.id));
     if (layoutIds.some(id => !existing.has(id)) || (defaultLayoutId && !layoutIds.includes(defaultLayoutId))) {
       return new Response("Default layout must be selected from the assigned layouts", { status: 400 });
     }

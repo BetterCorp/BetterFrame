@@ -109,10 +109,12 @@ public sealed class IntegrationTests
   [Test] public async Task PluginPushesInitialAndChangedCatalogsRetriesDeliveryAndDoesNotPoll()
   {
     var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
-    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
     static int FreePort() { var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start(); var port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop(); return port; }
     var callbackPort = FreePort(); using var receiver = new HttpListener(); receiver.Prefixes.Add($"http://127.0.0.1:{callbackPort}/"); receiver.Start();
     var settings = new Config(); settings.Set("callbackUrl", $"http://127.0.0.1:{callbackPort}/events"); settings.Set("integrationToken", new string('x', 40));
+    var cacheDirectory = Path.Combine(directory, "betterframe");
+    new ReaderAccessCache(cacheDirectory).Record(settings.Get("callbackUrl", ""), "kiosk/camera", true);
     settings.Set("rtspPort", FreePort().ToString()); settings.Set("httpListenUrl", $"http://127.0.0.1:{FreePort()}");
     var registry = new Registry(); var bus = new Bus(); var plugin = new BetterFramePlugin();
     plugin.Initialize(new PluginContext { Config = settings, Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = registry, EventBus = bus, StreamTap = new Tap() });
@@ -128,8 +130,27 @@ public sealed class IntegrationTests
       var changed = await receiver.GetContextAsync().WaitAsync(timeout.Token);
       var catalog = await JsonSerializer.DeserializeAsync<Catalog>(changed.Request.InputStream, CatalogBuilder.Json, timeout.Token);
       Assert.That(catalog!.Revision, Is.GreaterThan(initial.Revision)); Assert.That(catalog.Cameras.Single().Name, Is.EqualTo("New camera"));
-      var response = Encoding.UTF8.GetBytes($"{{\"revision\":{catalog.Revision}}}"); changed.Response.ContentType = "application/json";
+      // Storage can recover without any reader request or catalog change. Keep delivery pending until grants persist.
+      var blocked = Path.Combine(cacheDirectory, "access.json.tmp"); Directory.CreateDirectory(blocked);
+      var response = Encoding.UTF8.GetBytes($"{{\"revision\":{catalog.Revision},\"grants\":[]}}"); changed.Response.ContentType = "application/json";
       await changed.Response.OutputStream.WriteAsync(response, timeout.Token); changed.Response.Close();
+      await Task.Delay(200, timeout.Token);
+      using (var state = JsonDocument.Parse(File.ReadAllText(Path.Combine(cacheDirectory, "outbox.json"))))
+        Assert.That(state.RootElement.GetProperty("pending").ValueKind, Is.EqualTo(JsonValueKind.Object));
+      Directory.Delete(blocked);
+      var retried = await receiver.GetContextAsync().WaitAsync(timeout.Token);
+      var retry = await JsonSerializer.DeserializeAsync<Catalog>(retried.Request.InputStream, CatalogBuilder.Json, timeout.Token);
+      Assert.That(retry!.Revision, Is.EqualTo(catalog.Revision));
+      await retried.Response.OutputStream.WriteAsync(response, timeout.Token); retried.Response.Close();
+      var acknowledged = false;
+      for (var attempt = 0; attempt < 100; attempt++) {
+        using var state = JsonDocument.Parse(File.ReadAllText(Path.Combine(cacheDirectory, "outbox.json")));
+        acknowledged = state.RootElement.GetProperty("pending").ValueKind == JsonValueKind.Null;
+        if (acknowledged) break;
+        await Task.Delay(10, timeout.Token);
+      }
+      Assert.That(acknowledged, Is.True);
+      Assert.That(new ReaderAccessCache(cacheDirectory).Allows(settings.Get("callbackUrl", ""), "kiosk/camera"), Is.False);
       var calls = registry.Calls; await Task.Delay(200, timeout.Token); Assert.That(registry.Calls, Is.EqualTo(calls));
       await plugin.StopAsync(default);
       Assert.That((await plugin.StartAsync(timeout.Token)).IsT0, Is.True);

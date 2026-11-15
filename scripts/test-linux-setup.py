@@ -575,12 +575,13 @@ def CDLL(name):
             start_app_service user betterframe.service
         ''')
 
-    def test_failed_upgrade_restores_previous_gateway_state(self):
+    def test_failed_upgrade_keeps_previous_gateway_state(self):
         for active, enabled in [(True, 'enabled'), (False, 'disabled'), (True, 'disabled'), (False, 'enabled-runtime')]:
             with self.subTest(active=active, enabled=enabled), tempfile.TemporaryDirectory() as tmp:
                 p = Path(tmp)
                 (p/'app').write_text('candidate')
                 (p/'app.prev').write_text('known good')
+                (p/'firmware-applying.json').write_text('{}')
                 result = self.shell(f'''
                     BIN={p}/app; STATE={p}; LOG={p}/commands
                     sleep() {{ :; }}
@@ -600,10 +601,47 @@ def CDLL(name):
                 ''', check=False)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual((p/'app').read_text(), 'known good')
-                commands = (p/'commands').read_text().splitlines()
-                self.assertEqual('start betterframe-mediamtx.service' in commands, active)
-                self.assertEqual('enable betterframe-mediamtx.service' in commands, enabled == 'enabled')
-                self.assertEqual('enable --runtime betterframe-mediamtx.service' in commands, enabled == 'enabled-runtime')
+                self.assertFalse((p/'commands').exists(), 'An unconfirmed candidate must not alter gateway state')
+
+    def test_deferred_candidate_rollback_keeps_gateway_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p/'app').write_text('candidate')
+            (p/'app.prev').write_text('known good')
+            (p/'firmware-applying.json').write_text('{}')
+            (p/'firmware-applying.attempts').write_text('3')
+            self.shell(f'''STATE={p}
+                systemctl() {{ [[ $1 == show ]] && {{ echo loaded; return 0; }}; echo "$*" >> {p}/commands; }}
+                retire_legacy_gateway
+            ''')
+            script = (ROOT/'deploy/systemd/betterframe-firmware-rollback.sh').read_text()
+            script = script.replace('/opt/betterframe/kiosk/betterframe-kiosk', str(p/'app')).replace('/var/lib/betterframe/kiosk', str(p))
+            result = subprocess.run(['bash', '-c', script], text=True, capture_output=True, check=True)
+            self.assertIn('rolling back', result.stderr)
+            self.assertEqual((p/'app').read_text(), 'known good')
+            self.assertFalse((p/'commands').exists())
+
+    def test_gateway_retirement_failures_do_not_fail_healthy_app_setup(self):
+        for failure in ['stop', 'disable']:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                result = self.shell(f'''STATE={tmp}
+                    systemctl() {{ case "$1" in show) echo loaded;; disable) return {1 if failure == 'disable' else 0};; *) return 0;; esac; }}
+                    stop_app_service() {{ return {1 if failure == 'stop' else 0}; }}
+                    retire_legacy_gateway
+                    echo continued
+                ''')
+                self.assertIn('continued', result.stdout)
+                self.assertIn('Could not', result.stderr)
+
+    def test_confirmed_candidate_retires_legacy_gateway(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.shell(f'''STATE={tmp}
+                systemctl() {{ case "$1" in show) echo loaded;; is-active) return 0;; *) echo "$*";; esac; }}
+                stop_app_service() {{ echo "stop $2"; }}
+                retire_legacy_gateway
+            ''')
+            self.assertIn('stop betterframe-mediamtx.service', result.stdout)
+            self.assertIn('disable betterframe-mediamtx.service', result.stdout)
 
     def test_start_success_requires_a_stable_process_after_reset(self):
         self.shell('''

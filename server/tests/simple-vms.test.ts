@@ -81,6 +81,12 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     const cameras = await repo.listCamerasByDevice(source.device_id); assert.equal(cameras.length, 2);
     const camera = cameras.find(c => c.name === "Entrance")!;
     const managedLayout = (await repo.listLayouts())[0]!;
+    await repo.setSetupExtra("display_defaults", { layoutIds: [managedLayout.id], defaultLayoutId: managedLayout.id });
+    assert.deepEqual(await repo.getDisplayDefaults(), { layoutIds: [], defaultLayoutId: null });
+    const unrelatedDisplay = await repo.createDisplayForKiosk(other.id, { name: "Unlinked display" });
+    assert.equal(unrelatedDisplay.default_layout_id, null);
+    assert.deepEqual(await repo.listLayoutsForDisplay(unrelatedDisplay.id), []);
+    await repo.setSetupExtra("display_defaults", { layoutIds: [], defaultLayoutId: null });
     assert.equal((await repo.listLayoutsForDisplay(display.id)).length, 1);
     assert.equal((await repo.listLayoutsForDisplay(linkedDisplay.id)).length, 1);
     assert.equal((await repo.listLayoutsForDisplay(otherDisplay.id)).length, 0);

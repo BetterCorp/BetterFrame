@@ -91,11 +91,11 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
         using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
         var acknowledged = body.RootElement.GetProperty("revision").GetInt64();
         if (acknowledged < pending.Revision) throw new InvalidOperationException("Snapshot not acknowledged");
-        _outbox.Acknowledge(acknowledged);
         if (body.RootElement.TryGetProperty("grants", out var grants)) {
           _access.Replace(destination.AbsoluteUri, grants.EnumerateArray().SelectMany(g => g.GetProperty("cameraIds").EnumerateArray()
             .Select(camera => g.GetProperty("kioskId").GetString() + "/" + camera.GetString())).ToArray());
         }
+        _outbox.Acknowledge(acknowledged);
         if (acknowledged > pending.Revision) Changed(true, false); // Recorder state restored from an older backup.
       } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
       catch { await Task.Delay(TimeSpan.FromSeconds(5), ct); retry = !_changes.Reader.TryPeek(out _); }

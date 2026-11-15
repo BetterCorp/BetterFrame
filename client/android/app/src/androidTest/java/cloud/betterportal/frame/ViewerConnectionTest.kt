@@ -379,6 +379,7 @@ class ViewerConnectionTest {
         val statuses = ConcurrentLinkedQueue<String>()
         val heartbeatCalls = AtomicInteger()
         val bundleCalls = AtomicInteger()
+        val profileBlocks = AtomicInteger()
         val noAssignment = CountDownLatch(1)
         val displayed = CountDownLatch(1)
         val server = MockWebServer()
@@ -392,9 +393,11 @@ class ViewerConnectionTest {
                     "/api/pair/initiate" -> response.setBody("""{"code":"ABC123","polling_secret":"fixture-secret","poll_after_ms":1000}""")
                     "/api/pair/claim" -> response.setBody("""{"status":"claimed","kiosk_id":"1","kiosk_key":"fixture-device-key","encrypt_key":"0000000000000000000000000000000000000000000000000000000000000000"}""")
                     "/api/pair/ack" -> response.setBody("{}")
-                    "/api/kiosk/heartbeat" -> if (heartbeatCalls.incrementAndGet() == 1)
-                        response.setResponseCode(500).setBody("""{"error":"private diagnostic must not be displayed"}""")
-                        else response.setBody("""{"viewer_profile":"android-viewer-v1"}""")
+                    "/api/kiosk/heartbeat" -> when (heartbeatCalls.incrementAndGet()) {
+                        1 -> response.setResponseCode(500).setBody("""{"error":"private diagnostic must not be displayed"}""")
+                        2 -> response.setBody("{truncated response")
+                        else -> response.setBody("""{"viewer_profile":"android-viewer-v1"}""")
+                    }
                     "/api/kiosk/bundle" -> if (bundleCalls.incrementAndGet() == 1)
                         response.setResponseCode(409).setBody("""{"error":"display_unassigned"}""")
                         else response.setBody("""{"kiosk_id":1,"kiosk_name":"Lobby","version":"2","cameras":[],"displays":[{
@@ -413,6 +416,7 @@ class ViewerConnectionTest {
             override fun onStatus(message: String) { statuses.add(message) }
             override fun onPairing(code: String) {}
             override fun onPlan(plan: JSONObject) {
+                if (plan.optString("error").contains("must support android-viewer")) profileBlocks.incrementAndGet()
                 if (plan.optString("error") == "go into BetterFrame and assign layouts to this display") noAssignment.countDown()
                 if (plan.optString("layoutId") == "3" && plan.optJSONArray("cells")?.length() == 1) displayed.countDown()
             }
@@ -429,7 +433,9 @@ class ViewerConnectionTest {
             assertEquals(1, requests.count { it == "/api/pair/initiate" })
             assertEquals(1, requests.count { it == "/api/pair/claim" })
             assertEquals(1, requests.count { it == "/api/pair/ack" })
-            assertTrue(heartbeatCalls.get() >= 3)
+            assertTrue(heartbeatCalls.get() >= 4)
+            assertTrue(statuses.any { it.contains("invalid data for heartbeat") && it.contains("Retrying") })
+            assertEquals("Malformed JSON must retry without blocking the display", 0, profileBlocks.get())
             assertTrue(bundleCalls.get() >= 2)
             val saved = ProtectedStore(context).read()
             assertEquals("fixture-device-key", saved.getJSONObject("identity").getString("kiosk_key"))

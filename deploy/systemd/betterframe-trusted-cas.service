@@ -1,0 +1,26 @@
+[Unit]
+Description=BetterFrame managed certificate authorities
+After=local-fs.target time-sync.target
+Wants=time-sync.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+Before=betterframe-kiosk.service
+RequiresMountsFor=/var/lib/betterframe
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/betterframe-trusted-cas.py
+ExecStartPost=/usr/bin/systemctl reset-failed betterframe-trusted-cas.path
+ExecStartPost=/usr/bin/systemctl start --no-block betterframe-trusted-cas.path
+User=root
+Group=root
+UMask=0022
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/lib/betterframe -/usr/local/share/ca-certificates -/etc/ssl/certs -/etc/pki/ca-trust
+NoNewPrivileges=yes
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

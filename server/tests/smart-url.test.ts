@@ -19,7 +19,7 @@ function fixture() {
     layoutsForDisplayId: async () => [{ id: "layout", name: "Layout", preload_camera_ids: [] }],
     layoutCells: async () => cells,
     camerasForLayoutIds: async () => [], bundleScope: async () => ({ operateLabelIds: [] }), camerasForLabelIds: async () => [],
-    listCameraDevices: async () => [], listGpioBindings: async () => [], releaseStaleEventOwnership: async () => {},
+    listCameraDevices: async () => [], listGpioBindings: async () => [], trustedCasForKiosk: async () => [], releaseStaleEventOwnership: async () => {},
     getEntityById: async () => entity, listEntities: async () => [entity],
   };
   const secrets = { encryptForCluster: (value: string) => `cipher-${++nonce}:${value}` };

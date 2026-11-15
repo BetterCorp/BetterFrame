@@ -207,6 +207,7 @@ fn import_legacy_state(legacy: &std::path::Path, persistent: &std::path::Path) -
         "kiosk.key",
         "server.url",
         "bundle.json",
+        "trusted-cas.json",
         "cluster.key",
         "encrypt.key",
         "local.key",
@@ -490,6 +491,7 @@ fn remove_pairing_state_files(dir: &PathBuf) {
         "kiosk.key",
         "server.url",
         "bundle.json",
+        "trusted-cas.json",
         "cluster.key",
         "encrypt.key",
         "local.key",
@@ -517,14 +519,29 @@ pub fn enter_demo() -> Result<(), String> {
     Ok(())
 }
 
-pub fn reset_pairing_and_restart(reason: &str) -> ! {
-    tracing::warn!("{reason}; wiping kiosk pairing state and restarting");
-
-    remove_pairing_state_files(&PathBuf::from("/var/lib/betterframe/kiosk"));
-    if let Some(home) = dirs::home_dir() {
-        remove_pairing_state_files(&home.join(".betterframe-kiosk"));
+fn reset_pairing_state_at(directories: &[PathBuf], queue: impl FnOnce() -> crate::trusted_cas::TrustReport) -> Result<(), String> {
+    let report = queue();
+    if !matches!(report.state.as_str(), "pending" | "applied") {
+        return Err(report.message);
     }
+    // Never erase the retry context until removal is durably queued (or applied).
+    for directory in directories { remove_pairing_state_files(directory); }
+    Ok(())
+}
 
+pub fn reset_pairing_and_restart(reason: &str) -> ! {
+    tracing::warn!("{reason}; queuing CA removal before wiping kiosk pairing state");
+    let mut directories = vec![PathBuf::from("/var/lib/betterframe/kiosk")];
+    if let Some(home) = dirs::home_dir() { directories.push(home.join(".betterframe-kiosk")); }
+    loop {
+        match reset_pairing_state_at(&directories, crate::linux_trusted_cas::reset) {
+            Ok(()) => break,
+            Err(error) => {
+                tracing::error!("Cannot complete enrollment reset: {error}; retrying CA removal in 5 seconds");
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        }
+    }
     tracing::info!("config wiped, exiting for systemd restart");
     std::process::exit(1);
 }
@@ -977,6 +994,10 @@ pub fn heartbeat(
     let network_interfaces = read_network_interfaces();
     let managed_report = MANAGED_CONFIG_REPORT.lock().ok().and_then(|g| g.clone());
     let mut payload = serde_json::json!({
+        "trusted_ca_status": match load_trusted_cas() {
+            Ok(cas) => crate::linux_trusted_cas::sync(&cas),
+            Err(error) => crate::trusted_cas::load_error(error),
+        },
         "bundle_version": bundle_version,
         "kiosk_app_version": kiosk_app_version(),
         "firmware_target": crate::firmware::FIRMWARE_TARGET,
@@ -1052,6 +1073,15 @@ pub fn heartbeat(
                         "_check says key still valid, ignoring bf_kiosk_deleted from heartbeat"
                     );
                 }
+                if let Some(value) = body.get("trusted_cas") {
+                    if let Ok(cas) = serde_json::from_value::<Vec<crate::bundle::TrustedCa>>(value.clone()) {
+                        if let Ok(bytes) = serde_json::to_vec(&cas) {
+                            if crate::at_rest::write_encrypted(&state_dir().join("trusted-cas.json"), &bytes).is_ok() {
+                                let _ = crate::linux_trusted_cas::sync(&cas);
+                            }
+                        }
+                    }
+                }
                 crate::update_recovery::record_heartbeat(server, &body, policy_request);
                 let fw = body.get("firmware_channel").and_then(|v| v.as_str());
                 let os = body.get("os_update_channel").and_then(|v| v.as_str());
@@ -1074,6 +1104,17 @@ pub fn heartbeat(
             Ok(true)
         })
         .unwrap_or(false)
+}
+
+pub fn load_trusted_cas() -> Result<Vec<crate::bundle::TrustedCa>, String> {
+    crate::trusted_cas::load_cached_assignment(&state_dir().join("trusted-cas.json"),
+        |path| crate::at_rest::read_maybe_encrypted(path).ok_or_else(|| "Read or decrypt CA cache failed".into()),
+        || {
+            let path = bundle_cache_path();
+            if !path.try_exists().map_err(|error| error.to_string())? { return Ok(Vec::new()); }
+            let bytes = crate::at_rest::read_maybe_encrypted(&path).ok_or("Read or decrypt legacy bundle failed")?;
+            serde_json::from_slice::<KioskBundle>(&bytes).map(|bundle| bundle.trusted_cas).map_err(|error| error.to_string())
+        })
 }
 
 pub fn update_policy_path() -> PathBuf {
@@ -1296,6 +1337,27 @@ fn validate_timezone(timezone: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enrollment_reset_preserves_retry_context_until_trust_removal_is_queued() {
+        let directory = std::env::temp_dir().join(format!("bf-reset-trust-{}-{}", std::process::id(), rand::random::<u64>()));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("identity.json"), b"old identity").unwrap();
+        fs::write(directory.join("trusted-cas.json"), b"old assignment").unwrap();
+        for state in ["error", "manual_action"] {
+            assert!(reset_pairing_state_at(&[directory.clone()], || crate::trusted_cas::TrustReport {
+                revision: String::new(), state: state.into(), message: "Removal not queued".into(),
+            }).is_err());
+            assert!(directory.join("identity.json").exists());
+            assert!(directory.join("trusted-cas.json").exists());
+        }
+        reset_pairing_state_at(&[directory.clone()], || crate::trusted_cas::TrustReport {
+            revision: crate::trusted_cas::revision(&[]), state: "pending".into(), message: String::new(),
+        }).unwrap();
+        assert!(!directory.join("identity.json").exists());
+        assert!(!directory.join("trusted-cas.json").exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn completed_legacy_import_never_resurrects_a_consumed_journal_or_reset_identity() {
@@ -1587,4 +1649,19 @@ mod tests {
             ("eth0 aa:bb:cc:dd:ee:ff".into(), "searching".into())
         );
     }
+    #[test]
+    fn legacy_import_preserves_authoritative_empty_trust_cache() {
+        let directory = std::env::temp_dir().join(format!("bf-trust-import-{}", rand::random::<u64>()));
+        let legacy = directory.join("legacy"); let persistent = directory.join("persistent");
+        fs::create_dir_all(&legacy).unwrap(); fs::create_dir_all(&persistent).unwrap();
+        fs::write(legacy.join("trusted-cas.json"), b"[]").unwrap();
+        fs::write(legacy.join("bundle.json"), b"stale content must not supply trust").unwrap();
+        import_legacy_state(&legacy, &persistent).unwrap();
+        let cas = crate::trusted_cas::load_cached_assignment(&persistent.join("trusted-cas.json"),
+            |path| fs::read(path).map_err(|error| error.to_string()),
+            || panic!("migrated removal must supersede the stale bundle"));
+        assert!(cas.unwrap().is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
 }

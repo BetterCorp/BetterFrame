@@ -21,6 +21,7 @@ jobs:
           node-version: 24
       - run: python3 scripts/test-release-versions.py
       - run: python3 scripts/test-easy1-deploy.py
+      - run: python3 scripts/test-trusted-cas.py
       - run: python3 scripts/test-linux-setup.py
       - run: sudo python3 scripts/test-linux-setup.py SetupTests.test_root_installer_writes_runtime_files_without_root_privileges
       - name: Dashboard proxy isolation
@@ -144,6 +145,10 @@ jobs:
           "PKG_CONFIG=$pkgConfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "PKG_CONFIG_PATH=$pkgConfigPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "LIB=C:\Program Files\gstreamer\1.0\msvc_x86_64\lib;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Windows trusted CA lifecycle
+        timeout-minutes: 3
+        shell: pwsh
+        run: ./scripts/test-windows-trusted-cas.ps1
       - name: Build and test Windows client
         working-directory: client
         run: cargo test --workspace --locked

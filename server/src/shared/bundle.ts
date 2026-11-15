@@ -7,6 +7,7 @@ import { blockOverlay, createOverlayBatchRenderer, overlayPlaybackDocument } fro
  *
  * kiosk → enabled displays → layouts/cells plus operate-label cameras.
  */
+import type { BundleTrustedCa } from "./trusted-cas.js";
 import { createHash } from "node:crypto";
 import type { Observable } from "@bsb/base";
 import type { Repository } from "./db/repository.js";
@@ -161,6 +162,7 @@ export interface BundleGpioBinding {
 }
 
 export interface KioskBundle {
+  trusted_cas?: BundleTrustedCa[];
   kiosk_id: string;
   kiosk_name: string;
   tenant_slug: string;
@@ -666,6 +668,7 @@ export async function generateBundle(
   // `displays`.
   const primary = bundleDisplays[0]!;
   const bundle: KioskBundle = {
+    trusted_cas: (await repo.trustedCasForKiosk(kioskId)).map(({ pem, fingerprint_sha256 }) => ({ pem, fingerprint_sha256 })),
     kiosk_id: kioskId,
     kiosk_name: kiosk.name,
     tenant_slug: "default",

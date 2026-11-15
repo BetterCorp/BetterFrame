@@ -179,6 +179,7 @@ const operatorConsole = av.object(
 
 export const kioskBundle = av.object(
   {
+    trusted_cas: av.optional(av.array(av.object({ pem: av.string().maxLength(16384), fingerprint_sha256: av.string().minLength(64).maxLength(64) }, { unknownKeys: "reject" })).maxItems(32)),
     kiosk_id: id,
     kiosk_name: av.string().minLength(1).maxLength(512),
     display: bundleDisplay,

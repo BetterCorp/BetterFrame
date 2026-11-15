@@ -33,6 +33,7 @@ function fixture() {
     // Forbidden branches throw if viewer bundle accidentally widens scope.
     bundleScope: async () => { throw new Error("operator scope accessed"); },
     releaseStaleEventOwnership: async () => { throw new Error("ONVIF ownership changed"); },
+    trustedCasForKiosk: async () => [],
     listGpioBindings: async () => { throw new Error("GPIO accessed"); },
     listEntities: async () => { throw new Error("operator content accessed"); },
   };

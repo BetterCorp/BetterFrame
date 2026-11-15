@@ -34,6 +34,7 @@ for (const managed_image of [true, false]) {
         const heartbeat = new H3();
         heartbeat.use(event => { event.context.verifiedKiosk = {id: "k1"}; });
         registerKioskRoutes(heartbeat, {
+          trustedCasForKiosk: async () => [],
           getKioskById: async () => kiosk, touchKiosk: async () => {}, getSetupExtra: async () => null, listDisplaysForKiosk: async () => [],
         } as never, {} as never, {} as never, {} as never, {} as never, {} as never,
         {publishTelemetry() {}} as never, "");

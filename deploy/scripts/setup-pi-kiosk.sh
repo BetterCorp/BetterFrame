@@ -374,6 +374,9 @@ EOF
   install -d -m 2755 -o root -g systemd-journal /var/lib/betterframe/journal
   if ! mountpoint -q /var/log/journal; then cp -an /var/log/journal/. /var/lib/betterframe/journal/; fi
   systemctl daemon-reload
+  if ! systemctl start betterframe-trusted-cas.service betterframe-trusted-cas.path betterframe-trusted-cas.timer; then
+    echo "Warning: certificate provisioning could not start; inspect its status.json and journal. Continuing kiosk installation." >&2
+  fi
   systemctl enable --now var-log-journal.mount
   systemctl restart systemd-journald
   journalctl --flush

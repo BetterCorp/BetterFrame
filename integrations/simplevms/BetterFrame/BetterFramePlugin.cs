@@ -202,19 +202,30 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
   }
   public OneOf<Success, Error> ValidateValue(string key, string value)
   {
+    try {
     if (key == "newGroupName" || key.StartsWith("groupName_")) {
       if (value.Length > 255 || (key != "newGroupName" && string.IsNullOrWhiteSpace(value))) throw new ArgumentException("Use a group name of 1–255 characters");
       return new Success();
     }
     if (key.StartsWith("deleteGroup_")) { if (value is not ("true" or "false")) throw new ArgumentException("Invalid deletion flag"); return new Success(); }
     if (!Fields.Any(f => f.Key == key)) throw new ArgumentException("Unknown setting");
+    if (key == "integrationToken" && value.Length != 0 && value.Length is < 32 or > 256) throw new ArgumentException("Use an integration token of 32–256 characters");
+    if (key == "viewerPassword" && value.Length != 0 && value.Length is < 16 or > 512) throw new ArgumentException("Use a viewer password of 16–512 characters");
+    if (key == "viewerUsername" && !System.Text.RegularExpressions.Regex.IsMatch(value, "^[a-zA-Z0-9_.-]{1,128}$")) throw new ArgumentException("Use a viewer username containing letters, digits, dots, underscores or hyphens");
+    if (key == "name" && (string.IsNullOrWhiteSpace(value) || value.Length > 255)) throw new ArgumentException("Use an NVR name of 1–255 characters");
     if (key == "rtspPort" && (!int.TryParse(value, out var port) || port is < 1 or > 65535)) throw new ArgumentException("Invalid RTSP port");
     if (key == "callbackUrl" && value != "") { var u = new Uri(value); if (u.Scheme != "https" && !(u.Scheme == "http" && u.IsLoopback)) throw new ArgumentException("Use an HTTPS callback URL"); }
     return new Success();
+    } catch (Exception error) when (error is ArgumentException or FormatException) {
+      return Error.Create(0x10bf, 2, Result.BadRequest, error.Message);
+    }
   }
   public OneOf<Success, Error> ApplyValues(IReadOnlyDictionary<string, string> values)
   {
-    foreach (var item in values) ValidateValue(item.Key, item.Value);
+    foreach (var item in values) {
+      var validation = ValidateValue(item.Key, item.Value);
+      if (validation.IsT1) return validation.AsT1;
+    }
     lock (_gate) {
       var groups = Groups().Where(g => values.GetValueOrDefault("deleteGroup_" + g.Id) != "true")
         .Select(g => g with { Name = values.GetValueOrDefault("groupName_" + g.Id, g.Name).Trim() }).ToList();

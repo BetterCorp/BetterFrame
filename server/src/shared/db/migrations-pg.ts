@@ -1093,5 +1093,8 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     external_id TEXT NOT NULL, layout_id TEXT UNIQUE REFERENCES layouts(id) ON DELETE SET NULL,
     PRIMARY KEY(source_id, external_id)
   )`,
+  // Each kiosk can have its own localhost recorder; ONVIF endpoints retain global uniqueness.
+  `DROP INDEX IF EXISTS idx_camera_devices_endpoint`,
+  `CREATE UNIQUE INDEX idx_camera_devices_endpoint ON camera_devices(host, port) WHERE type = 'onvif'`,
 
 ];

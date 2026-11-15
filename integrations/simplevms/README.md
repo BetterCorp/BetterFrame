@@ -25,6 +25,10 @@ Install the published output as a `BetterFrame` plugin directory using the recor
 
 The RTSP listener defaults to `127.0.0.1:8554` and supports H.264/H.265 over interleaved TCP. Configure a private bind address for remote kiosks. For RTSPS, configure the certificate/key PEM paths and use `rtsps://` in BF. The browser media listener defaults to `http://127.0.0.1:8555`. Remote browser media requires HTTPS, using the configured certificate or a private HTTPS reverse proxy. Kiosks must trust the issuer; certificate verification remains enabled.
 
+Each owning kiosk can use its own localhost recorder address; SimpleVMS identity is scoped by instance, not by that local endpoint. To correct an instance ID or disconnect a recorder, use **Remove SimpleVMS connection** on its kiosk connection page. This atomically removes BF's imported NVR/cameras/generated layouts and clears references while preserving custom layouts. Deleting the owning kiosk performs the same cleanup. Neither operation deletes native cameras, recording policies or recorder history.
+
+Native camera labels are retained where unique in BF. Duplicate labels are qualified by recorder name, with an external-reference suffix only when still ambiguous. Renames and name swaps retain camera IDs and layout references.
+
 When the recorder uses the ControlRoom policy plugin, configure its service URL/key in the BetterFrame plugin. Missing policy configuration on a recorder with an existing ControlRoom policy database fails closed. Incident-only `alarm_review` cameras are excluded from ordinary exports. This integration does not issue incident grants or change incident/evidence policy.
 
 ## Synchronization and access

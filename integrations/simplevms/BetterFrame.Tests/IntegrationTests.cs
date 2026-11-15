@@ -19,6 +19,22 @@ namespace BetterFrame.Tests;
 
 public sealed class IntegrationTests
 {
+  [TestCase("integrationToken", 31, 32)]
+  [TestCase("viewerPassword", 15, 16)]
+  public void InvalidCredentialsAreRejectedBeforeAnySettingsAreWritten(string key, int tooShort, int minimum)
+  {
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    try {
+      var settings = new Config(); var plugin = new BetterFramePlugin();
+      plugin.Initialize(new PluginContext { Config = settings, Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = new Registry(), EventBus = new Bus(), StreamTap = new Tap() });
+      Assert.That(plugin.ValidateValue(key, new string('x', tooShort)).IsT1, Is.True);
+      var failed = plugin.ApplyValues(new Dictionary<string, string> { ["name"] = "Must not persist", [key] = new string('x', tooShort) });
+      Assert.That(failed.IsT1, Is.True); Assert.That(settings.Values, Is.Empty);
+      Assert.That(plugin.ValidateValue(key, new string('x', minimum)).IsT0, Is.True);
+      Assert.That(plugin.ApplyValues(new Dictionary<string, string> { [key] = new string('x', minimum) }).IsT0, Is.True);
+      Assert.That(settings.Get(key, ""), Has.Length.EqualTo(minimum));
+    } finally { Directory.Delete(directory, true); }
+  }
   [Test] public void ReaderGrantsAndRevocationsSurviveRestartWhileUnknownReadersRemainDenied()
   {
     var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());

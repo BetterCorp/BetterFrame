@@ -26,7 +26,7 @@ const bundleCamera = av.object(
     local_short_key: av.optional(av.string().minLength(6).maxLength(6)),
     device_id: av.optional(av.nullable(id)),
     device_name: av.optional(av.nullable(av.string().maxLength(255))),
-    name: av.string().minLength(1).maxLength(512),
+    name: av.string().minLength(1).maxLength(1024),
     camera_number: av.nullable(av.string().maxLength(128)),
     labels: av.array(av.string().maxLength(128)),
     capabilities: av.array(av.string().maxLength(128)),
@@ -100,7 +100,7 @@ const bundleLayout = av.object(
   {
     id,
     local_short_key: av.optional(av.string().minLength(6).maxLength(6)),
-    name: av.string().minLength(1).maxLength(512),
+    name: av.string().minLength(1).maxLength(1024),
     grid_cols: av.int().min(1).max(64),
     grid_rows: av.int().min(1).max(64),
     priority: layoutPriority,

@@ -24,6 +24,10 @@ export function SimpleVmsSettingsPage(props: { user?: string; kiosk: Kiosk; kios
         <label style="display:block"><input type="checkbox" name={`linked_${k.id}`} value="1" checked={props.linked.includes(k.id)} /> {k.name}</label>)}</fieldset>
       <button class="btn btn-primary" type="submit">Save connection</button>
     </form>
+    {s ? <form method="post" action={`/admin/kiosks/${props.kiosk.id}/simple-vms/remove`} style="margin-top:1rem">
+      <p>Removing this connection deletes BF's imported cameras and generated layouts. Custom layouts remain. Cameras and recordings in SimpleVMS remain unchanged.</p>
+      <button class="btn btn-danger" type="submit" {...{ onclick: "return confirm('Remove this SimpleVMS connection and its imported BF cameras and generated layouts?')" }}>Remove SimpleVMS connection</button>
+    </form> : ""}
   </Layout>;
 }
 

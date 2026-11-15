@@ -3,7 +3,7 @@ import test from "node:test";
 import { randomBytes } from "node:crypto";
 import { PgAdapter } from "../src/shared/db/pg-adapter.js";
 import { initDb, createTenantSchema } from "../src/shared/db/init.js";
-import { saveSimpleVmsSource, applySimpleVmsSnapshot, simpleVmsCamerasForKiosk, simpleVmsTokenMatches } from "../src/shared/simple-vms.js";
+import { saveSimpleVmsSource, removeSimpleVmsSource, applySimpleVmsSnapshot, simpleVmsCamerasForKiosk, simpleVmsTokenMatches } from "../src/shared/simple-vms.js";
 import { simpleVmsAddress, validateSimpleVmsSnapshot, type VmsSnapshot } from "../src/shared/simple-vms-schema.js";
 import { generateBundle } from "../src/shared/bundle.js";
 import { initSecrets } from "../src/shared/secrets.js";
@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { H3 } from "h3";
 import { registerSimpleVmsIngress } from "../src/shared/simple-vms-http.js";
+import { registerSimpleVmsAdminRoutes } from "../src/plugins/service-admin-http/routes-simple-vms.js";
 
 function snapshot(revision = 1): VmsSnapshot {
   return { version: 1, instanceId: "recorder-one", revision, name: "Property NVR", cameras: [
@@ -124,6 +125,51 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     await assert.rejects(applySimpleVmsSnapshot(repo, source.id, snapshot(4))); repo.createCameraStream = original;
     assert.equal((await repo.listCamerasByDevice(source.device_id)).length, 0);
     assert.equal((await applySimpleVmsSnapshot(repo, source.id, snapshot(4))).revision, 4);
+
+    // Localhost belongs to each kiosk: another recorder can use the same local media endpoint.
+    const second = await saveSimpleVmsSource(repo, secrets, other.id, { ...config, instanceId: "recorder-two", name: "Second NVR", linkedKioskIds: [linked.id] });
+    const secondCatalog = { ...snapshot(), instanceId: "recorder-two", name: "Second NVR" };
+    await applySimpleVmsSnapshot(repo, second.id, secondCatalog);
+    assert.equal((await repo.listCamerasByDevice(second.device_id)).length, 2);
+    const secondEntrance = (await repo.listCamerasByDevice(second.device_id)).find(camera => camera.device_channel_id === "entrance")!;
+    assert.equal(secondEntrance.name, "Second NVR / Entrance");
+    await applySimpleVmsSnapshot(repo, second.id, { ...secondCatalog, revision: 2,
+      cameras: secondCatalog.cameras.map(camera => ({ ...camera, name: camera.id === "entrance" ? "Yard" : "Entrance" })) });
+    assert.equal((await repo.getCameraById(secondEntrance.id))?.name, "Second NVR / Yard");
+    assert.equal((await repo.getEntityForCamera(secondEntrance.id))?.name, "Second NVR / Yard");
+    const onvif = await repo.createCameraDevice({ name: "Local ONVIF device", host: "127.0.0.1", port: 8554 });
+    assert.equal((await repo.getCameraDeviceByEndpoint("127.0.0.1", 8554))?.id, onvif.id);
+    await assert.rejects(repo.createCameraDevice({ name: "Duplicate ONVIF device", host: "127.0.0.1", port: 8554 }));
+    const secondLayout = (await repo.listLayouts()).find(layout => layout.simple_vms_source_id === second.id)!;
+    await repo.updateDisplay(otherDisplay.id, { default_layout_id: secondLayout.id });
+    const customSecond = await repo.createLayout({ name: "Custom second recorder view" });
+    const secondCamera = (await repo.listCamerasByDevice(second.device_id))[0]!;
+    await repo.createLayoutCell({ layout_id: customSecond.id, row: 0, col: 0, camera_id: secondCamera.id, content_type: "camera" });
+
+    const deleteCamera = repo.deleteCamera.bind(repo);
+    repo.deleteCamera = async () => { throw Error("injected cleanup failure"); };
+    await assert.rejects(removeSimpleVmsSource(repo, second.id)); repo.deleteCamera = deleteCamera;
+    assert.ok(await repo.getLayoutById(secondLayout.id));
+    assert.equal((await repo.listCamerasByDevice(second.device_id)).length, 2);
+    assert.equal((await repo.getDisplayById(otherDisplay.id))?.default_layout_id, secondLayout.id);
+
+    registerSimpleVmsAdminRoutes(app, { repo, secrets } as never);
+    assert.equal((await app.request(`http://bf.test/admin/kiosks/${other.id}/simple-vms/remove`, { method: "POST" })).status, 303);
+    assert.equal(await repo.getCameraDeviceById(second.device_id), null);
+    assert.equal(await repo.getLayoutById(secondLayout.id), null);
+    assert.ok(await repo.getLayoutById(customSecond.id));
+    assert.equal((await repo.listLayoutCells(customSecond.id)).length, 0);
+    assert.equal((await repo.getDisplayById(otherDisplay.id))?.default_layout_id, null);
+    assert.equal((await repo.getKioskById(other.id))?.simple_vms_enabled, false);
+    assert.equal((await repo.listCamerasByDevice(source.device_id)).length, 2);
+
+    // An incorrect immutable instance ID can be corrected after removing its connection.
+    const corrected = await saveSimpleVmsSource(repo, secrets, other.id, { ...config, instanceId: "corrected-instance", linkedKioskIds: [] });
+    await applySimpleVmsSnapshot(repo, corrected.id, { ...snapshot(), instanceId: "corrected-instance", name: "Corrected NVR" });
+    await repo.deleteKiosk(other.id);
+    assert.equal(await repo.getKioskById(other.id), null);
+    assert.equal(await repo.getCameraDeviceById(corrected.device_id), null);
+    assert.equal(await repo.adapter.get("SELECT 1 FROM simple_vms_sources WHERE owner_kiosk_id = ?", [other.id]), undefined);
     const tenant = await repo.createTenant({ name: "Other tenant", slug: "other-tenant" });
     await createTenantSchema(repo.adapter, tenant.slug, log);
     await repo.adapter.withSearchPath(tenant.schema_name, async () => {

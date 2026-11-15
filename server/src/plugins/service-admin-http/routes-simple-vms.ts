@@ -2,7 +2,7 @@ import { getRouterParam, readBody, type H3 } from "h3";
 import type { AdminDeps } from "./index.js";
 import { htmlPage } from "./html-response.js";
 import { getCoordinator } from "../../shared/coordinator-registry.js";
-import { saveSimpleVmsSource, type SimpleVmsSource } from "../../shared/simple-vms.js";
+import { saveSimpleVmsSource, removeSimpleVmsSource, type SimpleVmsSource } from "../../shared/simple-vms.js";
 import { SimpleVmsManagedPage, SimpleVmsSettingsPage } from "../../web-templates/simple-vms-pages.js";
 import type { Repository } from "../../shared/db/repository.js";
 
@@ -29,6 +29,12 @@ export async function simpleVmsManagedPage(repo: Repository, user: string | unde
 }
 
 export function registerSimpleVmsAdminRoutes(app: H3, deps: AdminDeps): void {
+  app.post("/admin/kiosks/:id/simple-vms/remove", async event => {
+    const id = getRouterParam(event, "id") ?? "";
+    const source = await deps.repo.adapter.get<{ id: string }>("SELECT id FROM simple_vms_sources WHERE owner_kiosk_id = ?", [id]);
+    if (source) for (const kioskId of await removeSimpleVmsSource(deps.repo, source.id)) getCoordinator().notifyKioskBundleChanged(kioskId);
+    return new Response(null, { status: 303, headers: { location: `/admin/kiosks/${id}/simple-vms` } });
+  });
   app.get("/admin/kiosks/:id/simple-vms", async event => {
     const id = getRouterParam(event, "id") ?? "";
     const kiosk = await deps.repo.getKioskById(id);

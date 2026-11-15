@@ -1,4 +1,5 @@
 import { assertSimpleVmsWritable, simpleVmsLayoutAllowed } from "../simple-vms-access.js";
+import { removeSimpleVmsSource } from "../simple-vms.js";
 import type { OverlayTemplate } from "../overlays.js";
 import type { LogFilters, LogPage, LogSummary } from "../kiosk-log-view.js";
 /**
@@ -1166,7 +1167,7 @@ export class Repository {
   }
 
   async getCameraDeviceByEndpoint(host: string, port: number): Promise<CameraDevice | null> {
-    const r = await this._get("SELECT * FROM camera_devices WHERE host = ? AND port = ?", [host, port]);
+    const r = await this._get("SELECT * FROM camera_devices WHERE type = 'onvif' AND host = ? AND port = ?", [host, port]);
     return r ? rowToCameraDevice(r as Record<string, unknown>) : null;
   }
 
@@ -3143,6 +3144,8 @@ export class Repository {
   async deleteKiosk(id: string): Promise<void> {
     const displays = await this.listDisplaysForKiosk(id);
     await this.transact(async () => {
+      const source = await this.adapter.get<{ id: string }>("SELECT id FROM simple_vms_sources WHERE owner_kiosk_id = ?", [id]);
+      if (source) await removeSimpleVmsSource(this, source.id);
       for (const display of displays) {
         await this._run(`DELETE FROM display_layouts WHERE display_id = ?`, [display.id]);
       }

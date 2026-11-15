@@ -21,6 +21,22 @@ export function simpleVmsTokenMatches(source: SimpleVmsSource, token: string): b
 export async function getSimpleVmsSource(repo: Repository, id: string): Promise<SimpleVmsSource | undefined> {
   return repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE id = ?", [id]);
 }
+/** Remove BF's imported copies atomically; the native recorder and its recordings remain untouched. */
+export async function removeSimpleVmsSource(repo: Repository, sourceId: string): Promise<string[]> {
+  return withSimpleVmsSync(() => repo.transact(async () => {
+    const source = await repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE id = ? FOR UPDATE", [sourceId]);
+    if (!source) return [];
+    const linked = await repo.adapter.all<{ kiosk_id: string }>("SELECT kiosk_id FROM simple_vms_linked_kiosks WHERE source_id = ?", [sourceId]);
+    const groups = await repo.adapter.all<{ layout_id: string | null }>("SELECT layout_id FROM simple_vms_groups WHERE source_id = ?", [sourceId]);
+    for (const group of groups) if (group.layout_id) await repo.deleteLayout(group.layout_id);
+    const cameras = await repo.adapter.all<{ camera_id: string }>("SELECT camera_id FROM simple_vms_cameras WHERE source_id = ?", [sourceId]);
+    for (const camera of cameras) await repo.deleteCamera(camera.camera_id);
+    await repo.adapter.run("DELETE FROM simple_vms_sources WHERE id = ?", [sourceId]);
+    await repo.deleteCameraDevice(source.device_id);
+    await repo.updateKiosk(source.owner_kiosk_id, { simple_vms_enabled: false });
+    return [source.owner_kiosk_id, ...linked.map(kiosk => kiosk.kiosk_id)];
+  }));
+}
 export async function saveSimpleVmsSource(repo: Repository, secrets: SecretsApi, ownerId: string, input: {
   instanceId: string; name: string; localAddress: string; externalAddress: string; localHttpAddress?: string; externalHttpAddress?: string; linkedKioskIds: string[];
   enabled: boolean; autoSync: boolean; viewerUsername: string; viewerPassword: string; ingestToken: string;
@@ -103,20 +119,37 @@ export async function applySimpleVmsSnapshot(repo: Repository, sourceId: string,
     if (snapshot.revision <= Number(source.revision)) return { revision: Number(source.revision), applied: false };
     const cameraIds = new Map<string, string>();
     const previous = await repo.adapter.all<{ external_id: string; camera_id: string }>("SELECT external_id, camera_id FROM simple_vms_cameras WHERE source_id = ?", [sourceId]);
+    // Free this source's names inside the transaction so swaps and replacements stay atomic.
+    for (const old of previous) {
+      const temporary = `simplevms-sync-${sourceId}-${old.camera_id}-${uuidv7()}`;
+      await repo.updateCamera(old.camera_id, { name: temporary });
+      const entity = await repo.getEntityForCamera(old.camera_id);
+      if (entity) await repo.updateEntity(entity.id, { name: temporary });
+    }
     for (const cam of snapshot.cameras) {
       let id = previous.find(p => p.external_id === cam.id)?.camera_id;
+      let name = cam.name;
+      if (await repo.getCameraByName(name)) name = `${snapshot.name} / ${cam.name}`;
+      const qualified = `${snapshot.name} / ${cam.name} [${sourceId}/${cam.id}]`;
+      let attempt = 0;
+      while (await repo.getCameraByName(name)) name = qualified + (attempt++ ? ` (${attempt})` : "");
       if (!id) {
-        const created = await repo.createCamera({ name: cam.name, type: "rtsp", device_id: source.device_id, device_channel_id: cam.id });
+        const created = await repo.createCamera({ name, type: "rtsp", device_id: source.device_id, device_channel_id: cam.id });
         id = created.id;
         await repo.adapter.run("INSERT INTO simple_vms_cameras(source_id, external_id, camera_id) VALUES (?, ?, ?)", [sourceId, cam.id, id]);
       }
       cameraIds.set(cam.id, id);
-      await repo.updateCamera(id, { name: cam.name, enabled: cam.enabled, rtsp_url: null, event_source: "server", capabilities: [] });
+      await repo.updateCamera(id, { name, enabled: cam.enabled, rtsp_url: null, event_source: "server", capabilities: [] });
       const entity = await repo.getEntityForCamera(id);
       if (entity) {
-        const conflict = await repo.getEntityByName(cam.name);
-        const name = conflict && conflict.id !== entity.id ? `${cam.name} (cam ${id.slice(-8)})` : cam.name;
-        await repo.updateEntity(entity.id, { name });
+        let entityName = name;
+        let conflict = await repo.getEntityByName(entityName);
+        let suffix = 0;
+        while (conflict && conflict.id !== entity.id) {
+          entityName = `${name} (cam ${id}${suffix++ ? `-${suffix}` : ""})`;
+          conflict = await repo.getEntityByName(entityName);
+        }
+        await repo.updateEntity(entity.id, { name: entityName });
       }
       await repo.deleteCameraStreams(id);
       for (const profile of cam.profiles) await repo.createCameraStream({

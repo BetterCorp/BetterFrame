@@ -31,6 +31,12 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
     _outbox = new CatalogOutbox(directory); _access = new ReaderAccessCache(directory); return new Success();
   }
   private string Config(string key, string fallback = "") => _context.Config.Get(key, fallback);
+  private static Uri Authority(string value)
+  {
+    var uri = new Uri(value, UriKind.Absolute);
+    if (uri.Scheme != "https" && !(uri.Scheme == "http" && uri.IsLoopback)) throw new ArgumentException("Use an HTTPS authority URL; HTTP is permitted only for loopback");
+    return uri;
+  }
   private DisplayGroup[] Groups() => CatalogBuilder.ParseGroups(Config("groups", "[]"));
   private void Changed(bool force = false, bool revoke = true)
   {
@@ -85,8 +91,7 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
       retry = false; var pending = _outbox.Pending;
       if (pending == null || string.IsNullOrWhiteSpace(Config("callbackUrl"))) continue;
       try {
-        var destination = new Uri(Config("callbackUrl"));
-        if (destination.Scheme != "https" && !(destination.Scheme == "http" && destination.IsLoopback)) throw new InvalidOperationException("Use an HTTPS callback");
+        var destination = Authority(Config("callbackUrl"));
         var secret = Config("integrationToken"); if (secret.Length < 32) throw new InvalidOperationException("Configure an integration token");
         using var request = new HttpRequestMessage(HttpMethod.Post, destination);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
@@ -116,7 +121,7 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
         throw new InvalidOperationException("Configure the ControlRoom policy authority before exporting this recorder");
       return cameras;
     }
-    var root = Config("controlRoomUrl").TrimEnd('/');
+    var root = Authority(Config("controlRoomUrl")).AbsoluteUri.TrimEnd('/');
     async Task<JsonDocument> Read(string path) {
       using var request = new HttpRequestMessage(HttpMethod.Get, root + path);
       request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Config("controlRoomKey"));
@@ -149,9 +154,8 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
       var digest = HMACSHA256.HashData(Encoding.UTF8.GetBytes(Config("viewerPassword")), Encoding.UTF8.GetBytes(scope));
       var expected = Convert.ToBase64String(digest).TrimEnd('=').Replace('+', '-').Replace('/', '_');
       if (!NativeRtspServer.ConstantEquals(password, expected)) return false;
-      var destination = new Uri(Config("callbackUrl"));
+      var destination = Authority(Config("callbackUrl"));
       if (!destination.AbsolutePath.EndsWith("/events", StringComparison.Ordinal)) return false;
-      if (destination.Scheme != "https" && !(destination.Scheme == "http" && destination.IsLoopback)) return false;
       var address = new UriBuilder(destination) { Path = destination.AbsolutePath[..^6] + "access", Query = "kioskId=" + Uri.EscapeDataString(kioskId) + "&cameraId=" + Uri.EscapeDataString(cameraId) };
       using var request = new HttpRequestMessage(HttpMethod.Get, address.Uri);
       request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Config("integrationToken"));
@@ -222,7 +226,7 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
     if (key == "viewerUsername" && !System.Text.RegularExpressions.Regex.IsMatch(value, "^[a-zA-Z0-9_.-]{1,128}$")) throw new ArgumentException("Use a viewer username containing letters, digits, dots, underscores or hyphens");
     if (key == "name" && (string.IsNullOrWhiteSpace(value) || value.Length > 255)) throw new ArgumentException("Use an NVR name of 1–255 characters");
     if (key == "rtspPort" && (!int.TryParse(value, out var port) || port is < 1 or > 65535)) throw new ArgumentException("Invalid RTSP port");
-    if (key == "callbackUrl" && value != "") { var u = new Uri(value); if (u.Scheme != "https" && !(u.Scheme == "http" && u.IsLoopback)) throw new ArgumentException("Use an HTTPS callback URL"); }
+    if (key is "callbackUrl" or "controlRoomUrl" && value != "") Authority(value);
     return new Success();
     } catch (Exception error) when (error is ArgumentException or FormatException) {
       return Error.Create(0x10bf, 2, Result.BadRequest, error.Message);

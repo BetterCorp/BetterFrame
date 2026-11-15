@@ -19,6 +19,19 @@ namespace BetterFrame.Tests;
 
 public sealed class IntegrationTests
 {
+  [TestCase("callbackUrl")] [TestCase("controlRoomUrl")]
+  public void AuthoritySettingsRejectInsecureRemoteUrlsBeforeSaving(string key)
+  {
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    try {
+      var settings = new Config(); var plugin = new BetterFramePlugin();
+      plugin.Initialize(new PluginContext { Config = settings, Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = new Registry(), EventBus = new Bus(), StreamTap = new Tap() });
+      foreach (var address in new[] { "http://recorder.property.lan/policy", "ftp://127.0.0.1/policy", "/relative-policy" }) Assert.That(plugin.ValidateValue(key, address).IsT1, Is.True);
+      foreach (var address in new[] { "https://recorder.property.lan/policy", "http://127.0.0.1/policy", "http://[::1]/policy" }) Assert.That(plugin.ValidateValue(key, address).IsT0, Is.True);
+      Assert.That(plugin.ApplyValues(new Dictionary<string, string> { ["name"] = "Must not persist", [key] = "http://recorder.property.lan/policy" }).IsT1, Is.True);
+      Assert.That(settings.Values, Is.Empty);
+    } finally { Directory.Delete(directory, true); }
+  }
   [TestCase("integrationToken", 31, 32)]
   [TestCase("viewerPassword", 15, 16)]
   public void InvalidCredentialsAreRejectedBeforeAnySettingsAreWritten(string key, int tooShort, int minimum)

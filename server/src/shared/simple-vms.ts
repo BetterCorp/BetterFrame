@@ -181,14 +181,21 @@ export async function applySimpleVmsSnapshot(repo: Repository, sourceId: string,
     // Use the existing deletion path, including custom layout/entity cleanup.
     for (const old of previous) if (!cameraIds.has(old.external_id)) await repo.deleteCamera(old.camera_id);
     const groups = await repo.adapter.all<{ external_id: string; layout_id: string | null }>("SELECT external_id, layout_id FROM simple_vms_groups WHERE source_id = ?", [sourceId]);
+    // Free existing labels before resolving swaps or names from deleted groups.
+    for (const old of groups) if (old.layout_id) await repo.updateLayout(old.layout_id, { name: `simplevms-group-sync-${sourceId}-${old.layout_id}-${uuidv7()}` });
     const keep = new Set<string>();
     for (const group of snapshot.groups) {
       if (!group.cameraIds.length) continue;
       keep.add(group.id);
       let layoutId = groups.find(g => g.external_id === group.id)?.layout_id;
       let name = `${snapshot.name} / ${group.name}`;
-      const conflict = await repo.adapter.get<{ id: string }>("SELECT id FROM layouts WHERE name = ?", [name]);
-      if (conflict && conflict.id !== layoutId) name += ` (${sourceId.slice(-6)}-${group.id.slice(-6)})`;
+      const qualified = `${name} (${sourceId}-${group.id})`;
+      let attempt = 0;
+      while (true) {
+        const conflict = await repo.adapter.get<{ id: string }>("SELECT id FROM layouts WHERE name = ?", [name]);
+        if (!conflict || conflict.id === layoutId) break;
+        name = qualified + (attempt++ ? ` (${attempt})` : "");
+      }
       if (!layoutId) {
         layoutId = (await repo.createLayout({ name, description: "Managed by SimpleVMS" })).id;
         await repo.adapter.run("INSERT INTO simple_vms_groups(source_id, external_id, layout_id) VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET layout_id = excluded.layout_id", [sourceId, group.id, layoutId]);

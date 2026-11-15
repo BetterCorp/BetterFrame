@@ -192,11 +192,15 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     // Localhost belongs to each kiosk: another recorder can use the same local media endpoint.
     const second = await saveSimpleVmsSource(repo, secrets, other.id, { ...config, instanceId: "recorder-two", name: "Second NVR", linkedKioskIds: [linked.id] });
     const secondCatalog = { ...snapshot(), instanceId: "recorder-two", name: "Second NVR" };
+    const reservedBase = await repo.createLayout({ name: "Second NVR / Outside" });
+    const reservedSuffix = await repo.createLayout({ name: `Second NVR / Outside (${second.id}-outside)` });
     await applySimpleVmsSnapshot(repo, second.id, secondCatalog);
     assert.equal((await repo.listCamerasByDevice(second.device_id)).length, 2);
     const secondEntrance = (await repo.listCamerasByDevice(second.device_id)).find(camera => camera.device_channel_id === "entrance")!;
     assert.equal(secondEntrance.name, "Second NVR / Entrance");
     const secondLayout = (await repo.listLayouts()).find(layout => layout.simple_vms_source_id === second.id)!;
+    assert.equal(secondLayout.name, `Second NVR / Outside (${second.id}-outside) (2)`);
+    assert.ok(await repo.getLayoutById(reservedBase.id)); assert.ok(await repo.getLayoutById(reservedSuffix.id));
     const entranceCell = (await repo.listLayoutCells(secondLayout.id)).find(cell => cell.camera_id === secondEntrance.id)!;
     const mapping = await repo.createIoBoxMapping({ display_id: otherDisplay.id, layout_id: secondLayout.id, cell_id: entranceCell.id,
       source_kind: "button", target_kind: "cell", action: "fullscreen" });

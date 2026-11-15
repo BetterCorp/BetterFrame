@@ -174,10 +174,10 @@ fn update_state_file(
 
 pub(super) fn complete_demo_exit() -> Result<(), String> {
     ensure_secure_state_dir()?;
-    complete_demo_exit_at(&state_dir(), &webview_data_dir())
+    complete_demo_exit_at(&state_dir(), &webview_data_dir(), || { let _ = super::trusted_cas::reconcile_cached(); })
 }
 
-fn complete_demo_exit_at(directory: &std::path::Path, browser: &std::path::Path) -> Result<(), String> {
+fn complete_demo_exit_at(directory: &std::path::Path, browser: &std::path::Path, reconcile: impl FnOnce()) -> Result<(), String> {
     let marker = directory.join("exit-demo");
     if !marker.exists() { return Ok(()); }
     update_state_file(&directory.join("state.json"), |latest| {
@@ -191,7 +191,7 @@ fn complete_demo_exit_at(directory: &std::path::Path, browser: &std::path::Path)
     if browser.exists() { fs::remove_dir_all(browser).map_err(|error| error.to_string())?; }
     // Commit the exit last. A crash or cleanup error leaves a retryable journal,
     // regardless of whether the credentials have already been cleared.
-    let _ = super::trusted_cas::reconcile_cached();
+    reconcile();
     fs::remove_file(marker).map_err(|error| error.to_string())
 }
 
@@ -202,11 +202,15 @@ pub(super) fn load_bundle() -> Option<KioskBundle> {
         .and_then(|bytes| deserialize_cached_bundle(&bytes))
 }
 
-pub(super) fn load_trusted_cas() -> Vec<crate::bundle::TrustedCa> {
-    let path = state_dir().join("trusted-cas.json");
-    if path.exists() {
-        read_protected_or_plain(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
-    } else { load_bundle().map(|bundle| bundle.trusted_cas).unwrap_or_default() }
+pub(super) fn load_trusted_cas() -> Result<Vec<crate::bundle::TrustedCa>, String> {
+    crate::trusted_cas::load_cached_assignment(&state_dir().join("trusted-cas.json"),
+        read_protected_or_plain,
+        || {
+            let path = bundle_path();
+            if !path.try_exists().map_err(|error| error.to_string())? { return Ok(Vec::new()); }
+            let bytes = read_protected_or_plain(&path)?;
+            deserialize_cached_bundle(&bytes).map(|bundle| bundle.trusted_cas).ok_or_else(|| "Decode legacy bundle failed".into())
+        })
 }
 
 pub(super) fn save_trusted_cas(cas: &[crate::bundle::TrustedCa]) -> Result<(), String> {
@@ -782,7 +786,7 @@ mod tests {
         fs::write(directory.join("bundle.json"), b"cached-demo-content").unwrap();
         // A non-directory browser path injects a cleanup error after state reset.
         fs::write(&browser, b"blocked-browser-cleanup").unwrap();
-        assert!(complete_demo_exit_at(&directory, &browser).is_err());
+        assert!(complete_demo_exit_at(&directory, &browser, || {}).is_err());
         assert!(marker.exists());
         let cleared = load_state_file(&state).unwrap();
         assert!(!cleared.demo);
@@ -792,7 +796,10 @@ mod tests {
         fs::create_dir(&browser).unwrap();
         fs::write(browser.join("cookies"), b"old-session").unwrap();
         // Restart resumes the journal even though demo is already false.
-        complete_demo_exit_at(&directory, &browser).unwrap();
+        // The injected operation proves this fixture never reads global machine state.
+        let reconciled = std::cell::Cell::new(false);
+        complete_demo_exit_at(&directory, &browser, || reconciled.set(true)).unwrap();
+        assert!(reconciled.get());
         assert!(!marker.exists());
         assert!(!browser.exists());
         assert!(!directory.join("bundle.json").exists());
@@ -801,7 +808,7 @@ mod tests {
             latest.kiosk_key = Some("new-demo-key".into());
             Ok(())
         }).unwrap();
-        complete_demo_exit_at(&directory, &browser).unwrap();
+        complete_demo_exit_at(&directory, &browser, || {}).unwrap();
         assert_eq!(load_state_file(&state).unwrap().kiosk_key.as_deref(), Some("new-demo-key"));
         fs::remove_dir_all(directory).unwrap();
     }

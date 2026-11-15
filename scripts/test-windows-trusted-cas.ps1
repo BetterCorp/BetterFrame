@@ -24,9 +24,9 @@ try {
     $env:BF_CA_REQUEST = Join-Path $directory 'request.json'
     $env:BF_CA_REPORT = Join-Path $directory 'report.json'
     $script = Join-Path $PSScriptRoot '../client/src/platform/windows/trusted-cas.ps1'
-    function Apply($Cas, $Expected) {
+    function Apply($Cas, $Expected, $ScriptPath = $script) {
         @{ trusted_cas = @($Cas) } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $env:BF_CA_REQUEST -Encoding utf8
-        & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script
+        & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ScriptPath
         Assert-True ($LASTEXITCODE -eq $Expected) "Installer exit $LASTEXITCODE, expected $Expected; report: $(Get-Content -LiteralPath $env:BF_CA_REPORT -Raw)"
     }
     Write-Host "Testing managed machine-root installation"
@@ -36,9 +36,24 @@ try {
     $bad = Item $first; $bad.fingerprint_sha256 = '0' * 64
     Apply @($bad) 1
     Assert-True (Installed $first) 'Invalid assignment changed existing trust'
-    Apply @() 10
-    Assert-True (-not (Installed $first)) 'Managed root was not removed'
+    # Fault injection after the root removal checks that errors still signal restart.
+    $fault = Join-Path $directory 'fail-final-journal.ps1'
+    $source = Get-Content -LiteralPath $script -Raw
+    $finalJournal = 'Write-AtomicJson $journal @{ owned = $owned; dirty = $false }'
+    Assert-True ($source.Contains($finalJournal)) 'Final journal fault location changed'
+    $source.Replace($finalJournal, 'throw "injected final journal failure"') | Set-Content -LiteralPath $fault -Encoding utf8
+    Apply @() 11 $fault
+    Assert-True (-not (Installed $first)) 'Managed root was not removed before the injected error'
     Assert-True (Installed $external) 'Pre-existing root was removed'
+    Assert-True ((Get-Content -LiteralPath $env:BF_CA_REPORT -Raw | ConvertFrom-Json).state -eq 'error') 'Partial failure was not reported'
+    Apply @() 10
+    Apply @() 0
+    $expired = New-SelfSignedCertificate -Type Custom -Subject ('CN=BF expired test ' + [Guid]::NewGuid()) -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -KeyUsage CertSign,CRLSign -TextExtension @('2.5.29.19={critical}{text}ca=1') -CertStoreLocation Cert:\CurrentUser\My -NotBefore (Get-Date).AddDays(-2) -NotAfter (Get-Date).AddDays(-1)
+    $created += $expired
+    Apply @((Item $first), (Item $expired)) 11
+    Assert-True (Installed $first) 'An expired root blocked another valid root'
+    Assert-True (-not (Installed $expired)) 'An expired root was installed'
+    Apply @() 10
     Apply @() 0
     $report = Get-Content -LiteralPath $env:BF_CA_REPORT -Raw | ConvertFrom-Json
     Assert-True ($report.state -eq 'applied' -and $report.revision -eq 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855') 'Empty assignment report mismatch'

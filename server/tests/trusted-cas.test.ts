@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { H3 } from "h3";
-import { parseTrustedCa, trustedCaAssignment, trustedCaRevision } from "../src/shared/trusted-cas.js";
+import { parseTrustedCa, trustedCaAssignment, trustedCaRevision, activeTrustedCas } from "../src/shared/trusted-cas.js";
 import { registerTrustedCaRoutes } from "../src/plugins/service-admin-http/routes-trusted-cas.js";
 import { registerMiddleware } from "../src/plugins/service-admin-http/middleware.js";
 import { TrustedCasPage } from "../src/web-templates/trusted-ca-pages.js";
@@ -66,7 +66,7 @@ function routeFixture(middleware = false, role = "admin") {
   const repo = {
     adapter: { dialect: () => "sqlite" }, isSetupComplete: async () => true,
     listTrustedCas: async () => [...certificates.values()], getTrustedCa: async (id: string) => certificates.get(id) ?? null,
-    saveTrustedCa: async (value: any) => { if (![...certificates.values()].some(c => c.fingerprint_sha256 === value.fingerprint_sha256)) certificates.set(value.id, value); },
+    saveTrustedCa: async (value: any) => { const existing = [...certificates.values()].find(c => c.fingerprint_sha256 === value.fingerprint_sha256); if (existing) return existing; certificates.set(value.id, value); return value; },
     deleteTrustedCa: async (id: string) => { certificates.delete(id); assigned = assigned.filter(item => item !== id); },
     listKiosks: async () => [kiosk], getKioskById: async (id: string) => id === "player" ? kiosk : null,
     assignTrustedCas: async (_id: string, ids: string[]) => { assigned = ids; },
@@ -86,6 +86,7 @@ test("admin routes upload multipart/PEM, download and delete with audit and no t
   const f = routeFixture();
   assert.equal((await f.post("/admin/trusted-cas", { name: "Duplicate", pem })).status, 303);
   assert.equal(f.certificates.size, 1);
+  assert.equal(f.audits[0].resource_id, ca.id, "Duplicate upload audits the actual stored row");
   assert.equal((await f.post("/admin/trusted-cas", { name: "Bad", pem: privateKey })).status, 422);
   const form = new FormData(); form.set("name", "Root"); form.set("certificate", new File([new X509Certificate(pem).raw], "root.der"));
   assert.equal((await f.app.request("http://bf.test/admin/trusted-cas", { method: "POST", body: form })).status, 303);
@@ -149,7 +150,10 @@ test("PostgreSQL CA assignments and reports remain tenant-local and survive reop
   const migrations = TENANT_MIGRATIONS.filter(sql => /^CREATE TABLE (trusted_cas|kiosk_trusted_cas|kiosk_trust_status) \(/.test(sql));
   try {
     for (const schema of schemas) await adapter.withSearchPath(schema, async () => {
-      await adapter.exec(`CREATE SCHEMA ${schema}`); await adapter.exec(`CREATE TABLE ${schema}.kiosks (id TEXT PRIMARY KEY)`);
+      await adapter.exec(`CREATE SCHEMA ${schema}`); await adapter.exec(`CREATE TABLE ${schema}.kiosks (id TEXT PRIMARY KEY, key_hash TEXT, key_prefix TEXT, capabilities JSONB,
+        hardware_model TEXT, firmware_target TEXT, paired_at TEXT, last_seen_at TEXT, last_bundle_version TEXT,
+        kiosk_app_version TEXT, os_version TEXT, cpu_temp_c REAL, cpu_load_percent REAL, fan_rpm INTEGER,
+        fan_pwm INTEGER, memory_total_mb INTEGER, memory_used_mb INTEGER, disk_total_mb INTEGER, disk_free_mb INTEGER, disk_used_percent REAL)`);
       for (const sql of migrations) await adapter.exec(sql);
       await adapter.run("INSERT INTO kiosks(id) VALUES (?)", ["player"]);
     });
@@ -164,6 +168,14 @@ test("PostgreSQL CA assignments and reports remain tenant-local and survive reop
     await adapter.withSearchPath(schemas[0]!, async () => {
       assert.deepEqual(await reopened.trustedCasForKiosk("player"), [ca]);
       assert.equal((await reopened.listTrustedCaReports())[0]?.state, "applied");
+      const duplicate = await reopened.saveTrustedCa({ ...ca, id: "duplicate-id", name: "Other name" });
+      assert.equal(duplicate.id, ca.id); assert.equal(duplicate.name, ca.name);
+      await reopened.transact(() => reopened.replaceKioskKey("player", { key_hash: "replacement", key_prefix: "new" }));
+      assert.deepEqual(await reopened.listTrustedCaReports(), []);
+      assert.deepEqual(await reopened.trustedCasForKiosk("player"), [ca]);
+      await adapter.run("UPDATE trusted_cas SET not_after = ? WHERE id = ?", ["2000-01-01T00:00:00.000Z", ca.id]);
+      assert.deepEqual(await reopened.trustedCasForKiosk("player"), []);
+      await adapter.run("UPDATE trusted_cas SET not_after = ? WHERE id = ?", [ca.not_after, ca.id]);
       await assert.rejects(() => reopened.assignTrustedCas("player", ["missing"]));
       assert.deepEqual(await reopened.trustedCasForKiosk("player"), [ca]);
       await reopened.deleteTrustedCa(ca.id); assert.deepEqual(await reopened.trustedCasForKiosk("player"), []);
@@ -191,4 +203,17 @@ test("heartbeats provision and remove CAs without displays, layouts or a content
     assert.deepEqual(((await removed.json()) as { trusted_cas: unknown }).trusted_cas, []);
     assert.equal(reports.length, 2);
   }
+});
+
+test("canonical PEM expansion is rejected at upload and certificate validity uses complete timestamps", () => {
+  const directory = mkdtempSync(join(tmpdir(), "bf-large-ca-"));
+  try {
+    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=Large root", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "1.2.3.4=DER:" + "01".repeat(12000), "-keyout", join(directory, "key"), "-out", join(directory, "cert")], { stdio: "ignore" });
+    const cert = new X509Certificate(readFileSync(join(directory, "cert")));
+    assert.ok(cert.raw.length < 16384); assert.ok(Buffer.byteLength(cert.toString()) > 16384);
+    assert.throws(() => parseTrustedCa(cert.raw), /Canonical PEM/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+  const now = Date.parse("2030-01-01T00:00:00.000Z");
+  const valid = { ...ca, not_before: "2029-01-01T00:00:00.000Z", not_after: "2031-01-01T00:00:00.000Z" };
+  assert.deepEqual(activeTrustedCas([valid, { ...valid, id: "expired", not_after: "2030-01-01T00:00:00.000Z" }, { ...valid, id: "future", not_before: "2030-01-01T00:00:00.001Z" }], now), [valid]);
 });

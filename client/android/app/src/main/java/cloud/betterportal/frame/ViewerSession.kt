@@ -71,7 +71,11 @@ internal object EnrollmentCleanup {
         }
     }
 
-    @Synchronized fun request(context: Context, token: String, clear: (Context, (Boolean) -> Unit) -> Unit, done: (Boolean) -> Unit) {
+    @Synchronized fun request(context: Context, token: String, clear: (Context, (Boolean) -> Unit) -> Unit,
+        cleanTrust: (Context) -> Unit = { app ->
+            val report = TrustedCas(app).sync(JSONArray())
+            check(report.optString("state") != "error") { report.optString("message") }
+        }, done: (Boolean) -> Unit) {
         val path = key(context)
         val job = jobs.getOrPut(path) { Job(token, CompletableFuture.completedFuture(Unit)) }
         job.listeners.add(done)
@@ -89,10 +93,13 @@ internal object EnrollmentCleanup {
         worker.execute {
             try {
                 job.persisted.get()
-                val trustCleanup = TrustedCas(context).sync(JSONArray())
-                check(trustCleanup.optString("state") != "error") { trustCleanup.optString("message") }
-                // A stale reader may join just after another instance completed.
-                if (store.read().optString(MARKER) != job.token) { finish(true); return@execute }
+                // Validate under the enrollment lock before any trust mutation.
+                // A delayed obsolete cleanup cannot remove a new session's CAs.
+                val current = synchronized(this) {
+                    if (jobs[path] !== job || store.read().optString(MARKER) != job.token) false
+                    else { cleanTrust(context); true }
+                }
+                if (!current) { finish(true); return@execute }
                 main.post {
                     try {
                         clear(context) { cleared ->

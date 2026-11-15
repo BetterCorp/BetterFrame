@@ -216,11 +216,14 @@ export class Repository {
     return await this._get<TrustedCa>("SELECT * FROM trusted_cas WHERE id = ?", [id]) ?? null;
   }
 
-  async saveTrustedCa(ca: TrustedCa): Promise<void> {
-    await this._run(`INSERT INTO trusted_cas (id, name, pem, fingerprint_sha256, subject, not_before, not_after)
-      VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (fingerprint_sha256) DO NOTHING`,
+  async saveTrustedCa(ca: TrustedCa): Promise<TrustedCa> {
+    const persisted = await this._get<TrustedCa>(`INSERT INTO trusted_cas (id, name, pem, fingerprint_sha256, subject, not_before, not_after)
+      VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (fingerprint_sha256)
+      DO UPDATE SET fingerprint_sha256 = EXCLUDED.fingerprint_sha256 RETURNING *`,
       [ca.id, ca.name, ca.pem, ca.fingerprint_sha256, ca.subject, ca.not_before, ca.not_after]);
-    void this.notify("trusted_cas", "create", ca.id);
+    if (!persisted) throw new Error("CA certificate was not persisted");
+    void this.notify("trusted_cas", "create", persisted.id);
+    return persisted;
   }
 
   async deleteTrustedCa(id: string): Promise<void> {
@@ -230,7 +233,8 @@ export class Repository {
 
   async trustedCasForKiosk(kioskId: string): Promise<TrustedCa[]> {
     return this._all<TrustedCa>(`SELECT ca.* FROM trusted_cas ca JOIN kiosk_trusted_cas a ON a.ca_id = ca.id
-      WHERE a.kiosk_id = ? ORDER BY ca.fingerprint_sha256`, [kioskId]);
+      WHERE a.kiosk_id = ? AND ca.not_before::timestamptz <= now()
+        AND ca.not_after::timestamptz > now() ORDER BY ca.fingerprint_sha256`, [kioskId]);
   }
 
   async assignTrustedCas(kioskId: string, ids: string[]): Promise<void> {
@@ -2013,6 +2017,7 @@ export class Repository {
         id,
       ],
     );
+    await this._run("DELETE FROM kiosk_trust_status WHERE kiosk_id = ?", [id]);
     void this.notify("kiosks", "update", id);
   }
 

@@ -31,18 +31,24 @@ public static class BetterFrameCaSignature {
 }
 '@
     $desired = @{}
+    $seen = @{}
+    $validityErrors = @()
     foreach ($ca in $cas) {
         $fp = [string]$ca.fingerprint_sha256
         $pem = [string]$ca.pem
-        if ($fp -cnotmatch '^[0-9a-f]{64}$' -or $desired.ContainsKey($fp) -or [Text.Encoding]::UTF8.GetByteCount($pem) -gt 16384 -or
+        if ($fp -cnotmatch '^[0-9a-f]{64}$' -or $seen.ContainsKey($fp) -or [Text.Encoding]::UTF8.GetByteCount($pem) -gt 16384 -or
             $pem.Trim() -cnotmatch '^-----BEGIN CERTIFICATE-----[\r\n]+[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----$') { throw 'Invalid CA assignment' }
+        $seen[$fp] = $true
         $der = [Convert]::FromBase64String(($pem -replace '-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\s', ''))
         $cert = [Security.Cryptography.X509Certificates.X509Certificate2]::new($der)
         $basic = @($cert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.19' })
         if ($basic.Count -ne 1 -or -not $basic[0].CertificateAuthority -or $cert.Subject -ne $cert.Issuer -or
-            $cert.NotBefore.ToUniversalTime() -gt [DateTime]::UtcNow -or $cert.NotAfter.ToUniversalTime() -le [DateTime]::UtcNow -or
             (Hash-Bytes $cert.RawData) -cne $fp -or
             -not [BetterFrameCaSignature]::CryptVerifyCertificateSignatureEx([IntPtr]::Zero, 1, 2, $cert.Handle, 2, $cert.Handle, 1, [IntPtr]::Zero)) { throw 'A valid, self-signed root CA is required' }
+        if ($cert.NotBefore.ToUniversalTime() -gt [DateTime]::UtcNow -or $cert.NotAfter.ToUniversalTime() -le [DateTime]::UtcNow) {
+            $validityErrors += ($fp + ': CA certificate is expired or not yet valid')
+            continue
+        }
         $desired[$fp] = $cert
     }
     $journal = Join-Path $env:BF_CA_STATE 'ownership.json'
@@ -78,7 +84,8 @@ public static class BetterFrameCaSignature {
         $store.Add($desired[$fp]); $changed = $true
     }
     Write-AtomicJson $journal @{ owned = $owned; dirty = $false }
-    $report.state = 'applied'
+    if ($validityErrors.Count) { $report.state = 'error'; $report.message = ($validityErrors -join '; '); if ($report.message.Length -gt 1024) { $report.message = $report.message.Substring(0, 1024) } }
+    else { $report.state = 'applied' }
 } catch {
     if ($_.Exception -is [UnauthorizedAccessException]) { $report.state = 'manual_action' }
     $report.message = ([string]$_.Exception.Message).Substring(0, [Math]::Min(1024, ([string]$_.Exception.Message).Length))
@@ -86,7 +93,7 @@ public static class BetterFrameCaSignature {
     if ($null -ne $store) { $store.Close() }
 }
 Write-AtomicJson $env:BF_CA_REPORT $report
-if ($report.state -eq 'error') { exit 1 }
+if ($report.state -eq 'error') { if ($changed) { exit 11 }; exit 1 }
 if ($report.state -eq 'manual_action') { exit 0 }
 if ($changed) { exit 10 }
 exit 0

@@ -37,13 +37,19 @@ export function parseTrustedCa(input: Uint8Array | string, now = Date.now()): Om
   if (!Number.isFinite(before) || !Number.isFinite(after) || now < before || now >= after) {
     throw new Error("CA certificate is expired or not yet valid");
   }
-  return { pem: cert.toString(), fingerprint_sha256: createHash("sha256").update(cert.raw).digest("hex"),
+  const pem = cert.toString();
+  if (Buffer.byteLength(pem) > MAX_CA_BYTES) throw new Error("Canonical PEM certificate exceeds 16 KiB");
+  return { pem, fingerprint_sha256: createHash("sha256").update(cert.raw).digest("hex"),
     subject: cert.subject, not_before: new Date(before).toISOString(), not_after: new Date(after).toISOString() };
 }
 
 /** Hash only the ordered fingerprints: consistent across every client implementation. */
 export function trustedCaRevision(cas: readonly BundleTrustedCa[]): string {
   return createHash("sha256").update(cas.map(ca => ca.fingerprint_sha256).sort().join("\n")).digest("hex");
+}
+
+export function activeTrustedCas(cas: readonly TrustedCa[], now = Date.now()): TrustedCa[] {
+  return cas.filter(ca => Date.parse(ca.not_before) <= now && now < Date.parse(ca.not_after));
 }
 
 export function trustedCaAssignment(value: unknown): string[] {

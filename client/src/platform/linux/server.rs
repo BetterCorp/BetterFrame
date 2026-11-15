@@ -207,6 +207,7 @@ fn import_legacy_state(legacy: &std::path::Path, persistent: &std::path::Path) -
         "kiosk.key",
         "server.url",
         "bundle.json",
+        "trusted-cas.json",
         "cluster.key",
         "encrypt.key",
         "local.key",
@@ -526,7 +527,7 @@ pub fn reset_pairing_and_restart(reason: &str) -> ! {
         remove_pairing_state_files(&home.join(".betterframe-kiosk"));
     }
 
-    let _ = crate::linux_trusted_cas::sync(&[]);
+    let _ = crate::linux_trusted_cas::reset();
     tracing::info!("config wiped, exiting for systemd restart");
     std::process::exit(1);
 }
@@ -979,7 +980,10 @@ pub fn heartbeat(
     let network_interfaces = read_network_interfaces();
     let managed_report = MANAGED_CONFIG_REPORT.lock().ok().and_then(|g| g.clone());
     let mut payload = serde_json::json!({
-        "trusted_ca_status": crate::linux_trusted_cas::sync(&load_trusted_cas()),
+        "trusted_ca_status": match load_trusted_cas() {
+            Ok(cas) => crate::linux_trusted_cas::sync(&cas),
+            Err(error) => crate::trusted_cas::load_error(error),
+        },
         "bundle_version": bundle_version,
         "kiosk_app_version": kiosk_app_version(),
         "firmware_target": crate::firmware::FIRMWARE_TARGET,
@@ -1088,14 +1092,15 @@ pub fn heartbeat(
         .unwrap_or(false)
 }
 
-pub fn load_trusted_cas() -> Vec<crate::bundle::TrustedCa> {
-    let path = state_dir().join("trusted-cas.json");
-    if path.exists() {
-        crate::at_rest::read_maybe_encrypted(&path)
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
-    } else {
-        load_cached_bundle().map(|bundle| bundle.trusted_cas).unwrap_or_default()
-    }
+pub fn load_trusted_cas() -> Result<Vec<crate::bundle::TrustedCa>, String> {
+    crate::trusted_cas::load_cached_assignment(&state_dir().join("trusted-cas.json"),
+        |path| crate::at_rest::read_maybe_encrypted(path).ok_or_else(|| "Read or decrypt CA cache failed".into()),
+        || {
+            let path = bundle_cache_path();
+            if !path.try_exists().map_err(|error| error.to_string())? { return Ok(Vec::new()); }
+            let bytes = crate::at_rest::read_maybe_encrypted(&path).ok_or("Read or decrypt legacy bundle failed")?;
+            serde_json::from_slice::<KioskBundle>(&bytes).map(|bundle| bundle.trusted_cas).map_err(|error| error.to_string())
+        })
 }
 
 pub fn update_policy_path() -> PathBuf {
@@ -1609,4 +1614,19 @@ mod tests {
             ("eth0 aa:bb:cc:dd:ee:ff".into(), "searching".into())
         );
     }
+    #[test]
+    fn legacy_import_preserves_authoritative_empty_trust_cache() {
+        let directory = std::env::temp_dir().join(format!("bf-trust-import-{}", rand::random::<u64>()));
+        let legacy = directory.join("legacy"); let persistent = directory.join("persistent");
+        fs::create_dir_all(&legacy).unwrap(); fs::create_dir_all(&persistent).unwrap();
+        fs::write(legacy.join("trusted-cas.json"), b"[]").unwrap();
+        fs::write(legacy.join("bundle.json"), b"stale content must not supply trust").unwrap();
+        import_legacy_state(&legacy, &persistent).unwrap();
+        let cas = crate::trusted_cas::load_cached_assignment(&persistent.join("trusted-cas.json"),
+            |path| fs::read(path).map_err(|error| error.to_string()),
+            || panic!("migrated removal must supersede the stale bundle"));
+        assert!(cas.unwrap().is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
 }

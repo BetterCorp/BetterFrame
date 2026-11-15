@@ -1,6 +1,6 @@
 import { Layout, LocalTime } from "./layout.js";
 import { escapeOverlayAttribute as esc } from "../shared/overlays.js";
-import { trustedCaRevision, type TrustedCa, type TrustedCaStatus } from "../shared/trusted-cas.js";
+import { activeTrustedCas, trustedCaRevision, type TrustedCa, type TrustedCaStatus } from "../shared/trusted-cas.js";
 import type { Kiosk } from "../shared/types.js";
 
 export function TrustedCasPage(props: { user?: string; error?: string; cas: TrustedCa[]; kiosks: Kiosk[];
@@ -20,7 +20,7 @@ export function TrustedCasPage(props: { user?: string; error?: string; cas: Trus
     <h2>Certificate library</h2>
     {props.cas.length ? <div class="table-wrap"><table><thead><tr><th>Name / subject</th><th>SHA-256 fingerprint</th><th>Expires</th><th>Actions</th></tr></thead><tbody>
       {props.cas.map(ca => <tr><td>{esc(ca.name)}<br /><small>{esc(ca.subject)}</small></td><td><code style="overflow-wrap:anywhere">{ca.fingerprint_sha256}</code></td>
-        <td><LocalTime value={ca.not_after} /></td><td><a class="btn" href={`/admin/trusted-cas/${ca.id}/certificate`}>Download</a>
+        <td><LocalTime value={ca.not_after} format="full" /></td><td><a class="btn" href={`/admin/trusted-cas/${ca.id}/certificate`}>Download</a>
         <form method="post" action={`/admin/trusted-cas/${ca.id}/delete`}><button class="btn btn-danger" type="submit">Delete and unassign</button></form></td></tr>)}
     </tbody></table></div> : <p>No CA certificates have been added.</p>}
     <h2>Player assignments</h2>
@@ -29,9 +29,9 @@ export function TrustedCasPage(props: { user?: string; error?: string; cas: Trus
     <p>Managed Android players install automatically. On other Android devices, download the assigned certificate and install it through Android Settings → Security → Encryption &amp; credentials → Install a CA certificate. Removal also requires Settings on those devices.</p>
     {props.kiosks.map(kiosk => {
       const assigned = props.assignments.filter(a => a.kiosk_id === kiosk.id).map(a => a.ca_id);
-      const desired = trustedCaRevision(props.cas.filter(ca => assigned.includes(ca.id)));
+      const desired = trustedCaRevision(activeTrustedCas(props.cas.filter(ca => assigned.includes(ca.id))));
       const report = props.reports.find(r => r.kiosk_id === kiosk.id);
-      const state = !report ? "Awaiting player report" : report.revision !== desired ? "Pending assignment change" : report.state === "applied" ? "Applied" : report.state === "manual_action" ? "Manual action required" : report.state === "error" ? "Error" : "Pending";
+      const state = !report ? "Awaiting player report" : report.state === "error" ? "Error" : report.revision !== desired ? "Pending assignment change" : report.state === "applied" ? "Applied" : report.state === "manual_action" ? "Manual action required" : "Pending";
       return <section class="card"><h3>{esc(kiosk.name)}</h3><p role="status">{state}{report ? <span> · <LocalTime value={report.reported_at} /></span> : ""}</p>
         {report?.message ? <p>{esc(report.message)}</p> : ""}
         <form method="post" action={`/admin/trusted-cas/players/${kiosk.id}`}>

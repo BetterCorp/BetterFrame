@@ -4,7 +4,8 @@ After=local-fs.target
 RequiresMountsFor=/var/lib/betterframe
 
 [Path]
-PathChanged=/var/lib/betterframe/kiosk/trusted-cas-request.json
+PathExists=/var/lib/betterframe/kiosk/trusted-cas-request.json
+PathExists=/var/lib/betterframe/trusted-cas/processing.json
 Unit=betterframe-trusted-cas.service
 
 [Install]

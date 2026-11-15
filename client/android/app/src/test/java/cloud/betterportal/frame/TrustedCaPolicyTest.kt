@@ -23,9 +23,10 @@ class TrustedCaPolicyTest {
         var saved = "{}"
         var owner = true
         var failAdd = false
+        var failBeforeAdd = false
         val installed = mutableSetOf<String>()
         fun sync(cas: JSONArray) = TrustedCaPolicy.sync(cas, { JSONObject(saved) }, { owner }, { installed.toSet() },
-            { cert -> installed.add(TrustedCaPolicy.fingerprint(cert.encoded)); if (failAdd) error("interrupted install") },
+            { cert -> if (failBeforeAdd) error("install refused"); installed.add(TrustedCaPolicy.fingerprint(cert.encoded)); if (failAdd) error("interrupted install") },
             { der -> installed.remove(TrustedCaPolicy.fingerprint(der)); Unit }, { saved = it.toString() })
     }
     @Test fun managedInstallIsIdempotentAndOnlyRemovesOwnedRoots() {
@@ -67,4 +68,22 @@ class TrustedCaPolicyTest {
         assertEquals("error", store.sync(JSONArray().put(ca).put(ca)).getString("state"))
         assertEquals(previous, store.saved)
     }
+    @Test fun unmanagedPreexistingRootsAreNeverRequestedForRemoval() {
+        val ca = certificate(); val fp = ca.getString("fingerprint_sha256"); val store = Store(); store.owner = false
+        store.installed.add(fp)
+        assertEquals("applied", store.sync(JSONArray().put(ca)).getString("state"))
+        assertEquals("applied", store.sync(JSONArray()).getString("state"))
+        assertTrue(store.installed.contains(fp))
+        assertFalse(JSONObject(store.saved).getJSONObject("previous").has(fp))
+    }
+    @Test fun partialAndRepeatedFailuresStillRefreshBrowsers() {
+        val first = certificate(); val second = certificate(); val store = Store()
+        store.sync(JSONArray().put(first)); store.failBeforeAdd = true
+        val failed = store.sync(JSONArray().put(second))
+        assertEquals("error", failed.getString("state")); assertTrue(failed.getBoolean("changed"))
+        assertFalse(store.installed.contains(first.getString("fingerprint_sha256")))
+        val retry = store.sync(JSONArray().put(second))
+        assertEquals("error", retry.getString("state")); assertTrue(retry.getBoolean("changed"))
+    }
+
 }

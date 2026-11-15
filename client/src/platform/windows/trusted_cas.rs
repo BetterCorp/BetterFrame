@@ -12,7 +12,7 @@ pub(super) fn trust_report() -> Option<TrustReport> {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
-fn reconcile(cas: &[crate::bundle::TrustedCa]) -> Result<bool, String> {
+fn reconcile(cas: &[crate::bundle::TrustedCa]) -> Result<(bool, Option<String>), String> {
     validate(cas)?;
     let directory = state_dir().join("Trust");
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
@@ -20,7 +20,7 @@ fn reconcile(cas: &[crate::bundle::TrustedCa]) -> Result<bool, String> {
         let report = TrustReport { revision: revision(cas), state: "applied".into(), message: String::new() };
         let bytes = serde_json::to_vec(&report).map_err(|error| error.to_string())?;
         fs::write(state_dir().join("trusted-ca-status.json"), bytes).map_err(|error| error.to_string())?;
-        return Ok(false);
+        return Ok((false, None));
     }
     let request = directory.join("request.json");
     fs::write(&request, serde_json::to_vec(&serde_json::json!({"trusted_cas": cas})).unwrap())
@@ -38,7 +38,8 @@ fn reconcile(cas: &[crate::bundle::TrustedCa]) -> Result<bool, String> {
     loop {
         if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
             return match status.code() {
-                Some(0) => Ok(false), Some(10) => Ok(true),
+                Some(0) => Ok((false, None)), Some(10) => Ok((true, None)),
+                Some(11) => Ok((true, Some(trust_report().map(|r| r.message).filter(|m| !m.is_empty()).unwrap_or_else(|| "CA provisioning changed trust before failing".into())))),
                 _ => Err(trust_report().map(|r| r.message).unwrap_or_else(|| "Certificate installer failed".into())),
             };
         }
@@ -52,13 +53,21 @@ fn reconcile(cas: &[crate::bundle::TrustedCa]) -> Result<bool, String> {
 
 /// The elevated agent owns machine trust; an unelevated agent reports manual action.
 pub(super) fn reconcile_cached() -> bool {
-    let cas = load_trusted_cas();
-    match reconcile(&cas) {
-        Ok(changed) => changed,
+    let cas = match load_trusted_cas() {
+        Ok(cas) => cas,
         Err(error) => {
-            let report = TrustReport { revision: revision(&cas), state: "error".into(), message: error.chars().take(1024).collect() };
+            let report = crate::trusted_cas::load_error(error);
             if let Ok(bytes) = serde_json::to_vec(&report) { let _ = fs::write(state_dir().join("trusted-ca-status.json"), bytes); }
-            false
+            return false;
         }
+    };
+    let (changed, error) = match reconcile(&cas) {
+        Ok(result) => result,
+        Err(error) => (false, Some(error)),
+    };
+    if let Some(error) = error {
+        let report = TrustReport { revision: revision(&cas), state: "error".into(), message: error.chars().take(1024).collect() };
+        if let Ok(bytes) = serde_json::to_vec(&report) { let _ = fs::write(state_dir().join("trusted-ca-status.json"), bytes); }
     }
+    changed
 }

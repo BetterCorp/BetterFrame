@@ -389,7 +389,7 @@ async fn run_agent(server_url: String, app: Arc<Mutex<Option<Child>>>) -> Result
         latest.server_url = server_url;
         Ok(())
     })?;
-    let _ = trusted_cas::reconcile_cached();
+    if trusted_cas::reconcile_cached() { restart_app(&app)?; }
     // The renderer reads protected cached state independently. Start it before
     // regional discovery so an offline upgrade keeps showing the saved display.
     start_app(&app)?;

@@ -35,8 +35,8 @@ export function registerTrustedCaRoutes(app: H3, deps: AdminDeps): void {
       const existing = await deps.repo.listTrustedCas();
       if (existing.length >= 128 && !existing.some(ca => ca.fingerprint_sha256 === parsed.fingerprint_sha256)) throw new Error("A tenant can store at most 128 CA certificates");
       const ca = { id: uuidv7(), name: name.trim(), ...parsed };
-      await deps.repo.saveTrustedCa(ca);
-      await audit(deps.repo, event, "trusted-ca.upload", { resource_type: "trusted_ca", resource_id: ca.id, metadata: { fingerprint_sha256: ca.fingerprint_sha256 } });
+      const persisted = await deps.repo.saveTrustedCa(ca);
+      await audit(deps.repo, event, "trusted-ca.upload", { resource_type: "trusted_ca", resource_id: persisted.id, metadata: { fingerprint_sha256: persisted.fingerprint_sha256 } });
       return redirect();
     } catch (cause) {
       const response = await page(event.context.user?.username, cause instanceof Error ? cause.message : "Invalid certificate");

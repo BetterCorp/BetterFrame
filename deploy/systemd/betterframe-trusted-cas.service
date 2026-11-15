@@ -1,6 +1,9 @@
 [Unit]
 Description=BetterFrame managed certificate authorities
-After=local-fs.target
+After=local-fs.target time-sync.target
+Wants=time-sync.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
 Before=betterframe-kiosk.service
 RequiresMountsFor=/var/lib/betterframe
 
@@ -11,7 +14,7 @@ User=root
 Group=root
 UMask=0022
 PrivateTmp=yes
-ProtectHome=yes
+ProtectHome=read-only
 ProtectSystem=strict
 ReadWritePaths=/var/lib/betterframe -/usr/local/share/ca-certificates -/etc/ssl/certs -/etc/pki/ca-trust
 NoNewPrivileges=yes

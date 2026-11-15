@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Exercises the actual Linux reconciler in isolated directories, never system trust."""
-import copy
 import hashlib
 import importlib.util
 import json
-import os
 from pathlib import Path
 import ssl
 import subprocess
@@ -60,6 +58,15 @@ class TrustedCaTests(unittest.TestCase):
             {**self.ca, "pem": self.ca["pem"] + (self.root / "key").read_text()},
             {"pem": ssl.DER_cert_to_PEM_cert(forged), "fingerprint_sha256": hashlib.sha256(forged).hexdigest()},
         ]
+        leaf = self.root / "non-ca.pem"
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=Leaf", "-addext", "basicConstraints=critical,CA:FALSE", "-keyout", str(self.root / "leaf-key"), "-out", str(leaf)], check=True, capture_output=True)
+        csr = self.root / "intermediate.csr"; intermediate = self.root / "intermediate.pem"
+        subprocess.run(["openssl", "req", "-new", "-key", str(self.root / "key"), "-subj", "/CN=Intermediate", "-out", str(csr)], check=True, capture_output=True)
+        ext = self.root / "ca-ext"; ext.write_text("basicConstraints=critical,CA:TRUE\n")
+        subprocess.run(["openssl", "x509", "-req", "-in", str(csr), "-CA", str(self.root / "ca"), "-CAkey", str(self.root / "key"), "-CAcreateserial", "-extfile", str(ext), "-days", "1", "-out", str(intermediate)], check=True, capture_output=True)
+        for certificate in [leaf, intermediate]:
+            pem = certificate.read_text()
+            cases.append({"pem": pem, "fingerprint_sha256": hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest()})
         for ca in cases:
             with self.assertRaises(Exception): self.apply([ca])
             self.assertEqual((self.state / "ownership.json").read_bytes(), before)
@@ -106,6 +113,61 @@ class TrustedCaTests(unittest.TestCase):
         self.assertNotEqual(verify("internal.test", "expired"), 0)
         trust.reconcile([], self.state, self.cadir, update)
         self.assertNotEqual(verify("internal.test"), 0)
+
+    def test_claimed_request_cannot_delete_a_newer_replacement(self):
+        request = self.root / "request.json"
+        request.write_text(json.dumps({"trusted_cas": [self.ca]}))
+        def replace_while_applying():
+            request.write_text(json.dumps({"trusted_cas": []}))
+            self.update()
+        trust.main(self.state, request, self.cadir, replace_while_applying, lambda: None)
+        self.assertTrue(request.exists())
+        self.assertFalse((self.state / "processing.json").exists())
+        trust.main(self.state, request, self.cadir, self.update, lambda: None)
+        self.assertEqual(list(self.cadir.iterdir()), [])
+        self.assertEqual(json.loads((self.state / "status.json").read_text())["revision"], trust.revision([]))
+
+    def test_failure_consumes_only_the_claim_and_preserves_the_next_request(self):
+        request = self.root / "request.json"
+        request.write_text(json.dumps({"trusted_cas": [self.ca]}))
+        def fail_with_replacement():
+            request.write_text(json.dumps({"trusted_cas": []}))
+            raise RuntimeError("interrupted update")
+        with self.assertRaises(RuntimeError): trust.main(self.state, request, self.cadir, fail_with_replacement, lambda: None)
+        self.assertTrue(request.exists()); self.assertFalse((self.state / "processing.json").exists())
+        trust.main(self.state, request, self.cadir, self.update, lambda: None)
+        self.assertEqual(list(self.cadir.iterdir()), [])
+
+    def test_abandoned_claim_recovers_and_invalid_claim_does_not_retry_forever(self):
+        self.state.mkdir()
+        claimed = self.state / "processing.json"
+        claimed.write_text(json.dumps({"trusted_cas": [self.ca]}))
+        request = self.root / "request.json"
+        trust.main(self.state, request, self.cadir, self.update, lambda: None)
+        self.assertFalse(claimed.exists())
+        self.assertEqual(len(list(self.cadir.iterdir())), 1)
+        request.write_text("malformed JSON")
+        with self.assertRaises(ValueError): trust.main(self.state, request, self.cadir, self.update, lambda: None)
+        self.assertFalse(request.exists()); self.assertFalse(claimed.exists())
+        self.assertEqual(json.loads((self.state / "status.json").read_text())["state"], "error")
+
+    def test_expired_roots_do_not_block_other_assignments_or_removals(self):
+        expired = self.root / "expired-root.pem"
+        subprocess.run(["openssl", "x509", "-in", str(self.root / "ca"), "-signkey", str(self.root / "key"), "-days", "-1", "-out", str(expired)], check=True, capture_output=True)
+        pem = expired.read_text()
+        bad_time = {"pem": pem, "fingerprint_sha256": hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest()}
+        request = self.root / "request.json"
+        request.write_text(json.dumps({"trusted_cas": [self.ca, bad_time]}))
+        trust.main(self.state, request, self.cadir, self.update, lambda: None)
+        report = json.loads((self.state / "status.json").read_text())
+        self.assertEqual(report["state"], "error"); self.assertIn(bad_time["fingerprint_sha256"], report["message"])
+        self.assertEqual(len(list(self.cadir.iterdir())), 1)
+        request.write_text(json.dumps({"trusted_cas": [bad_time]}))
+        trust.main(self.state, request, self.cadir, self.update, lambda: None)
+        self.assertEqual(list(self.cadir.iterdir()), [])
+        errors = []
+        self.assertEqual(trust.validate([self.ca], self.state, errors, now=0), {})
+        self.assertEqual(len(errors), 1)
 
     def test_standalone_setup_embeds_identical_helper_and_units(self):
         for function, file in [("write_trusted_ca_helper", "betterframe-trusted-cas.py"), ("write_trusted_ca_service", "betterframe-trusted-cas.service"), ("write_trusted_ca_path", "betterframe-trusted-cas.path")]:

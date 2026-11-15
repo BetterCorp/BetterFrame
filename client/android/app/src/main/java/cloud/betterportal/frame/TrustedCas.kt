@@ -7,7 +7,16 @@ import android.util.AtomicFile
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileNotFoundException
 import java.security.KeyStore
+
+internal fun readTrustJournal(journal: AtomicFile): JSONObject = try {
+    JSONObject(journal.openRead().use { it.readBytes().toString(Charsets.UTF_8) })
+} catch (error: FileNotFoundException) {
+    // openRead recovers Android 9's .bak before opening the base file.
+    if (journal.baseFile.exists() || File(journal.baseFile.path + ".bak").exists()) throw error
+    JSONObject()
+}
 
 /** Stores only public certificates. The lock also covers enrollment reset across Activity instances. */
 internal class TrustedCas(context: Context) {
@@ -16,7 +25,7 @@ internal class TrustedCas(context: Context) {
     private val journal = AtomicFile(File(app.noBackupFilesDir, "trusted-ca-ownership.json"))
     private val policy get() = app.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
     private val admin get() = ComponentName(app, KioskAdminReceiver::class.java)
-    private fun read(): JSONObject = if (!journal.baseFile.exists()) JSONObject() else JSONObject(journal.openRead().use { it.readBytes().toString(Charsets.UTF_8) })
+    private fun read(): JSONObject = readTrustJournal(journal)
     private fun write(value: JSONObject) {
         val stream = journal.startWrite()
         try { stream.write(value.toString().toByteArray()); journal.finishWrite(stream) }

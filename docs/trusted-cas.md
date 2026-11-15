@@ -48,3 +48,11 @@ runtime account. That account must be trusted to request machine CA changes; the
 helper limits requests to valid self-signed public roots and fixed paths, but it
 does not authenticate a different local process running under the same account.
 Managed images use the dedicated, non-login bfkiosk account.
+
+Review hardening: unreadable authoritative caches produce errors and retain live
+trust. A legitimate empty cache remains a removal assignment and is migrated with
+legacy state. Linux requests are atomically claimed into root-owned processing
+state; pending and interrupted claims are watched by file existence. A reset
+supersedes queued additions. Invalid lifetime periods are reported per root and
+do not block the other roots; the server omits expired/not-yet-valid certificates.
+Windows and Android refresh browsers even after a partially failed trust change.

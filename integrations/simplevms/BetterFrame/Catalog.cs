@@ -28,7 +28,7 @@ public static class CatalogBuilder
     // Never export upstream credentials or addresses.
     var result = cameras.OrderBy(c => c.Id).Select(camera => {
       var streams = camera.Streams.Where(s => s.IsRootStream && s.Codec?.ToLowerInvariant() is "h264" or "h265" or "hevc")
-        .OrderByDescending(s => Pixels(s.Resolution)).ThenBy(s => s.Profile, StringComparer.Ordinal).ToArray();
+        .OrderByDescending(s => Pixels(s.Resolution)).ThenBy(s => s.Profile, StringComparer.Ordinal).Take(32).ToArray();
       var profiles = streams.Select((s, index) => {
         var dimensions = (s.Resolution ?? "").Split('x', '×');
         int.TryParse(dimensions.ElementAtOrDefault(0), out var width);

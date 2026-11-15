@@ -184,6 +184,16 @@ public sealed class IntegrationTests
     catalog = CatalogBuilder.Build("instance", 2, "NVR", [unsupported], [new DisplayGroup(Guid.NewGuid(), "Unsupported only", [unsupported.Id])]);
     Assert.That(catalog.Cameras, Is.Empty); Assert.That(catalog.Groups.Single().CameraIds, Is.Empty);
   }
+  [Test] public void ProfileExportHonorsTheWireLimitInStableResolutionOrder()
+  {
+    var camera = new CameraInfo { Id = Guid.NewGuid(), Name = "Many profiles", Address = "unused", ProviderId = "onvif", Capabilities = [],
+      Streams = Enumerable.Range(0, 40).Select(index => new StreamProfile { Id = Guid.NewGuid(), Profile = $"p-{index:D2}", Kind = StreamKind.Quality,
+        FormatId = "h264", Codec = "h264", Resolution = $"{(index + 1) * 16}x16", IsRootStream = true, Uri = "unused" }).ToArray() };
+    var profiles = CatalogBuilder.Build("instance", 1, "NVR", [camera], []).Cameras.Single().Profiles;
+    Assert.That(profiles, Has.Length.EqualTo(32));
+    Assert.That(profiles.First().Id, Is.EqualTo("p-39")); Assert.That(profiles.First().Role, Is.EqualTo("main"));
+    Assert.That(profiles.Last().Id, Is.EqualTo("p-08")); Assert.That(profiles.Last().Role, Is.EqualTo("sub"));
+  }
   [Test] public void OutboxSurvivesRestartAndLostAcknowledgements()
   {
     var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());

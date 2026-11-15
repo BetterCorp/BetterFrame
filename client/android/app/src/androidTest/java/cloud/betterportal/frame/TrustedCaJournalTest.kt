@@ -1,5 +1,7 @@
 package cloud.betterportal.frame
 
+import android.content.Context
+import android.content.ContextWrapper
 import android.util.AtomicFile
 import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONObject
@@ -12,6 +14,15 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class TrustedCaJournalTest {
+    private fun isolatedContext(): Pair<Context, File> {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(context.cacheDir, "trust-cleanup-${UUID.randomUUID()}").apply { mkdirs() }
+        return object : ContextWrapper(context) {
+            override fun getApplicationContext(): Context = this
+            override fun getNoBackupFilesDir(): File = directory
+        } to directory
+    }
+
     @Test fun backupOnlyJournalRecoversOwnershipBeforeTheNextWrite() {
         val app = InstrumentationRegistry.getInstrumentation().targetContext
         val base = File(app.cacheDir, "trust-journal-${UUID.randomUUID()}")
@@ -27,8 +38,8 @@ class TrustedCaJournalTest {
         assertEquals(0, readTrustJournal(AtomicFile(base)).length())
     }
     @Test fun incompleteTrustCleanupRetainsItsMarkerAndGuidanceUntilRetried() {
-        val app = InstrumentationRegistry.getInstrumentation().targetContext
-        val store = ProtectedStore(app); val before = store.read()
+        val (app, directory) = isolatedContext()
+        val store = ProtectedStore(app)
         val token = "trust-cleanup-${UUID.randomUUID()}"; val browser = AtomicInteger()
         try {
             store.write(JSONObject().put(EnrollmentCleanup.MARKER, token))
@@ -46,11 +57,11 @@ class TrustedCaJournalTest {
             assertTrue(completed.await(10, TimeUnit.SECONDS))
             assertFalse(store.read().has(EnrollmentCleanup.MARKER)); assertEquals(1, browser.get())
             assertNull(EnrollmentCleanup.failureReason(app))
-        } finally { store.write(before) }
+        } finally { directory.deleteRecursively() }
     }
     @Test fun obsoleteCleanupCannotRemoveTrustOrBrowserSessionsFromNewEnrollment() {
-        val app = InstrumentationRegistry.getInstrumentation().targetContext
-        val store = ProtectedStore(app); val before = store.read()
+        val (app, directory) = isolatedContext()
+        val store = ProtectedStore(app)
         val trust = AtomicInteger(); val browser = AtomicInteger(); val done = CountDownLatch(1)
         try {
             val next = JSONObject().put("server", "https://new-enrollment.test")
@@ -61,6 +72,6 @@ class TrustedCaJournalTest {
             assertTrue(done.await(10, TimeUnit.SECONDS))
             assertEquals(0, trust.get()); assertEquals(0, browser.get())
             assertEquals(next.toString(), store.read().toString())
-        } finally { store.write(before) }
+        } finally { directory.deleteRecursively() }
     }
 }

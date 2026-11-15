@@ -1067,4 +1067,26 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     html TEXT NOT NULL,
     sample_data JSONB NOT NULL DEFAULT '{}'
   )`,
+  // Append-only migrations: certificate library and assignments stay tenant-local.
+  `CREATE TABLE trusted_cas (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    pem TEXT NOT NULL,
+    fingerprint_sha256 TEXT NOT NULL UNIQUE,
+    subject TEXT NOT NULL,
+    not_before TEXT NOT NULL,
+    not_after TEXT NOT NULL
+  )`,
+  `CREATE TABLE kiosk_trusted_cas (
+    kiosk_id TEXT NOT NULL REFERENCES kiosks(id) ON DELETE CASCADE,
+    ca_id TEXT NOT NULL REFERENCES trusted_cas(id) ON DELETE CASCADE,
+    PRIMARY KEY(kiosk_id, ca_id)
+  )`,
+  `CREATE TABLE kiosk_trust_status (
+    kiosk_id TEXT PRIMARY KEY REFERENCES kiosks(id) ON DELETE CASCADE,
+    revision TEXT NOT NULL,
+    state TEXT NOT NULL,
+    message TEXT NOT NULL,
+    reported_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
 ];

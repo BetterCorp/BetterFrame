@@ -174,21 +174,24 @@ fn update_state_file(
 
 pub(super) fn complete_demo_exit() -> Result<(), String> {
     ensure_secure_state_dir()?;
-    complete_demo_exit_at(&state_dir(), &webview_data_dir())
+    complete_demo_exit_at(&state_dir(), &webview_data_dir(), super::trusted_cas::complete_reset)
 }
 
-fn complete_demo_exit_at(directory: &std::path::Path, browser: &std::path::Path) -> Result<(), String> {
+fn complete_demo_exit_at(directory: &std::path::Path, browser: &std::path::Path, reconcile: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
     let marker = directory.join("exit-demo");
     if !marker.exists() { return Ok(()); }
     update_state_file(&directory.join("state.json"), |latest| {
         *latest = ClientState::unpaired(&latest.server_url);
         Ok(())
     })?;
+    let trust = directory.join("trusted-cas.json");
+    if trust.exists() { fs::remove_file(trust).map_err(|error| error.to_string())?; }
     let bundle = directory.join("bundle.json");
     if bundle.exists() { fs::remove_file(bundle).map_err(|error| error.to_string())?; }
     if browser.exists() { fs::remove_dir_all(browser).map_err(|error| error.to_string())?; }
     // Commit the exit last. A crash or cleanup error leaves a retryable journal,
     // regardless of whether the credentials have already been cleared.
+    reconcile()?;
     fs::remove_file(marker).map_err(|error| error.to_string())
 }
 
@@ -197,6 +200,21 @@ pub(super) fn load_bundle() -> Option<KioskBundle> {
         .and_then(|()| read_protected_or_plain(&bundle_path()))
         .ok()
         .and_then(|bytes| deserialize_cached_bundle(&bytes))
+}
+
+pub(super) fn load_trusted_cas() -> Result<Vec<crate::bundle::TrustedCa>, String> {
+    crate::trusted_cas::load_cached_assignment(&state_dir().join("trusted-cas.json"),
+        read_protected_or_plain,
+        || {
+            let path = bundle_path();
+            if !path.try_exists().map_err(|error| error.to_string())? { return Ok(Vec::new()); }
+            let bytes = read_protected_or_plain(&path)?;
+            trusted_cas_from_bundle(&bytes)
+        })
+}
+
+pub(super) fn save_trusted_cas(cas: &[crate::bundle::TrustedCa]) -> Result<(), String> {
+    write_protected(&state_dir().join("trusted-cas.json"), &serde_json::to_vec(cas).map_err(|error| error.to_string())?)
 }
 
 pub(super) fn save_bundle(bundle: &KioskBundle) -> Result<(), String> {
@@ -532,6 +550,14 @@ struct LegacyWindowsStream {
     rtsp_uri: String,
 }
 
+fn trusted_cas_from_bundle(bytes: &[u8]) -> Result<Vec<crate::bundle::TrustedCa>, String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    if let Some(cas) = value.get("trusted_cas") {
+        return serde_json::from_value(cas.clone()).map_err(|error| format!("Decode trusted CAs: {error}"));
+    }
+    deserialize_cached_bundle(bytes).map(|bundle| bundle.trusted_cas).ok_or_else(|| "Decode legacy bundle failed".into())
+}
+
 fn deserialize_cached_bundle(bytes: &[u8]) -> Option<KioskBundle> {
     serde_json::from_slice(bytes).ok().or_else(|| {
         serde_json::from_slice::<LegacyWindowsBundle>(bytes)
@@ -658,6 +684,7 @@ fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
         cameras,
         gpio_bindings: Vec::new(),
         operator_console: crate::bundle::OperatorConsoleConfig::default(),
+        trusted_cas: Vec::new(),
         version: legacy.version,
     }
 }
@@ -767,7 +794,7 @@ mod tests {
         fs::write(directory.join("bundle.json"), b"cached-demo-content").unwrap();
         // A non-directory browser path injects a cleanup error after state reset.
         fs::write(&browser, b"blocked-browser-cleanup").unwrap();
-        assert!(complete_demo_exit_at(&directory, &browser).is_err());
+        assert!(complete_demo_exit_at(&directory, &browser, || Ok(())).is_err());
         assert!(marker.exists());
         let cleared = load_state_file(&state).unwrap();
         assert!(!cleared.demo);
@@ -777,7 +804,14 @@ mod tests {
         fs::create_dir(&browser).unwrap();
         fs::write(browser.join("cookies"), b"old-session").unwrap();
         // Restart resumes the journal even though demo is already false.
-        complete_demo_exit_at(&directory, &browser).unwrap();
+        // The injected operation proves this fixture never reads global machine state.
+        for error in ["Remove previously requested roots manually", "Transient trust-store failure"] {
+            assert!(complete_demo_exit_at(&directory, &browser, || Err(error.into())).is_err());
+            assert!(marker.exists(), "Incomplete trust cleanup must retain its retry marker");
+        }
+        let reconciled = std::cell::Cell::new(false);
+        complete_demo_exit_at(&directory, &browser, || { reconciled.set(true); Ok(()) }).unwrap();
+        assert!(reconciled.get());
         assert!(!marker.exists());
         assert!(!browser.exists());
         assert!(!directory.join("bundle.json").exists());
@@ -786,9 +820,22 @@ mod tests {
             latest.kiosk_key = Some("new-demo-key".into());
             Ok(())
         }).unwrap();
-        complete_demo_exit_at(&directory, &browser).unwrap();
+        complete_demo_exit_at(&directory, &browser, || Ok(())).unwrap();
         assert_eq!(load_state_file(&state).unwrap().kiosk_key.as_deref(), Some("new-demo-key"));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn malformed_bundle_trust_never_falls_back_to_an_empty_legacy_assignment() {
+        let legacy = serde_json::json!({ "kiosk_id": "1", "kiosk_name": "Lobby", "version": "7", "displays": [], "cameras": [] });
+        assert!(trusted_cas_from_bundle(&serde_json::to_vec(&legacy).unwrap()).unwrap().is_empty());
+        for malformed in [serde_json::json!(null), serde_json::json!([{"pem": 42, "fingerprint_sha256": "a".repeat(64)}])] {
+            let mut bundle = legacy.clone(); bundle["trusted_cas"] = malformed;
+            assert!(deserialize_cached_bundle(&serde_json::to_vec(&bundle).unwrap()).is_some(), "Fixture must reproduce the permissive legacy fallback");
+            assert!(trusted_cas_from_bundle(&serde_json::to_vec(&bundle).unwrap()).is_err());
+        }
+        let mut empty = legacy; empty["trusted_cas"] = serde_json::json!([]);
+        assert!(trusted_cas_from_bundle(&serde_json::to_vec(&empty).unwrap()).unwrap().is_empty());
     }
 
     #[test]

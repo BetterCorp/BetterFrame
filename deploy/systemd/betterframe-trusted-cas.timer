@@ -1,0 +1,10 @@
+[Unit]
+Description=Retry BetterFrame certificate provisioning and recover its watcher
+
+[Timer]
+OnBootSec=6min
+OnUnitActiveSec=6min
+Unit=betterframe-trusted-cas.service
+
+[Install]
+WantedBy=timers.target

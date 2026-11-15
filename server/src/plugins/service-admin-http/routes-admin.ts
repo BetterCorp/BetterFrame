@@ -1,3 +1,4 @@
+import { registerTrustedCaRoutes } from "./routes-trusted-cas.js";
 import { registerOverlayRoutes } from "./routes-overlays.js";
 import { parseSmartUrlForm } from "../../shared/smart-url.js";
 import { visibleTenants } from "../../shared/demo.js";
@@ -732,6 +733,7 @@ async function shiftCellsForInsertion(
 
 export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   registerOverlayRoutes(app, deps);
+  registerTrustedCaRoutes(app, deps);
   // ---- Overview -------------------------------------------------------------
 
   app.get("/admin/", async (event) => {

@@ -29,6 +29,7 @@ internal object EnrollmentCleanup {
         var started = false
     }
     private val jobs = mutableMapOf<String, Job>()
+    private val failures = mutableMapOf<String, String>()
     private data class ResetVersion(val generation: Long, val token: String)
     // Keep the tombstone after cleanup so delayed writes stay invalidated.
     private val versions = mutableMapOf<String, ResetVersion>()
@@ -37,6 +38,7 @@ internal object EnrollmentCleanup {
     private fun key(context: Context) = context.noBackupFilesDir.absolutePath
 
     @Synchronized fun pending(context: Context): String? = jobs[key(context)]?.token
+    @Synchronized fun failureReason(context: Context): String? = failures[key(context)]
 
     @Synchronized fun begin(context: Context, token: String): Claim {
         val path = key(context)
@@ -71,11 +73,15 @@ internal object EnrollmentCleanup {
         }
     }
 
-    @Synchronized fun request(context: Context, token: String, clear: (Context, (Boolean) -> Unit) -> Unit, done: (Boolean) -> Unit) {
+    @Synchronized fun request(context: Context, token: String, clear: (Context, (Boolean) -> Unit) -> Unit,
+        cleanTrust: (Context) -> Unit = { app ->
+            TrustedCaPolicy.requireRemovalApplied(TrustedCas(app).sync(JSONArray()))
+        }, done: (Boolean) -> Unit) {
         val path = key(context)
         val job = jobs.getOrPut(path) { Job(token, CompletableFuture.completedFuture(Unit)) }
         job.listeners.add(done)
         if (job.started) return
+        failures.remove(path)
         job.started = true
         val store = ProtectedStore(context)
         fun finish(success: Boolean) {
@@ -89,8 +95,13 @@ internal object EnrollmentCleanup {
         worker.execute {
             try {
                 job.persisted.get()
-                // A stale reader may join just after another instance completed.
-                if (store.read().optString(MARKER) != job.token) { finish(true); return@execute }
+                // Validate under the enrollment lock before any trust mutation.
+                // A delayed obsolete cleanup cannot remove a new session's CAs.
+                val current = synchronized(this) {
+                    if (jobs[path] !== job || store.read().optString(MARKER) != job.token) false
+                    else { cleanTrust(context); true }
+                }
+                if (!current) { finish(true); return@execute }
                 main.post {
                     try {
                         clear(context) { cleared ->
@@ -108,7 +119,10 @@ internal object EnrollmentCleanup {
                         }
                     } catch (_: Exception) { finish(false) }
                 }
-            } catch (_: Exception) { finish(false) }
+            } catch (error: Exception) {
+                if (error is TrustedCaPolicy.CleanupIncomplete) synchronized(this) { failures[path] = error.message.orEmpty() }
+                finish(false)
+            }
         }
     }
 }
@@ -131,12 +145,15 @@ class ViewerSession internal constructor(context: Context, private val listener:
         fun onServerAddress(address: String) {}
         fun onStatus(message: String)
         fun onPairing(code: String)
+        fun onTrustChanged() {}
         fun onPlan(plan: JSONObject)
         fun onIdleReturn() {}
         fun onStandbyChanged(standby: Boolean) {}
     }
     private val app = context.applicationContext
     private val store = ProtectedStore(app)
+    private val trustedCas = TrustedCas(app)
+    private var trustReport = JSONObject()
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadScheduledExecutor()
     // Projection is independent of potentially slow network I/O, so local touch/remote actions stay responsive.
@@ -524,7 +541,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
                     listener.onPairing("")
                     listener.onStatus("Enrollment cleared. Ready to pair.")
                     if (restart != null) start(restart.server)
-                } else listener.onStatus("Unable to clear saved enrollment")
+                } else listener.onStatus(EnrollmentCleanup.failureReason(app) ?: "Unable to clear saved enrollment")
             }
         }
     }
@@ -730,24 +747,36 @@ class ViewerSession internal constructor(context: Context, private val listener:
             .put("power_session_id", powerSessionId).put("power_revision", powerRevision)
     }
 
+    private fun syncTrustedCas(cas: JSONArray): JSONObject {
+        val report = trustedCas.sync(cas, ::active)
+        if (report.optBoolean("changed")) ui(activeEpoch) { listener.onTrustChanged() }
+        return report
+    }
+
     private fun heartbeat(): Boolean {
+        trustReport = syncTrustedCas(state.optJSONArray("trusted_cas") ?: state.optString("bundle").takeIf { it.isNotBlank() }?.let { JSONObject(it).optJSONArray("trusted_cas") } ?: JSONArray())
         val metrics = app.resources.displayMetrics
         val displays = JSONArray().put(powerStateReport().put("index", 0).put("name", "Android display")
             .put("width_px", metrics.widthPixels).put("height_px", metrics.heightPixels))
         return request("/api/kiosk/heartbeat", JSONObject().put("displays", displays).put("capabilities", capabilities())
             .put("kiosk_app_version", BuildConfig.VERSION_NAME).put("os_version", "Android ${Build.VERSION.RELEASE}")
-            .put("bundle_version", state.optString("bundle_version"))).use {
+            .put("bundle_version", state.optString("bundle_version")).put("trusted_ca_status", trustReport)).use {
                 profileVerified = false
                 if (!authorized(it)) return@use false
                 // A dropped response body is a transport failure, not evidence
                 // that a previously verified server no longer supports viewers.
-                val profile = try { json(it).optString("viewer_profile") } catch (_: JSONException) { null }
+                val response = json(it)
+                val profile = response.optString("viewer_profile")
                 ensureActive()
                 if (profile != VIEWER_PROFILE) {
                     clearCachedBundle()
                     blockDisplay(PROFILE_REQUIRED)
                     false
                 } else {
+                    response.optJSONArray("trusted_cas")?.let { cas ->
+                        state.put("trusted_cas", cas); persist()
+                        trustReport = syncTrustedCas(cas)
+                    }
                     profileVerified = true
                     true
                 }

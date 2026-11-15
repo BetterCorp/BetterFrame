@@ -442,6 +442,16 @@ class MainActivity : Activity(), ViewerSession.Listener {
         if (code.isBlank()) resetRequested = false
     }
 
+    override fun onTrustChanged() = runOnUiThread {
+        // Refresh web content and overlays while keeping camera decoding alive.
+        for (id in tiles.keys.toList()) {
+            val tile = tiles[id]?.second ?: continue
+            tile.releaseOverlay()
+            if (tile is WebTile) { tiles.remove(id); tile.release(); grid.removeView(tile) }
+        }
+        if (active && !session.isStandby) plan?.let(::render)
+    }
+
     override fun onPlan(value: JSONObject) = runOnUiThread {
         plan = value
         if (active && !session.isStandby) render(value)

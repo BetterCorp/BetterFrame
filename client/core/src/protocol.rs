@@ -193,6 +193,8 @@ pub struct PairClaimResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct HeartbeatResponse {
+    #[serde(default)]
+    pub trusted_cas: Option<Vec<crate::bundle::TrustedCa>>,
     pub pending_config: Option<PendingConfig>,
 }
 

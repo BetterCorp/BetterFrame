@@ -55,6 +55,7 @@ export interface AuthApi {
   verifyApiKey(plaintext: string, ip: string | null): Promise<ApiKey | null>;
   verifyKioskKey(plaintext: string): Promise<{
     id: string;
+    key_hash: string;
     tenant_id: string;
     tenant_slug: string;
     tenant_name: string | null;
@@ -296,6 +297,7 @@ export function createAuth(
 
   async function verifyKioskKey(plaintext: string): Promise<{
     id: string;
+    key_hash: string;
     tenant_id: string;
     tenant_slug: string;
     tenant_name: string | null;
@@ -312,6 +314,7 @@ export function createAuth(
         if (await verifyPassword(plaintext, cand.key_hash)) {
           return {
             id: cand.id,
+            key_hash: cand.key_hash,
             tenant_id: "default",
             tenant_slug: "default",
             tenant_name: "Default",
@@ -329,6 +332,7 @@ export function createAuth(
         if (await verifyPassword(plaintext, cand.key_hash)) {
           return {
             id: cand.id,
+            key_hash: cand.key_hash,
             tenant_id: tenant.id,
             tenant_slug: tenant.slug,
             tenant_name: tenant.name,

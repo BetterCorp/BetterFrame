@@ -72,6 +72,7 @@ use crate::core::state::ClientState;
 mod host;
 mod renderer;
 mod storage;
+mod trusted_cas;
 
 use host::*;
 use renderer::*;
@@ -388,6 +389,7 @@ async fn run_agent(server_url: String, app: Arc<Mutex<Option<Child>>>) -> Result
         latest.server_url = server_url;
         Ok(())
     })?;
+    if trusted_cas::reconcile_cached() { restart_app(&app)?; }
     // The renderer reads protected cached state independently. Start it before
     // regional discovery so an offline upgrade keeps showing the saved display.
     start_app(&app)?;
@@ -433,12 +435,16 @@ async fn run_agent(server_url: String, app: Arc<Mutex<Option<Child>>>) -> Result
     }
     {
         let state = state.clone();
+        let app_for_trust = app.clone();
         tokio::spawn(async move {
             loop {
                 let snapshot = state.lock().unwrap().clone();
                 if let Some(key) = snapshot.kiosk_key.as_deref() {
                     match heartbeat(&snapshot.server_url, key, &snapshot).await {
                         Ok(next) => {
+                            if tokio::task::spawn_blocking(trusted_cas::reconcile_cached).await.unwrap_or(false) {
+                                if let Err(error) = restart_app(&app_for_trust) { warn!("restart renderer after CA change: {error}"); }
+                            }
                             match update_state(|latest| {
                                 latest.managed_config_applied_version = next.managed_config_applied_version;
                                 latest.managed_config_error = next.managed_config_error;
@@ -925,6 +931,7 @@ async fn heartbeat(
         .post(format!("{server_url}/api/kiosk/heartbeat"))
         .bearer_auth(key)
         .json(&serde_json::json!({
+            "trusted_ca_status": trusted_cas::trust_report(),
             "bundle_version": state.bundle_version.as_deref(),
             "kiosk_app_version": kiosk_app_version(),
             "firmware_target": "windows-x64",
@@ -953,6 +960,7 @@ async fn heartbeat(
         .json::<HeartbeatResponse>()
         .await
         .map_err(|e| HeartbeatError::Other(format!("heartbeat response: {e}")))?;
+    if let Some(cas) = body.trusted_cas { save_trusted_cas(&cas).map_err(HeartbeatError::Other)?; }
     let mut next = state.clone();
     if let Some(pending) = body.pending_config {
         match apply_pending_config(&pending) {
@@ -992,7 +1000,8 @@ async fn report_layout_change(
 }
 
 fn start_app(slot: &Arc<Mutex<Option<Child>>>) -> Result<(), String> {
-    if slot.lock().unwrap().is_some() {
+    let mut guard = slot.lock().unwrap();
+    if guard.is_some() {
         return Ok(());
     }
     let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
@@ -1000,7 +1009,7 @@ fn start_app(slot: &Arc<Mutex<Option<Child>>>) -> Result<(), String> {
         .arg("app")
         .spawn()
         .map_err(|e| format!("start app: {e}"))?;
-    *slot.lock().unwrap() = Some(child);
+    *guard = Some(child);
     Ok(())
 }
 

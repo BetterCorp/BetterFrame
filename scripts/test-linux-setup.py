@@ -20,6 +20,12 @@ class SetupTests(unittest.TestCase):
         return subprocess.run(['bash', '-c', f'source {shlex.quote(str(ROOT / "setup.sh"))}\nBACKUP_ID=test\n{body}'],
                               text=True, capture_output=True, check=check)
 
+    def test_certificate_service_failure_does_not_abort_installation(self):
+        result = self.shell("START=1; systemctl() { return 1; }; start_trusted_ca_service; printf 'continued'")
+        self.assertEqual(result.stdout, 'continued')
+        self.assertIn('Warning: certificate service could not start', result.stderr)
+        self.assertEqual(self.shell("START=0; systemctl() { exit 99; }; start_trusted_ca_service; printf 'continued'").stdout, 'continued')
+
     def test_arguments(self):
         self.assertEqual(self.shell('parse_args --yes --mode desktop --no-start; echo "$MODE $START $ASSUME_YES"').stdout.strip(), 'desktop 0 1')
         for args in ['--mode invalid', '--binary', '--version 1.0.1 --binary /tmp/app']:

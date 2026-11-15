@@ -519,15 +519,29 @@ pub fn enter_demo() -> Result<(), String> {
     Ok(())
 }
 
-pub fn reset_pairing_and_restart(reason: &str) -> ! {
-    tracing::warn!("{reason}; wiping kiosk pairing state and restarting");
-
-    remove_pairing_state_files(&PathBuf::from("/var/lib/betterframe/kiosk"));
-    if let Some(home) = dirs::home_dir() {
-        remove_pairing_state_files(&home.join(".betterframe-kiosk"));
+fn reset_pairing_state_at(directories: &[PathBuf], queue: impl FnOnce() -> crate::trusted_cas::TrustReport) -> Result<(), String> {
+    let report = queue();
+    if !matches!(report.state.as_str(), "pending" | "applied") {
+        return Err(report.message);
     }
+    // Never erase the retry context until removal is durably queued (or applied).
+    for directory in directories { remove_pairing_state_files(directory); }
+    Ok(())
+}
 
-    let _ = crate::linux_trusted_cas::reset();
+pub fn reset_pairing_and_restart(reason: &str) -> ! {
+    tracing::warn!("{reason}; queuing CA removal before wiping kiosk pairing state");
+    let mut directories = vec![PathBuf::from("/var/lib/betterframe/kiosk")];
+    if let Some(home) = dirs::home_dir() { directories.push(home.join(".betterframe-kiosk")); }
+    loop {
+        match reset_pairing_state_at(&directories, crate::linux_trusted_cas::reset) {
+            Ok(()) => break,
+            Err(error) => {
+                tracing::error!("Cannot complete enrollment reset: {error}; retrying CA removal in 5 seconds");
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        }
+    }
     tracing::info!("config wiped, exiting for systemd restart");
     std::process::exit(1);
 }
@@ -1323,6 +1337,27 @@ fn validate_timezone(timezone: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enrollment_reset_preserves_retry_context_until_trust_removal_is_queued() {
+        let directory = std::env::temp_dir().join(format!("bf-reset-trust-{}-{}", std::process::id(), rand::random::<u64>()));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("identity.json"), b"old identity").unwrap();
+        fs::write(directory.join("trusted-cas.json"), b"old assignment").unwrap();
+        for state in ["error", "manual_action"] {
+            assert!(reset_pairing_state_at(&[directory.clone()], || crate::trusted_cas::TrustReport {
+                revision: String::new(), state: state.into(), message: "Removal not queued".into(),
+            }).is_err());
+            assert!(directory.join("identity.json").exists());
+            assert!(directory.join("trusted-cas.json").exists());
+        }
+        reset_pairing_state_at(&[directory.clone()], || crate::trusted_cas::TrustReport {
+            revision: crate::trusted_cas::revision(&[]), state: "pending".into(), message: String::new(),
+        }).unwrap();
+        assert!(!directory.join("identity.json").exists());
+        assert!(!directory.join("trusted-cas.json").exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn completed_legacy_import_never_resurrects_a_consumed_journal_or_reset_identity() {

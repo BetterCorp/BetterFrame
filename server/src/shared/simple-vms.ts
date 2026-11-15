@@ -93,7 +93,9 @@ export async function reconcileSimpleVmsAssignments(repo: Repository, sourceId?:
   await withSimpleVmsSync(async () => {
     const sources = sourceId ? [await getSimpleVmsSource(repo, sourceId)].filter((s): s is SimpleVmsSource => !!s)
       : await repo.adapter.all<SimpleVmsSource>("SELECT * FROM simple_vms_sources");
-    for (const source of sources) await repo.transact(async () => {
+    for (const candidate of sources) await repo.transact(async () => {
+      const source = await repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE id = ? FOR UPDATE", [candidate.id]);
+      if (!source) return;
       const layouts = await repo.adapter.all<{ layout_id: string }>("SELECT layout_id FROM simple_vms_groups WHERE source_id = ? AND layout_id IS NOT NULL", [source.id]);
       const eligible = new Set<string>();
       if (source.enabled) {

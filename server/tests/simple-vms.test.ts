@@ -3,7 +3,7 @@ import test from "node:test";
 import { randomBytes } from "node:crypto";
 import { PgAdapter } from "../src/shared/db/pg-adapter.js";
 import { initDb, createTenantSchema } from "../src/shared/db/init.js";
-import { saveSimpleVmsSource, removeSimpleVmsSource, applySimpleVmsSnapshot, simpleVmsCamerasForKiosk, simpleVmsTokenMatches } from "../src/shared/simple-vms.js";
+import { saveSimpleVmsSource, removeSimpleVmsSource, applySimpleVmsSnapshot, simpleVmsCamerasForKiosk, simpleVmsTokenMatches, reconcileSimpleVmsAssignments } from "../src/shared/simple-vms.js";
 import { simpleVmsAddress, validateSimpleVmsSnapshot, type VmsSnapshot } from "../src/shared/simple-vms-schema.js";
 import { generateBundle } from "../src/shared/bundle.js";
 import { initSecrets } from "../src/shared/secrets.js";
@@ -146,7 +146,13 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     assert.equal((await repo.getDisplayById(display.id))?.default_layout_id, null);
     await repo.attachLayoutToDisplay(linkedDisplay.id, custom.id);
     await repo.updateDisplay(linkedDisplay.id, { default_layout_id: custom.id });
-    await saveSimpleVmsSource(repo, secrets, owner.id, config);
+    // Re-enable after reconciliation enumerates the disabled source but before its transaction begins.
+    const transact = repo.transact.bind(repo); let reenabled = false;
+    repo.transact = async <T>(work: () => Promise<T>): Promise<T> => {
+      if (!reenabled) { reenabled = true; await saveSimpleVmsSource(repo, secrets, owner.id, config); }
+      return transact(work);
+    };
+    try { await reconcileSimpleVmsAssignments(repo, source.id); } finally { repo.transact = transact; }
     assert.equal((await repo.getDisplayById(display.id))?.default_layout_id, managedLayout.id, "Re-enabling restores the previous managed default");
     assert.equal((await repo.getDisplayById(linkedDisplay.id))?.default_layout_id, custom.id, "A different default chosen during disconnection takes precedence");
     const empty = snapshot(3); empty.cameras = []; empty.groups = [];

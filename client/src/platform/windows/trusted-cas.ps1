@@ -91,6 +91,7 @@ public static class BetterFrameCaSignature {
         $owned[$fp] = $desired[$fp].Thumbprint
         Write-AtomicJson $journal @{ owned = $owned; previous = $previous; dirty = $true }
         $store.Add($desired[$fp]); $changed = $true
+        if ($previous.ContainsKey($fp)) { $previous[$fp] = 'present' }
     }
     foreach ($fp in @($previous.Keys)) {
         if ($fp -cnotmatch '^[0-9a-f]{64}$') { throw 'Corrupt manual CA journal' }

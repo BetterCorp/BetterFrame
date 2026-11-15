@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 """Bounded, root-owned CA reconciler. Never accepts paths or private keys from the player."""
+import errno
 import hashlib
 import json
 import os
@@ -15,6 +16,10 @@ STATE = Path("/var/lib/betterframe/trusted-cas")
 REQUEST = Path("/var/lib/betterframe/kiosk/trusted-cas-request.json")
 CA_DIR = Path("/etc/pki/ca-trust/source/anchors") if Path("/usr/bin/update-ca-trust").is_file() else Path("/usr/local/share/ca-certificates")
 MAX_REQUEST = 600 * 1024
+
+
+class InvalidAssignment(ValueError):
+    """Malformed requests may be discarded; operational failures remain retryable."""
 
 
 def atomic(path, value):
@@ -86,7 +91,10 @@ def reconcile(cas, state_dir=STATE, ca_dir=CA_DIR, update=None, errors=None, now
     journal = state_dir / "ownership.json"
     previous = json.loads(journal.read_text()) if journal.exists() else {"owned": [], "desired": [], "dirty": False}
     with tempfile.TemporaryDirectory(dir=state_dir) as workdir:
-        validated = validate(cas, workdir, errors, now)
+        try:
+            validated = validate(cas, workdir, errors, now)
+        except (ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+            raise InvalidAssignment(str(error)) from error
     owned = set(previous["owned"])
     # Record ownership BEFORE copying a new file; a crash is safely retryable.
     for fp in validated:
@@ -119,15 +127,23 @@ def reconcile(cas, state_dir=STATE, ca_dir=CA_DIR, update=None, errors=None, now
 
 
 def read_request(path):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise InvalidAssignment("Refusing a symlink CA request") from error
+        raise
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_REQUEST:
-            raise ValueError("Invalid CA request file")
+            raise InvalidAssignment("Invalid CA request file")
         raw = stream.read(MAX_REQUEST + 1)
         if len(raw) > MAX_REQUEST:
-            raise ValueError("CA request is too large")
-        return json.loads(raw)
+            raise InvalidAssignment("CA request is too large")
+        try:
+            return json.loads(raw)
+        except (ValueError, UnicodeError) as error:
+            raise InvalidAssignment("Invalid CA request JSON") from error
 
 
 def restart_player(config=Path("/etc/betterframe/linux-install")):
@@ -156,6 +172,8 @@ def main(state_dir=STATE, request=REQUEST, ca_dir=CA_DIR, update=None, restart=r
             pass
         if claimed.exists() or claimed.is_symlink():
             body = read_request(claimed)
+            if not isinstance(body, dict) or "trusted_cas" not in body:
+                raise InvalidAssignment("CA request must contain trusted_cas")
             cas = body["trusted_cas"]
         elif (state_dir / "ownership.json").exists():
             cas = json.loads((state_dir / "ownership.json").read_text())["desired"]
@@ -175,9 +193,11 @@ def main(state_dir=STATE, request=REQUEST, ca_dir=CA_DIR, update=None, restart=r
         except Exception:
             desired_revision = hashlib.sha256(b"").hexdigest()
         atomic(state_dir / "status.json", {"revision": desired_revision, "state": "error", "message": ("CA provisioning failed: " + str(error))[:1024]})
-        # Only the claimed file belongs to this invocation. A newer live request
-        # must remain available to PathExists after this service terminates.
-        claimed.unlink(missing_ok=True)
+        # Discard malformed requests, but retain valid claims after operational
+        # failures, including failure to journal a new desired set during reset.
+        # A newer live request remains available to supersede this claim.
+        if isinstance(error, InvalidAssignment):
+            claimed.unlink(missing_ok=True)
         raise
 
 

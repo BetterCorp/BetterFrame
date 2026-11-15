@@ -87,6 +87,17 @@ class TrustedCaPolicyTest {
             fail("Store errors must keep cleanup pending")
         } catch (error: TrustedCaPolicy.CleanupIncomplete) { assertEquals("Store unavailable", error.message) }
     }
+    @Test fun managedRemovalClearsAnEarlierManualRequestInOneAttempt() {
+        val ca = certificate(); val fp = ca.getString("fingerprint_sha256"); val store = Store(); store.owner = false
+        store.sync(JSONArray().put(ca)); store.owner = true
+        assertEquals("applied", store.sync(JSONArray().put(ca)).getString("state"))
+        assertTrue(store.installed.contains(fp))
+        assertFalse("Managed installation must also update the observed manual state", store.sync(JSONArray().put(ca)).getBoolean("changed"))
+        val removed = store.sync(JSONArray())
+        TrustedCaPolicy.requireRemovalApplied(removed)
+        assertTrue(removed.getBoolean("changed")); assertFalse(store.installed.contains(fp))
+        assertFalse(JSONObject(store.saved).getJSONObject("previous").has(fp))
+    }
     @Test fun invalidAssignmentsCannotChangeExistingTrust() {
         val ca = certificate(); val store = Store()
         store.sync(JSONArray().put(ca))

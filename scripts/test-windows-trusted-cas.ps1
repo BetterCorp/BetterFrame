@@ -76,6 +76,12 @@ try {
     Apply @() 10 $manualScript
     Apply @() 0 $manualScript
     Assert-True (Installed $external) 'Pre-existing root was removed'
+    # Elevation after a manual request transfers removal responsibility to ownership.
+    Apply @((Item $first)) 0 $manualScript
+    Apply @((Item $first)) 10
+    Apply @((Item $first)) 0
+    Apply @() 10
+    Apply @() 0
     $report = Get-Content -LiteralPath $env:BF_CA_REPORT -Raw | ConvertFrom-Json
     Assert-True ($report.state -eq 'applied' -and $report.revision -eq 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855') 'Empty assignment report mismatch'
     Write-Host 'Windows CA installation, idempotence, validation and removal passed.'

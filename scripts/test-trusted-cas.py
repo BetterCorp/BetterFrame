@@ -93,7 +93,7 @@ class TrustedCaTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.apply([self.ca])
         self.assertEqual(victim.read_text(), "keep")
         request = self.root / "request"; request.symlink_to(victim)
-        with self.assertRaises(OSError): trust.read_request(request)
+        with self.assertRaises(trust.InvalidAssignment): trust.read_request(request)
         request.unlink(); request.write_bytes(b"x" * (trust.MAX_REQUEST + 1))
         with self.assertRaises(ValueError): trust.read_request(request)
     def test_real_trust_bundle_accepts_only_the_signed_hostname_and_valid_leaf_until_removal(self):
@@ -128,16 +128,38 @@ class TrustedCaTests(unittest.TestCase):
         self.assertEqual(list(self.cadir.iterdir()), [])
         self.assertEqual(json.loads((self.state / "status.json").read_text())["revision"], trust.revision([]))
 
-    def test_failure_consumes_only_the_claim_and_preserves_the_next_request(self):
+    def test_operational_failure_retains_the_claim_and_preserves_the_next_request(self):
         request = self.root / "request.json"
         request.write_text(json.dumps({"trusted_cas": [self.ca]}))
         def fail_with_replacement():
             request.write_text(json.dumps({"trusted_cas": []}))
             raise RuntimeError("interrupted update")
         with self.assertRaises(RuntimeError): trust.main(self.state, request, self.cadir, fail_with_replacement, lambda: None)
-        self.assertTrue(request.exists()); self.assertFalse((self.state / "processing.json").exists())
+        self.assertTrue(request.exists()); self.assertTrue((self.state / "processing.json").exists())
         trust.main(self.state, request, self.cadir, self.update, lambda: None)
         self.assertEqual(list(self.cadir.iterdir()), [])
+
+    def test_reset_removal_survives_failure_before_the_new_desired_set_is_journaled(self):
+        request = self.root / "request.json"
+        request.write_text(json.dumps({"trusted_cas": [self.ca]}))
+        trust.main(self.state, request, self.cadir, self.update, lambda: None)
+        request.write_text(json.dumps({"trusted_cas": []}))
+        original_atomic = trust.atomic
+        def fail_journal(path, value):
+            if path == self.state / "ownership.json": raise OSError("Transient journal write failure")
+            original_atomic(path, value)
+        with patch.object(trust, "atomic", fail_journal):
+            with self.assertRaises(OSError): trust.main(self.state, request, self.cadir, self.update, lambda: None)
+        self.assertTrue((self.state / "processing.json").exists())
+        self.assertEqual(json.loads((self.state / "ownership.json").read_text())["desired"], [self.ca])
+        trust.main(self.state, request, self.cadir, self.update, lambda: None)
+        self.assertEqual(list(self.cadir.iterdir()), [])
+        self.assertEqual(json.loads((self.state / "ownership.json").read_text())["desired"], [])
+        self.assertFalse((self.state / "processing.json").exists())
+        # Invalid certificate requests are still consumed rather than retried forever.
+        request.write_text(json.dumps({"trusted_cas": [{**self.ca, "fingerprint_sha256": "0" * 64}]}))
+        with self.assertRaises(trust.InvalidAssignment): trust.main(self.state, request, self.cadir, self.update, lambda: None)
+        self.assertFalse((self.state / "processing.json").exists())
 
     def test_abandoned_claim_recovers_and_invalid_claim_does_not_retry_forever(self):
         self.state.mkdir()

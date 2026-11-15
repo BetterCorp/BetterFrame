@@ -52,7 +52,7 @@ internal object TrustedCaPolicy {
             val owned = state.optJSONObject("owned") ?: JSONObject()
             val previous = state.optJSONObject("previous") ?: JSONObject()
             val managed = owner()
-            val present = installed()
+            val present = installed().toMutableSet()
             var manual = false
             fun journal() { state.put("owned", owned).put("dirty", true); persist(state) }
             for (fp in owned.keys().asSequence().toList()) {
@@ -60,7 +60,7 @@ internal object TrustedCaPolicy {
                 if (managed) {
                     val der = Base64.getDecoder().decode(owned.getString(fp))
                     require(fingerprint(der) == fp) { "Corrupt CA ownership journal" }
-                    journal(); changed = true; remove(der)
+                    journal(); changed = true; remove(der); present.remove(fp)
                     owned.remove(fp); journal()
                 } else if (present.contains(fp)) manual = true
                 else { owned.remove(fp); journal() }
@@ -75,7 +75,8 @@ internal object TrustedCaPolicy {
                     previous.put(fp, "missing"); manual = true; continue
                 }
                 owned.put(fp, Base64.getEncoder().encodeToString(cert.encoded))
-                journal(); changed = true; install(cert)
+                journal(); changed = true; install(cert); present.add(fp)
+                if (previous.has(fp)) previous.put(fp, "present")
             }
             // Manual requests remain ours to report even if device ownership
             // changes later; ownership alone does not remove user-installed CAs.

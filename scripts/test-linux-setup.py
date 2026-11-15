@@ -108,6 +108,26 @@ def CDLL(name):
             self.assertEqual((p/'app').read_text(), 'working current app')
             self.assertFalse(marker.exists())
 
+    def test_identical_repair_preserves_confirmation_and_pending_rollback(self):
+        for pending in [False, True]:
+            with self.subTest(pending=pending), tempfile.TemporaryDirectory() as tmp:
+                p = Path(tmp)
+                (p/'app').write_text('identical candidate')
+                (p/'candidate').write_text('identical candidate')
+                (p/'app.prev').write_text('previous rollback')
+                marker = p/'firmware-applying.json'
+                if pending:
+                    marker.write_text('{}')
+                result = self.shell(f'''BIN={p}/app; STATE={p}; STAGING={p}; INSTALL_USER={os.getuid()}; USER_GROUP={os.getgid()}
+                    install_app_binary
+                    systemctl() {{ case "$1" in show) echo loaded;; is-active) return 0;; *) echo "$*";; esac; }}
+                    stop_app_service() {{ :; }}
+                    retire_legacy_gateway
+                ''')
+                self.assertEqual(marker.exists(), pending)
+                self.assertEqual((p/'app.prev').read_text(), 'previous rollback')
+                self.assertEqual('disable betterframe-mediamtx.service' in result.stdout, not pending)
+
     def test_rollback_bookkeeping_failures_restore_and_allow_startup(self):
         for failure in ['deadline', 'attempts', 'read_only_state']:
             with tempfile.TemporaryDirectory() as tmp:
@@ -581,6 +601,99 @@ def CDLL(name):
             start_app_service user betterframe.service
         ''')
 
+    def test_failed_upgrade_keeps_previous_gateway_state(self):
+        for active, enabled in [(True, 'enabled'), (False, 'disabled'), (True, 'disabled'), (False, 'enabled-runtime')]:
+            with self.subTest(active=active, enabled=enabled), tempfile.TemporaryDirectory() as tmp:
+                p = Path(tmp)
+                (p/'app').write_text('candidate')
+                (p/'app.prev').write_text('known good')
+                (p/'firmware-applying.json').write_text('{}')
+                result = self.shell(f'''
+                    BIN={p}/app; STATE={p}; LOG={p}/commands
+                    sleep() {{ :; }}
+                    runtime_command() {{ "$@"; }}
+                    stop_app_service() {{ :; }}
+                    systemctl() {{
+                        case "$1" in
+                            show) echo loaded;;
+                            is-enabled) echo {enabled};;
+                            is-active) return {0 if active else 1};;
+                            *) echo "$*" >> "$LOG";;
+                        esac
+                    }}
+                    service_command() {{ return 1; }}
+                    retire_legacy_gateway
+                    start_app_service system betterframe-kiosk.service
+                ''', check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual((p/'app').read_text(), 'known good')
+                self.assertFalse((p/'commands').exists(), 'An unconfirmed candidate must not alter gateway state')
+
+    def test_deferred_candidate_rollback_keeps_gateway_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p/'app').write_text('candidate')
+            (p/'app.prev').write_text('known good')
+            (p/'firmware-applying.json').write_text('{}')
+            (p/'firmware-applying.attempts').write_text('3')
+            self.shell(f'''STATE={p}
+                systemctl() {{ [[ $1 == show ]] && {{ echo loaded; return 0; }}; echo "$*" >> {p}/commands; }}
+                retire_legacy_gateway
+            ''')
+            script = (ROOT/'deploy/systemd/betterframe-firmware-rollback.sh').read_text()
+            script = script.replace('/opt/betterframe/kiosk/betterframe-kiosk', str(p/'app')).replace('/var/lib/betterframe/kiosk', str(p))
+            result = subprocess.run(['bash', '-c', script], text=True, capture_output=True, check=True)
+            self.assertIn('rolling back', result.stderr)
+            self.assertEqual((p/'app').read_text(), 'known good')
+            self.assertFalse((p/'commands').exists())
+
+    def test_gateway_retirement_failures_do_not_fail_healthy_app_setup(self):
+        for failure in ['stop', 'disable']:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                result = self.shell(f'''STATE={tmp}
+                    systemctl() {{ case "$1" in show) echo loaded;; disable) return {1 if failure == 'disable' else 0};; *) return 0;; esac; }}
+                    stop_app_service() {{ return {1 if failure == 'stop' else 0}; }}
+                    retire_legacy_gateway
+                    echo continued
+                ''')
+                self.assertIn('continued', result.stdout)
+                self.assertIn('Could not', result.stderr)
+
+    def test_confirmed_candidate_retires_legacy_gateway(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.shell(f'''STATE={tmp}
+                systemctl() {{ case "$1" in show) echo loaded;; is-active) return 0;; *) echo "$*";; esac; }}
+                stop_app_service() {{ echo "stop $2"; }}
+                retire_legacy_gateway
+            ''')
+            self.assertIn('stop betterframe-mediamtx.service', result.stdout)
+            self.assertIn('disable betterframe-mediamtx.service', result.stdout)
+
+    def test_pi_upgrade_retires_only_a_safe_legacy_gateway(self):
+        script = (ROOT/'deploy/scripts/setup-pi-kiosk.sh').read_text()
+        start = script.index('retire_pi_legacy_gateway() {')
+        function = script[start:script.index('\n}\n', start) + 3]
+        for pending, previously_pending, active, loaded, failure in [(False, False, True, True, False), (True, False, True, True, False),
+                    (False, True, True, True, False), (False, False, False, True, False), (False, False, True, False, False), (False, False, True, True, True)]:
+            with self.subTest(pending=pending, previously_pending=previously_pending, active=active, loaded=loaded, failure=failure), tempfile.TemporaryDirectory() as tmp:
+                marker = Path(tmp)/'pending.json'
+                if pending:
+                    marker.write_text('{}')
+                result = subprocess.run(['bash', '-c', f'''set -euo pipefail
+                    {function}
+                    systemctl() {{
+                        case "$1" in
+                            is-active) return {0 if active else 1};;
+                            show) echo {'loaded' if loaded else 'not-found'};;
+                            *) echo "$*"; return {1 if failure else 0};;
+                        esac
+                    }}
+                    retire_pi_legacy_gateway {shlex.quote(str(marker))} {int(previously_pending)}
+                    echo completed
+                '''], text=True, capture_output=True, check=True)
+                self.assertIn('completed', result.stdout)
+                self.assertEqual('disable --now betterframe-mediamtx.service' in result.stdout, not pending and not previously_pending and active and loaded)
+
     def test_start_success_requires_a_stable_process_after_reset(self):
         self.shell('''
             sleep() { :; }
@@ -698,53 +811,24 @@ printf '%s' "$answer" > "$TEST_INPUT"
             self.assertIn('Install, update, or repair', help_result.stdout)
 
 
-    def test_media_gateway_choice_is_remembered_and_can_be_changed(self):
+    def test_legacy_media_gateway_settings_migrate_to_native_simplevms(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp)/'install'
-            config.write_text('kiosk desktop dev off\n')
+            config.write_text('kiosk desktop dev on\n')
             cmd = f'CONFIG={config}; load_settings; echo "$MEDIA_GATEWAY $MEDIA_SAVED"'
             self.assertEqual(self.shell(cmd).stdout.strip(), 'off 1')
-            self.assertEqual(self.shell(f'CONFIG={config}; parse_args --media-gateway on; load_settings; echo "$MEDIA_GATEWAY"').stdout.strip(), 'on')
+            self.assertNotEqual(self.shell(f'CONFIG={config}; parse_args --media-gateway on; load_settings', check=False).returncode, 0)
             config.write_text('kiosk desktop dev\n')
-            self.assertEqual(self.shell(cmd).stdout.strip(), 'on 0')
+            self.assertEqual(self.shell(cmd).stdout.strip(), 'off 0')
             self.assertNotEqual(self.shell(f'CONFIG={config}; parse_args --media-gateway invalid; load_settings', check=False).returncode, 0)
 
-    def test_mediamtx_bundle_matches_managed_images(self):
-        self.assertEqual(self.shell('echo "$MEDIAMTX_VERSION"').stdout.strip(), (ROOT/'deploy/mediamtx.version').read_text().strip())
-        self.assertEqual(self.shell('write_mediamtx_config').stdout, (ROOT/'deploy/mediamtx.yml').read_text())
-        unit = self.shell('INSTALL_USER=kiosk; USER_GROUP=kiosk; write_mediamtx_unit').stdout
-        self.assertIn('User=kiosk', unit)
-        self.assertIn('Restart=always', unit)
-        self.assertIn('ReadWritePaths=/var/lib/betterframe/recordings', unit)
-
-    def test_mediamtx_archive_integrity_and_member_safety(self):
-        import io
-        import tarfile
-        with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp)
-            archive = p/'gateway.tar.gz'
-            def make_archive(symlink=False):
-                with tarfile.open(archive, 'w:gz') as bundle:
-                    member = tarfile.TarInfo('mediamtx')
-                    if symlink:
-                        member.type = tarfile.SYMTYPE
-                        member.linkname = '/etc/passwd'
-                        bundle.addfile(member)
-                    else:
-                        data = b'gateway executable'
-                        member.size = len(data)
-                        bundle.addfile(member, io.BytesIO(data))
-                (p/'mediamtx-checksums').write_text(hashlib.sha256(archive.read_bytes()).hexdigest()+'  gateway.tar.gz\n')
-            cmd = f'STAGING={p}; MEDIAMTX_ARCHIVE=gateway.tar.gz; verify_mediamtx_archive'
-            make_archive()
-            self.shell(cmd)
-            self.assertEqual((p/'mediamtx').read_bytes(), b'gateway executable')
-            archive.write_bytes(b'corrupted')
-            self.assertNotEqual(self.shell(cmd, check=False).returncode, 0)
-            (p/'mediamtx').unlink()
-            make_archive(symlink=True)
-            self.assertNotEqual(self.shell(cmd, check=False).returncode, 0)
-            self.assertFalse((p/'mediamtx').exists())
+    def test_native_simplevms_replaces_bundled_gateway(self):
+        script = (ROOT/'setup.sh').read_text()
+        self.assertNotIn('download_mediamtx', script)
+        self.assertNotIn('install_mediamtx()', script)
+        self.assertIn('MEDIA_GATEWAY=off', script)
+        self.assertIn('stop_app_service system betterframe-mediamtx.service', script)
+        self.assertNotEqual(self.shell('parse_args --media-gateway on; load_settings', check=False).returncode, 0)
 
 
 if __name__ == '__main__':

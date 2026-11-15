@@ -35,15 +35,6 @@ systemctl disable tailscaled.service 2>/dev/null || true
 # --- Binary ---
 install -d -o bfkiosk -g bfkiosk -m 755 /opt/betterframe/kiosk
 install -m 755 /tmp/bf-files/betterframe-kiosk /opt/betterframe/kiosk/betterframe-kiosk
-MEDIAMTX_VERSION="$(cat /tmp/bf-files/mediamtx.version)"
-MEDIAMTX_ARCHIVE="mediamtx_v${MEDIAMTX_VERSION}_linux_arm64.tar.gz"
-curl -fsSLO "https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/${MEDIAMTX_ARCHIVE}"
-curl -fsSLO "https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/checksums.sha256"
-grep -F "${MEDIAMTX_ARCHIVE}" checksums.sha256 | sha256sum -c -
-tar -xzf "${MEDIAMTX_ARCHIVE}" mediamtx
-install -d -m 755 /opt/betterframe/mediamtx
-install -m 755 mediamtx /opt/betterframe/mediamtx/mediamtx
-rm -f mediamtx "${MEDIAMTX_ARCHIVE}" checksums.sha256
 # State dir for firmware marker file (rollback script reads this)
 install -d -o bfkiosk -g bfkiosk -m 755 /var/lib/betterframe/kiosk
 install -d -o bfkiosk -g bfkiosk -m 750 /var/lib/betterframe/recordings
@@ -61,9 +52,7 @@ install -d -m 755 /etc/systemd/system/systemd-journal-flush.service.d
 install -m 644 /tmp/bf-files/flush-storage.conf /etc/systemd/system/systemd-journal-flush.service.d/betterframe.conf
 systemctl enable var-log-journal.mount betterframe-log-upload.service
 
-install -m 644 /tmp/bf-files/betterframe-mediamtx.service /etc/systemd/system/betterframe-mediamtx.service
 install -d -m 755 /etc/betterframe
-install -m 644 /tmp/bf-files/mediamtx.yml /etc/betterframe/mediamtx.yml
 install -m 644 /tmp/bf-files/cage.pam                  /etc/pam.d/cage
 install -m 755 /tmp/bf-files/betterframe-firmware-rollback.sh \
   /usr/local/sbin/betterframe-firmware-rollback.sh
@@ -220,7 +209,6 @@ systemctl enable systemd-timesyncd 2>/dev/null || true
 # --- Enable services, disable noise ---
 systemctl enable seatd
 systemctl enable betterframe-kiosk.service
-systemctl enable betterframe-mediamtx.service
 systemctl enable betterframe-rauc-mark-good.service
 systemctl enable betterframe-expand-data.service
 systemctl enable rauc.service 2>/dev/null || true

@@ -128,7 +128,8 @@ test("CA page escapes names and exposes pending, manual action and recorded appl
 
 test("assigned public CAs change bundle versions; removal emits an empty set and leaves unrelated players unchanged", async () => {
   let assigned = [ca];
-  const repo = { getKioskById: async (id: string) => ({ id, name: "Viewer", capabilities: ["android-viewer"], encrypt_key_encrypted: "key" }),
+  const repo = { adapter: { all: async () => [], get: async () => undefined },
+    getKioskById: async (id: string) => ({ id, name: "Viewer", capabilities: ["android-viewer"], encrypt_key_encrypted: "key" }),
     listDisplaysForKiosk: async () => [{ id: "display", name: "Main", is_enabled: true, width_px: 1920, height_px: 1080 }],
     layoutsForDisplayId: async () => [], listCameraDevices: async () => [],
     trustedCasForKiosk: async (id: string) => id === "assigned" ? assigned : [] };

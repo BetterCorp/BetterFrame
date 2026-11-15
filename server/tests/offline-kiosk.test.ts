@@ -7,7 +7,6 @@ import { kioskSessionCookie } from "../src/plugins/service-api-http/index.js";
 test("kiosk boot and RAUC confirmation do not wait for network-online", () => {
   for (const file of [
     "../../deploy/systemd/betterframe-kiosk.service",
-    "../../deploy/systemd/betterframe-mediamtx.service",
     "../../deploy/systemd/betterframe-rauc-mark-good.service",
   ]) {
     assert.doesNotMatch(readFileSync(new URL(file, import.meta.url), "utf8"), /network-online\.target/);
@@ -86,7 +85,7 @@ test("operator credentials stay in HttpOnly cookies and stale previews are abort
   assert.doesNotMatch(script + workScript, /stationToken|Authorization.*Bearer/);
   assert.match(server, /Secure; HttpOnly; SameSite=Strict/);
   assert.match(script, /new AbortController\(\)/);
-  assert.match(script, /generation!==state\.previewGeneration/);
+  assert.match(script, /generation\s*!==\s*state\.previewGeneration/);
 });
 
 test("webview kiosk credentials become server-issued host-only cookies", () => {

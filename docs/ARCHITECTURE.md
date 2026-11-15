@@ -2,8 +2,10 @@
 
 BetterFrame is a camera-wall and mixed-content display system. The server
 coordinates layouts, events, and fleet state; kiosks fetch RTSP directly from
-cameras or NVRs. Managed Linux images also include a local MediaMTX gateway
-for Operator Console preview and optional SimpleVMS recording/playback.
+cameras or NVRs. The native SimpleVMS BetterFrame plugin provides authenticated
+RTSP, Operator Console preview, and recording export directly from the recorder.
+MediaMTX is no longer installed or used by BF. See the
+[integration guide](../integrations/simplevms/README.md).
 
 ## Components
 

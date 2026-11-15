@@ -31,6 +31,18 @@
 
 set -euo pipefail
 
+retire_pi_legacy_gateway() {
+  local marker=${1:-/var/lib/betterframe/kiosk/firmware-applying.json}
+  local previously_pending=${2:-0}
+  if [[ -f $marker || $previously_pending == 1 ]] || ! systemctl is-active --quiet betterframe-kiosk.service; then
+    echo 'Legacy media gateway retained until BF starts successfully; rerun setup afterward to retire it.'
+    return 0
+  fi
+  if [[ $(systemctl show betterframe-mediamtx.service -p LoadState --value 2>/dev/null || echo not-found) != not-found ]]; then
+    systemctl disable --now betterframe-mediamtx.service || echo 'Could not retire the legacy media gateway; BF startup is unaffected.' >&2
+  fi
+}
+
 if [ "$EUID" -ne 0 ]; then
   echo "error: must run as root (sudo $0)" >&2
   exit 1
@@ -223,21 +235,6 @@ if [ "${INSTALL_KIOSK}" = "1" ]; then
   install -d -o bfkiosk -g bfkiosk -m 755 /var/lib/betterframe/kiosk
   install -d -o bfkiosk -g bfkiosk -m 750 /var/lib/betterframe/recordings
 
-  MEDIAMTX_VERSION="$(cat "${REPO_ROOT}/deploy/mediamtx.version")"
-  case "$(uname -m)" in
-    x86_64) MEDIAMTX_ARCH=amd64 ;;
-    aarch64) MEDIAMTX_ARCH=arm64 ;;
-    armv7l) MEDIAMTX_ARCH=armv7 ;;
-    *) echo "error: unsupported MediaMTX architecture $(uname -m)" >&2; exit 1 ;;
-  esac
-  MEDIAMTX_ARCHIVE="mediamtx_v${MEDIAMTX_VERSION}_linux_${MEDIAMTX_ARCH}.tar.gz"
-  MEDIAMTX_TMP="$(mktemp -d)"
-  curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/${MEDIAMTX_ARCHIVE}" -o "${MEDIAMTX_TMP}/${MEDIAMTX_ARCHIVE}"
-  curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/checksums.sha256" -o "${MEDIAMTX_TMP}/checksums.sha256"
-  (cd "${MEDIAMTX_TMP}" && grep -F "${MEDIAMTX_ARCHIVE}" checksums.sha256 | sha256sum -c - && tar -xzf "${MEDIAMTX_ARCHIVE}" mediamtx)
-  install -d -m 755 /opt/betterframe/mediamtx
-  install -m 755 "${MEDIAMTX_TMP}/mediamtx" /opt/betterframe/mediamtx/mediamtx
-  rm -rf "${MEDIAMTX_TMP}"
   echo "    installed → ${BIN_DST}"
 
   # Allow managed timezone changes through polkit.
@@ -336,10 +333,7 @@ for name in ['default','left_ptr','arrow','watch','hand2','text','xterm',
   systemctl enable betterframe-trusted-cas.service betterframe-trusted-cas.path betterframe-trusted-cas.timer
   install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-kiosk.service" \
     /etc/systemd/system/betterframe-kiosk.service
-  install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-mediamtx.service" \
-    /etc/systemd/system/betterframe-mediamtx.service
   install -d -m 755 /etc/betterframe
-  install -m 644 "${REPO_ROOT}/deploy/mediamtx.yml" /etc/betterframe/mediamtx.yml
   install -m 755 "${REPO_ROOT}/deploy/systemd/betterframe-firmware-rollback.sh" \
     /usr/local/sbin/betterframe-firmware-rollback.sh
   install -m 644 "${REPO_ROOT}/deploy/systemd/betterframe-rauc-mark-good.service" \
@@ -382,10 +376,15 @@ EOF
   journalctl --flush
   systemctl enable --now betterframe-log-upload.service
   systemctl enable betterframe-kiosk.service
-  systemctl enable --now betterframe-mediamtx.service
   systemctl enable betterframe-rauc-mark-good.service
   # Restart picks up new binary on re-run.
-  systemctl restart betterframe-kiosk.service || true
+  upgrade_pending=0
+  if [[ -f /var/lib/betterframe/kiosk/firmware-applying.json ]]; then upgrade_pending=1; fi
+  if systemctl restart betterframe-kiosk.service; then
+    retire_pi_legacy_gateway /var/lib/betterframe/kiosk/firmware-applying.json "$upgrade_pending"
+  else
+    echo 'BF restart failed; the legacy media gateway is retained.' >&2
+  fi
 
   # --------------------------------------------------------------------------
   # 9. Plymouth boot splash — hide kernel text + Pi rainbow, show BF logo

@@ -10,7 +10,7 @@ const cameraStream = av.object(
   {
     id,
     role: streamRole,
-    name: av.string().minLength(1).maxLength(128),
+    name: av.string().minLength(1).maxLength(512),
     rtsp_uri: av.string().minLength(1),
     width: av.nullable(av.int().min(1).max(8192)),
     height: av.nullable(av.int().min(1).max(8192)),
@@ -25,14 +25,15 @@ const bundleCamera = av.object(
     id,
     local_short_key: av.optional(av.string().minLength(6).maxLength(6)),
     device_id: av.optional(av.nullable(id)),
-    device_name: av.optional(av.nullable(av.string().maxLength(128))),
-    name: av.string().minLength(1).maxLength(128),
+    device_name: av.optional(av.nullable(av.string().maxLength(255))),
+    name: av.string().minLength(1).maxLength(1024),
     camera_number: av.nullable(av.string().maxLength(128)),
     labels: av.array(av.string().maxLength(128)),
     capabilities: av.array(av.string().maxLength(128)),
     enabled: av.bool(),
     last_seen_at: av.nullable(av.string().maxLength(64)),
     simple_vms_managed: av.bool(),
+    simple_vms_http_url: av.optional(av.nullable(av.string().maxLength(2048))),
     recording_config: av.record(av.any()),
     type: av.string().minLength(1).maxLength(32),
     onvif_host: av.nullable(av.string().maxLength(255)),
@@ -99,7 +100,7 @@ const bundleLayout = av.object(
   {
     id,
     local_short_key: av.optional(av.string().minLength(6).maxLength(6)),
-    name: av.string().minLength(1).maxLength(128),
+    name: av.string().minLength(1).maxLength(1024),
     grid_cols: av.int().min(1).max(64),
     grid_rows: av.int().min(1).max(64),
     priority: layoutPriority,
@@ -116,7 +117,7 @@ const bundleLayout = av.object(
 const bundleDisplay = av.object(
   {
     id,
-    name: av.string().minLength(1).maxLength(128),
+    name: av.string().minLength(1).maxLength(512),
     width_px: av.int().min(1),
     height_px: av.int().min(1),
     idle_timeout_seconds: av.int().min(0),
@@ -129,7 +130,7 @@ const bundleDisplay = av.object(
 const bundleDisplayWithLayouts = av.object(
   {
     id,
-    name: av.string().minLength(1).maxLength(128),
+    name: av.string().minLength(1).maxLength(512),
     width_px: av.int().min(1),
     height_px: av.int().min(1),
     idle_timeout_seconds: av.int().min(0),
@@ -180,7 +181,7 @@ export const kioskBundle = av.object(
   {
     trusted_cas: av.optional(av.array(av.object({ pem: av.string().maxLength(16384), fingerprint_sha256: av.string().minLength(64).maxLength(64) }, { unknownKeys: "reject" })).maxItems(32)),
     kiosk_id: id,
-    kiosk_name: av.string().minLength(1).maxLength(128),
+    kiosk_name: av.string().minLength(1).maxLength(512),
     display: bundleDisplay,
     layouts: av.array(bundleLayout),
     displays: av.array(bundleDisplayWithLayouts),

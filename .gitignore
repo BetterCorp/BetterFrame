@@ -68,3 +68,7 @@ server/src/shared/db/MULTI_TENANT.md
 
 # Codex local working notes / task tracking
 .codex-tasklist.md
+
+# Native SimpleVMS plugin build output
+integrations/simplevms/**/bin/
+integrations/simplevms/**/obj/

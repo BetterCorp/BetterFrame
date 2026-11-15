@@ -1,3 +1,5 @@
+import { registerSimpleVmsAdminRoutes, simpleVmsManagedPage } from "./routes-simple-vms.js";
+import { simpleVmsLayoutAllowed } from "../../shared/simple-vms-access.js";
 import { registerTrustedCaRoutes } from "./routes-trusted-cas.js";
 import { registerOverlayRoutes } from "./routes-overlays.js";
 import { parseSmartUrlForm } from "../../shared/smart-url.js";
@@ -733,6 +735,7 @@ async function shiftCellsForInsertion(
 
 export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   registerOverlayRoutes(app, deps);
+  registerSimpleVmsAdminRoutes(app, deps);
   registerTrustedCaRoutes(app, deps);
   // ---- Overview -------------------------------------------------------------
 
@@ -1261,6 +1264,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
 
   app.get("/admin/camera-devices/:id", async (event) => {
     const id = getRouterParam(event, "id") ?? "";
+    const managedPage = await simpleVmsManagedPage(deps.repo, event.context.user?.username, "device", id);
+    if (managedPage) return managedPage;
     const device = await deps.repo.getCameraDeviceById(id);
     if (!device) return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
     const url = new URL(event.req.url, "http://localhost");
@@ -1477,6 +1482,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = (getRouterParam(event, "id") ?? "");
     const ent = await deps.repo.getEntityById(id);
     if (!ent) return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
+    if (ent.type === "camera" && ent.camera_id) {
+      const managedPage = await simpleVmsManagedPage(deps.repo, user.username, "camera", ent.camera_id);
+      if (managedPage) return managedPage;
+    }
     return htmlPage(EntityEditPage({
       user: user.username,
       entity: ent,
@@ -1709,6 +1718,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.get("/admin/layouts/:id", async (event) => {
     const user = event.context.user!;
     const id = (getRouterParam(event, "id") ?? "");
+    const managedPage = await simpleVmsManagedPage(deps.repo, event.context.user?.username, "layout", id);
+    if (managedPage) return managedPage;
     const layout = await deps.repo.getLayoutById(id);
     if (!layout) return new Response(null, { status: 302, headers: { location: "/admin/layouts" } });
     const cells = await deps.repo.layoutCells(id);
@@ -2075,7 +2086,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (!display) return new Response(null, { status: 302, headers: { location: "/admin/displays" } });
     const attachedLayouts = await deps.repo.listLayoutsForDisplay(id);
     const attachedIds = new Set(attachedLayouts.map((l) => l.id));
-    const availableLayouts = (await deps.repo.listLayouts()).filter((l) => !attachedIds.has(l.id));
+    const availableLayouts = [];
+    for (const layout of await deps.repo.listLayouts()) {
+      if (!attachedIds.has(layout.id) && await simpleVmsLayoutAllowed(deps.repo.adapter, layout.id, display.kiosk_id ?? "")) availableLayouts.push(layout);
+    }
     const kiosk = display.kiosk_id ? await deps.repo.getKioskById(display.kiosk_id) : null;
     return htmlPage(DisplayEditPage({
       user: user.username,
@@ -2084,7 +2098,15 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       availableLayouts,
       kioskName: kiosk?.name ?? null,
       kiosk,
+      hasDisconnectedSimpleVmsDefault: !!await deps.repo.adapter.get("SELECT 1 FROM simple_vms_display_defaults WHERE display_id = ?", [id]),
     }));
+  });
+
+  app.post("/admin/displays/:id/clear-default", async event => {
+    const id = getRouterParam(event, "id") ?? "";
+    await deps.repo.clearDisplayDefault(id);
+    notifyKiosks();
+    return new Response(null, { status: 303, headers: { location: `/admin/displays/${id}` } });
   });
 
   app.post("/admin/displays/:id", async (event) => {
@@ -2120,7 +2142,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const display = await deps.repo.getDisplayById(displayId);
     const attached = await deps.repo.listLayoutsForDisplay(displayId);
     const attachedIds = new Set(attached.map((l) => l.id));
-    const available = (await deps.repo.listLayouts()).filter((l) => !attachedIds.has(l.id));
+    const available = [];
+    for (const layout of await deps.repo.listLayouts()) {
+      if (!attachedIds.has(layout.id) && await simpleVmsLayoutAllowed(deps.repo.adapter, layout.id, display?.kiosk_id ?? "")) available.push(layout);
+    }
     return htmlFragment(
       renderDisplayLayouts(displayId, display?.default_layout_id ?? null, attached, available)
       + renderDefaultLayoutSelect(display?.default_layout_id ?? null, attached, true),
@@ -2185,6 +2210,8 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.get("/admin/cameras/:id", async (event) => {
     const user = event.context.user!;
     const id = (getRouterParam(event, "id") ?? "");
+    const managedPage = await simpleVmsManagedPage(deps.repo, event.context.user?.username, "camera", id);
+    if (managedPage) return managedPage;
     const camera = await deps.repo.getCameraById(id);
     if (!camera) return new Response(null, { status: 302, headers: { location: "/admin/cameras" } });
 
@@ -2571,25 +2598,6 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     if (enabled && !host) throw new Error("Operator Console requires a stable hostname or static IP");
     if (port !== 18443) throw new Error("Managed kiosk images expose the Operator Console on port 18443");
 
-    const simpleVmsEnabled = body?.["simple_vms_enabled"] === "1";
-    const storagePath = (body?.["simple_vms_storage_path"] ?? "").trim() || null;
-    if (simpleVmsEnabled && kiosk.firmware_target !== "betterframe-pc-x86_64") {
-      throw new Error("Co-located SimpleVMS is supported only on managed x86-64 kiosks");
-    }
-    if (simpleVmsEnabled && !storagePath) throw new Error("SimpleVMS requires a dedicated recording mount");
-    if (simpleVmsEnabled && storagePath !== "/var/lib/betterframe/recordings" && !storagePath?.startsWith("/var/lib/betterframe/recordings/")) {
-      throw new Error("SimpleVMS storage must be mounted at /var/lib/betterframe/recordings");
-    }
-
-    let settings: Record<string, unknown> = {};
-    try {
-      const parsed = JSON.parse(body?.["simple_vms_settings_json"] || "{}");
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("must be an object");
-      settings = parsed as Record<string, unknown>;
-    } catch (err) {
-      throw new Error(`Invalid SimpleVMS settings: ${(err as Error).message}`);
-    }
-
     const tools = (body?.["operator_tools"] ?? "").split(/\r?\n/).flatMap((line) => {
       const separator = line.indexOf("|");
       if (separator < 1) return [];
@@ -2604,16 +2612,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       operator_console_host: host,
       operator_console_port: port,
       operator_tools_json: JSON.stringify(tools),
-      simple_vms_enabled: simpleVmsEnabled,
-      simple_vms_storage_path: storagePath,
-      simple_vms_settings_json: JSON.stringify(settings),
     } as any);
     getCoordinator().notifyKioskBundleChanged(id);
     getCoordinator().sendToKiosk(id, { type: "operator-console-restart" });
     await audit(deps.repo, event as any, "kiosk.operator_console.update", {
       resource_type: "kiosk",
       resource_id: id,
-      metadata: { enabled, simple_vms_enabled: simpleVmsEnabled },
+      metadata: { enabled },
     });
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
@@ -2841,7 +2846,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
   app.post("/admin/kiosks/:id/delete", async (event) => {
     event.context.obs?.log.info("kiosk delete {id} by {user}", { id: getRouterParam(event, "id") ?? "?", user: event.context.user?.username ?? "unknown" });
     const id = (getRouterParam(event, "id") ?? "");
-    await deps.repo.deleteKiosk(id);
+    for (const kioskId of await deps.repo.deleteKiosk(id)) getCoordinator().notifyKioskBundleChanged(kioskId);
     return new Response(null, { status: 302, headers: { location: "/admin/kiosks" } });
   });
 
@@ -3256,7 +3261,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const cloudAccounts = await deps.repo.listCloudAccounts();
     const ablesignAccounts = await deps.repo.listAbleSignAccounts();
     const updateSchedule = normalizeUpdateSchedule(await deps.repo.getSetupExtra("update_schedule"));
-    return htmlPage(SettingsPage({ cloudAccounts, ablesignAccounts, updateSchedule, layouts: await deps.repo.listLayouts(), displayDefaults: await deps.repo.getDisplayDefaults() }));
+    return htmlPage(SettingsPage({ cloudAccounts, ablesignAccounts, updateSchedule, layouts: (await deps.repo.listLayouts()).filter(l => !l.simple_vms_source_id), displayDefaults: await deps.repo.getDisplayDefaults() }));
   });
 
   app.post("/admin/settings/display-defaults", async (event) => {
@@ -3264,7 +3269,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const raw = body?.["layout_ids"];
     const layoutIds = [...new Set((Array.isArray(raw) ? raw : raw ? [raw] : []).map(String))];
     const defaultLayoutId = String(body?.["default_layout_id"] ?? "") || null;
-    const existing = new Set((await deps.repo.listLayouts()).map(l => l.id));
+    const existing = new Set((await deps.repo.listLayouts()).filter(l => !l.simple_vms_source_id).map(l => l.id));
     if (layoutIds.some(id => !existing.has(id)) || (defaultLayoutId && !layoutIds.includes(defaultLayoutId))) {
       return new Response("Default layout must be selected from the assigned layouts", { status: 400 });
     }

@@ -18,7 +18,7 @@ function fixture() {
     { id: "sign-cell", entity_id: "sign", row: 1, col: 1, row_span: 1, col_span: 1 },
   ];
   const repo = {
-    adapter: { withSearchPath: async (_schema: string, fn: () => unknown) => fn() },
+    adapter: { all: async () => [], get: async () => undefined, withSearchPath: async (_schema: string, fn: () => unknown) => fn() },
     getKioskById: async () => kiosk,
     getTenantBySlug: async () => ({ id: "tenant", slug: "default", schema_name: "public", name: "Default", is_active: true }),
     listDisplaysForKiosk: async () => [display, { ...display, id: "hidden" }],
@@ -170,7 +170,7 @@ test("production bundle and heartbeat routes preserve tenant context and revoke 
   const updates: Record<string, unknown>[] = [];
   const repo = {
     ...base,
-    adapter: { withSearchPath: async (schema: string, fn: () => unknown) => scope.run(schema, fn) },
+    adapter: { all: async () => [], get: async () => undefined, withSearchPath: async (schema: string, fn: () => unknown) => scope.run(schema, fn) },
     getKioskById: async () => { assert.equal(scope.getStore(), "tenant_viewer"); return kiosk; },
     getSetupExtra: async () => null,
     touchKiosk: async () => { assert.equal(scope.getStore(), "tenant_viewer"); },

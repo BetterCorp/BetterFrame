@@ -1926,11 +1926,7 @@ export function CameraEditPage(props: CameraEditProps) {
                 <div class="form-hint">Show movement and camera presets in the operator console.</div>
               </div>
             )}
-            <div class="form-group">
-              <label for="recording_config_json">SimpleVMS Recording Configuration</label>
-              <textarea id="recording_config_json" name="recording_config_json" class="form-input" rows="8">{JSON.stringify(cam.recording_config_json ?? {}, null, 2)}</textarea>
-              <div class="form-hint">BetterFrame-owned dynamic camera, stream, and plugin values. The kiosk validates these against the installed SimpleVMS schema.</div>
-            </div>
+
             {cam.type === "onvif" && (
               <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #eee">
                 <h3 style="margin:0 0 0.5rem; font-size:0.95rem">Event Routing</h3>
@@ -2455,10 +2451,7 @@ function OperatorConsoleCard(props: { kiosk: Kiosk }) {
           <div class="form-group"><label>HTTPS port</label><input name="operator_console_port" type="number" class="form-input" value="18443" readonly /></div>
         </div>
         <div class="form-group"><label>Monitor 2 links</label><textarea name="operator_tools" class="form-input" rows="4" placeholder="Incidents|https://incident.example/">{tools.map((tool) => `${tool.label}|${tool.url}`).join("\n")}</textarea><div class="form-hint">One <code>Label|https://URL</code> entry per line.</div></div>
-        <hr style="border:0;border-top:1px solid #eee;margin:1rem 0" />
-        <label style="display:block; margin-bottom:.75rem"><input type="checkbox" name="simple_vms_enabled" value="1" checked={k.simple_vms_enabled} /> Enable co-located SimpleVMS (managed x86-64 only)</label>
-        <div class="form-group"><label>Dedicated recording mount</label><input name="simple_vms_storage_path" class="form-input" value={k.simple_vms_storage_path ?? ""} placeholder="/var/lib/betterframe/recordings" /></div>
-        <div class="form-group"><label>Dynamic SimpleVMS settings</label><textarea name="simple_vms_settings_json" class="form-input" rows="6">{JSON.stringify(vmsSettings, null, 2)}</textarea></div>
+        <p><a href={`/admin/kiosks/${k.id}/simple-vms`}>Configure SimpleVMS connection and linked kiosks</a></p>
         <button type="submit" class="btn btn-primary">Save &amp; Push</button>
         {origin ? <a class="btn btn-ghost" style="margin-left:.5rem" href={origin}>Open Console</a> : null}
         {k.operator_console_host ? <a class="btn btn-ghost" style="margin-left:.5rem" href={`http://${k.operator_console_host}:18090/local/operator-certificate.crt`}>Download trust certificate</a> : null}
@@ -3681,6 +3674,7 @@ interface DisplayEditPageProps {
   availableLayouts: LayoutType[];
   kioskName?: string | null;
   kiosk?: Pick<Kiosk, "capabilities"> | null;
+  hasDisconnectedSimpleVmsDefault?: boolean;
   error?: string;
   success?: string;
 }
@@ -3738,6 +3732,8 @@ export function renderDisplayLayouts(
                     <button
                       type="button"
                       class="btn btn-sm btn-danger"
+                      disabled={!!l.simple_vms_source_id}
+                      title={l.simple_vms_source_id ? "Managed by the SimpleVMS connection" : "Detach layout"}
                       {...{
                         "hx-post": `/admin/displays/${String(displayId)}/layouts/${String(l.id)}/remove`,
                         "hx-target": target,
@@ -3949,6 +3945,10 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
             <button type="submit" class="btn btn-primary">Save</button>
             <a href="/admin/displays" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
           </form>
+          {props.hasDisconnectedSimpleVmsDefault ? <form method="post" action={`/admin/displays/${d.id}/clear-default`} style="margin-top:1rem">
+            <p>A disconnected SimpleVMS layout will return as the default when its recorder reconnects.</p>
+            <button type="submit" class="btn btn-ghost">Keep no default</button>
+          </form> : null}
         </div>
 
         {/* Layout attachments */}

@@ -1,3 +1,5 @@
+import { assertSimpleVmsWritable, simpleVmsLayoutAllowed } from "../simple-vms-access.js";
+import { removeSimpleVmsSource } from "../simple-vms.js";
 import { MAX_TRUSTED_CAS, type TrustedCa, type TrustedCaStatus } from "../trusted-cas.js";
 import type { OverlayTemplate } from "../overlays.js";
 import type { LogFilters, LogPage, LogSummary } from "../kiosk-log-view.js";
@@ -708,10 +710,10 @@ export class Repository {
     });
   }
 
-  /** Defaults apply once, when a display is created. Deleted layouts are ignored. */
+  /** Defaults apply once, when a display is created. Deleted and recorder-scoped layouts are ignored. */
   async getDisplayDefaults(): Promise<{ layoutIds: string[]; defaultLayoutId: string | null }> {
     const raw = await this.getSetupExtra("display_defaults") as { layoutIds?: unknown; defaultLayoutId?: unknown } | null;
-    const existing = new Set((await this.listLayouts()).map(l => l.id));
+    const existing = new Set((await this.listLayouts()).filter(l => !l.simple_vms_source_id).map(l => l.id));
     const layoutIds = Array.isArray(raw?.layoutIds)
       ? [...new Set(raw.layoutIds.filter((id): id is string => typeof id === "string" && existing.has(id)))] : [];
     const defaultLayoutId = typeof raw?.defaultLayoutId === "string" && layoutIds.includes(raw.defaultLayoutId) ? raw.defaultLayoutId : null;
@@ -782,6 +784,15 @@ export class Repository {
     return (r?.m ?? -1) + 1;
   }
 
+  /** Explicitly keep no default, including when an automatic detach already cleared the field. */
+  async clearDisplayDefault(id: string): Promise<void> {
+    await this.transact(async () => {
+      await this.adapter.get("SELECT id FROM displays WHERE id = ? FOR UPDATE", [id]);
+      await this.updateDisplay(id, { default_layout_id: null });
+      await this._run("DELETE FROM simple_vms_display_defaults WHERE display_id = ?", [id]);
+    });
+  }
+
   async updateDisplay(id: string, patch: Partial<Display>): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
@@ -793,7 +804,15 @@ export class Repository {
     }
     if (sets.length === 0) return;
     vals.push(id);
-    await this._run(`UPDATE displays SET ${sets.join(", ")} WHERE id = ?`, vals);
+    if ("default_layout_id" in patch) {
+      await this.transact(async () => {
+        const previous = await this.adapter.get<{ default_layout_id: string | null }>("SELECT default_layout_id FROM displays WHERE id = ? FOR UPDATE", [id]);
+        await this._run(`UPDATE displays SET ${sets.join(", ")} WHERE id = ?`, vals);
+        if (previous && previous.default_layout_id !== (patch.default_layout_id ?? null)) {
+          await this._run("DELETE FROM simple_vms_display_defaults WHERE display_id = ?", [id]);
+        }
+      });
+    } else await this._run(`UPDATE displays SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("displays", "update", id);
   }
 
@@ -806,12 +825,12 @@ export class Repository {
   // ===========================================================================
 
   async listLayouts(): Promise<Layout[]> {
-    const rs = await this._all("SELECT * FROM layouts ORDER BY name");
+    const rs = await this._all("SELECT l.*, (SELECT source_id FROM simple_vms_groups g WHERE g.layout_id = l.id) AS simple_vms_source_id FROM layouts l ORDER BY name");
     return rs.map((r) => rowToLayout(r as Record<string, unknown>));
   }
 
   async getLayoutById(id: string): Promise<Layout | null> {
-    const r = await this._get("SELECT * FROM layouts WHERE id = ?", [id]);
+    const r = await this._get("SELECT l.*, (SELECT source_id FROM simple_vms_groups g WHERE g.layout_id = l.id) AS simple_vms_source_id FROM layouts l WHERE l.id = ?", [id]);
     return r ? rowToLayout(r as Record<string, unknown>) : null;
   }
 
@@ -827,7 +846,7 @@ export class Repository {
   /** All layouts attached to the given display, via display_layouts. */
   async listLayoutsForDisplay(displayId: string): Promise<Layout[]> {
     const rs = await this._all(
-      `SELECT l.* FROM layouts l
+      `SELECT l.*, (SELECT source_id FROM simple_vms_groups g WHERE g.layout_id = l.id) AS simple_vms_source_id FROM layouts l
          JOIN display_layouts dl ON dl.layout_id = l.id
         WHERE dl.display_id = ?
         ORDER BY l.name`,
@@ -850,6 +869,11 @@ export class Repository {
 
   /** Idempotent attach. */
   async attachLayoutToDisplay(displayId: string, layoutId: string): Promise<void> {
+    const display = await this.getDisplayById(displayId);
+    if (!display?.kiosk_id || !await simpleVmsLayoutAllowed(this.adapter, layoutId, display.kiosk_id)) {
+      const managed = await this.adapter.get("SELECT 1 FROM simple_vms_groups WHERE layout_id = ?", [layoutId]);
+      if (managed) throw new Error("SimpleVMS layouts are restricted to their owning and linked kiosks");
+    }
     await this._run(
       `INSERT OR IGNORE INTO display_layouts (display_id, layout_id)
        VALUES (?, ?)`,
@@ -860,6 +884,7 @@ export class Repository {
 
   /** Detach. If the display's default_layout_id pointed at this layout, clear it. */
   async detachLayoutFromDisplay(displayId: string, layoutId: string): Promise<void> {
+    await assertSimpleVmsWritable(this.adapter, "layout", layoutId);
     await this._run(
       `DELETE FROM display_layouts WHERE display_id = ? AND layout_id = ?`,
       [displayId, layoutId],
@@ -905,10 +930,11 @@ export class Repository {
   }
 
   async updateLayout(id: string, patch: Partial<Layout>): Promise<void> {
+    await assertSimpleVmsWritable(this.adapter, "layout", id);
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
-      if (k === "id" || k === "display_id") continue; // display_id deprecated
+      if (k === "id" || k === "display_id" || k === "simple_vms_source_id") continue; // display_id deprecated; source is derived
       sets.push(`${k} = ?`);
       if (k === "preload_camera_ids" || k === "regions" || k === "input_options_json") vals.push(J(v));
       else if (typeof v === "boolean") vals.push(v);
@@ -982,6 +1008,7 @@ export class Repository {
   }
 
   async deleteLayout(id: string): Promise<void> {
+    await assertSimpleVmsWritable(this.adapter, "layout", id);
     await this._run(`DELETE FROM layout_cells WHERE layout_id = ?`, [id]);
     await this._run(`DELETE FROM layout_labels WHERE layout_id = ?`, [id]);
     await this._run(`DELETE FROM display_layouts WHERE layout_id = ?`, [id]);
@@ -1033,6 +1060,7 @@ export class Repository {
     fit?: "cover" | "contain" | "fill";
     input_options_json?: Record<string, unknown>;
   }): Promise<LayoutCell> {
+    await assertSimpleVmsWritable(this.adapter, "layout", input.layout_id);
     // Resolve content fields from the entity (if given). The legacy columns
     // remain populated for backward-compatible bundle generation. Dashboard
     // entities materialise as web cells pointing at /dash/<id> so the existing
@@ -1089,6 +1117,7 @@ export class Repository {
    * compatible with the existing kiosk.
    */
   async assignCellEntity(cellId: string, entityId: string | null): Promise<void> {
+    await assertSimpleVmsWritable(this.adapter, "cell", cellId);
     if (entityId == null) {
       await this._run(
         `UPDATE layout_cells
@@ -1131,6 +1160,7 @@ export class Repository {
   }
 
   async updateLayoutCell(id: string, patch: Partial<LayoutCell>): Promise<void> {
+    await assertSimpleVmsWritable(this.adapter, "cell", id);
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -1147,6 +1177,7 @@ export class Repository {
   }
 
   async deleteLayoutCell(id: string): Promise<void> {
+    await assertSimpleVmsWritable(this.adapter, "cell", id);
     await this._run(`DELETE FROM layout_cells WHERE id = ?`, [id]);
     void this.notify("layout_cells", "delete", id);
   }
@@ -1163,6 +1194,7 @@ export class Repository {
     fromIndex: number,
     delta: number,
   ): Promise<void> {
+    await assertSimpleVmsWritable(this.adapter, "layout", String(layoutId));
     if (delta === 0) return;
     const colName = axis === "row" ? `"row"` : "col";
     await this._run(
@@ -1226,7 +1258,7 @@ export class Repository {
   }
 
   async getCameraDeviceByEndpoint(host: string, port: number): Promise<CameraDevice | null> {
-    const r = await this._get("SELECT * FROM camera_devices WHERE host = ? AND port = ?", [host, port]);
+    const r = await this._get("SELECT * FROM camera_devices WHERE type = 'onvif' AND host = ? AND port = ?", [host, port]);
     return r ? rowToCameraDevice(r as Record<string, unknown>) : null;
   }
 
@@ -1252,6 +1284,7 @@ export class Repository {
   }
 
   async updateCameraDevice(id: string, patch: Partial<CameraDevice>): Promise<void> {
+    await assertSimpleVmsWritable(this.adapter, "device", id);
     const allowed = new Set(["name", "host", "port", "username", "password", "discovery_runner", "layout_defaults_json"]);
     const sets: string[] = [];
     const vals: unknown[] = [];
@@ -1279,6 +1312,7 @@ export class Repository {
   }
 
   async deleteCameraDevice(id: string): Promise<void> {
+    await assertSimpleVmsWritable(this.adapter, "device", id);
     await this._run("DELETE FROM camera_devices WHERE id = ?", [id]);
     void this.notify("camera_devices", "delete", id);
     void this.notify("cameras", "delete", id);
@@ -1318,6 +1352,7 @@ export class Repository {
     capabilities?: string[];
     stream_policy?: StreamPolicy;
   }): Promise<Camera> {
+    if (input.device_id) await assertSimpleVmsWritable(this.adapter, "device", input.device_id);
     const id = uuidv7();
     await this._run(
       `INSERT INTO cameras
@@ -1429,6 +1464,7 @@ export class Repository {
     bitrate_kbps?: number | null;
     is_discovered?: boolean;
   }): Promise<CameraStream> {
+    await assertSimpleVmsWritable(this.adapter, "camera", input.camera_id);
     const id = uuidv7();
     await this._run(
       `INSERT INTO camera_streams
@@ -1457,6 +1493,8 @@ export class Repository {
   }
 
   async updateCameraStream(id: string, patch: Partial<CameraStream>): Promise<void> {
+    const stream = await this.adapter.get<{ camera_id: string }>("SELECT camera_id FROM camera_streams WHERE id = ?", [id]);
+    if (stream) await assertSimpleVmsWritable(this.adapter, "camera", stream.camera_id);
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -1471,6 +1509,7 @@ export class Repository {
   }
 
   async deleteCameraStreams(cameraId: string): Promise<void> {
+    await assertSimpleVmsWritable(this.adapter, "camera", cameraId);
     await this._run("DELETE FROM camera_streams WHERE camera_id = ?", [cameraId]);
     void this.notify("camera_streams", "delete", cameraId);
   }
@@ -2976,7 +3015,15 @@ export class Repository {
     });
   }
 
+  /** Health bookkeeping is independent of the camera's configuration authority. */
+  async touchCamera(id: string, lastSeenAt: string): Promise<void> {
+    await this._run("UPDATE cameras SET last_seen_at = ? WHERE id = ?", [lastSeenAt, id]);
+    void this.notify("cameras", "update", id);
+  }
+
   async updateCamera(id: string, patch: Partial<Camera>): Promise<void> {
+    if (patch.device_id) await assertSimpleVmsWritable(this.adapter, "device", patch.device_id);
+    await assertSimpleVmsWritable(this.adapter, "camera", id);
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -3001,6 +3048,7 @@ export class Repository {
   }
 
   async deleteCamera(id: string): Promise<void> {
+    await assertSimpleVmsWritable(this.adapter, "camera", id);
     await this._run(`DELETE FROM camera_labels WHERE camera_id = ?`, [id]);
     await this._run(`DELETE FROM camera_streams WHERE camera_id = ?`, [id]);
     // Clear cells that referenced this camera (legacy column).
@@ -3103,6 +3151,7 @@ export class Repository {
       smart_url_json?: Entity["smart_url_json"];
     },
   ): Promise<void> {
+    await assertSimpleVmsWritable(this.adapter, "entity", id);
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -3142,6 +3191,7 @@ export class Repository {
   }
 
   async deleteEntity(id: string): Promise<void> {
+    await assertSimpleVmsWritable(this.adapter, "entity", id);
     // FK ON DELETE SET NULL clears layout_cells.entity_id.
     await this._run(`DELETE FROM entities WHERE id = ?`, [id]);
     void this.notify("entities", "delete", id);
@@ -3191,9 +3241,13 @@ export class Repository {
     ) as Array<{ key_hash: string }>;
   }
 
-  async deleteKiosk(id: string): Promise<void> {
+  /** Return surviving kiosks that need a fresh bundle after their source owner is removed. */
+  async deleteKiosk(id: string): Promise<string[]> {
     const displays = await this.listDisplaysForKiosk(id);
+    let affectedKiosks: string[] = [];
     await this.transact(async () => {
+      const source = await this.adapter.get<{ id: string }>("SELECT id FROM simple_vms_sources WHERE owner_kiosk_id = ?", [id]);
+      if (source) affectedKiosks = await removeSimpleVmsSource(this, source.id);
       for (const display of displays) {
         await this._run(`DELETE FROM display_layouts WHERE display_id = ?`, [display.id]);
       }
@@ -3212,6 +3266,7 @@ export class Repository {
       void this.notify("displays", "delete", display.id);
     }
     void this.notify("kiosks", "delete", id);
+    return affectedKiosks.filter(kioskId => kioskId !== id);
   }
 
   async detachCameraLabel(cameraId: string, labelId: string): Promise<void> {

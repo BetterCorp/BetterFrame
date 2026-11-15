@@ -1,3 +1,4 @@
+import { registerSimpleVmsIngress } from "../../shared/simple-vms-http.js";
 import { selectWindowsRelease, windowsPushRequest, windowsUpdatePolicy } from "../../shared/windows-updates.js";
 import { selectPublicUpdate } from "../../shared/public-update-selection.js";
 import { effectiveFirmwareChannel } from "../../shared/kiosk-channels.js";
@@ -236,6 +237,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     });
 
     registerViewerDeviceAuth(app, repo, auth, secrets, nodered);
+    registerSimpleVmsIngress(app, repo);
     app.use(async (event, next) => {
       const path = new URL(event.req.url).pathname;
       if (path.startsWith("/api/kiosk/")) return next();

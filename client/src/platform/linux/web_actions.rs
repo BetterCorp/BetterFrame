@@ -62,7 +62,7 @@ impl Actions {
             {
                 state.pending_load.set(false);
                 if !state.config.on_load.is_empty() {
-                    state.start(state.config.on_load.clone(), |result| {
+                    state.start(state.config.on_load.clone(), state.auth.clone(), |result| {
                         if let Err(error) = result {
                             tracing::warn!("web on-load actions: {error}");
                         }
@@ -95,7 +95,7 @@ impl Actions {
             return Err("Another sequence is pending or running in this block".into());
         }
         let steps = state.config.groups.get(group).ok_or("Group not found")?.clone();
-        state.start(steps, done);
+        state.start(steps, None, done);
         Ok(())
     }
 }
@@ -108,6 +108,7 @@ impl State {
     fn start(
         &self,
         steps: Vec<crate::bundle::SmartUrlStep>,
+        auth_ready: Option<smart_url::Readiness>,
         done: impl FnOnce(Result<(), String>) + 'static,
     ) {
         self.current.borrow_mut().take();
@@ -116,7 +117,7 @@ impl State {
             return;
         };
         let controller = smart_url::run_sequence(
-            &view, steps, &self.server, &self.key, self.auth.clone(), done,
+            &view, steps, &self.server, &self.key, auth_ready, done,
         );
         self.current.replace(Some(controller));
     }

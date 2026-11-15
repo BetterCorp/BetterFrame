@@ -1,5 +1,5 @@
 //! Browser identity and navigation-safe progress for smart URL automation.
-use crate::bundle::BundleCell;
+use crate::bundle::{BundleCell, SmartUrlStep};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use url::{Position, Url};
@@ -90,6 +90,19 @@ impl SmartUrlProgress {
         // from the old document, but never starts the sequence over.
         self.generation += 1;
         self.busy = false;
+    }
+
+    /// Waits belong to one document and cannot succeed if navigation destroys
+    /// it. Navigate/click/script steps retain the existing resume behaviour.
+    pub fn load_started_for_steps(&mut self, steps: &[SmartUrlStep], now: Duration) -> Option<usize> {
+        let interrupted = self.busy.then(|| self.next.saturating_sub(1)).filter(|&index| {
+            steps.get(index).is_some_and(|step| matches!(step.step_type.as_str(), "wait" | "wait_for"))
+        });
+        self.load_started();
+        if interrupted.is_some() {
+            self.fail(now);
+        }
+        interrupted
     }
 
     /// Start an eligible auth attempt only on a matching login URL.
@@ -196,6 +209,30 @@ mod tests {
             "smart_url":{"steps":[{"type":"navigate","url":"/lovelace/2"}]}
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn interrupted_waits_fail_but_navigation_actions_resume() {
+        for kind in ["wait", "wait_for", "navigate", "click", "javascript"] {
+            let steps: Vec<SmartUrlStep> = serde_json::from_value(serde_json::json!([
+                {"type":kind}, {"type":"javascript","script":"next()"}
+            ])).unwrap();
+            let mut run = SmartUrlProgress::default();
+            run.start_sequence();
+            let (_, generation) = run.take_step(steps.len(), Duration::ZERO).unwrap();
+            let interrupted = run.load_started_for_steps(&steps, Duration::from_secs(1));
+            assert!(!run.finish_step(generation, true, Duration::from_secs(1)));
+            if matches!(kind, "wait" | "wait_for") {
+                assert_eq!(interrupted, Some(0));
+                assert!(run.has_failed());
+                assert_eq!(run.take_step(steps.len(), Duration::from_secs(1)), None);
+                assert!(!run.is_complete());
+            } else {
+                assert_eq!(interrupted, None);
+                assert!(!run.has_failed());
+                assert_eq!(run.take_step(steps.len(), Duration::from_secs(1)).unwrap().0, 1);
+            }
+        }
     }
 
     #[test]

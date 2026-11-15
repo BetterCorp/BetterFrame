@@ -118,7 +118,12 @@ fn install_runner(webview: &webkit6::WebView, config: SmartUrlConfig, server_url
     let controller = Controller { runner: runner.clone(), webview: webview.downgrade(), handlers: RefCell::new(Vec::new()) };
     let state = runner.clone();
     let changed = webview.connect_load_changed(move |wv, event| match event {
-        webkit6::LoadEvent::Started => state.progress.borrow_mut().load_started(),
+        webkit6::LoadEvent::Started => {
+            let interrupted = state.progress.borrow_mut().load_started_for_steps(&state.config.steps, state.started.elapsed());
+            if let Some(index) = interrupted {
+                finish(&state, Err(format!("Step {} interrupted by navigation", index + 1)));
+            }
+        }
         webkit6::LoadEvent::Finished => check_url(wv, &state),
         _ => {}
     });
@@ -850,6 +855,71 @@ mod tests {
         wait_until(|| fixture.count("/on-load") == 2);
         assert_eq!(fixture.count("/custom"), 1, "on-load never replays named groups");
         drop(actions);
+
+        // An interrupted wait must fail, including when it is the last step.
+        for (kind, last) in [("wait", false), ("wait_for", false), ("wait_for", true)] {
+            let mut steps = serde_json::json!([
+                {"type":kind,"selector":"#never-present","delay_ms":10000,"timeout_ms":10000}
+            ]).as_array().unwrap().clone();
+            if !last {
+                steps.push(serde_json::json!({"type":"javascript","script":"await fetch('/after-interrupted-wait');"}));
+            }
+            result.replace(None);
+            let completed = result.clone();
+            let job = run_sequence(&action_wv, serde_json::from_value(serde_json::Value::Array(steps)).unwrap(),
+                "http://frame.invalid", "test-key", None, move |r| { completed.replace(Some(r)); });
+            pump(Duration::from_millis(150));
+            action_wv.load_uri(&format!("{}/done?interrupt={kind}-{last}", fixture.root));
+            wait_until(|| result.borrow().is_some() && !action_wv.is_loading());
+            assert!(result.borrow().as_ref().unwrap().is_err());
+            assert!(job.is_finished());
+            assert_eq!(fixture.count("/after-interrupted-wait"), 0);
+        }
+
+        // Missing encrypted values are unavailable, never implicit blank fills.
+        evaluate(&action_wv, "document.body.insertAdjacentHTML('beforeend', '<input id=keep-value value=kept>');");
+        result.replace(None);
+        let completed = result.clone();
+        let missing_fill = run_sequence(&action_wv, serde_json::from_value(serde_json::json!([
+            {"type":"fill","selector":"#keep-value"}
+        ])).unwrap(), "http://frame.invalid", "test-key", None, move |r| { completed.replace(Some(r)); });
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_err());
+        evaluate(&action_wv, "if (document.querySelector('#keep-value').value !== 'kept') throw new Error('field changed');");
+        drop(missing_fill);
+
+        // Invocation readiness must not gate the inside of a user-authored group.
+        let mut login_path = cell(&fixture, "login-path", serde_json::json!([
+            {"type":"javascript","script":"await fetch('/entity-login-path');"}
+        ]));
+        login_path.web_url = Some(format!("{}/healthy-group", fixture.root));
+        login_path.smart_url.as_mut().unwrap().session_check_interval_ms = Some(0);
+        let (_, login_wv) = browser(&login_path);
+        let readiness = super::super::WARM_WEBVIEWS.with(|pool| pool.borrow().values()
+            .find(|entry| entry.webview == login_wv).unwrap().smart_url.as_ref().unwrap().readiness());
+        let login_actions = super::super::web_actions::Actions::new(&login_wv,
+            serde_json::from_value(serde_json::json!({"revision":"login-path", "on_load":[],
+                "groups":{"custom":[{"type":"navigate","url":"/auth/manual"},
+                    {"type":"wait_for","selector":"#page"},
+                    {"type":"javascript","script":"await fetch('/group-under-login');"},
+                    {"type":"navigate","url":"/done"}]}})).unwrap(),
+            Some(readiness.clone()), "http://frame.invalid", "test-key");
+        row.append(&login_wv);
+        wait_until(|| readiness.ready(&login_wv));
+        result.replace(None);
+        let completed = result.clone();
+        login_actions.invoke("custom", "login-path", move |r| { completed.replace(Some(r)); }).unwrap();
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok());
+        assert_eq!(fixture.count("/group-under-login"), 1);
+        wait_until(|| readiness.ready(&login_wv));
+        result.replace(None);
+        let completed = result.clone();
+        login_actions.invoke("custom", "login-path", move |r| { completed.replace(Some(r)); }).unwrap();
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok());
+        assert_eq!(fixture.count("/group-under-login"), 2, "the block is not left busy");
+        drop(login_actions);
 
         let failed_auth = cell(&fixture, "failed-auth", serde_json::json!([
             {"type":"navigate","url":"/done"},

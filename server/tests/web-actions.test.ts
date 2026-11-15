@@ -161,3 +161,34 @@ test("device action results are bound to the reporting kiosk and desktop capabil
   assert.equal((await post("heartbeat",{capabilities:["gtk4","web-action-groups-v1"]})).status,200);
   assert.deepEqual(updates[0],{capabilities:["gtk4","web-action-groups-v1"]});
 });
+
+test("missing or unreadable player keys never expose fill values", async () => {
+  const { fixture } = await import("./smart-url.test.js");
+  const { generateBundle } = await import("../src/shared/bundle.js");
+  for (const unreadable of [false,true]) {
+    const f=fixture(), getKiosk=f.repo.getKioskById;
+    if (unreadable) f.repo.getKioskById=async()=>({...await getKiosk(),encrypt_key_encrypted:"unreadable"});
+    const secrets={...f.secrets,decryptString:()=>{throw new Error("unavailable");},encryptForCluster:()=>{throw new Error("must not encrypt without a key");}};
+    (f.cells[0]!.options as Record<string,unknown>).web_actions={on_load:[{type:"fill",selector:"#token",value:"private-fill"}],groups:{custom:[{type:"fill",selector:"#other",value:"second-fill"}]}};
+    const bundle=await generateBundle(f.repo as never,secrets as never,"kiosk",undefined);
+    assert.ok(bundle);
+    for (const cell of bundle.displays[0]!.layouts.flatMap(l=>l.cells)) {
+      for (const step of [...cell.smart_url?.steps??[],...cell.web_actions?.on_load??[],...Object.values(cell.web_actions?.groups??{}).flat()]) {
+        assert.equal(step.value,undefined);
+        assert.equal(step.value_encrypted,undefined);
+      }
+    }
+    const serialized=JSON.stringify(bundle);
+    for (const secret of ["private-fill","second-fill","person=example"]) assert.equal(serialized.includes(secret),false);
+  }
+});
+
+test("bundle secret fingerprints depend on the server key, including entity auth fills", async () => {
+  const {fixture}=await import("./smart-url.test.js");
+  const {generateBundle}=await import("../src/shared/bundle.js");
+  const f=fixture();
+  const make=(key:number)=>generateBundle(f.repo as never,{...f.secrets,deriveKey:()=>Buffer.alloc(32,key)} as never,"kiosk","cluster");
+  const first=(await make(7))!;
+  assert.equal(first.version,(await make(7))!.version,"random encryption remains stable under the same fingerprint key");
+  assert.notEqual(first.version,(await make(8))!.version,"the version input cannot be guessed without the server-held key");
+});

@@ -9,7 +9,7 @@ import { blockOverlay, createOverlayBatchRenderer, overlayPlaybackDocument } fro
  * kiosk → enabled displays → layouts/cells plus operate-label cameras.
  */
 import type { BundleTrustedCa } from "./trusted-cas.js";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import type { Observable } from "@bsb/base";
 import type { Repository } from "./db/repository.js";
 import type { SecretsApi } from "./secrets.js";
@@ -286,7 +286,7 @@ export async function generateBundle(
 
   function encryptForBundle(plaintext: string, key: string, stableContext: string): string {
     const ciphertext = secrets.encryptForCluster(plaintext, key);
-    stableEncryptedValues.set(ciphertext, stableSecretFingerprint(stableContext, plaintext));
+    stableEncryptedValues.set(ciphertext, stableSecretFingerprint(secrets.deriveKey("bundle:secret-fingerprint:v1"), stableContext, plaintext));
     return ciphertext;
   }
 
@@ -298,8 +298,8 @@ export async function generateBundle(
       steps: raw.steps.map((source) => {
         const step = { ...source };
         const key = kioskEncryptKey ?? clusterKey;
-        if (step.value != null && step.type === "fill" && key) {
-          step.value_encrypted = encryptForBundle(step.value, key, `smart-url:entity:${ent.id}:${String(step.selector ?? "")}`);
+        if (step.value != null && step.type === "fill") {
+          if (key) step.value_encrypted = encryptForBundle(step.value, key, `smart-url:entity:${ent.id}:${String(step.selector ?? "")}`);
           delete step.value;
         }
         return step;
@@ -314,8 +314,8 @@ export async function generateBundle(
     const key = kioskEncryptKey ?? clusterKey;
     const encryptSteps = (steps: typeof config.on_load) => steps.map(source => {
       const step = { ...source };
-      if (step.type === "fill" && step.value != null && key) {
-        step.value_encrypted = encryptForBundle(step.value, key, `web-action:${cell.id}:${step.selector ?? ""}`);
+      if (step.type === "fill" && step.value != null) {
+        if (key) step.value_encrypted = encryptForBundle(step.value, key, `web-action:${cell.id}:${step.selector ?? ""}`);
         delete step.value;
       }
       return step;
@@ -783,8 +783,8 @@ function stripDisplayKioskPrefix(displayName: string, kioskName: string): string
   return displayName.startsWith(prefix) ? displayName.slice(prefix.length) : displayName;
 }
 
-function stableSecretFingerprint(context: string, plaintext: string): string {
-  return `secret:${createHash("sha256").update(context).update("\0").update(plaintext).digest("hex")}`;
+function stableSecretFingerprint(key: Buffer, context: string, plaintext: string): string {
+  return `secret:${createHmac("sha256", key).update(context).update("\0").update(plaintext).digest("hex")}`;
 }
 
 function stableBundleForVersion(value: unknown, encryptedValues: Map<string, string>): unknown {

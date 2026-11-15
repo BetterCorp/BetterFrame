@@ -2466,7 +2466,7 @@ fn apply_operator_overrides(display_id: &str, layout: &mut crate::bundle::Bundle
             cooling_timeout_seconds: None,
             fit: "cover".to_string(),
             smart_url: None,
-                            web_actions: None,
+            web_actions: None,
             local_storage: None,
             input_options: None,
         });
@@ -3415,26 +3415,40 @@ fn web_event_meta(
     }
 }
 
+fn report_web_action(request: crate::core::commands::WebActionRequest, result: Result<(), String>) {
+    tracing::info!("web action {} {}: {}", request.request_id, request.group,
+        result.as_ref().err().map(String::as_str).unwrap_or("completed"));
+    let auth = CURRENT_AUTH.with(|auth| auth.borrow().clone());
+    if let Some((server, key)) = auth {
+        std::thread::spawn(move || server::report_web_action_result(&server, &key, &request, result));
+    }
+}
+
 fn invoke_web_action(request: crate::core::commands::WebActionRequest) {
     let keys = DISPLAYS.with(|displays| {
-        let displays = displays.borrow(); let display = displays.get(&request.display_id).ok_or("Display not found")?;
-        if display.current_layout_id.as_deref() != Some(request.layout_id.as_str()) { return Err("Layout is not active"); }
+        let displays = displays.borrow();
+        let display = displays.get(&request.display_id).ok_or("Display not found")?;
+        if display.current_layout_id.as_deref() != Some(request.layout_id.as_str()) {
+            return Err("Layout is not active");
+        }
         Ok(display.web_positions.iter().map(|position| position.key.clone()).collect::<Vec<_>>())
     });
-    let report = |request: crate::core::commands::WebActionRequest, result: Result<(),String>| {
-        tracing::info!("web action {} {}: {}", request.request_id, request.group, result.as_ref().err().map(String::as_str).unwrap_or("completed"));
-        let auth = CURRENT_AUTH.with(|auth| auth.borrow().clone());
-        if let Some((server,key)) = auth { std::thread::spawn(move || server::report_web_action_result(&server,&key,&request,result)); }
-    };
     let result = keys.map_err(str::to_string).and_then(|keys| WARM_WEBVIEWS.with(|pool| {
         let pool = pool.borrow();
-        let entry = keys.iter().filter_map(|key| pool.get(key)).find(|entry| entry.event_meta.as_ref().is_some_and(|meta|
-            meta.view_id.as_deref() == Some(request.cell_id.as_str()))).ok_or("Block is not active")?;
+        let entry = keys.iter().filter_map(|key| pool.get(key)).find(|entry| {
+            entry.event_meta.as_ref().is_some_and(|meta| {
+                meta.view_id.as_deref() == Some(request.cell_id.as_str())
+            })
+        }).ok_or("Block is not active")?;
         let actions = entry.actions.as_ref().ok_or("Block has no web action groups")?;
         let completed_request = request.clone();
-        actions.invoke(&request.group,&request.revision,move |result| report(completed_request,result))
+        actions.invoke(&request.group, &request.revision, move |result| {
+            report_web_action(completed_request, result);
+        })
     }));
-    if let Err(error) = result { report(request,Err(error)); }
+    if let Err(error) = result {
+        report_web_action(request, Err(error));
+    }
 }
 
 fn report_web_change_for_key(key: &str, url: String) {

@@ -15,7 +15,7 @@ function fixture() {
   let assigned = true, delivered = true, supported = true, allowed = true;
   const sent: { id: string; message: object; queue?: boolean }[] = [];
   const repo = {
-    adapter: { dialect: () => "sqlite", get: async () => allowed ? null : { source_id: "source" } },
+    adapter: { dialect: () => "sqlite", get: async (sql: string) => allowed || !sql.startsWith("SELECT source_id") ? null : { source_id: "source" } },
     isSetupComplete: async () => true,
     getDisplayById: async (id: string) => id === "display" ? { id, kiosk_id: "kiosk" } : null,
     getLayoutCellById: async (id: string) => id === cell.id ? cell : null,
@@ -29,7 +29,7 @@ function fixture() {
   const post = (group = "custom", body = { layout_id: "layout", cell_id: "block" }, display = "display") => app.request(`http://bf.test/api/displays/${display}/web-actions/${group}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   return { app, repo, cell, entity, post, sent,
     assign: (v: boolean) => { assigned = v; }, deliver: (v: boolean) => { delivered = v; }, support: (v: boolean) => { supported = v; },
-    allow: (v: boolean) => { allowed = v; repo.adapter.get = async () => v ? null : { source_id: "source" }; },
+    allow: (v: boolean) => { allowed = v; },
   };
 }
 
@@ -77,6 +77,7 @@ test("API dispatches only a configured group bound to an assigned display and ne
   assert.equal((await f.post("custom",{layout_id:"layout",cell_id:"other"})).status, 404);
   assert.equal((await f.post("custom",undefined,"other-tenant-display")).status, 404);
   f.assign(false); assert.equal((await f.post()).status, 404); f.assign(true);
+  f.allow(false); assert.equal((await f.post()).status, 403); f.allow(true);
   f.cell.layout_id = "other"; assert.equal((await f.post()).status, 404);
   assert.deepEqual(f.sent, []);
 });
@@ -135,4 +136,26 @@ test("bundle encrypts action fills, keeps stable versions and excludes actions f
   action.groups.custom![0]!.value = "not stored";
   (f.cells[0]!.options as Record<string,any>).web_actions.groups.custom[0].value="changed";
   assert.notEqual(bundle.version,(await make())!.version);
+});
+
+test("device action results are bound to the reporting kiosk and desktop capabilities update on upgrade", async () => {
+  const { registerKioskRoutes } = await import("../src/plugins/service-api-http/index.js");
+  const app = new H3(), logged: Record<string,unknown>[] = [], updates:Record<string,unknown>[]=[];
+  app.use(event=>{
+    event.context.verifiedKiosk={id:"kiosk"};
+    if (event.req.url.includes("web-actions/result")) event.context.obs={log:{info:(_:string,fields:Record<string,unknown>)=>{logged.push(fields);}}} as never;
+  });
+  registerKioskRoutes(app,{
+    getDisplayById:async(id:string)=>({id,kiosk_id:id==="display"?"kiosk":"another"}),
+    getKioskById:async()=>({id:"kiosk",enabled:true,capabilities:["gtk4"]}),
+    updateKiosk:async(_:string,patch:Record<string,unknown>)=>{updates.push(patch);},
+    trustedCasForKiosk:async()=>[], touchKiosk:async()=>{},getSetupExtra:async()=>null,listDisplaysForKiosk:async()=>[],
+  } as never,{} as never,{} as never,{} as never,{} as never,{} as never,{publishTelemetry(){}} as never,"");
+  const post=(path:string,body:unknown)=>app.request(`http://bf.test/api/kiosk/${path}`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+  const result={request_id:"request",display_id:"display",cell_id:"block",group:"custom",ok:true};
+  assert.equal((await post("web-actions/result",result)).status,200);
+  assert.deepEqual(logged.pop(),{...result,error:""});
+  assert.equal((await post("web-actions/result",{...result,display_id:"other"})).status,403);
+  assert.equal((await post("heartbeat",{capabilities:["gtk4","web-action-groups-v1"]})).status,200);
+  assert.deepEqual(updates[0],{capabilities:["gtk4","web-action-groups-v1"]});
 });

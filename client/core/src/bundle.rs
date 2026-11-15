@@ -209,7 +209,7 @@ pub struct SmartUrlConfig {
     pub session_check_interval_ms: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct WebActions {
     pub revision: String,
     #[serde(default)]
@@ -218,7 +218,7 @@ pub struct WebActions {
     pub groups: std::collections::BTreeMap<String, Vec<SmartUrlStep>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SmartUrlStep {
     #[serde(rename = "type")]
     pub step_type: String,

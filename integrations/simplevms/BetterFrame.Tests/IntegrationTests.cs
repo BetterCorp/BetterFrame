@@ -14,6 +14,7 @@ using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Shared.Models.Events;
 using System.Security.Cryptography;
+using System.Diagnostics;
 
 namespace BetterFrame.Tests;
 
@@ -464,6 +465,58 @@ public sealed class IntegrationTests
       Assert.That((int)wrongCamera.StatusCode, Is.EqualTo(404));
     } finally { stop.Cancel(); try { await running; } catch (OperationCanceledException) { } Directory.Delete(directory, true); }
   }
+  [Test] public async Task RecordingExportRemuxesAlternateProfileAndTrimsRequestedTimeRange()
+  {
+    using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString()); Directory.CreateDirectory(directory);
+    async Task<string> Run(string program, params string[] arguments) {
+      var info = new ProcessStartInfo(program) { WorkingDirectory = directory, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+      foreach (var argument in arguments) info.ArgumentList.Add(argument);
+      using var process = Process.Start(info)!;
+      using var kill = stop.Token.Register(() => { try { process.Kill(true); } catch (InvalidOperationException) { } });
+      var output = process.StandardOutput.ReadToEndAsync(stop.Token); var errors = process.StandardError.ReadToEndAsync(stop.Token);
+      await process.WaitForExitAsync(stop.Token);
+      Assert.That(process.ExitCode, Is.Zero, await errors); return await output;
+    }
+    Task? running = null;
+    try {
+      await Run("ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10", "-t", "4",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "10", "-keyint_min", "10", "-sc_threshold", "0", "low.mp4");
+      var payload = await File.ReadAllBytesAsync(Path.Combine(directory, "low.mp4"), stop.Token);
+      var id = Guid.NewGuid(); var origin = DateTimeOffset.FromUnixTimeSeconds(1700000000); var start = origin.AddSeconds(1);
+      var recordings = new Recordings {
+        Segments = new() {
+          ["High"] = [new SegmentInfo { Id = Guid.NewGuid(), StartTime = origin.AddSeconds(2).ToUnixMicroseconds(), EndTime = origin.AddSeconds(4).ToUnixMicroseconds(), SegmentRef = "gapped-main", SizeBytes = 1 }],
+          ["Low"] = [new SegmentInfo { Id = Guid.NewGuid(), StartTime = origin.ToUnixMicroseconds(), EndTime = origin.AddSeconds(4).ToUnixMicroseconds(), SegmentRef = "low", SizeBytes = payload.Length }]
+        }, Payloads = new() { ["low"] = payload }
+      };
+      var tap = new Tap();
+      var context = new PluginContext { Config = new Config(), Environment = new Environment(directory), LoggerFactory = new Logs(),
+        CameraRegistry = new Registry { Cameras = [Camera(id, "Recorded camera")] }, RecordingAccess = recordings, StreamTap = tap };
+      var server = new NativeHttpServer(context, (camera, profile, _) => Task.FromResult(camera == id && profile is "High" or "Low"), (_, _) => Task.FromResult(true));
+      var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start(); var port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+      running = server.RunAsync($"http://127.0.0.1:{port}", stop.Token); await server.Ready.WaitAsync(stop.Token);
+      using var client = new HttpClient();
+      using var response = await client.GetAsync($"http://127.0.0.1:{port}/bf/{id}/High/recordings?start={Uri.EscapeDataString(start.ToString("O"))}&duration=2", stop.Token);
+      Assert.That((int)response.StatusCode, Is.EqualTo(200));
+      await File.WriteAllBytesAsync(Path.Combine(directory, "export.mp4"), await response.Content.ReadAsByteArrayAsync(stop.Token), stop.Token);
+      using var media = JsonDocument.Parse(await Run("ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", "export.mp4"));
+      var video = media.RootElement.GetProperty("streams").EnumerateArray().Single(stream => stream.GetProperty("codec_type").GetString() == "video");
+      Assert.That(video.GetProperty("codec_name").GetString(), Is.EqualTo("h264"));
+      Assert.That(video.GetProperty("width").GetInt32(), Is.EqualTo(160)); Assert.That(video.GetProperty("height").GetInt32(), Is.EqualTo(90));
+      var duration = double.Parse(media.RootElement.GetProperty("format").GetProperty("duration").GetString()!, System.Globalization.CultureInfo.InvariantCulture);
+      var firstTimestamp = double.Parse(media.RootElement.GetProperty("format").GetProperty("start_time").GetString()!, System.Globalization.CultureInfo.InvariantCulture);
+      Assert.That(duration - firstTimestamp, Is.EqualTo(2).Within(0.1));
+      var requestedFrame = await Run("ffmpeg", "-nostdin", "-v", "error", "-i", "low.mp4", "-vf", "select=eq(n\\,10)", "-frames:v", "1", "-f", "hash", "-hash", "sha256", "pipe:1");
+      var exportedFrame = await Run("ffmpeg", "-nostdin", "-v", "error", "-i", "export.mp4", "-frames:v", "1", "-f", "hash", "-hash", "sha256", "pipe:1");
+      Assert.That(exportedFrame, Is.EqualTo(requestedFrame), "The export must start at the requested keyframe rather than the next GOP");
+      Assert.That(recordings.Queries, Is.EqualTo(new[] { "High", "Low" })); Assert.That(recordings.Opened, Is.EqualTo(new[] { "low" }));
+      Assert.That(tap.Count, Is.Zero);
+    } finally {
+      stop.Cancel(); if (running != null) { try { await running; } catch (OperationCanceledException) { } }
+      Directory.Delete(directory, true);
+    }
+  }
   [Test] public async Task PluginReaderCredentialsCannotBeReusedForAnotherCameraOrAfterUnlinking()
   {
     using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -552,12 +605,14 @@ public sealed class IntegrationTests
   private sealed class Environment(string path) : IServerEnvironment { public string DataPath => path; }
   private sealed class Recordings : IRecordingAccess {
     public Dictionary<string, IReadOnlyList<SegmentInfo>> Segments = [];
-    public List<string> Queries = []; public int OpenCalls;
+    public Dictionary<string, byte[]> Payloads = [];
+    public List<string> Queries = []; public List<string> Opened = []; public int OpenCalls;
     public Task<OneOf<IReadOnlyList<SegmentInfo>, Error>> QueryAsync(Guid cameraId, string profile, ulong from, ulong to, CancellationToken ct) {
       Queries.Add(profile); return Task.FromResult(OneOf<IReadOnlyList<SegmentInfo>, Error>.FromT0(Segments.GetValueOrDefault(profile) ?? []));
     }
     public Task<OneOf<Stream, Error>> OpenSegmentAsync(string segmentRef, CancellationToken ct) {
-      OpenCalls++; return Task.FromResult<OneOf<Stream, Error>>(Error.Create(0x10bf, 9, Result.NotFound, "No test segment opened"));
+      OpenCalls++; Opened.Add(segmentRef);
+      return Task.FromResult<OneOf<Stream, Error>>(Payloads.TryGetValue(segmentRef, out var data) ? new MemoryStream(data, false) : Error.Create(0x10bf, 9, Result.NotFound, "No test segment opened"));
     }
   }
   private sealed class Logs : IPluginLoggerFactory, ILogger {

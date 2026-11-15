@@ -17,6 +17,10 @@ dotnet test integrations/simplevms/BetterFrame.Tests/BetterFrame.Tests.csproj \
 
 Install the published output as a `BetterFrame` plugin directory using the recorder's normal plugin deployment process, then enable the plugin. The optional overlay Dockerfile copies a prepared `plugin/` directory into the existing recorder image. Keep the recorder's existing data volume and single writer. Do not replace or initialize its databases.
 
+The native test suite requires `ffmpeg` (with `libx264`) and `ffprobe` on `PATH` for its generated-video recording-export regression. No camera footage is used.
+
+Recording export copies encoded video. Start boundaries retain the preceding keyframe as decoder preroll, so cuts follow keyframe boundaries rather than arbitrary frames; see [FFmpeg's input-seeking behavior](https://ffmpeg.org/ffmpeg.html#Main-options).
+
 ## Configure
 
 1. In SimpleVMS **Settings → Plugins → BetterFrame**, note the persistent instance ID. Set its NVR name, integration token (at least 32 characters), viewer username and viewer password (at least 16 characters). The instance ID and durable delivery state live under the recorder's `betterframe/` data directory; preserve them on upgrades and backups.

@@ -118,12 +118,13 @@ public sealed class NativeHttpServer(PluginContext context, Func<Guid, string, C
             total += read; if (total > 256 * 1024 * 1024) throw new IOException("Export exceeds limit");
             await output.WriteAsync(buffer.AsMemory(0, read), token);
           }
-          files.Add($"file '{file}'");
+          files.Add($"file '{file}'\nduration {((decimal)(segment.EndTime - segment.StartTime) / 1000000m).ToString(CultureInfo.InvariantCulture)}");
         }
         await File.WriteAllLinesAsync(Path.Combine(directory, "segments.txt"), files, token);
         var info = new ProcessStartInfo("ffmpeg") { WorkingDirectory = directory, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
         var offset = Math.Max(0, ((double)start.ToUnixMicroseconds() - segments[0].StartTime) / 1000000);
-        foreach (var argument in new[] { "-nostdin", "-v", "error", "-f", "concat", "-safe", "1", "-i", "segments.txt", "-ss", offset.ToString(CultureInfo.InvariantCulture), "-t", duration.ToString(), "-c", "copy", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1" }) info.ArgumentList.Add(argument);
+        // Input seeking preserves the preceding keyframe needed for stream-copy decoding.
+        foreach (var argument in new[] { "-nostdin", "-v", "error", "-ss", offset.ToString(CultureInfo.InvariantCulture), "-f", "concat", "-safe", "1", "-i", "segments.txt", "-t", duration.ToString(CultureInfo.InvariantCulture), "-c", "copy", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1" }) info.ArgumentList.Add(argument);
         using var process = Process.Start(info) ?? throw new IOException("Export remuxer unavailable");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token); deadline.CancelAfter(TimeSpan.FromSeconds(60));
         using var kill = deadline.Token.Register(() => { try { process.Kill(true); } catch (InvalidOperationException) { } });

@@ -243,6 +243,8 @@ pub struct BundleCamera {
     #[serde(default)]
     pub simple_vms_managed: bool,
     #[serde(default)]
+    pub simple_vms_http_url: Option<String>,
+    #[serde(default)]
     pub recording_config: serde_json::Value,
     #[serde(rename = "type")]
     pub cam_type: String,

@@ -1,0 +1,196 @@
+using System.Buffers.Binary;
+using System.Net.Sockets;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.Json;
+using NUnit.Framework;
+using OneOf;
+using Shared.Models;
+using Shared.Models.Formats;
+using BetterCorp.BetterFrame;
+using Microsoft.Extensions.Logging;
+using System.Net;
+using System.Collections.Concurrent;
+using System.Threading.Channels;
+using Shared.Models.Events;
+
+namespace BetterFrame.Tests;
+
+public sealed class IntegrationTests
+{
+  [Test] public async Task NativeSettingsManageNamedGroupsAndCameraMembershipWithoutChangingRecording()
+  {
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    try {
+      var settings = new Config(); var plugin = new BetterFramePlugin();
+      plugin.Initialize(new PluginContext { Config = settings, Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = new Registry(), EventBus = new Bus(), StreamTap = new Tap() });
+      plugin.ApplyValues(new Dictionary<string, string> { ["newGroupName"] = "Outside" });
+      var group = CatalogBuilder.ParseGroups(settings.Get("groups", "[]")).Single(); var camera = Guid.NewGuid();
+      plugin.ApplyValues(camera, new Dictionary<string, string> { ["member_" + group.Id] = "true" });
+      Assert.That(plugin.GetValues(camera)["member_" + group.Id], Is.EqualTo("true"));
+      plugin.ApplyValues(new Dictionary<string, string> { ["groupName_" + group.Id] = "Perimeter" });
+      Assert.That(CatalogBuilder.ParseGroups(settings.Get("groups", "[]")).Single().Id, Is.EqualTo(group.Id));
+      Assert.That(plugin.GetSchema(camera).Single().Fields.Single().Label, Is.EqualTo("Perimeter"));
+      await plugin.OnRemovedAsync(camera, default);
+      Assert.That(CatalogBuilder.ParseGroups(settings.Get("groups", "[]")).Single().CameraIds, Is.Empty);
+      plugin.ApplyValues(new Dictionary<string, string> { ["deleteGroup_" + group.Id] = "true" });
+      Assert.That(CatalogBuilder.ParseGroups(settings.Get("groups", "[]")), Is.Empty);
+      Assert.That(settings.Values.Keys.Any(k => k.Contains("record", StringComparison.OrdinalIgnoreCase)), Is.False);
+    } finally { Directory.Delete(directory, true); }
+  }
+
+  [Test] public async Task PluginPushesInitialAndChangedCatalogsRetriesDeliveryAndDoesNotPoll()
+  {
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+    static int FreePort() { var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start(); var port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop(); return port; }
+    var callbackPort = FreePort(); using var receiver = new HttpListener(); receiver.Prefixes.Add($"http://127.0.0.1:{callbackPort}/"); receiver.Start();
+    var settings = new Config(); settings.Set("callbackUrl", $"http://127.0.0.1:{callbackPort}/events"); settings.Set("integrationToken", new string('x', 40));
+    settings.Set("rtspPort", FreePort().ToString()); settings.Set("httpListenUrl", $"http://127.0.0.1:{FreePort()}");
+    var registry = new Registry(); var bus = new Bus(); var plugin = new BetterFramePlugin();
+    plugin.Initialize(new PluginContext { Config = settings, Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = registry, EventBus = bus, StreamTap = new Tap() });
+    await plugin.StartAsync(timeout.Token);
+    try {
+      var first = await receiver.GetContextAsync().WaitAsync(timeout.Token);
+      var initial = await JsonSerializer.DeserializeAsync<Catalog>(first.Request.InputStream, CatalogBuilder.Json, timeout.Token);
+      first.Response.StatusCode = 503; first.Response.Close();
+      Assert.That(initial!.Revision, Is.EqualTo(1)); Assert.That(registry.Calls, Is.EqualTo(1));
+      await Task.Delay(200, timeout.Token); Assert.That(registry.Calls, Is.EqualTo(1));
+      var id = Guid.NewGuid(); registry.Cameras = [Camera(id, "New camera")];
+      await bus.PublishAsync(new CameraAdded { CameraId = id, Timestamp = 1 }, timeout.Token);
+      var changed = await receiver.GetContextAsync().WaitAsync(timeout.Token);
+      var catalog = await JsonSerializer.DeserializeAsync<Catalog>(changed.Request.InputStream, CatalogBuilder.Json, timeout.Token);
+      Assert.That(catalog!.Revision, Is.GreaterThan(initial.Revision)); Assert.That(catalog.Cameras.Single().Name, Is.EqualTo("New camera"));
+      var response = Encoding.UTF8.GetBytes($"{{\"revision\":{catalog.Revision}}}"); changed.Response.ContentType = "application/json";
+      await changed.Response.OutputStream.WriteAsync(response, timeout.Token); changed.Response.Close();
+      var calls = registry.Calls; await Task.Delay(200, timeout.Token); Assert.That(registry.Calls, Is.EqualTo(calls));
+    } finally { await plugin.StopAsync(default); receiver.Stop(); Directory.Delete(directory, true); }
+  }
+  [Test] public void CatalogExportsUngroupedCamerasWithoutUpstreamSecretsAndPreservesGroupOrder()
+  {
+    var a = Guid.NewGuid(); var b = Guid.NewGuid();
+    var cameras = new[] { Camera(a, "A"), Camera(b, "B") };
+    var catalog = CatalogBuilder.Build("instance", 1, "NVR", cameras, [new DisplayGroup(Guid.NewGuid(), "Wall", [a])]);
+    Assert.That(catalog.Cameras, Has.Length.EqualTo(2));
+    Assert.That(catalog.Groups[0].CameraIds, Is.EqualTo(new[] { a.ToString() }));
+    Assert.That(JsonSerializer.Serialize(catalog), Does.Not.Contain("secret"));
+    Assert.That(catalog.Cameras[0].Profiles.Select(p => p.Role), Is.EqualTo(new[] { "main", "sub" }));
+  }
+  [Test] public void OutboxSurvivesRestartAndLostAcknowledgements()
+  {
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    try {
+      var box = new CatalogOutbox(directory); var identity = box.InstanceId;
+      var catalog = new Catalog(1, identity, 0, "NVR", [], []);
+      Assert.That(box.Enqueue(catalog), Is.True); Assert.That(box.Revision, Is.EqualTo(1));
+      box = new CatalogOutbox(directory); Assert.That(box.InstanceId, Is.EqualTo(identity));
+      Assert.That(box.Pending!.Revision, Is.EqualTo(1));
+      Assert.That(box.Enqueue(catalog), Is.False);
+      box.Enqueue(catalog with { Name = "Renamed" }); box.Acknowledge(1);
+      Assert.That(box.Pending!.Revision, Is.EqualTo(2)); box.Acknowledge(2);
+      Assert.That(new CatalogOutbox(directory).Pending, Is.Null);
+    } finally { Directory.Delete(directory, true); }
+  }
+  [TestCase(false)] [TestCase(true)] public void FragmentedRtpReassemblesOriginalNal(bool hevc)
+  {
+    var nal = new byte[4500]; new Random(42).NextBytes(nal); nal[0] = hevc ? (byte)0x26 : (byte)0x65; nal[1] = 1;
+    var packets = new RtpPacketizer(hevc).Packetize(nal, 90000, true).ToArray();
+    Assert.That(packets.Length, Is.GreaterThan(1));
+    var header = hevc ? 3 : 2; var reconstructed = new List<byte>(); reconstructed.Add(nal[0]); if (hevc) reconstructed.Add(nal[1]);
+    for (var i = 0; i < packets.Length; i++) {
+      var p = packets[i]; Assert.That(p.Length, Is.LessThanOrEqualTo(1212));
+      Assert.That(BinaryPrimitives.ReadUInt32BigEndian(p.AsSpan(4)), Is.EqualTo(90000));
+      Assert.That((p[1] & 0x80) != 0, Is.EqualTo(i == packets.Length - 1));
+      if (i > 0) Assert.That(BinaryPrimitives.ReadUInt16BigEndian(p.AsSpan(2)), Is.EqualTo(unchecked((ushort)(BinaryPrimitives.ReadUInt16BigEndian(packets[i - 1].AsSpan(2)) + 1))));
+      reconstructed.AddRange(p.AsSpan(12 + header).ToArray());
+    }
+    Assert.That(reconstructed, Is.EqualTo(nal));
+  }
+  [Test] public void DisplayGroupsRejectDuplicatesAndExcessiveWalls()
+  {
+    var id = Guid.NewGuid();
+    Assert.Throws<ArgumentException>(() => CatalogBuilder.ParseGroups(JsonSerializer.Serialize(new[] { new DisplayGroup(id, "A", []), new DisplayGroup(id, "B", []) }, CatalogBuilder.Json)));
+    Assert.Throws<ArgumentException>(() => CatalogBuilder.ParseGroups(JsonSerializer.Serialize(new[] { new DisplayGroup(id, "A", Enumerable.Range(0, 33).Select(_ => Guid.NewGuid()).ToArray()) }, CatalogBuilder.Json)));
+  }
+  [Test] public async Task RtspAuthenticatesStreamsAndReleasesNativeDemandOnDisconnectAndRevocation()
+  {
+    using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+    var camera = Guid.NewGuid(); var tap = new Tap(); var allowed = true;
+    var server = new NativeRtspServer(tap, (id, profile, _) => Task.FromResult(allowed && id == camera && profile == "High"), () => ("viewer", "viewer-password-at-least-16"));
+    var running = server.RunAsync("127.0.0.1", 0, "", "", stop.Token);
+    var port = await server.ListeningPort.WaitAsync(stop.Token);
+    try {
+      using (var client = new TcpClient()) {
+        await client.ConnectAsync("127.0.0.1", port, stop.Token); var stream = client.GetStream();
+        var uri = $"rtsp://127.0.0.1:{port}/bf/{camera}/High";
+        var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes("viewer:viewer-password-at-least-16"));
+        async Task<string> Send(string method, string extra = "", bool auth = true) {
+          await stream.WriteAsync(Encoding.ASCII.GetBytes($"{method} {uri} RTSP/1.0\r\nCSeq: 1\r\n{(auth ? "Authorization: Basic " + basic + "\r\n" : "")}{extra}\r\n"), stop.Token);
+          return await ReadResponse(stream, stop.Token);
+        }
+        Assert.That(await Send("DESCRIBE", auth: false), Does.StartWith("RTSP/1.0 401")); Assert.That(tap.Count, Is.EqualTo(0));
+        Assert.That(await Send("DESCRIBE"), Does.Contain("H264/90000")); Assert.That(tap.Count, Is.EqualTo(1));
+        var setup = await Send("SETUP", "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n");
+        var session = setup.Split("\r\n").Single(l => l.StartsWith("Session:")).Split(':', 2)[1].Split(';')[0].Trim();
+        Assert.That(await Send("PLAY", $"Session: {session}\r\n"), Does.StartWith("RTSP/1.0 200"));
+        var header = new byte[4]; await stream.ReadExactlyAsync(header, stop.Token); Assert.That(header[0], Is.EqualTo((byte)'$'));
+        var payload = new byte[BinaryPrimitives.ReadUInt16BigEndian(header.AsSpan(2))]; await stream.ReadExactlyAsync(payload, stop.Token);
+        Assert.That(payload[0], Is.EqualTo(0x80));
+      }
+      for (var i = 0; i < 100 && tap.Count != 0; i++) await Task.Delay(10, stop.Token);
+      Assert.That(tap.Count, Is.EqualTo(0));
+      using var denied = new TcpClient(); await denied.ConnectAsync("127.0.0.1", port, stop.Token);
+      allowed = false; server.Invalidate();
+    } finally { stop.Cancel(); try { await running; } catch (OperationCanceledException) { } }
+    Assert.That(tap.Count, Is.EqualTo(0));
+  }
+  private static async Task<string> ReadResponse(Stream stream, CancellationToken ct)
+  {
+    using var buffer = new MemoryStream(); var one = new byte[1];
+    while (true) {
+      await stream.ReadExactlyAsync(one, ct); buffer.WriteByte(one[0]);
+      if (buffer.Length >= 4 && buffer.GetBuffer().AsSpan((int)buffer.Length - 4, 4).SequenceEqual("\r\n\r\n"u8)) break;
+    }
+    var header = Encoding.ASCII.GetString(buffer.ToArray());
+    var length = int.Parse(header.Split("\r\n").Single(l => l.StartsWith("Content-Length:")).Split(':')[1]);
+    var body = new byte[length]; await stream.ReadExactlyAsync(body, ct); return header + Encoding.UTF8.GetString(body);
+  }
+  private static CameraInfo Camera(Guid id, string name) => new() { Id = id, Name = name, Address = "rtsp://secret:secret@camera/", ProviderId = "onvif", Capabilities = [], Streams = [
+    new() { Id = Guid.NewGuid(), Profile = "High", Kind = StreamKind.Quality, FormatId = "h264", Codec = "h264", Resolution = "1920x1080", IsRootStream = true, Uri = "secret" },
+    new() { Id = Guid.NewGuid(), Profile = "Low", Kind = StreamKind.Quality, FormatId = "h264", Codec = "h264", Resolution = "640x360", IsRootStream = true, Uri = "secret" }
+  ] };
+  private sealed class Tap : IStreamTap
+  {
+    public int Count;
+    public Task<OneOf<IDataStream, Error>> TapAsync(Guid camera, string profile, CancellationToken ct) { Interlocked.Increment(ref Count); return Task.FromResult<OneOf<IDataStream, Error>>(new Stream(this)); }
+    private sealed class Stream(Tap owner) : IDataStream<H264NalUnit>, IDisposable
+    {
+      public StreamInfo Info { get; } = new() { DataFormat = "h264", FormatParameters = new H264Parameters { Sps = new byte[] { 0x67, 0x42, 0, 0x1e }, Pps = new byte[] { 0x68, 0xce, 6, 0xe2 } } };
+      public Type FrameType => typeof(H264NalUnit);
+      public async IAsyncEnumerable<H264NalUnit> ReadAsync([EnumeratorCancellation] CancellationToken ct) {
+        ulong timestamp = 0;
+        while (!ct.IsCancellationRequested) { yield return new H264NalUnit { Data = new byte[] { 0x65, 1, 2 }, Timestamp = timestamp, MediaTimestamp = timestamp, IsSyncPoint = true, IsHeader = false, NalType = H264NalType.Idr }; timestamp += 3600; await Task.Delay(10, ct); }
+      }
+      public void Dispose() => Interlocked.Decrement(ref owner.Count);
+    }
+  }
+  private sealed class Environment(string path) : IServerEnvironment { public string DataPath => path; }
+  private sealed class Logs : IPluginLoggerFactory { public ILogger CreateLogger(string categoryName) => Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance; }
+  private sealed class Config : IConfig {
+    public ConcurrentDictionary<string, string> Values { get; } = new();
+    public string Get(string key, string fallback) => Values.GetValueOrDefault(key, fallback);
+    public void Set(string key, string value) => Values[key] = value;
+  }
+  private sealed class Registry : ICameraRegistry {
+    public CameraInfo[] Cameras = []; public int Calls;
+    public Task<OneOf<IReadOnlyList<CameraInfo>, Error>> GetCamerasAsync(CancellationToken ct) { Interlocked.Increment(ref Calls); return Task.FromResult<OneOf<IReadOnlyList<CameraInfo>, Error>>(Cameras); }
+    public Task<OneOf<CameraInfo, Error>> GetCameraAsync(Guid id, CancellationToken ct) => Task.FromResult<OneOf<CameraInfo, Error>>(Cameras.Single(c => c.Id == id));
+  }
+  private sealed class Bus : IEventBus {
+    private readonly ConcurrentDictionary<Type, Channel<object>> _channels = new();
+    public Task PublishAsync<T>(T item, CancellationToken ct) where T : ISystemEvent { _channels.GetOrAdd(typeof(T), _ => Channel.CreateUnbounded<object>()).Writer.TryWrite(item); return Task.CompletedTask; }
+    public async IAsyncEnumerable<T> SubscribeAsync<T>([EnumeratorCancellation] CancellationToken ct) where T : ISystemEvent {
+      await foreach (var item in _channels.GetOrAdd(typeof(T), _ => Channel.CreateUnbounded<object>()).Reader.ReadAllAsync(ct)) yield return (T)item;
+    }
+  }
+}

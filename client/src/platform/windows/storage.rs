@@ -631,6 +631,7 @@ fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
                 enabled: true,
                 last_seen_at: None,
                 simple_vms_managed: false,
+                simple_vms_http_url: None,
                 recording_config: serde_json::Value::Null,
                 cam_type: "rtsp".to_string(),
                 rtsp_url: streams.first().map(|stream| stream.rtsp_uri.clone()),

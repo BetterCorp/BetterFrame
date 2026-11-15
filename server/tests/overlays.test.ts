@@ -151,6 +151,7 @@ test("PostgreSQL overlay migration and repository remain tenant scoped and survi
       await adapter.exec(`CREATE SCHEMA ${schema}`);
       await adapter.withSearchPath(schema, async () => {
         await adapter.exec(migration);
+        await adapter.exec("CREATE TABLE simple_vms_groups (layout_id TEXT)");
         await adapter.exec("CREATE TABLE layout_cells (id TEXT PRIMARY KEY, layout_id TEXT, options JSONB NOT NULL DEFAULT '{}')");
         await adapter.run("INSERT INTO layout_cells(id, layout_id) VALUES (?, ?)", ["block", "layout"]);
       });

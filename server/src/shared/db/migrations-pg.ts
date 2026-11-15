@@ -1067,4 +1067,31 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     html TEXT NOT NULL,
     sample_data JSONB NOT NULL DEFAULT '{}'
   )`,
+  `ALTER TABLE camera_devices DROP CONSTRAINT IF EXISTS camera_devices_type_check`,
+  `ALTER TABLE camera_devices ADD CONSTRAINT camera_devices_type_check CHECK(type IN ('onvif', 'simplevms'))`,
+  `CREATE TABLE simple_vms_sources (
+    id TEXT PRIMARY KEY, instance_id TEXT NOT NULL UNIQUE,
+    device_id TEXT NOT NULL UNIQUE REFERENCES camera_devices(id) ON DELETE RESTRICT,
+    owner_kiosk_id TEXT NOT NULL UNIQUE REFERENCES kiosks(id) ON DELETE RESTRICT,
+    enabled BOOLEAN NOT NULL DEFAULT true, auto_sync BOOLEAN NOT NULL DEFAULT true,
+    local_address TEXT NOT NULL, external_address TEXT,
+    local_http_address TEXT, external_http_address TEXT,
+    viewer_username TEXT NOT NULL, viewer_password_encrypted TEXT NOT NULL, ingest_key_hash TEXT NOT NULL,
+    revision BIGINT NOT NULL DEFAULT 0, last_sync_at TIMESTAMPTZ
+  )`,
+  `CREATE TABLE simple_vms_linked_kiosks (
+    source_id TEXT NOT NULL REFERENCES simple_vms_sources(id) ON DELETE CASCADE,
+    kiosk_id TEXT NOT NULL REFERENCES kiosks(id) ON DELETE CASCADE, PRIMARY KEY(source_id, kiosk_id)
+  )`,
+  `CREATE TABLE simple_vms_cameras (
+    source_id TEXT NOT NULL REFERENCES simple_vms_sources(id) ON DELETE CASCADE,
+    external_id TEXT NOT NULL, camera_id TEXT NOT NULL UNIQUE REFERENCES cameras(id) ON DELETE CASCADE,
+    PRIMARY KEY(source_id, external_id)
+  )`,
+  `CREATE TABLE simple_vms_groups (
+    source_id TEXT NOT NULL REFERENCES simple_vms_sources(id) ON DELETE CASCADE,
+    external_id TEXT NOT NULL, layout_id TEXT UNIQUE REFERENCES layouts(id) ON DELETE SET NULL,
+    PRIMARY KEY(source_id, external_id)
+  )`,
+
 ];

@@ -12,7 +12,7 @@ function fixture() {
   const cells = [0, 1].map((col) => ({ id: `block${col}`, entity_id: "entity", content_type: "web", web_url: entity.web_url, row: 0, col, row_span: 1, col_span: 1, options: { smart_url: { steps: [{ type: "navigate", url: "http://wrong" }] } } }));
   let nonce = 0;
   const repo = {
-    adapter: { withSearchPath: async (_: string, fn: () => unknown) => fn() },
+    adapter: { all: async () => [], get: async () => undefined, withSearchPath: async (_: string, fn: () => unknown) => fn() },
     getKioskById: async () => ({ id: "kiosk", name: "Kiosk", capabilities: [], enabled: true, operator_console_enabled: true }),
     getTenantBySlug: async () => ({ slug: "default", schema_name: "public", is_active: true }),
     listDisplaysForKiosk: async () => [{ id: "display", name: "Display", is_enabled: true, default_layout_id: "layout" }],

@@ -1,3 +1,6 @@
+import { simpleVmsViewerCredentials, reconcileSimpleVmsAssignments, simpleVmsCamerasForKiosk } from "./simple-vms.js";
+import { simpleVmsStreamUri } from "./simple-vms-schema.js";
+import { simpleVmsLayoutAllowed } from "./simple-vms-access.js";
 import { blockOverlay, createOverlayBatchRenderer, overlayPlaybackDocument } from "./overlays.js";
 /**
  * Bundle generation — display-chain routing.
@@ -52,6 +55,7 @@ export interface BundleCamera {
   enabled: boolean;
   last_seen_at: string | null;
   simple_vms_managed: boolean;
+  simple_vms_http_url?: string | null;
   recording_config: Record<string, unknown>;
   type: string;
   onvif_host: string | null;
@@ -228,6 +232,9 @@ export async function generateBundle(
     }
   }
 
+  await reconcileSimpleVmsAssignments(repo);
+  const vmsCameras = new Map((await simpleVmsCamerasForKiosk(repo, kioskId)).map(c => [c.camera_id, c]));
+  const managedCameraIds = new Set((await repo.adapter.all<{ camera_id: string }>("SELECT camera_id FROM simple_vms_cameras")).map(c => c.camera_id));
   phase = "load-displays";
   // Find all displays for this kiosk (displays now point to kiosks via kiosk_id)
   const kioskDisplays = await repo.listDisplaysForKiosk(kioskId);
@@ -261,6 +268,13 @@ export async function generateBundle(
   const cameraById = new Map(layoutCameras.map((camera) => [camera.id, camera]));
   for (const camera of operateCameras) cameraById.set(camera.id, camera);
   let cameras = [...cameraById.values()].sort((a, b) => a.name.localeCompare(b.name));
+  for (const cameraId of vmsCameras.keys()) {
+    if (!cameraById.has(cameraId)) {
+      const camera = await repo.getCameraById(cameraId);
+      if (camera?.enabled) cameraById.set(cameraId, camera);
+    }
+  }
+  cameras = [...cameraById.values()].filter(c => !managedCameraIds.has(c.id) || vmsCameras.has(c.id));
   const deviceNames = new Map((await repo.listCameraDevices()).map((device) => [device.id, device.name]));
   const stableEncryptedValues = new Map<string, string>();
   const renderBundleOverlay = createOverlayBatchRenderer();
@@ -331,6 +345,7 @@ export async function generateBundle(
     const result: BundleLayout[] = [];
     const virtualLayouts = new Map<string, BundleLayout>();
     for (const l of layouts) {
+      if (!await simpleVmsLayoutAllowed(repo.adapter, l.id, kioskId)) continue;
       const cells = await repo.layoutCells(l.id);
       let gridCols = 1;
       let gridRows = 1;
@@ -519,6 +534,7 @@ export async function generateBundle(
       const camera = await repo.getCameraById(id);
       if (camera?.enabled) cameras.push(camera);
     }
+    cameras = cameras.filter(c => !managedCameraIds.has(c.id) || vmsCameras.has(c.id));
     cameras.sort((a, b) => a.name.localeCompare(b.name));
   }
 
@@ -551,7 +567,7 @@ export async function generateBundle(
   for (const cam of cameras) {
     phase = `build-camera-streams:${cam.id}`;
     const streams = await repo.listCameraStreams(cam.id);
-    const effectiveStreams = streams.length > 0 ? streams : (
+    let effectiveStreams: Array<Pick<import("./types.js").CameraStream, "id" | "role" | "name" | "profile_token" | "rtsp_uri" | "width" | "height" | "encoding" | "framerate">> = streams.length > 0 ? streams : (
       cam.type === "rtsp" && cam.rtsp_url
         ? [{
           id: "",
@@ -567,7 +583,15 @@ export async function generateBundle(
         : []
     );
     phase = `build-camera-credentials:${cam.id}`;
-    const playbackCreds = resolvePlaybackCredentials(cam, effectiveStreams);
+    const vms = vmsCameras.get(cam.id);
+    if (managedCameraIds.has(cam.id) && !vms) continue;
+    if (vms) {
+      const address = vms.owner_kiosk_id === kioskId ? vms.local_address : vms.external_address;
+      if (!address) continue;
+      effectiveStreams = effectiveStreams.map(stream => ({ ...stream,
+        rtsp_uri: simpleVmsStreamUri(address, vms.external_id, stream.profile_token ?? "") }));
+    }
+    const playbackCreds = vms ? simpleVmsViewerCredentials(vms.viewer_username, secrets.decryptString(vms.viewer_password_encrypted, "simple-vms-viewer"), kioskId) : resolvePlaybackCredentials(cam, effectiveStreams);
     // Encrypt camera password with per-kiosk key if available (stronger
     // isolation — compromised SD only exposes this kiosk's cameras). Falls
     // back to shared cluster_key for kiosks that paired before per-kiosk
@@ -595,7 +619,8 @@ export async function generateBundle(
       capabilities: viewer ? [] : cam.capabilities,
       enabled: cam.enabled,
       last_seen_at: cam.last_seen_at,
-      simple_vms_managed: operateCameraIds.has(cam.id),
+      simple_vms_managed: !!vms || operateCameraIds.has(cam.id),
+      simple_vms_http_url: vms ? (vms.owner_kiosk_id === kioskId ? vms.local_http_address : vms.external_http_address) : null,
       recording_config: viewer ? {} : cam.recording_config_json,
       type: cam.type,
       onvif_host: viewer ? null : cam.onvif_host,

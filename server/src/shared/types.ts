@@ -274,7 +274,7 @@ export interface Camera {
 export interface CameraDevice {
   id: string;
   name: string;
-  type: "onvif";
+  type: "onvif" | "simplevms";
   host: string;
   port: number;
   username: string | null;

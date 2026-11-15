@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="$(SimpleVmsSource)/src/Shared.Models/Shared.Models.csproj" />
+    <ProjectReference Include="$(SimpleVmsSource)/src/plugins/format/Fmp4/Fmp4.csproj" />
+  </ItemGroup>
+  <Target Name="RequireSimpleVmsSource" BeforeTargets="PrepareForBuild" Condition="'$(SimpleVmsSource)' == ''">
+    <Error Text="Build with -p:SimpleVmsSource=/absolute/path/to/simple-vms" />
+  </Target>
+</Project>

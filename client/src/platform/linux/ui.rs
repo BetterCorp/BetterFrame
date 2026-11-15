@@ -430,7 +430,6 @@ fn activate(app: &Application) {
             operator_auth: crate::operator_console::shared_auth(),
         });
         if let Some(bundle) = server::load_cached_bundle() {
-            local_server::sync_simple_vms(&bundle);
         }
 
         // Spawn WS client in a separate thread for live updates
@@ -477,7 +476,6 @@ fn activate(app: &Application) {
                         match server::fetch_bundle(&server_for_reload, &key_for_reload) {
                             Some(bundle) => {
                                 set_reported_bundle_version(&bundle.version);
-                                local_server::sync_simple_vms(&bundle);
                                 let _ = tx_for_reload.send(WorkerMsg::RenderBundle(
                                     bundle,
                                     server_for_reload.clone(),

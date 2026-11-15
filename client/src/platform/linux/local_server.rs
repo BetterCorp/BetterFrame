@@ -17,7 +17,6 @@
 //! Listens on `0.0.0.0:18090` by default. Override with env
 //! `BF_KIOSK_LOCAL_PORT`. Disable with `BF_KIOSK_LOCAL_DISABLE=1`.
 
-use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::mpsc::Sender as StdSender;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -37,7 +36,6 @@ use tracing::{info, warn};
 use crate::WorkerMsg;
 
 static ACTIVE_LOCAL_KEY: OnceLock<Arc<Mutex<String>>> = OnceLock::new();
-static VMS_PATHS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 const OPERATOR_COOKIE: &str = "betterframe_operator";
 
 #[derive(Clone)]
@@ -406,7 +404,7 @@ async fn operator_bootstrap_handler(
                 "height": stream.height,
             })).collect::<Vec<_>>(),
             "simple_vms_managed": camera.simple_vms_managed,
-            "playback_path": if camera.simple_vms_managed { Some(media_path_name(&camera.id, "main")) } else { None },
+            "playback_path": if camera.simple_vms_http_url.is_some() { Some(camera.id.clone()) } else { None },
         })
     }).collect();
     let camera_names: std::collections::HashMap<&str, &str> = bundle.cameras.iter()
@@ -515,140 +513,10 @@ async fn operator_media_session_handler(
     let Some(camera) = bundle.cameras.iter().find(|camera| camera.id == body.camera_id && camera.enabled && camera.simple_vms_managed) else {
         return (StatusCode::NOT_FOUND, "camera not in operator catalog").into_response();
     };
-    let Some((uri, _)) = camera.pick_stream(Some(&body.stream), if body.stream == "main" { 1.0 } else { 0.0 }) else {
-        return (StatusCode::NOT_FOUND, "camera has no playable stream").into_response();
-    };
-    let decrypt_key = crate::server::load_encrypt_key().or_else(|| crate::server::load_cluster_key());
-    let password = camera.playback_password_encrypted.as_ref().and_then(|encrypted| {
-        decrypt_key.as_deref().and_then(|key| crate::onvif_events::decrypt_cluster_public(encrypted, key))
-    });
-    let source = inject_rtsp_credentials(&uri, camera.playback_username.as_deref(), password.as_deref());
-    let media_path = media_path_name(&camera.id, &body.stream);
-    let api_base = std::env::var("BF_MEDIAMTX_API").unwrap_or_else(|_| "http://127.0.0.1:9997".to_string());
-    let client = reqwest::Client::new();
-    let encoded = urlencoding::encode(&media_path);
-    let config = json!({ "source": source, "sourceOnDemand": true, "sourceOnDemandCloseAfter": "10s" });
-    let add = client.post(format!("{api_base}/v3/config/paths/add/{encoded}")).json(&config).send().await;
-    let configured = match add {
-        Ok(response) if response.status().is_success() => true,
-        Ok(_) => client.patch(format!("{api_base}/v3/config/paths/patch/{encoded}"))
-            .json(&config).send().await.map(|response| response.status().is_success()).unwrap_or(false),
-        Err(_) => false,
-    };
-    if !configured {
-        return (StatusCode::SERVICE_UNAVAILABLE, "MediaMTX is unavailable").into_response();
+    if camera.simple_vms_http_url.is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "Browser preview requires a SimpleVMS browser media connection").into_response();
     }
-    Json(json!({ "whep_url": format!("/operator/media/{media_path}/whep") })).into_response()
-}
-
-fn inject_rtsp_credentials(uri: &str, username: Option<&str>, password: Option<&str>) -> String {
-    let Ok(mut parsed) = url::Url::parse(uri) else { return uri.to_string(); };
-    if let Some(username) = username { let _ = parsed.set_username(username); }
-    let _ = parsed.set_password(password);
-    parsed.to_string()
-}
-
-pub fn sync_simple_vms(bundle: &crate::bundle::KioskBundle) {
-    const RECORD_KEYS: &[&str] = &[
-        "recordFormat",
-        "recordPartDuration",
-        "recordMaxPartSize",
-        "recordSegmentDuration",
-        "recordDeleteAfter",
-    ];
-    let api_base = std::env::var("BF_MEDIAMTX_API")
-        .unwrap_or_else(|_| "http://127.0.0.1:9997".to_string());
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-    {
-        Ok(client) => client,
-        Err(err) => {
-            warn!("simple-vms: HTTP client failed: {err}");
-            return;
-        }
-    };
-    let decrypt_key = crate::server::load_encrypt_key().or_else(|| crate::server::load_cluster_key());
-    let storage = bundle
-        .operator_console
-        .simple_vms
-        .storage_path
-        .as_deref()
-        .unwrap_or("/var/lib/betterframe/recordings")
-        .trim_end_matches('/');
-    let defaults = bundle.operator_console.simple_vms.settings.as_object();
-    let mut desired = HashSet::new();
-
-    if bundle.operator_console.simple_vms.enabled {
-        for camera in bundle.cameras.iter().filter(|camera| {
-            camera.enabled
-                && camera.simple_vms_managed
-                && camera.recording_config.get("record").and_then(|value| value.as_bool()) != Some(false)
-        }) {
-            let Some((uri, _)) = camera.pick_stream(Some("main"), 1.0) else { continue; };
-            let password = camera.playback_password_encrypted.as_ref().and_then(|encrypted| {
-                decrypt_key.as_deref().and_then(|key| crate::onvif_events::decrypt_cluster_public(encrypted, key))
-            });
-            let name = media_path_name(&camera.id, "main");
-            let mut config = serde_json::Map::from_iter([
-                ("source".to_string(), json!(inject_rtsp_credentials(&uri, camera.playback_username.as_deref(), password.as_deref()))),
-                ("sourceOnDemand".to_string(), json!(false)),
-                ("record".to_string(), json!(true)),
-                ("recordPath".to_string(), json!(format!("{storage}/%path/%Y-%m-%d_%H-%M-%S-%f"))),
-            ]);
-            for options in [defaults, camera.recording_config.as_object()].into_iter().flatten() {
-                for key in RECORD_KEYS {
-                    if let Some(value) = options.get(*key) {
-                        config.insert((*key).to_string(), value.clone());
-                    }
-                }
-            }
-            if configure_mediamtx_path_blocking(&client, &api_base, &name, &config) {
-                desired.insert(name);
-            }
-        }
-    }
-
-    let tracked = VMS_PATHS.get_or_init(|| Mutex::new(HashSet::new()));
-    if let Ok(mut active) = tracked.lock() {
-        for stale in active.difference(&desired).cloned().collect::<Vec<_>>() {
-            let encoded = urlencoding::encode(&stale);
-            let _ = client
-                .delete(format!("{api_base}/v3/config/paths/delete/{encoded}"))
-                .send();
-        }
-        *active = desired;
-    }
-}
-
-fn media_path_name(camera_id: &str, stream: &str) -> String {
-    let safe_id: String = camera_id.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect();
-    format!("bf_{safe_id}_{stream}")
-}
-
-fn configure_mediamtx_path_blocking(
-    client: &reqwest::blocking::Client,
-    api_base: &str,
-    name: &str,
-    config: &serde_json::Map<String, serde_json::Value>,
-) -> bool {
-    let encoded = urlencoding::encode(name);
-    match client
-        .post(format!("{api_base}/v3/config/paths/add/{encoded}"))
-        .json(config)
-        .send()
-    {
-        Ok(response) if response.status().is_success() => true,
-        Ok(_) => client
-            .patch(format!("{api_base}/v3/config/paths/patch/{encoded}"))
-            .json(config)
-            .send()
-            .is_ok_and(|response| response.status().is_success()),
-        Err(err) => {
-            warn!("simple-vms: MediaMTX path {name} failed: {err}");
-            false
-        }
-    }
+    Json(json!({ "live_url": format!("/operator/media/{}/{}", camera.id, body.stream) })).into_response()
 }
 
 async fn operator_focus_handler(
@@ -736,48 +604,13 @@ where
 
 async fn operator_media_proxy_handler(
     State(state): State<LocalServerState>,
-    Path((media_path, tail)): Path<(String, String)>,
+    Path((camera_id, stream)): Path<(String, String)>,
     method: Method,
     headers: HeaderMap,
-    body: Bytes,
 ) -> Response {
     if let Some(response) = require_operator(&state, &headers) { return response; }
-    if !media_path.starts_with("bf_") || media_path.chars().any(|ch| !(ch.is_ascii_alphanumeric() || ch == '_')) {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    let base = std::env::var("BF_MEDIAMTX_WEBRTC").unwrap_or_else(|_| "http://127.0.0.1:8889".to_string());
-    let target = format!("{}/{}/{}", base.trim_end_matches('/'), media_path, tail.trim_start_matches('/'));
-    let client = reqwest::Client::new();
-    let mut request = client.request(reqwest_method(&method), &target).body(body.to_vec());
-    for (name, value) in headers.iter() {
-        if matches!(name.as_str(), "authorization" | "host" | "content-length" | "connection") { continue; }
-        request = request.header(name.as_str(), value.as_bytes());
-    }
-    let upstream = match request.send().await {
-        Ok(response) => response,
-        Err(err) => return (StatusCode::BAD_GATEWAY, format!("MediaMTX proxy failed: {err}")).into_response(),
-    };
-    let status = upstream.status().as_u16();
-    let upstream_headers = upstream.headers().clone();
-    let bytes = match upstream.bytes().await {
-        Ok(bytes) => bytes,
-        Err(err) => return (StatusCode::BAD_GATEWAY, format!("MediaMTX response failed: {err}")).into_response(),
-    };
-    let mut response = Response::builder().status(status);
-    for (name, value) in upstream_headers.iter() {
-        if matches!(name.as_str(), "connection" | "content-length" | "transfer-encoding" | "location") { continue; }
-        response = response.header(name, value);
-    }
-    if let Some(location) = upstream_headers.get("location").and_then(|value| value.to_str().ok()) {
-        let suffix = url::Url::parse(location).ok().map(|url| url.path().to_string()).unwrap_or_else(|| location.to_string());
-        let rewritten = if let Some(index) = suffix.find(&format!("/{media_path}/")) {
-            format!("/operator/media/{media_path}/{}", &suffix[index + media_path.len() + 2..])
-        } else {
-            format!("/operator/media/{media_path}/{}", suffix.trim_start_matches('/'))
-        };
-        response = response.header("location", rewritten);
-    }
-    response.body(Body::from(bytes)).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    if method != Method::GET || (stream != "main" && stream != "sub") { return StatusCode::BAD_REQUEST.into_response(); }
+    native_vms_request(&camera_id, &stream, "live", &[]).await
 }
 
 async fn operator_playback_proxy_handler(
@@ -787,34 +620,37 @@ async fn operator_playback_proxy_handler(
     headers: HeaderMap,
 ) -> Response {
     if let Some(response) = require_operator(&state, &headers) { return response; }
-    if endpoint != "list" && endpoint != "get" {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let Some(path) = params.get("path") else { return StatusCode::BAD_REQUEST.into_response(); };
-    if !path.starts_with("bf_") || path.chars().any(|ch| !(ch.is_ascii_alphanumeric() || ch == '_')) {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    let base = std::env::var("BF_MEDIAMTX_PLAYBACK")
-        .unwrap_or_else(|_| "http://127.0.0.1:9996".to_string());
-    let mut target = match reqwest::Url::parse(&format!("{}/{endpoint}", base.trim_end_matches('/'))) {
-        Ok(url) => url,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    if endpoint != "get" { return StatusCode::NOT_FOUND.into_response(); }
+    let Some(camera_id) = params.get("path") else { return StatusCode::BAD_REQUEST.into_response(); };
+    let Some(start) = params.get("start") else { return StatusCode::BAD_REQUEST.into_response(); };
+    let Some(duration) = params.get("duration") else { return StatusCode::BAD_REQUEST.into_response(); };
+    native_vms_request(camera_id, "main", "recordings", &[("start", start.as_str()), ("duration", duration.as_str())]).await
+}
+
+async fn native_vms_request(camera_id: &str, selector: &str, endpoint: &str, query: &[(&str, &str)]) -> Response {
+    let Some(bundle) = crate::server::load_cached_bundle() else { return StatusCode::SERVICE_UNAVAILABLE.into_response(); };
+    let Some(camera) = bundle.cameras.iter().find(|c| c.id == camera_id && c.enabled && c.simple_vms_managed) else { return StatusCode::NOT_FOUND.into_response(); };
+    let Some(base) = &camera.simple_vms_http_url else { return (StatusCode::SERVICE_UNAVAILABLE, "No SimpleVMS browser media connection").into_response(); };
+    let Some((uri, _)) = camera.pick_stream(Some(selector), if selector == "main" { 1.0 } else { 0.0 }) else { return StatusCode::NOT_FOUND.into_response(); };
+    let Ok(source) = url::Url::parse(&uri) else { return StatusCode::BAD_REQUEST.into_response(); };
+    let Ok(mut target) = reqwest::Url::parse(base) else { return StatusCode::BAD_REQUEST.into_response(); };
+    if !matches!(target.scheme(), "http" | "https") { return StatusCode::BAD_REQUEST.into_response(); }
+    target.set_path(&format!("{}/{endpoint}", source.path().trim_end_matches('/')));
+    target.query_pairs_mut().extend_pairs(query.iter().copied());
+    let key = crate::server::load_encrypt_key().or_else(crate::server::load_cluster_key);
+    let password = camera.playback_password_encrypted.as_ref().and_then(|encrypted| key.as_deref().and_then(|key| crate::onvif_events::decrypt_cluster_public(encrypted, key)));
+    let Some(password) = password else { return StatusCode::SERVICE_UNAVAILABLE.into_response(); };
+    let client = match reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).connect_timeout(std::time::Duration::from_secs(10)).build() {
+        Ok(client) => client, Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
-    target.query_pairs_mut().extend_pairs(params.iter());
-    let upstream = match reqwest::Client::new().get(target).send().await {
-        Ok(response) => response,
-        Err(err) => return (StatusCode::BAD_GATEWAY, format!("MediaMTX playback failed: {err}")).into_response(),
+    let upstream = match client.get(target).basic_auth(camera.playback_username.as_deref().unwrap_or(""), Some(password)).send().await {
+        Ok(response) => response, Err(_) => return (StatusCode::BAD_GATEWAY, "SimpleVMS media connection failed").into_response(),
     };
-    let status = upstream.status().as_u16();
-    let upstream_headers = upstream.headers().clone();
-    let mut response = Response::builder().status(status);
-    for (name, value) in upstream_headers.iter() {
-        if matches!(name.as_str(), "connection" | "transfer-encoding") { continue; }
-        response = response.header(name, value);
+    let mut response = Response::builder().status(upstream.status().as_u16()).header("cache-control", "no-store");
+    for header in ["content-type", "x-betterframe-mime"] {
+        if let Some(value) = upstream.headers().get(header) { response = response.header(header, value); }
     }
-    response
-        .body(Body::from_stream(upstream.bytes_stream()))
-        .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+    response.body(Body::from_stream(upstream.bytes_stream())).unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
 }
 
 fn require_operator(state: &LocalServerState, headers: &HeaderMap) -> Option<Response> {

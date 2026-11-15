@@ -355,6 +355,7 @@ async function requireKiosk(
   _auth: AuthApi,
 ): Promise<{
   id: string;
+  key_hash: string;
   tenant_id: string;
   tenant_slug: string;
   tenant_name: string | null;
@@ -1121,7 +1122,7 @@ export function registerKioskRoutes(
       }),
     });
 
-    if (body.trusted_ca_status) await repo.reportTrustedCas(kiosk.id, body.trusted_ca_status);
+    if (body.trusted_ca_status) await repo.reportTrustedCas(kiosk.id, body.trusted_ca_status, kiosk.key_hash);
 
     // Managed-config echo: kiosk reports the version it has successfully
     // applied. Persist for the admin UI to render. Error string clears on a

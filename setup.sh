@@ -840,7 +840,7 @@ def reconcile(cas, state_dir=STATE, ca_dir=CA_DIR, update=None, errors=None, now
     for fp in owned:
         if not re.fullmatch(r"[0-9a-f]{64}", fp):
             raise ValueError("Corrupt CA ownership journal")
-    atomic(journal, {"owned": sorted(owned), "desired": cas, "dirty": True})
+    atomic(journal, {"owned": sorted(owned), "desired": cas, "dirty": True, "restart_pending": True})
     changed = bool(previous.get("dirty")) or revision(previous.get("desired", [])) != revision(cas)
     for fp in owned:
         target = ca_dir / ("betterframe-" + fp + ".crt")
@@ -853,7 +853,8 @@ def reconcile(cas, state_dir=STATE, ca_dir=CA_DIR, update=None, errors=None, now
             target.unlink(); changed = True
     if changed:
         (update or (lambda: subprocess.run((["/usr/bin/update-ca-trust", "extract"] if Path("/usr/bin/update-ca-trust").is_file() else ["/usr/sbin/update-ca-certificates"]), check=True, capture_output=True, timeout=60)))()
-    atomic(journal, {"owned": sorted(owned.intersection(validated)), "desired": cas, "dirty": False})
+    atomic(journal, {"owned": sorted(owned.intersection(validated)), "desired": cas, "dirty": False,
+                     "restart_pending": changed or bool(previous.get("restart_pending"))})
     return changed
 
 
@@ -900,10 +901,14 @@ def main(state_dir=STATE, request=REQUEST, ca_dir=CA_DIR, update=None, restart=r
             cas = json.loads((state_dir / "ownership.json").read_text())["desired"]
         errors = []
         changed = reconcile(cas, state_dir, ca_dir, update, errors)
+        journal = state_dir / "ownership.json"
+        saved = json.loads(journal.read_text())
+        if changed or saved.get("restart_pending"):
+            restart()
+            saved["restart_pending"] = False
+            atomic(journal, saved)
         atomic(state_dir / "status.json", {"revision": revision(cas), "state": "error" if errors else "applied", "message": "; ".join(errors)[:1024]})
         claimed.unlink(missing_ok=True)
-        if changed:
-            restart()
     except Exception as error:
         try:
             desired_revision = revision(cas)

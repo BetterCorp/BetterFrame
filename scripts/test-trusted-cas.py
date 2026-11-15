@@ -169,6 +169,25 @@ class TrustedCaTests(unittest.TestCase):
         self.assertEqual(trust.validate([self.ca], self.state, errors, now=0), {})
         self.assertEqual(len(errors), 1)
 
+    def test_failed_restart_is_retried_after_trust_is_already_clean(self):
+        request = self.root / "request.json"
+        for cas in [[self.ca], []]:
+            request.write_text(json.dumps({"trusted_cas": cas}))
+            def fail_restart(): raise RuntimeError("transient session-bus failure")
+            with self.assertRaises(RuntimeError):
+                trust.main(self.state, request, self.cadir, self.update, fail_restart)
+            saved = json.loads((self.state / "ownership.json").read_text())
+            self.assertFalse(saved["dirty"]); self.assertTrue(saved["restart_pending"])
+            self.assertEqual(json.loads((self.state / "status.json").read_text())["state"], "error")
+            calls = self.calls
+            restarted = []
+            trust.main(self.state, request, self.cadir, self.update, lambda: restarted.append(True))
+            self.assertEqual(restarted, [True]); self.assertEqual(self.calls, calls)
+            self.assertFalse(json.loads((self.state / "ownership.json").read_text())["restart_pending"])
+            self.assertEqual(json.loads((self.state / "status.json").read_text())["state"], "applied")
+            trust.main(self.state, request, self.cadir, self.update, lambda: restarted.append(True))
+            self.assertEqual(restarted, [True])
+
     def test_standalone_setup_embeds_identical_helper_and_units(self):
         for function, file in [("write_trusted_ca_helper", "betterframe-trusted-cas.py"), ("write_trusted_ca_service", "betterframe-trusted-cas.service"), ("write_trusted_ca_path", "betterframe-trusted-cas.path")]:
             result = subprocess.run(["bash", "-c", 'source "$1"; "$2"', "test", str(ROOT / "setup.sh"), function], check=True, capture_output=True, text=True)

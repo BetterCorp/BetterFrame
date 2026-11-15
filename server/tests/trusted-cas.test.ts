@@ -155,10 +155,10 @@ test("PostgreSQL CA assignments and reports remain tenant-local and survive reop
         kiosk_app_version TEXT, os_version TEXT, cpu_temp_c REAL, cpu_load_percent REAL, fan_rpm INTEGER,
         fan_pwm INTEGER, memory_total_mb INTEGER, memory_used_mb INTEGER, disk_total_mb INTEGER, disk_free_mb INTEGER, disk_used_percent REAL)`);
       for (const sql of migrations) await adapter.exec(sql);
-      await adapter.run("INSERT INTO kiosks(id) VALUES (?)", ["player"]);
+      await adapter.run("INSERT INTO kiosks(id, key_hash) VALUES (?, ?)", ["player", "original"]);
     });
     const repo = new Repository(adapter, async () => {});
-    await adapter.withSearchPath(schemas[0]!, async () => { await repo.saveTrustedCa(ca); await repo.assignTrustedCas("player", [ca.id]); await repo.reportTrustedCas("player", { revision: trustedCaRevision([ca]), state: "applied", message: "" }); });
+    await adapter.withSearchPath(schemas[0]!, async () => { await repo.saveTrustedCa(ca); await repo.assignTrustedCas("player", [ca.id]); await repo.reportTrustedCas("player", { revision: trustedCaRevision([ca]), state: "applied", message: "" }, "original"); });
     await adapter.withSearchPath(schemas[1]!, async () => {
       assert.deepEqual(await repo.listTrustedCas(), []);
       await assert.rejects(() => repo.assignTrustedCas("player", [ca.id]), /this tenant/);
@@ -170,8 +170,20 @@ test("PostgreSQL CA assignments and reports remain tenant-local and survive reop
       assert.equal((await reopened.listTrustedCaReports())[0]?.state, "applied");
       const duplicate = await reopened.saveTrustedCa({ ...ca, id: "duplicate-id", name: "Other name" });
       assert.equal(duplicate.id, ca.id); assert.equal(duplicate.name, ca.name);
-      await reopened.transact(() => reopened.replaceKioskKey("player", { key_hash: "replacement", key_prefix: "new" }));
-      assert.deepEqual(await reopened.listTrustedCaReports(), []);
+      let releaseRekey!: () => void, keyChanged!: () => void;
+      const rekeyBlocked = new Promise<void>(resolve => { keyChanged = resolve; });
+      const allowCommit = new Promise<void>(resolve => { releaseRekey = resolve; });
+      const replacing = reopened.transact(async () => {
+        await reopened.replaceKioskKey("player", { key_hash: "replacement", key_prefix: "new" });
+        keyChanged(); await allowCommit;
+      });
+      await rekeyBlocked;
+      const retiredReport = reopened.reportTrustedCas("player", { revision: trustedCaRevision([ca]), state: "applied", message: "" }, "original");
+      releaseRekey();
+      await Promise.all([replacing, retiredReport]);
+      assert.deepEqual(await reopened.listTrustedCaReports(), [], "An in-flight retired-key report cannot restore stale status");
+      await reopened.reportTrustedCas("player", { revision: trustedCaRevision([ca]), state: "applied", message: "" }, "replacement");
+      assert.equal((await reopened.listTrustedCaReports())[0]?.state, "applied");
       assert.deepEqual(await reopened.trustedCasForKiosk("player"), [ca]);
       await adapter.run("UPDATE trusted_cas SET not_after = ? WHERE id = ?", ["2000-01-01T00:00:00.000Z", ca.id]);
       assert.deepEqual(await reopened.trustedCasForKiosk("player"), []);
@@ -179,6 +191,17 @@ test("PostgreSQL CA assignments and reports remain tenant-local and survive reop
       await assert.rejects(() => reopened.assignTrustedCas("player", ["missing"]));
       assert.deepEqual(await reopened.trustedCasForKiosk("player"), [ca]);
       await reopened.deleteTrustedCa(ca.id); assert.deepEqual(await reopened.trustedCasForKiosk("player"), []);
+      // Two distinct uploads compete for the final slot in this tenant's library.
+      await adapter.run(`INSERT INTO trusted_cas (id, name, pem, fingerprint_sha256, subject, not_before, not_after)
+        SELECT 'seed-' || n, ?, ?, md5(n::text) || md5(n::text), ?, ?, ? FROM generate_series(1, 127) n`,
+        [ca.name, ca.pem, ca.subject, ca.not_before, ca.not_after]);
+      const competing = await Promise.allSettled(["a", "b"].map(value => reopened.saveTrustedCa({ ...ca, id: value, fingerprint_sha256: value.repeat(64) })));
+      assert.equal(competing.filter(result => result.status === "fulfilled").length, 1);
+      assert.equal(competing.filter(result => result.status === "rejected").length, 1);
+      assert.equal((await reopened.listTrustedCas()).length, 128);
+      const stored = (await reopened.listTrustedCas())[0]!;
+      assert.equal((await reopened.saveTrustedCa({ ...stored, id: "duplicate-at-quota" })).id, stored.id);
+
     });
   } finally { for (const schema of schemas) await adapter.exec(`DROP SCHEMA IF EXISTS ${schema} CASCADE`); await adapter.close(); }
 });
@@ -188,11 +211,11 @@ test("heartbeats provision and remove CAs without displays, layouts or a content
     let assigned = [ca]; const reports: unknown[] = [];
     const profile = { id: "player", name: "Player", enabled: true, capabilities: viewer ? ["android-viewer"] : ["linux"], managed_image: false };
     const app = new H3();
-    app.use(event => { event.context.verifiedKiosk = { id: "player" }; event.context.kioskProfile = profile; });
+    app.use(event => { event.context.verifiedKiosk = { id: "player", key_hash: "authenticated-generation" }; event.context.kioskProfile = profile; });
     registerKioskRoutes(app, {
       getKioskById: async () => profile, touchKiosk: async () => {}, getSetupExtra: async () => null, listDisplaysForKiosk: async () => [],
       trustedCasForKiosk: async (id: string) => { assert.equal(id, "player"); return assigned; },
-      reportTrustedCas: async (_id: string, report: unknown) => { reports.push(report); },
+      reportTrustedCas: async (_id: string, report: unknown, keyHash: string) => { assert.equal(keyHash, "authenticated-generation"); reports.push(report); },
     } as never, {} as never, {} as never, {} as never, {} as never, {} as never, { publishTelemetry() {} } as never, "");
     const send = () => app.request("http://bf.test/api/kiosk/heartbeat", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ displays: [], trusted_ca_status: { revision: trustedCaRevision([]), state: "applied", message: "" } }) });

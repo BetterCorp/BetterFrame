@@ -217,11 +217,20 @@ export class Repository {
   }
 
   async saveTrustedCa(ca: TrustedCa): Promise<TrustedCa> {
-    const persisted = await this._get<TrustedCa>(`INSERT INTO trusted_cas (id, name, pem, fingerprint_sha256, subject, not_before, not_after)
-      VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (fingerprint_sha256)
-      DO UPDATE SET fingerprint_sha256 = EXCLUDED.fingerprint_sha256 RETURNING *`,
-      [ca.id, ca.name, ca.pem, ca.fingerprint_sha256, ca.subject, ca.not_before, ca.not_after]);
-    if (!persisted) throw new Error("CA certificate was not persisted");
+    const persisted = await this.transact(async () => {
+      // A tenant's small CA library has one lock for quota checks and inserts.
+      // Relation locks are schema-local and also serialize concurrent deletions.
+      await this._exec("LOCK TABLE trusted_cas IN SHARE ROW EXCLUSIVE MODE");
+      const existing = await this._get<TrustedCa>("SELECT * FROM trusted_cas WHERE fingerprint_sha256 = ?", [ca.fingerprint_sha256]);
+      if (existing) return existing;
+      const count = await this._get<{ count: string }>("SELECT COUNT(*) AS count FROM trusted_cas");
+      if (Number(count?.count) >= 128) throw new Error("A tenant can store at most 128 CA certificates");
+      const inserted = await this._get<TrustedCa>(`INSERT INTO trusted_cas (id, name, pem, fingerprint_sha256, subject, not_before, not_after)
+        VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+        [ca.id, ca.name, ca.pem, ca.fingerprint_sha256, ca.subject, ca.not_before, ca.not_after]);
+      if (!inserted) throw new Error("CA certificate was not persisted");
+      return inserted;
+    });
     void this.notify("trusted_cas", "create", persisted.id);
     return persisted;
   }
@@ -255,10 +264,17 @@ export class Repository {
     return this._all("SELECT kiosk_id, ca_id FROM kiosk_trusted_cas ORDER BY kiosk_id, ca_id");
   }
 
-  async reportTrustedCas(kioskId: string, report: TrustedCaStatus): Promise<void> {
-    await this._run(`INSERT INTO kiosk_trust_status (kiosk_id, revision, state, message) VALUES (?, ?, ?, ?)
-      ON CONFLICT (kiosk_id) DO UPDATE SET revision = EXCLUDED.revision, state = EXCLUDED.state,
-      message = EXCLUDED.message, reported_at = now()`, [kioskId, report.revision, report.state, report.message]);
+  async reportTrustedCas(kioskId: string, report: TrustedCaStatus, authenticatedKeyHash: string): Promise<void> {
+    if (!authenticatedKeyHash) return;
+    await this.transact(async () => {
+      // Serialize with rekeying; an authenticated in-flight old heartbeat must
+      // not repopulate the replacement device's status after its key changes.
+      const kiosk = await this._get<{ key_hash: string }>("SELECT key_hash FROM kiosks WHERE id = ? FOR UPDATE", [kioskId]);
+      if (!kiosk || kiosk.key_hash !== authenticatedKeyHash) return;
+      await this._run(`INSERT INTO kiosk_trust_status (kiosk_id, revision, state, message) VALUES (?, ?, ?, ?)
+        ON CONFLICT (kiosk_id) DO UPDATE SET revision = EXCLUDED.revision, state = EXCLUDED.state,
+        message = EXCLUDED.message, reported_at = now()`, [kioskId, report.revision, report.state, report.message]);
+    });
   }
 
   async listTrustedCaReports(): Promise<Array<TrustedCaStatus & { kiosk_id: string; reported_at: string }>> {
@@ -1985,39 +2001,41 @@ export class Repository {
       firmware_target?: string | null;
     },
   ): Promise<void> {
-    await this._run(
-      `UPDATE kiosks SET
-         key_hash = ?,
-         key_prefix = ?,
-         capabilities = ?,
-         hardware_model = ?,
-         firmware_target = ?,
-         paired_at = ?,
-         last_seen_at = NULL,
-         last_bundle_version = NULL,
-         kiosk_app_version = NULL,
-         os_version = NULL,
-         cpu_temp_c = NULL,
-         cpu_load_percent = NULL,
-         fan_rpm = NULL,
-         fan_pwm = NULL,
-         memory_total_mb = NULL,
-         memory_used_mb = NULL,
-         disk_total_mb = NULL,
-         disk_free_mb = NULL,
-         disk_used_percent = NULL
-       WHERE id = ?`,
-      [
-        input.key_hash,
-        input.key_prefix,
-        J(input.capabilities ?? []),
-        input.hardware_model ?? null,
-        input.firmware_target ?? null,
-        isoNow(),
-        id,
-      ],
-    );
-    await this._run("DELETE FROM kiosk_trust_status WHERE kiosk_id = ?", [id]);
+    await this.transact(async () => {
+      await this._run(
+        `UPDATE kiosks SET
+           key_hash = ?,
+           key_prefix = ?,
+           capabilities = ?,
+           hardware_model = ?,
+           firmware_target = ?,
+           paired_at = ?,
+           last_seen_at = NULL,
+           last_bundle_version = NULL,
+           kiosk_app_version = NULL,
+           os_version = NULL,
+           cpu_temp_c = NULL,
+           cpu_load_percent = NULL,
+           fan_rpm = NULL,
+           fan_pwm = NULL,
+           memory_total_mb = NULL,
+           memory_used_mb = NULL,
+           disk_total_mb = NULL,
+           disk_free_mb = NULL,
+           disk_used_percent = NULL
+         WHERE id = ?`,
+        [
+          input.key_hash,
+          input.key_prefix,
+          J(input.capabilities ?? []),
+          input.hardware_model ?? null,
+          input.firmware_target ?? null,
+          isoNow(),
+          id,
+        ],
+      );
+      await this._run("DELETE FROM kiosk_trust_status WHERE kiosk_id = ?", [id]);
+    });
     void this.notify("kiosks", "update", id);
   }
 

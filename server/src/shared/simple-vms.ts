@@ -174,11 +174,18 @@ export async function applySimpleVmsSnapshot(repo: Repository, sourceId: string,
         await repo.adapter.run("INSERT INTO simple_vms_groups(source_id, external_id, layout_id) VALUES (?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET layout_id = excluded.layout_id", [sourceId, group.id, layoutId]);
       } else {
         await repo.updateLayout(layoutId, { name });
-        for (const cell of await repo.listLayoutCells(layoutId)) await repo.deleteLayoutCell(cell.id);
       }
+      const cells = await repo.listLayoutCells(layoutId);
+      const members = new Set(group.cameraIds.map(externalId => cameraIds.get(externalId)!));
+      for (const cell of cells) if (!cell.camera_id || !members.has(cell.camera_id)) await repo.deleteLayoutCell(cell.id);
       const columns = Math.ceil(Math.sqrt(group.cameraIds.length));
       for (const [index, externalId] of group.cameraIds.entries()) {
         const cameraId = cameraIds.get(externalId)!;
+        const existing = cells.find(cell => cell.camera_id === cameraId);
+        if (existing) {
+          await repo.updateLayoutCell(existing.id, { row: Math.floor(index / columns), col: index % columns });
+          continue;
+        }
         const entity = await repo.adapter.get<{ id: string }>("SELECT id FROM entities WHERE camera_id = ?", [cameraId]);
         await repo.createLayoutCell({ layout_id: layoutId, row: Math.floor(index / columns), col: index % columns,
           content_type: "camera", camera_id: cameraId, entity_id: entity?.id ?? null });

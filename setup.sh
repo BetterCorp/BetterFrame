@@ -22,6 +22,28 @@ CONFIG=/etc/betterframe/linux-install
 PREVIOUS_INSTALL=0
 PRESERVE_PREVIOUS=0
 RELEASE_VERSION=
+LEGACY_GATEWAY_ACTIVE=0
+LEGACY_GATEWAY_ENABLED=
+
+retire_legacy_gateway() {
+    [[ $(systemctl show betterframe-mediamtx.service -p LoadState --value) != not-found ]] || return 0
+    LEGACY_GATEWAY_ENABLED=$(systemctl is-enabled betterframe-mediamtx.service 2>/dev/null || true)
+    if systemctl is-active --quiet betterframe-mediamtx.service; then LEGACY_GATEWAY_ACTIVE=1; fi
+    if ((START)); then
+        (stop_app_service system betterframe-mediamtx.service)
+    elif ((LEGACY_GATEWAY_ACTIVE)); then
+        fail '--no-start requires MediaMTX to be stopped before disabling it'
+    fi
+    systemctl disable betterframe-mediamtx.service
+    printf 'Media gateway disabled; existing recordings are preserved.\n'
+}
+restore_legacy_gateway() {
+    case "$LEGACY_GATEWAY_ENABLED" in
+        enabled) systemctl enable betterframe-mediamtx.service;;
+        enabled-runtime) systemctl enable --runtime betterframe-mediamtx.service;;
+    esac
+    if ((LEGACY_GATEWAY_ACTIVE)); then systemctl start betterframe-mediamtx.service; fi
+}
 
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 usage() {
@@ -309,6 +331,7 @@ start_app_service() {
         runtime_command install -m 755 "$BIN.prev" "$BIN.new"
         runtime_command mv -fT -- "$BIN.new" "$BIN"
         runtime_command rm -f -- "$STATE/firmware-applying.json" "$STATE/firmware-applying.attempts"
+        restore_legacy_gateway
         service_command "$scope" reset-failed "$unit" || printf 'Could not clear failed state for %s; attempting startup.\n' "$unit" >&2
         service_command "$scope" start "$unit" || true
     fi
@@ -741,15 +764,7 @@ finally:
 PYOWN
     write_rollback_helper | reconcile_file /usr/local/libexec/betterframe-rollback 755 root root
     runuser -u "$INSTALL_USER" -- mkdir -p -- "$unit_dir" "$autostart_dir"
-    if [[ $(systemctl show betterframe-mediamtx.service -p LoadState --value) != not-found ]]; then
-        if ((START)); then
-            (stop_app_service system betterframe-mediamtx.service)
-        elif systemctl is-active --quiet betterframe-mediamtx.service; then
-            fail '--no-start requires MediaMTX to be stopped before disabling it'
-        fi
-        systemctl disable betterframe-mediamtx.service
-        printf 'Media gateway disabled; existing recordings are preserved.\n'
-    fi
+    retire_legacy_gateway
     if [[ -S /run/user/$USER_ID/bus ]]; then
         # Existing manual units often set DISPLAY locally rather than importing
         # it into the manager. Preserve that real session before replacing them.

@@ -33,6 +33,33 @@ public sealed class IntegrationTests
       Assert.That(plugin.ValidateValue(key, new string('x', minimum)).IsT0, Is.True);
       Assert.That(plugin.ApplyValues(new Dictionary<string, string> { [key] = new string('x', minimum) }).IsT0, Is.True);
       Assert.That(settings.Get(key, ""), Has.Length.EqualTo(minimum));
+      Assert.That(plugin.ValidateValue("name", new string('n', 256)).IsT1, Is.True);
+      Assert.That(plugin.ValidateValue("name", new string('n', 255)).IsT0, Is.True);
+    } finally { Directory.Delete(directory, true); }
+  }
+  [Test] public void OlderAccessResponsesCannotRestoreGrantsRemovedByANewerSnapshot()
+  {
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    try {
+      var cache = new ReaderAccessCache(directory); cache.Record("authority", "kiosk/camera", true);
+      var requestGeneration = cache.Generation;
+      cache.Replace("authority", []);
+      Assert.That(cache.Record("authority", "kiosk/camera", true, requestGeneration), Is.False);
+      Assert.That(new ReaderAccessCache(directory).Allows("authority", "kiosk/camera"), Is.False);
+      Assert.That(cache.Record("authority", "kiosk/camera", true, cache.Generation), Is.True);
+    } finally { Directory.Delete(directory, true); }
+  }
+  [Test] public void RepeatedDenialsRetryFailedDurableRevocationWrites()
+  {
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    try {
+      var cache = new ReaderAccessCache(directory); cache.Record("authority", "kiosk/camera", true);
+      Directory.CreateDirectory(Path.Combine(directory, "access.json.tmp"));
+      Assert.Throws<UnauthorizedAccessException>(() => cache.Record("authority", "kiosk/camera", false));
+      Assert.That(cache.Allows("authority", "kiosk/camera"), Is.False);
+      Directory.Delete(Path.Combine(directory, "access.json.tmp"));
+      cache.Record("authority", "kiosk/camera", false);
+      Assert.That(new ReaderAccessCache(directory).Allows("authority", "kiosk/camera"), Is.False);
     } finally { Directory.Delete(directory, true); }
   }
   [Test] public void ReaderGrantsAndRevocationsSurviveRestartWhileUnknownReadersRemainDenied()
@@ -178,11 +205,12 @@ public sealed class IntegrationTests
         var header = new byte[4]; await stream.ReadExactlyAsync(header, stop.Token); Assert.That(header[0], Is.EqualTo((byte)'$'));
         var payload = new byte[BinaryPrimitives.ReadUInt16BigEndian(header.AsSpan(2))]; await stream.ReadExactlyAsync(payload, stop.Token);
         Assert.That(payload[0], Is.EqualTo(0x80));
+        allowed = false; server.Invalidate();
+        for (var i = 0; i < 100 && tap.Count != 0; i++) await Task.Delay(10, stop.Token);
+        Assert.That(tap.Count, Is.EqualTo(0), "Revocation must release demand while the playing client is still open");
       }
       for (var i = 0; i < 100 && tap.Count != 0; i++) await Task.Delay(10, stop.Token);
       Assert.That(tap.Count, Is.EqualTo(0));
-      using var denied = new TcpClient(); await denied.ConnectAsync("127.0.0.1", port, stop.Token);
-      allowed = false; server.Invalidate();
     } finally { stop.Cancel(); try { await running; } catch (OperationCanceledException) { } }
     Assert.That(tap.Count, Is.EqualTo(0));
   }

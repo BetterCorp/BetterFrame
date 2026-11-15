@@ -45,7 +45,7 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
     var rtspRun = _rtsp.RunAsync(Config("listenAddress", "127.0.0.1"), int.Parse(Config("rtspPort", "8554")), Config("tlsCertificate"), Config("tlsKey"), token);
     var httpRun = http.RunAsync(Config("httpListenUrl", "http://127.0.0.1:8555"), token);
     _tasks = [Watch<CameraAdded>(token), Watch<CameraUpdated>(token), Watch<CameraRemoved>(token), Watch<CameraConfigChanged>(token),
-      Watch<StreamStarted>(token, false), Watch<CameraRecordingChanged>(token),
+      Watch<StreamStarted>(token, false), Watch<CameraRecordingChanged>(token, false),
       SynchronizeAsync(token), rtspRun, httpRun];
     try {
       var ready = Task.WhenAll(_rtsp.ListeningPort, http.Ready);
@@ -148,13 +148,14 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
       var address = new UriBuilder(destination) { Path = destination.AbsolutePath[..^6] + "access", Query = "kioskId=" + Uri.EscapeDataString(kioskId) + "&cameraId=" + Uri.EscapeDataString(cameraId) };
       using var request = new HttpRequestMessage(HttpMethod.Get, address.Uri);
       request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Config("integrationToken"));
+      var generation = _access.Generation;
       try {
         using var response = await _http.SendAsync(request, ct);
-        if ((int)response.StatusCode is 401 or 403 or 404) { _access.Record(destination.AbsoluteUri, scope, false); return false; }
+        if ((int)response.StatusCode is 401 or 403 or 404) { _access.Record(destination.AbsoluteUri, scope, false, generation); return false; }
         response.EnsureSuccessStatusCode();
         using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
         var allowed = json.RootElement.GetProperty("allowed").GetBoolean();
-        _access.Record(destination.AbsoluteUri, scope, allowed); return allowed;
+        return _access.Record(destination.AbsoluteUri, scope, allowed, generation);
       } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
       catch (Exception error) when (error is HttpRequestException or TaskCanceledException) {
         // A valid signed credential can reuse a durable grant during an authority outage.

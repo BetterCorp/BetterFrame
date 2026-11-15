@@ -133,14 +133,21 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     assert.equal((await repo.listCamerasByDevice(second.device_id)).length, 2);
     const secondEntrance = (await repo.listCamerasByDevice(second.device_id)).find(camera => camera.device_channel_id === "entrance")!;
     assert.equal(secondEntrance.name, "Second NVR / Entrance");
+    const secondLayout = (await repo.listLayouts()).find(layout => layout.simple_vms_source_id === second.id)!;
+    const entranceCell = (await repo.listLayoutCells(secondLayout.id)).find(cell => cell.camera_id === secondEntrance.id)!;
+    const mapping = await repo.createIoBoxMapping({ display_id: otherDisplay.id, layout_id: secondLayout.id, cell_id: entranceCell.id,
+      source_kind: "button", target_kind: "cell", action: "fullscreen" });
     await applySimpleVmsSnapshot(repo, second.id, { ...secondCatalog, revision: 2,
+      groups: secondCatalog.groups.map(group => ({ ...group, cameraIds: [...group.cameraIds].reverse() })),
       cameras: secondCatalog.cameras.map(camera => ({ ...camera, name: camera.id === "entrance" ? "Yard" : "Entrance" })) });
     assert.equal((await repo.getCameraById(secondEntrance.id))?.name, "Second NVR / Yard");
     assert.equal((await repo.getEntityForCamera(secondEntrance.id))?.name, "Second NVR / Yard");
+    const reordered = (await repo.listLayoutCells(secondLayout.id)).find(cell => cell.id === entranceCell.id)!;
+    assert.equal(reordered.col, 1);
+    assert.ok((await repo.listIoBoxMappingsForDisplay(otherDisplay.id)).some(item => item.id === mapping.id && item.cell_id === entranceCell.id));
     const onvif = await repo.createCameraDevice({ name: "Local ONVIF device", host: "127.0.0.1", port: 8554 });
     assert.equal((await repo.getCameraDeviceByEndpoint("127.0.0.1", 8554))?.id, onvif.id);
     await assert.rejects(repo.createCameraDevice({ name: "Duplicate ONVIF device", host: "127.0.0.1", port: 8554 }));
-    const secondLayout = (await repo.listLayouts()).find(layout => layout.simple_vms_source_id === second.id)!;
     await repo.updateDisplay(otherDisplay.id, { default_layout_id: secondLayout.id });
     const customSecond = await repo.createLayout({ name: "Custom second recorder view" });
     const secondCamera = (await repo.listCamerasByDevice(second.device_id))[0]!;

@@ -2132,7 +2132,10 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const display = await deps.repo.getDisplayById(displayId);
     const attached = await deps.repo.listLayoutsForDisplay(displayId);
     const attachedIds = new Set(attached.map((l) => l.id));
-    const available = (await deps.repo.listLayouts()).filter((l) => !attachedIds.has(l.id));
+    const available = [];
+    for (const layout of await deps.repo.listLayouts()) {
+      if (!attachedIds.has(layout.id) && await simpleVmsLayoutAllowed(deps.repo.adapter, layout.id, display?.kiosk_id ?? "")) available.push(layout);
+    }
     return htmlFragment(
       renderDisplayLayouts(displayId, display?.default_layout_id ?? null, attached, available)
       + renderDefaultLayoutSelect(display?.default_layout_id ?? null, attached, true),

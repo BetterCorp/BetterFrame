@@ -575,6 +575,36 @@ def CDLL(name):
             start_app_service user betterframe.service
         ''')
 
+    def test_failed_upgrade_restores_previous_gateway_state(self):
+        for active, enabled in [(True, 'enabled'), (False, 'disabled'), (True, 'disabled'), (False, 'enabled-runtime')]:
+            with self.subTest(active=active, enabled=enabled), tempfile.TemporaryDirectory() as tmp:
+                p = Path(tmp)
+                (p/'app').write_text('candidate')
+                (p/'app.prev').write_text('known good')
+                result = self.shell(f'''
+                    BIN={p}/app; STATE={p}; LOG={p}/commands
+                    sleep() {{ :; }}
+                    runtime_command() {{ "$@"; }}
+                    stop_app_service() {{ :; }}
+                    systemctl() {{
+                        case "$1" in
+                            show) echo loaded;;
+                            is-enabled) echo {enabled};;
+                            is-active) return {0 if active else 1};;
+                            *) echo "$*" >> "$LOG";;
+                        esac
+                    }}
+                    service_command() {{ return 1; }}
+                    retire_legacy_gateway
+                    start_app_service system betterframe-kiosk.service
+                ''', check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual((p/'app').read_text(), 'known good')
+                commands = (p/'commands').read_text().splitlines()
+                self.assertEqual('start betterframe-mediamtx.service' in commands, active)
+                self.assertEqual('enable betterframe-mediamtx.service' in commands, enabled == 'enabled')
+                self.assertEqual('enable --runtime betterframe-mediamtx.service' in commands, enabled == 'enabled-runtime')
+
     def test_start_success_requires_a_stable_process_after_reset(self):
         self.shell('''
             sleep() { :; }

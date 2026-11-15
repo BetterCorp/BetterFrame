@@ -80,6 +80,10 @@ impl SmartUrlProgress {
         self.triggered && !self.complete && !self.failed && !self.cancelled
     }
 
+    pub fn has_failed(&self) -> bool {
+        self.failed
+    }
+
     /// Invalidate the old document's callbacks while preserving the step cursor.
     pub fn load_started(&mut self) {
         // Progress lives outside the document. A redirect invalidates callbacks
@@ -356,6 +360,9 @@ mod tests {
         run.observe_url("http://ha/auth?initial=1", Some("/auth"), Duration::ZERO);
         let (_, generation) = run.take_step(3, Duration::ZERO).unwrap();
         assert!(!run.finish_step(generation, false, Duration::ZERO));
+        assert!(run.has_failed());
+        assert!(!run.is_running());
+        assert!(!run.is_complete());
         assert_eq!(run.take_step(3, Duration::ZERO), None);
         run.load_started();
         assert_eq!(run.take_step(3, Duration::ZERO), None);

@@ -29,7 +29,10 @@ impl Readiness {
             return false;
         }
         let Some(runner) = self.0.upgrade() else { return true };
-        if runner.progress.borrow().is_running() {
+        if runner.progress.borrow().is_running()
+            || runner.progress.borrow().has_failed()
+            || runner.progress.borrow().is_cancelled()
+        {
             return false;
         }
         let Some(url) = webview.uri() else { return false };
@@ -847,6 +850,23 @@ mod tests {
         wait_until(|| fixture.count("/on-load") == 2);
         assert_eq!(fixture.count("/custom"), 1, "on-load never replays named groups");
         drop(actions);
+
+        let failed_auth = cell(&fixture, "failed-auth", serde_json::json!([
+            {"type":"navigate","url":"/done"},
+            {"type":"javascript","script":"throw new Error('incomplete login');"}
+        ]));
+        let (_, failed_wv) = browser(&failed_auth);
+        let readiness = super::super::WARM_WEBVIEWS.with(|pool| pool.borrow().values()
+            .find(|entry| entry.webview == failed_wv).unwrap().smart_url.as_ref().unwrap().readiness());
+        let failed_actions = super::super::web_actions::Actions::new(&failed_wv,
+            serde_json::from_value(serde_json::json!({"revision":"failed",
+                "on_load":[{"type":"javascript","script":"await fetch('/after-failed-auth');"}],"groups":{}})).unwrap(),
+            Some(readiness), "http://frame.invalid", "test-key");
+        row.append(&failed_wv);
+        wait_until(|| !failed_wv.is_loading() && failed_wv.uri().is_some_and(|url| url.ends_with("/done")));
+        pump(Duration::from_secs(2));
+        assert_eq!(fixture.count("/after-failed-auth"), 0, "failed entity authentication never releases on-load actions");
+        drop(failed_actions);
         super::super::purge_obsolete_webviews(&HashSet::new());
         window.close();
     }

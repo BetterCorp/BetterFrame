@@ -10,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -821,6 +822,27 @@ printf '%s' "$answer" > "$TEST_INPUT"
             config.write_text('kiosk desktop dev\n')
             self.assertEqual(self.shell(cmd).stdout.strip(), 'off 0')
             self.assertNotEqual(self.shell(f'CONFIG={config}; parse_args --media-gateway invalid; load_settings', check=False).returncode, 0)
+
+    def test_pi_release_stages_existing_runtime_files(self):
+        workflow = (ROOT/'.github/workflows/build.yml').read_text()
+        block = workflow.split('      - name: Stage files for pi-gen\n', 1)[1].split('      - name: Build Pi image', 1)[0]
+        script = textwrap.dedent(block.split('        run: |\n', 1)[1]).replace('${{ inputs.channel }}', 'dev')
+        tracked = subprocess.check_output(['git', 'ls-files', '-z', '--', 'deploy'], cwd=ROOT).decode().split('\0')
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            for name in filter(None, tracked):
+                destination = target/name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT/name, destination)
+            (target/'staging').mkdir()
+            for name in ['betterframe-kiosk', 'logo.png']:
+                (target/'staging'/name).write_bytes(b'build fixture')
+            result = subprocess.run(['bash', '-e', '-c', script], cwd=target, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            files = target/'deploy/pi-gen/stage-betterframe-client/01-install-kiosk/files'
+            self.assertEqual((files/'betterframe-kiosk').read_bytes(), b'build fixture')
+            self.assertTrue((files/'betterframe-trusted-cas.py').is_file())
+            self.assertFalse((files/'betterframe-mediamtx.service').exists())
 
     def test_native_simplevms_replaces_bundled_gateway(self):
         script = (ROOT/'setup.sh').read_text()

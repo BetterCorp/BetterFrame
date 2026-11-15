@@ -17,16 +17,31 @@ struct Runner {
     completion: RefCell<Option<Box<dyn FnOnce(Result<(), String>)>>>,
     auth_ready: Option<Readiness>,
     manual: bool,
+    settled: RefCell<Option<(u64, String)>>,
+    settling: RefCell<Option<(u64, String)>>,
 }
 
 #[derive(Clone)]
 pub(super) struct Readiness(std::rc::Weak<Runner>);
 impl Readiness {
     pub(super) fn ready(&self, webview: &webkit6::WebView) -> bool {
-        if webview.is_loading() { return false; }
+        if webview.is_loading() {
+            return false;
+        }
         let Some(runner) = self.0.upgrade() else { return true };
-        !runner.progress.borrow().is_running() && !webview.uri().is_some_and(|url|
-            runner.config.login_detect_url.as_deref().is_some_and(|prefix| login_url_matches(&url, prefix)))
+        if runner.progress.borrow().is_running() {
+            return false;
+        }
+        let Some(url) = webview.uri() else { return false };
+        if runner.config.login_detect_url.as_deref().is_some_and(|prefix| login_url_matches(&url, prefix)) {
+            return false;
+        }
+        // A healthy-looking destination can still redirect to login after its
+        // Finished event. Share the same settled-document check used to arm auth.
+        confirm_settled_page(webview, &runner);
+        let candidate = (runner.progress.borrow().generation(), url.to_string());
+        let ready = runner.settled.borrow().as_ref() == Some(&candidate);
+        ready
     }
 }
 
@@ -95,6 +110,7 @@ fn install_runner(webview: &webkit6::WebView, config: SmartUrlConfig, server_url
         kiosk_key: kiosk_key.into(),
         started: Instant::now(),
         completion: RefCell::new(completion), auth_ready, manual,
+        settled: RefCell::new(None), settling: RefCell::new(None),
     });
     let controller = Controller { runner: runner.clone(), webview: webview.downgrade(), handlers: RefCell::new(Vec::new()) };
     let state = runner.clone();
@@ -179,29 +195,37 @@ fn observe_url(webview: &webkit6::WebView, runner: &Runner) {
 /// Arm a future login transition after a completed non-login page stays settled.
 /// The delayed confirmation requires the same URL and document generation.
 fn confirm_settled_page(webview: &webkit6::WebView, runner: &Rc<Runner>) {
-    if runner.manual || !runner.progress.borrow().is_complete() {
+    if runner.manual || runner.progress.borrow().is_running() || webview.is_loading() {
         return;
     }
-    let Some(url) = webview.uri() else {
-        return;
-    };
+    let Some(url) = webview.uri() else { return };
     let prefix = runner.config.login_detect_url.as_deref().unwrap_or("");
     if login_url_matches(&url, prefix) {
         return;
     }
-    let generation = runner.progress.borrow().generation();
+    let candidate = (runner.progress.borrow().generation(), url.to_string());
+    if runner.settled.borrow().as_ref() == Some(&candidate)
+        || runner.settling.borrow().as_ref() == Some(&candidate)
+    {
+        return;
+    }
+    runner.settling.replace(Some(candidate.clone()));
     let weak = webview.downgrade();
     let runner = runner.clone();
-    // Client-side redirects can report Finished for an intermediate page.
-    // Never arm retries until the final non-login URL has actually settled.
     glib::timeout_add_local_once(Duration::from_secs(1), move || {
         if let Some(wv) = weak.upgrade() {
             if !wv.is_loading()
-                && wv.uri().as_ref() == Some(&url)
-                && runner.progress.borrow().generation() == generation
+                && wv.uri().as_deref() == Some(candidate.1.as_str())
+                && runner.progress.borrow().generation() == candidate.0
+                && !runner.progress.borrow().is_running()
+                && !runner.progress.borrow().is_cancelled()
             {
+                runner.settled.replace(Some(candidate.clone()));
                 runner.progress.borrow_mut().confirm_authenticated();
             }
+        }
+        if runner.settling.borrow().as_ref() == Some(&candidate) {
+            runner.settling.replace(None);
         }
     });
 }
@@ -432,6 +456,10 @@ mod tests {
                                 if (root.querySelector('#username').value === 'person@example.test') location.href = '/done';
                             };
                         </script>"#,
+                        ),
+                        "/delayed-redirect" => (
+                            "200 OK", "",
+                            "<script>setTimeout(() => location.href='/auth/authorize?delayed=1', 350)</script>",
                         ),
                         "/done" => ("200 OK", "", "<div id='done'>Dashboard</div>"),
                         _ => (
@@ -764,17 +792,18 @@ mod tests {
         super::super::purge_obsolete_webviews(&HashSet::new());
         // Generic groups run after entity login; user-authored groups are never
         // implicitly paired or compensated when a block becomes hidden.
-        let generic = cell(&fixture, "actions", serde_json::json!([
+        let mut generic = cell(&fixture, "actions", serde_json::json!([
             {"type":"navigate","url":"/auth/form"},
             {"type":"fill","selector":"#username","value":"person@example.test"},
             {"type":"click","selector":"#login"},
             {"type":"wait_for","selector":"#done"}
         ]));
+        generic.web_url = Some(format!("{}/delayed-redirect", fixture.root));
         let (_, action_wv) = browser(&generic);
         let readiness = super::super::WARM_WEBVIEWS.with(|pool| pool.borrow().values()
             .find(|entry| entry.webview == action_wv).unwrap().smart_url.as_ref().unwrap().readiness());
         let config = serde_json::from_value(serde_json::json!({"revision":"r1",
-            "on_load":[{"type":"javascript","script":"await fetch('/on-load');"}],
+            "on_load":[{"type":"javascript","script":"if (!document.querySelector('#done')) { await fetch('/premature-on-load'); throw new Error('not authenticated'); } await fetch('/on-load');"}],
             "groups":{"custom":[{"type":"javascript","script":"await fetch('/custom');"}],
                 "navigate":[{"type":"navigate","url":"/done"},{"type":"wait_for","selector":"#done"},{"type":"javascript","script":"await fetch('/group-navigation');"}],
                 "failure":[{"type":"javascript","script":"throw new Error('failed');"},{"type":"javascript","script":"await fetch('/should-not-run');"}]}
@@ -783,6 +812,7 @@ mod tests {
         row.append(&action_wv);
         wait_until(|| fixture.count("/on-load") == 1);
         assert!(action_wv.uri().unwrap().ends_with("/done"));
+        assert_eq!(fixture.count("/premature-on-load"), 0, "on-load waits through asynchronous login redirects");
         let result = Rc::new(RefCell::new(None));
         let completed = result.clone();
         assert!(actions.invoke("custom", "r1", move |r| { completed.replace(Some(r)); }).is_ok());

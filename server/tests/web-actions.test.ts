@@ -24,10 +24,11 @@ function fixture() {
     layoutsForDisplayId: async () => assigned ? [{ id: "layout" }] : [],
   };
   setCoordinator({ ...getCoordinator(), sendToKiosk: (id,message,queue) => { sent.push({id,message,queue}); return delivered; } });
+  const secrets = { deriveKey: () => Buffer.alloc(32, 9) };
   const app = new H3();
-  registerWebActionRoutes(app, { repo } as never);
+  registerWebActionRoutes(app, { repo, secrets } as never);
   const post = (group = "custom", body = { layout_id: "layout", cell_id: "block" }, display = "display") => app.request(`http://bf.test/api/displays/${display}/web-actions/${group}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  return { app, repo, cell, entity, post, sent,
+  return { app, repo, secrets, cell, entity, post, sent,
     assign: (v: boolean) => { assigned = v; }, deliver: (v: boolean) => { delivered = v; }, support: (v: boolean) => { supported = v; },
     allow: (v: boolean) => { allowed = v; },
   };
@@ -49,9 +50,10 @@ test("generic action drafts retain row order, selector equals signs and user-aut
 test("binding revisions track actions, content and entity authentication but ignore geometry", t => {
   const original = getCoordinator(); t.after(() => setCoordinator(original));
   const f = fixture();
-  const bundle = () => bundleWebActions(f.cell as never, f.entity as never)!;
+  const bundle = () => bundleWebActions(f.cell as never, f.entity as never, f.secrets)!;
   const revision = bundle().revision;
-  assert.equal(bundleWebActions({...f.cell, col_span: 3} as never, f.entity as never)?.revision, revision);
+  assert.notEqual(bundleWebActions(f.cell as never, f.entity as never, {deriveKey: () => Buffer.alloc(32, 7)})!.revision, revision, "revisions are keyed by server secrets");
+  assert.equal(bundleWebActions({...f.cell, col_span: 3} as never, f.entity as never, f.secrets)?.revision, revision);
   f.cell.options.web_actions.groups.custom[0]!.selector = "#edited";
   assert.notEqual(bundle().revision, revision);
   const edited = bundle().revision;
@@ -69,7 +71,7 @@ test("API dispatches only a configured group bound to an assigned display and ne
   assert.equal(response.status, 202);
   const body = await response.json() as {request_id: string};
   assert.ok(body.request_id);
-  assert.deepEqual(f.sent, [{id:"kiosk",queue:false,message:{type:"web-action",request_id:body.request_id,display_id:"display",layout_id:"layout",cell_id:"block",group:"custom",revision:bundleWebActions(f.cell as never,f.entity as never)!.revision}}]);
+  assert.deepEqual(f.sent, [{id:"kiosk",queue:false,message:{type:"web-action",request_id:body.request_id,display_id:"display",layout_id:"layout",cell_id:"block",group:"custom",revision:bundleWebActions(f.cell as never,f.entity as never,f.secrets)!.revision}}]);
   f.deliver(false); assert.equal((await f.post()).status, 503);
   f.sent.length=0;
   f.support(false); assert.equal((await f.post()).status, 409); f.support(true);
@@ -88,7 +90,7 @@ test("web action API uses existing authentication and operator permission gates"
   let valid=false;
   const app=new H3();
   registerMiddleware(app, {repo:f.repo,cookieName:"session",auth:{verifyApiKey:async()=>valid?{scopes:["admin"],key_prefix:"test"}:null}} as never);
-  registerWebActionRoutes(app,{repo:f.repo} as never);
+  registerWebActionRoutes(app,{repo:f.repo,secrets:f.secrets} as never);
   const request=()=>app.request("http://bf.test/api/displays/display/web-actions/custom",{method:"POST",headers:{authorization:"Bearer bf-test","content-type":"application/json"},body:JSON.stringify({layout_id:"layout",cell_id:"block"})});
   assert.equal((await request()).status,401);
   valid=true; assert.equal((await request()).status,202);

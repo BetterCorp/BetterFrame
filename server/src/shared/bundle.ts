@@ -309,7 +309,7 @@ export async function generateBundle(
 
   function cellWebActions(cell: import("./types.js").LayoutCell, entity: Entity | null): BundleWebActions | undefined {
     if (viewer) return undefined;
-    const config = bundleWebActions(cell, entity);
+    const config = bundleWebActions(cell, entity, secrets);
     if (!config) return undefined;
     const key = kioskEncryptKey ?? clusterKey;
     const encryptSteps = (steps: typeof config.on_load) => steps.map(source => {

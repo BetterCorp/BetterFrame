@@ -23,7 +23,7 @@ export function registerWebActionRoutes(app: H3, deps: AdminDeps): void {
     const cell = await deps.repo.getLayoutCellById(cellId);
     if (!cell || cell.layout_id !== layoutId) return json({ error: "block_not_found" }, 404);
     const entity = cell.entity_id ? await deps.repo.getEntityById(cell.entity_id) : null;
-    const config = bundleWebActions(cell, entity);
+    const config = bundleWebActions(cell, entity, deps.secrets);
     if (!config || !Object.hasOwn(config.groups, group)) return json({ error: "group_not_found" }, 404);
     const kiosk = await deps.repo.getKioskById(display.kiosk_id);
     if (!kiosk?.capabilities?.includes("web-action-groups-v1")) return json({ error: "player_does_not_support_web_actions" }, 409);

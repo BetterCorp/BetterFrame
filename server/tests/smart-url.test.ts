@@ -22,7 +22,7 @@ export function fixture() {
     listCameraDevices: async () => [], listGpioBindings: async () => [], trustedCasForKiosk: async () => [], releaseStaleEventOwnership: async () => {},
     getEntityById: async () => entity, listEntities: async () => [entity],
   };
-  const secrets = { encryptForCluster: (value: string) => `cipher-${++nonce}:${value}` };
+  const secrets = { deriveKey: () => Buffer.alloc(32, 9), encryptForCluster: (value: string) => `cipher-${++nonce}:${value}` };
   return { entity, cells, repo, secrets };
 }
 

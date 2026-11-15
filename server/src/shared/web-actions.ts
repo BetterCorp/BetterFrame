@@ -1,7 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import * as av from "anyvali";
 import { smartUrlStep, type SmartUrlStep } from "../schemas/wire/smart-url.js";
 import { smartUrlStepsDraft } from "./smart-url.js";
+import type { SecretsApi } from "./secrets.js";
 import type { Entity, LayoutCell } from "./types.js";
 
 export const WEB_ACTION_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
@@ -40,15 +41,16 @@ export function webActionsFormDraft(body: Record<string, string>): WebActions {
   return { on_load: smartUrlStepsDraft(body, "web_on_load_step") as SmartUrlStep[], groups };
 }
 
-export function bundleWebActions(cell: LayoutCell, entity?: Entity | null): BundleWebActions | undefined {
+export function bundleWebActions(cell: LayoutCell, entity: Entity | null | undefined, secrets: Pick<SecretsApi, "deriveKey">): BundleWebActions | undefined {
   const config = parseWebActions(cell.options?.["web_actions"]);
   if (!config) return undefined;
   const type = entity?.type ?? cell.content_type;
   if (!["web", "html", "dashboard", "ablesign"].includes(type)) return undefined;
   // Server-generated opaque binding revision: clients execute only their matching
   // cached definition, never a stale group after its content or auth changes.
+  // Keying the revision also prevents offline guessing of encrypted fill values.
   const binding = [config, cell.entity_id, type, entity?.web_url ?? cell.web_url,
     entity?.html_content ?? cell.html_content, entity?.smart_url_json ?? null,
     entity?.dashboard_id ?? null, entity?.ablesign_screen_id ?? null];
-  return { ...config, revision: createHash("sha256").update(JSON.stringify(binding)).digest("hex") };
+  return { ...config, revision: createHmac("sha256", secrets.deriveKey("web-actions:revision:v1")).update(JSON.stringify(binding)).digest("hex") };
 }

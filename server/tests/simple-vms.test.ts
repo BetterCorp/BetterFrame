@@ -144,6 +144,8 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     await repo.updateDisplay(display.id, { default_layout_id: managedLayout.id });
     await saveSimpleVmsSource(repo, secrets, owner.id, { ...config, enabled: false });
     assert.equal((await repo.getDisplayById(display.id))?.default_layout_id, null);
+    await repo.updateDisplay(display.id, { name: "Owner display renamed", default_layout_id: null });
+    assert.ok(await repo.adapter.get("SELECT 1 FROM simple_vms_display_defaults WHERE display_id = ?", [display.id]), "Saving an unchanged default retains automatic restoration");
     await repo.attachLayoutToDisplay(linkedDisplay.id, custom.id);
     await repo.updateDisplay(linkedDisplay.id, { default_layout_id: custom.id });
     // Re-enable after reconciliation enumerates the disabled source but before its transaction begins.
@@ -155,6 +157,13 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     try { await reconcileSimpleVmsAssignments(repo, source.id); } finally { repo.transact = transact; }
     assert.equal((await repo.getDisplayById(display.id))?.default_layout_id, managedLayout.id, "Re-enabling restores the previous managed default");
     assert.equal((await repo.getDisplayById(linkedDisplay.id))?.default_layout_id, custom.id, "A different default chosen during disconnection takes precedence");
+    await saveSimpleVmsSource(repo, secrets, owner.id, { ...config, enabled: false });
+    await repo.attachLayoutToDisplay(display.id, custom.id);
+    await repo.updateDisplay(display.id, { default_layout_id: custom.id });
+    await repo.updateDisplay(display.id, { default_layout_id: null });
+    assert.equal(await repo.adapter.get("SELECT 1 FROM simple_vms_display_defaults WHERE display_id = ?", [display.id]), undefined);
+    await saveSimpleVmsSource(repo, secrets, owner.id, config);
+    assert.equal((await repo.getDisplayById(display.id))?.default_layout_id, null, "A changed selection ending in no default must not be restored");
     const empty = snapshot(3); empty.cameras = []; empty.groups = [];
     await applySimpleVmsSnapshot(repo, source.id, empty);
     assert.equal(await repo.getLayoutById(managedLayout.id), null);

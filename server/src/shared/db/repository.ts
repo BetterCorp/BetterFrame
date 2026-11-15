@@ -721,7 +721,15 @@ export class Repository {
     }
     if (sets.length === 0) return;
     vals.push(id);
-    await this._run(`UPDATE displays SET ${sets.join(", ")} WHERE id = ?`, vals);
+    if ("default_layout_id" in patch) {
+      await this.transact(async () => {
+        const previous = await this.adapter.get<{ default_layout_id: string | null }>("SELECT default_layout_id FROM displays WHERE id = ? FOR UPDATE", [id]);
+        await this._run(`UPDATE displays SET ${sets.join(", ")} WHERE id = ?`, vals);
+        if (previous && previous.default_layout_id !== (patch.default_layout_id ?? null)) {
+          await this._run("DELETE FROM simple_vms_display_defaults WHERE display_id = ?", [id]);
+        }
+      });
+    } else await this._run(`UPDATE displays SET ${sets.join(", ")} WHERE id = ?`, vals);
     void this.notify("displays", "update", id);
   }
 

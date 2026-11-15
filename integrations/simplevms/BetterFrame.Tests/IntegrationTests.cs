@@ -116,8 +116,8 @@ public sealed class IntegrationTests
     var cacheDirectory = Path.Combine(directory, "betterframe");
     new ReaderAccessCache(cacheDirectory).Record(settings.Get("callbackUrl", ""), "kiosk/camera", true);
     settings.Set("rtspPort", FreePort().ToString()); settings.Set("httpListenUrl", $"http://127.0.0.1:{FreePort()}");
-    var registry = new Registry(); var bus = new Bus(); var plugin = new BetterFramePlugin();
-    plugin.Initialize(new PluginContext { Config = settings, Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = registry, EventBus = bus, StreamTap = new Tap() });
+    var registry = new Registry(); var bus = new Bus(); var plugin = new BetterFramePlugin(); var logs = new Logs();
+    plugin.Initialize(new PluginContext { Config = settings, Environment = new Environment(directory), LoggerFactory = logs, CameraRegistry = registry, EventBus = bus, StreamTap = new Tap() });
     await plugin.StartAsync(timeout.Token);
     try {
       var first = await receiver.GetContextAsync().WaitAsync(timeout.Token);
@@ -134,7 +134,7 @@ public sealed class IntegrationTests
       var blocked = Path.Combine(cacheDirectory, "access.json.tmp"); Directory.CreateDirectory(blocked);
       var response = Encoding.UTF8.GetBytes($"{{\"revision\":{catalog.Revision},\"grants\":[]}}"); changed.Response.ContentType = "application/json";
       await changed.Response.OutputStream.WriteAsync(response, timeout.Token); changed.Response.Close();
-      await Task.Delay(200, timeout.Token);
+      await logs.StorageFailure.Task.WaitAsync(timeout.Token);
       using (var state = JsonDocument.Parse(File.ReadAllText(Path.Combine(cacheDirectory, "outbox.json"))))
         Assert.That(state.RootElement.GetProperty("pending").ValueKind, Is.EqualTo(JsonValueKind.Object));
       Directory.Delete(blocked);
@@ -420,7 +420,15 @@ public sealed class IntegrationTests
     }
   }
   private sealed class Environment(string path) : IServerEnvironment { public string DataPath => path; }
-  private sealed class Logs : IPluginLoggerFactory { public ILogger CreateLogger(string categoryName) => Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance; }
+  private sealed class Logs : IPluginLoggerFactory, ILogger {
+    public TaskCompletionSource StorageFailure { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public ILogger CreateLogger(string categoryName) => this;
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+    public bool IsEnabled(LogLevel level) => true;
+    public void Log<TState>(LogLevel level, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) {
+      if (exception is UnauthorizedAccessException or IOException) StorageFailure.TrySetResult();
+    }
+  }
   private sealed class Config : IConfig {
     public ConcurrentDictionary<string, string> Values { get; } = new();
     public string Get(string key, string fallback) => Values.GetValueOrDefault(key, fallback);

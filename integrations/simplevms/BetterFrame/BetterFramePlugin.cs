@@ -102,7 +102,10 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
         _outbox.Acknowledge(acknowledged);
         if (acknowledged > pending.Revision) Changed(true, false); // Recorder state restored from an older backup.
       } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-      catch { await Task.Delay(TimeSpan.FromSeconds(5), ct); retry = !_changes.Reader.TryPeek(out _); }
+      catch (Exception error) {
+        _context.LoggerFactory.CreateLogger("BetterFrame").LogWarning(error, "Catalog delivery or grant persistence failed; retaining pending delivery for retry");
+        await Task.Delay(TimeSpan.FromSeconds(5), ct); retry = !_changes.Reader.TryPeek(out _);
+      }
     }
   }
   private async Task<IReadOnlyList<CameraInfo>> FilterPolicyAsync(IReadOnlyList<CameraInfo> cameras, CancellationToken ct)

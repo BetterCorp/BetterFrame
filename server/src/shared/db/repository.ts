@@ -3015,6 +3015,12 @@ export class Repository {
     });
   }
 
+  /** Health bookkeeping is independent of the camera's configuration authority. */
+  async touchCamera(id: string, lastSeenAt: string): Promise<void> {
+    await this._run("UPDATE cameras SET last_seen_at = ? WHERE id = ?", [lastSeenAt, id]);
+    void this.notify("cameras", "update", id);
+  }
+
   async updateCamera(id: string, patch: Partial<Camera>): Promise<void> {
     if (patch.device_id) await assertSimpleVmsWritable(this.adapter, "device", patch.device_id);
     await assertSimpleVmsWritable(this.adapter, "camera", id);

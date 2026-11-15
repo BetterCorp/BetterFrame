@@ -52,7 +52,7 @@ export function startCameraHealthChecker(
         : false;
 
       if (reachable) {
-        await repo.updateCamera(cam.id, { last_seen_at: new Date().toISOString() } as any);
+        await repo.touchCamera(cam.id, new Date().toISOString());
       } else if (wasOnline) {
         // Camera just went offline — log event for Node-RED / admin visibility.
         log.warn(`camera ${cam.id} (${cam.name}) went offline`);

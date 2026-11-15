@@ -14,6 +14,8 @@ import { H3 } from "h3";
 import { registerSimpleVmsIngress } from "../src/shared/simple-vms-http.js";
 import { registerSimpleVmsAdminRoutes } from "../src/plugins/service-admin-http/routes-simple-vms.js";
 import { DisplayEditPage } from "../src/web-templates/admin-pages.js";
+import { createServer } from "node:net";
+import { startCameraHealthChecker } from "../src/shared/camera-health.js";
 
 function snapshot(revision = 1): VmsSnapshot {
   return { version: 1, instanceId: "recorder-one", revision, name: "Property NVR", cameras: [
@@ -94,6 +96,25 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     assert.equal((await repo.listLayoutsForDisplay(otherDisplay.id)).length, 0);
     await assert.rejects(repo.attachLayoutToDisplay(otherDisplay.id, managedLayout.id));
     await assert.rejects(repo.updateCamera(camera.id, { name: "forbidden" }));
+    await assert.rejects(repo.updateCamera(camera.id, { last_seen_at: new Date().toISOString() }));
+    const probe = createServer(socket => socket.end());
+    await new Promise<void>(resolve => probe.listen(0, "127.0.0.1", resolve));
+    const endpoint = probe.address(); assert.ok(endpoint && typeof endpoint !== "string");
+    const uri = `rtsp://127.0.0.1:${endpoint.port}/health`;
+    const ordinary = await repo.createCamera({ name: "Health regression camera", type: "rtsp", rtsp_url: uri });
+    let complete!: () => void;
+    const checked = new Promise<void>(resolve => { complete = resolve; });
+    let deadline: ReturnType<typeof setTimeout>;
+    const timedOut = new Promise<never>((_resolve, reject) => { deadline = setTimeout(() => reject(Error("Health cycle did not reach the second camera")), 5000); });
+    const health = startCameraHealthChecker({
+      listCameras: async () => [camera, ordinary], listCameraStreams: async () => [{ role: "main", rtsp_uri: uri }],
+      touchCamera: async (id: string, at: string) => { await repo.touchCamera(id, at); if (id === ordinary.id) complete(); },
+    } as never, { intervalMs: 60_000, timeoutMs: 100 }, log);
+    try {
+      await Promise.race([checked, timedOut]);
+      assert.ok((await repo.getCameraById(camera.id))?.last_seen_at);
+      assert.ok((await repo.getCameraById(ordinary.id))?.last_seen_at);
+    } finally { clearTimeout(deadline!); health.stop(); await new Promise<void>(resolve => probe.close(() => resolve())); }
     await assert.rejects(repo.deleteCamera(camera.id));
     await assert.rejects(repo.updateLayout(managedLayout.id, { name: "forbidden" }));
     await assert.rejects(repo.deleteLayout(managedLayout.id));

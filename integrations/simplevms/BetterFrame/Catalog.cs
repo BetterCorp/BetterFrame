@@ -29,17 +29,8 @@ public static class CatalogBuilder
   {
     // Groups generate layouts; ungrouped cameras remain available for custom layouts.
     // Never export upstream credentials or addresses.
-    var result = cameras.OrderBy(c => c.Id).Select(camera => {
-      var streams = camera.Streams.Where(s => s.IsRootStream && s.Profile is { Length: > 0 and <= 128 } && s.Codec?.ToLowerInvariant() is "h264" or "h265" or "hevc")
-        .OrderByDescending(s => Pixels(s.Resolution)).ThenBy(s => s.Profile, StringComparer.Ordinal).DistinctBy(s => s.Profile, StringComparer.Ordinal).Take(32).ToArray();
-      var profiles = streams.Select((s, index) => {
-        var dimensions = (s.Resolution ?? "").Split('x', '×');
-        int.TryParse(dimensions.ElementAtOrDefault(0), out var width);
-        int.TryParse(dimensions.ElementAtOrDefault(1), out var height);
-        return new Profile(s.Profile, s.Profile, index == 0 ? "main" : index == streams.Length - 1 ? "sub" : "other", s.Codec!, Math.Clamp(width, 0, 32768), Math.Clamp(height, 0, 32768), Math.Clamp(s.Fps ?? 0, 0, 1000));
-      }).ToArray();
-      return new Camera(camera.Id.ToString(), Label(camera.Name, camera.Id.ToString()), true, profiles);
-    }).Where(camera => camera.Profiles.Length > 0).Take(MaxCameras).ToArray();
+    var result = cameras.OrderBy(c => c.Id).Select(camera => new Camera(camera.Id.ToString(), Label(camera.Name, camera.Id.ToString()), true, SupportedProfiles(camera)))
+      .Where(camera => camera.Profiles.Length > 0).Take(MaxCameras).ToArray();
     Catalog Prefix(int count) {
       var selected = result.Take(count).ToArray();
       var present = selected.Select(c => c.Id).ToHashSet();
@@ -58,6 +49,17 @@ public static class CatalogBuilder
     catalog = Prefix(low);
     if (JsonSerializer.SerializeToUtf8Bytes(catalog, Json).Length > MaxCatalogBytes) throw new ArgumentException("Display-group metadata exceeds the catalog size limit");
     return catalog;
+  }
+  public static Profile[] SupportedProfiles(CameraInfo camera)
+  {
+    var streams = camera.Streams.Where(s => s.IsRootStream && s.Profile is { Length: > 0 and <= 128 } && s.Codec?.ToLowerInvariant() is "h264" or "h265" or "hevc")
+      .OrderByDescending(s => Pixels(s.Resolution)).ThenBy(s => s.Profile, StringComparer.Ordinal).DistinctBy(s => s.Profile, StringComparer.Ordinal).Take(32).ToArray();
+    return streams.Select((s, index) => {
+      var dimensions = (s.Resolution ?? "").Split('x', '×');
+      int.TryParse(dimensions.ElementAtOrDefault(0), out var width);
+      int.TryParse(dimensions.ElementAtOrDefault(1), out var height);
+      return new Profile(s.Profile, s.Profile, index == 0 ? "main" : index == streams.Length - 1 ? "sub" : "other", s.Codec!, Math.Clamp(width, 0, 32768), Math.Clamp(height, 0, 32768), Math.Clamp(s.Fps ?? 0, 0, 1000));
+    }).ToArray();
   }
   private static string Label(string value, string fallback) => string.IsNullOrWhiteSpace(value) ? fallback : value[..Math.Min(255, value.Length)];
   private static long Pixels(string? value)
@@ -87,14 +89,18 @@ public sealed class CatalogOutbox
   {
     var content = JsonSerializer.Serialize(catalog with { Revision = 0 }, CatalogBuilder.Json);
     if (!force && content == _lastContent) return false;
+    var previous = (Revision, Pending, _lastContent);
     Revision = checked(Revision + 1); Pending = catalog with { InstanceId = InstanceId, Revision = Revision };
-    _lastContent = content; Save(); return true;
+    _lastContent = content;
+    try { Save(); } catch { (Revision, Pending, _lastContent) = previous; throw; }
+    return true;
   }
   public void Acknowledge(long revision)
   {
+    var previous = (Revision, Pending);
     Revision = Math.Max(Revision, revision);
     if (Pending?.Revision <= revision) Pending = null;
-    Save();
+    try { Save(); } catch { (Revision, Pending) = previous; throw; }
   }
   private void Save()
   {

@@ -7,6 +7,7 @@ using Format.Fmp4;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Shared.Models;
 using Shared.Models.Formats;
 
@@ -36,7 +37,7 @@ public sealed class NativeHttpServer(PluginContext context, Func<Guid, string, C
       catch { if (!request.Response.HasStarted) request.Response.StatusCode = 503; else request.Abort(); }
     });
     app.MapGet("/bf/{cameraId:guid}/{profile}/live", async (Guid cameraId, string profile, HttpContext request, CancellationToken token) => {
-      profile = Uri.UnescapeDataString(profile);
+      profile = RequestedProfile(request, profile);
       if (cameraScope != null && !cameraScope(request.Request.Headers.Authorization.ToString(), cameraId)) { request.Response.StatusCode = 404; return; }
       if (!await authorize(cameraId, profile, token)) { request.Response.StatusCode = 404; return; }
       if (!await _liveSlots.WaitAsync(0, token)) { request.Response.StatusCode = 503; return; }
@@ -72,25 +73,34 @@ public sealed class NativeHttpServer(PluginContext context, Func<Guid, string, C
       }
     });
     app.MapGet("/bf/{cameraId:guid}/{profile}/recordings", async (Guid cameraId, string profile, HttpContext request, CancellationToken token) => {
-      profile = Uri.UnescapeDataString(profile);
+      profile = RequestedProfile(request, profile);
       if (cameraScope != null && !cameraScope(request.Request.Headers.Authorization.ToString(), cameraId)) { request.Response.StatusCode = 404; return; }
-      if (!await authorize(cameraId, profile, token)) { request.Response.StatusCode = 404; return; }
       if (!DateTimeOffset.TryParse(request.Request.Query["start"], CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var start)
         || start < DateTimeOffset.UnixEpoch || !int.TryParse(request.Request.Query["duration"], out var duration) || duration is < 1 or > 600) { request.Response.StatusCode = 400; return; }
       if (context.RecordingAccess == null || !await _exportSlots.WaitAsync(0, token)) { request.Response.StatusCode = 503; return; }
       var directory = Path.Combine(Path.GetTempPath(), "betterframe-export-" + Guid.NewGuid().ToString("N"));
       try {
-        var result = await context.RecordingAccess.QueryAsync(cameraId, profile, start.ToUnixMicroseconds(), start.AddSeconds(duration).ToUnixMicroseconds(), token);
-        if (result.IsT1 || result.AsT0.Count == 0) { request.Response.StatusCode = 404; return; }
-        var segments = result.AsT0.OrderBy(s => s.StartTime).ToArray();
-        // Do not concatenate missing periods into apparently continuous history.
-        var coveredUntil = segments[0].EndTime;
-        var gap = segments[0].StartTime > start.ToUnixMicroseconds();
-        foreach (var segment in segments.Skip(1)) {
-          gap |= segment.StartTime > coveredUntil + 250000;
-          coveredUntil = Math.Max(coveredUntil, segment.EndTime);
+        var profiles = new List<string> { profile };
+        if (context.CameraRegistry != null) {
+          var camera = await context.CameraRegistry.GetCameraAsync(cameraId, token);
+          if (camera.IsT0) profiles.AddRange(CatalogBuilder.SupportedProfiles(camera.AsT0).Select(candidate => candidate.Id));
         }
-        if (gap || coveredUntil < start.AddSeconds(duration).ToUnixMicroseconds()) { request.Response.StatusCode = 409; return; }
+        SegmentInfo[] segments = []; var foundGaps = false;
+        foreach (var candidate in profiles.Distinct(StringComparer.Ordinal)) {
+          if (!await authorize(cameraId, candidate, token)) continue;
+          var result = await context.RecordingAccess.QueryAsync(cameraId, candidate, start.ToUnixMicroseconds(), start.AddSeconds(duration).ToUnixMicroseconds(), token);
+          if (result.IsT1 || result.AsT0.Count == 0) continue;
+          var ordered = result.AsT0.OrderBy(segment => segment.StartTime).ToArray();
+          // Select one profile with complete coverage; never splice profiles or missing periods.
+          var coveredUntil = ordered[0].EndTime; var gap = ordered[0].StartTime > start.ToUnixMicroseconds();
+          foreach (var segment in ordered.Skip(1)) {
+            gap |= segment.StartTime > coveredUntil + 250000;
+            coveredUntil = Math.Max(coveredUntil, segment.EndTime);
+          }
+          if (gap || coveredUntil < start.AddSeconds(duration).ToUnixMicroseconds()) { foundGaps = true; continue; }
+          segments = ordered; profile = candidate; break;
+        }
+        if (segments.Length == 0) { request.Response.StatusCode = foundGaps ? 409 : 404; return; }
         if (segments.Length > 1024 || segments.Sum(s => s.SizeBytes) > 256 * 1024 * 1024) { request.Response.StatusCode = 413; return; }
         Directory.CreateDirectory(directory);
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -126,5 +136,12 @@ public sealed class NativeHttpServer(PluginContext context, Func<Guid, string, C
     _ready.TrySetResult();
     try { await Task.Delay(Timeout.Infinite, ct); }
     finally { await app.StopAsync(CancellationToken.None); }
+  }
+  private static string RequestedProfile(HttpContext request, string fallback)
+  {
+    var raw = request.Features.Get<IHttpRequestFeature>()?.RawTarget;
+    if (string.IsNullOrEmpty(raw)) return fallback;
+    var parts = raw.Split('?', 2)[0].Split('/');
+    return parts.Length >= 2 ? Uri.UnescapeDataString(parts[^2]) : fallback;
   }
 }

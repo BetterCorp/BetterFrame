@@ -108,6 +108,26 @@ def CDLL(name):
             self.assertEqual((p/'app').read_text(), 'working current app')
             self.assertFalse(marker.exists())
 
+    def test_identical_repair_preserves_confirmation_and_pending_rollback(self):
+        for pending in [False, True]:
+            with self.subTest(pending=pending), tempfile.TemporaryDirectory() as tmp:
+                p = Path(tmp)
+                (p/'app').write_text('identical candidate')
+                (p/'candidate').write_text('identical candidate')
+                (p/'app.prev').write_text('previous rollback')
+                marker = p/'firmware-applying.json'
+                if pending:
+                    marker.write_text('{}')
+                result = self.shell(f'''BIN={p}/app; STATE={p}; STAGING={p}; INSTALL_USER={os.getuid()}; USER_GROUP={os.getgid()}
+                    install_app_binary
+                    systemctl() {{ case "$1" in show) echo loaded;; is-active) return 0;; *) echo "$*";; esac; }}
+                    stop_app_service() {{ :; }}
+                    retire_legacy_gateway
+                ''')
+                self.assertEqual(marker.exists(), pending)
+                self.assertEqual((p/'app.prev').read_text(), 'previous rollback')
+                self.assertEqual('disable betterframe-mediamtx.service' in result.stdout, not pending)
+
     def test_rollback_bookkeeping_failures_restore_and_allow_startup(self):
         for failure in ['deadline', 'attempts', 'read_only_state']:
             with tempfile.TemporaryDirectory() as tmp:

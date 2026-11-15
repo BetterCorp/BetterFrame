@@ -84,7 +84,8 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
           var catalog = CatalogBuilder.Build(_outbox.InstanceId, 0, Config("name", "SimpleVMS"), allowed, Groups());
           if (catalog.Cameras.Length < allowed.Count) _context.LoggerFactory.CreateLogger("BetterFrame")
             .LogWarning("Exporting {Exported} of {Available} cameras: unsupported profiles or the 4096-camera/4-MiB catalog limit excluded cameras", catalog.Cameras.Length, allowed.Count);
-          _outbox.Enqueue(catalog, force);
+          try { _outbox.Enqueue(catalog, force); }
+          catch { lock (_gate) _force |= force; throw; }
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { await Task.Delay(TimeSpan.FromSeconds(5), ct); _changes.Writer.TryWrite(true); continue; }
       }

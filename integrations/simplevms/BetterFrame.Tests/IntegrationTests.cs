@@ -289,6 +289,29 @@ public sealed class IntegrationTests
       Assert.That(box.Pending!.Revision, Is.EqualTo(101));
     } finally { Directory.Delete(directory, true); }
   }
+  [Test] public void FailedOutboxWritesRestoreRevisionContentAndPendingAcknowledgements()
+  {
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    try {
+      var box = new CatalogOutbox(directory); var original = new Catalog(1, box.InstanceId, 0, "Original", [], []);
+      box.Enqueue(original); box.Acknowledge(1); var changed = original with { Name = "Changed" };
+      var blocked = Path.Combine(directory, "outbox.json.tmp"); Directory.CreateDirectory(blocked);
+      Assert.Throws<UnauthorizedAccessException>(() => box.Enqueue(changed));
+      Assert.Throws<UnauthorizedAccessException>(() => box.Enqueue(changed));
+      Assert.That(box.Revision, Is.EqualTo(1)); Assert.That(box.Pending, Is.Null);
+      Directory.Delete(blocked); Assert.That(box.Enqueue(changed), Is.True); Assert.That(box.Pending!.Revision, Is.EqualTo(2));
+      Directory.CreateDirectory(blocked);
+      Assert.Throws<UnauthorizedAccessException>(() => box.Acknowledge(100));
+      Assert.That(box.Revision, Is.EqualTo(2)); Assert.That(box.Pending!.Revision, Is.EqualTo(2));
+      Directory.Delete(blocked); box.Acknowledge(100); Assert.That(box.Pending, Is.Null);
+      Directory.CreateDirectory(blocked);
+      Assert.Throws<UnauthorizedAccessException>(() => box.Enqueue(changed, true));
+      Assert.That(box.Revision, Is.EqualTo(100)); Assert.That(box.Pending, Is.Null);
+      Directory.Delete(blocked); Assert.That(box.Enqueue(changed, true), Is.True);
+      var reopened = new CatalogOutbox(directory);
+      Assert.That(reopened.Pending!.Revision, Is.EqualTo(101)); Assert.That(reopened.Pending.Name, Is.EqualTo("Changed"));
+    } finally { Directory.Delete(directory, true); }
+  }
   [TestCase(false)] [TestCase(true)] public void FragmentedRtpReassemblesOriginalNal(bool hevc)
   {
     var nal = new byte[4500]; new Random(42).NextBytes(nal); nal[0] = hevc ? (byte)0x26 : (byte)0x65; nal[1] = 1;
@@ -343,17 +366,18 @@ public sealed class IntegrationTests
     } finally { stop.Cancel(); try { await running; } catch (OperationCanceledException) { } }
     Assert.That(tap.Count, Is.EqualTo(0));
   }
-  [Test] public async Task BrowserMediaAuthenticatesRemuxesNativeFramesAndReleasesDemand()
+  [TestCase("High")] [TestCase("High%2Fopaque")]
+  public async Task BrowserMediaAuthenticatesRemuxesNativeFramesAndReleasesDemand(string profile)
   {
     using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
     var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
     var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start(); var port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
     var tap = new Tap();
     var context = new PluginContext { Config = new Config(), Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = new Registry(), EventBus = new Bus(), StreamTap = tap };
-    var server = new NativeHttpServer(context, (_, _, _) => Task.FromResult(true), (header, _) => Task.FromResult(header == "Basic authorized"));
+    var server = new NativeHttpServer(context, (_, requested, _) => Task.FromResult(requested == profile), (header, _) => Task.FromResult(header == "Basic authorized"));
     var running = server.RunAsync($"http://127.0.0.1:{port}", stop.Token); await server.Ready.WaitAsync(stop.Token);
     using var client = new HttpClient(new SocketsHttpHandler { MaxResponseDrainSize = 0, ResponseDrainTimeout = TimeSpan.Zero });
-    var address = $"http://127.0.0.1:{port}/bf/{Guid.NewGuid()}/High/live";
+    var address = $"http://127.0.0.1:{port}/bf/{Guid.NewGuid()}/{Uri.EscapeDataString(profile)}/live";
     try {
       using (var denied = await client.GetAsync(address, stop.Token)) Assert.That((int)denied.StatusCode, Is.EqualTo(401));
       Assert.That(tap.Count, Is.EqualTo(0));
@@ -369,6 +393,34 @@ public sealed class IntegrationTests
       for (var i = 0; i < 100 && tap.Count != 0; i++) await Task.Delay(10, stop.Token);
       Assert.That(tap.Count, Is.EqualTo(0));
     } finally { stop.Cancel(); try { await running; } catch (OperationCanceledException) { } }
+  }
+  [TestCase(false, false, false, 413)] [TestCase(true, false, false, 413)]
+  [TestCase(false, false, true, 404)] [TestCase(true, true, false, 409)]
+  public async Task RecordingExportsSelectOneAuthorizedProfileWithCompleteCoverage(bool mainGaps, bool subGaps, bool denySub, int expectedStatus)
+  {
+    using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString()); Directory.CreateDirectory(directory);
+    var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start(); var port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+    var id = Guid.NewGuid(); var start = DateTimeOffset.FromUnixTimeSeconds(1700000000); var from = start.ToUnixMicroseconds(); var to = start.AddSeconds(10).ToUnixMicroseconds();
+    SegmentInfo Segment(bool gap) => new() { Id = Guid.NewGuid(), StartTime = from + (gap ? 1000000UL : 0), EndTime = to,
+      SegmentRef = "native-segment", SizeBytes = 257L * 1024 * 1024 };
+    var recordings = new Recordings { Segments = new() { ["High"] = mainGaps ? [Segment(true)] : [], ["Low"] = [Segment(subGaps)] } };
+    var tap = new Tap();
+    var context = new PluginContext { Config = new Config(), Environment = new Environment(directory), LoggerFactory = new Logs(),
+      CameraRegistry = new Registry { Cameras = [Camera(id, "Recorded camera")] }, RecordingAccess = recordings, StreamTap = tap };
+    var server = new NativeHttpServer(context, (_, candidate, _) => Task.FromResult(candidate == "High" || candidate == "Low" && !denySub),
+      (header, _) => Task.FromResult(header == "Basic authorized"), (_, camera) => camera == id);
+    var running = server.RunAsync($"http://127.0.0.1:{port}", stop.Token); await server.Ready.WaitAsync(stop.Token);
+    using var client = new HttpClient(); client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", "Basic authorized");
+    try {
+      using var response = await client.GetAsync($"http://127.0.0.1:{port}/bf/{id}/High/recordings?start={Uri.EscapeDataString(start.ToString("O"))}&duration=10", stop.Token);
+      Assert.That((int)response.StatusCode, Is.EqualTo(expectedStatus));
+      Assert.That(recordings.Queries, Does.Contain("High"));
+      Assert.That(recordings.Queries.Contains("Low"), Is.EqualTo(!denySub));
+      Assert.That(recordings.OpenCalls, Is.Zero); Assert.That(tap.Count, Is.Zero);
+      using var wrongCamera = await client.GetAsync($"http://127.0.0.1:{port}/bf/{Guid.NewGuid()}/High/recordings?start={Uri.EscapeDataString(start.ToString("O"))}&duration=10", stop.Token);
+      Assert.That((int)wrongCamera.StatusCode, Is.EqualTo(404));
+    } finally { stop.Cancel(); try { await running; } catch (OperationCanceledException) { } Directory.Delete(directory, true); }
   }
   [Test] public async Task PluginReaderCredentialsCannotBeReusedForAnotherCameraOrAfterUnlinking()
   {
@@ -456,6 +508,16 @@ public sealed class IntegrationTests
     }
   }
   private sealed class Environment(string path) : IServerEnvironment { public string DataPath => path; }
+  private sealed class Recordings : IRecordingAccess {
+    public Dictionary<string, IReadOnlyList<SegmentInfo>> Segments = [];
+    public List<string> Queries = []; public int OpenCalls;
+    public Task<OneOf<IReadOnlyList<SegmentInfo>, Error>> QueryAsync(Guid cameraId, string profile, ulong from, ulong to, CancellationToken ct) {
+      Queries.Add(profile); return Task.FromResult(OneOf<IReadOnlyList<SegmentInfo>, Error>.FromT0(Segments.GetValueOrDefault(profile) ?? []));
+    }
+    public Task<OneOf<Stream, Error>> OpenSegmentAsync(string segmentRef, CancellationToken ct) {
+      OpenCalls++; return Task.FromResult<OneOf<Stream, Error>>(Error.Create(0x10bf, 9, Result.NotFound, "No test segment opened"));
+    }
+  }
   private sealed class Logs : IPluginLoggerFactory, ILogger {
     public TaskCompletionSource StorageFailure { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public ILogger CreateLogger(string categoryName) => this;

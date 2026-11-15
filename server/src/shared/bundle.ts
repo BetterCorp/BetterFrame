@@ -276,7 +276,8 @@ export async function generateBundle(
       if (camera?.enabled) cameraById.set(cameraId, camera);
     }
   }
-  cameras = [...cameraById.values()].filter(c => !managedCameraIds.has(c.id) || vmsCameras.has(c.id));
+  cameras = [...cameraById.values()].filter(c => !managedCameraIds.has(c.id) || vmsCameras.has(c.id))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   const deviceNames = new Map((await repo.listCameraDevices()).map((device) => [device.id, device.name]));
   const stableEncryptedValues = new Map<string, string>();
   const renderBundleOverlay = createOverlayBatchRenderer();
@@ -538,7 +539,7 @@ export async function generateBundle(
       if (camera?.enabled) cameras.push(camera);
     }
     cameras = cameras.filter(c => !managedCameraIds.has(c.id) || vmsCameras.has(c.id));
-    cameras.sort((a, b) => a.name.localeCompare(b.name));
+    cameras.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   }
 
   phase = "event-ownership";

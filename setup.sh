@@ -432,6 +432,8 @@ PY
     fi
 }
 install_app_binary() {
+    local already_confirmed=0
+    if [[ -f $BIN && ! -f $STATE/firmware-applying.json ]] && cmp -s "$BIN" "$STAGING/candidate"; then already_confirmed=1; fi
     runtime_command rm -f -- "$BIN.new" "$BIN.prev.new"
     if [[ -f $BIN && ! -f $STATE/firmware-applying.json && ( $PRESERVE_PREVIOUS == 0 || ! -f $BIN.prev ) ]] && ! cmp -s "$BIN" "$STAGING/candidate"; then
         runtime_command install -m 755 "$BIN" "$BIN.prev.new"
@@ -444,7 +446,7 @@ install_app_binary() {
     runtime_command sh -c 'set -eu; umask 077; cat > "$1"; chmod 755 "$1"' sh "$BIN.new" < "$STAGING/candidate"
     # Publish protection before replacing the executable. Failures/interruption
     # up to the final rename leave the existing app in place.
-    arm_setup_candidate "$BIN.new"
+    if ((already_confirmed == 0)); then arm_setup_candidate "$BIN.new"; fi
     runtime_command mv -fT -- "$BIN.new" "$BIN"
 }
 # Embedded for single-file installation. Keep identical to the deployment helper;

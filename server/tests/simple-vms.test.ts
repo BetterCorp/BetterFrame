@@ -265,6 +265,24 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     assert.equal(await repo.getKioskById(other.id), null);
     assert.equal(await repo.getCameraDeviceById(corrected.device_id), null);
     assert.equal(await repo.adapter.get("SELECT 1 FROM simple_vms_sources WHERE owner_kiosk_id = ?", [other.id]), undefined);
+    const orderingKiosk = await repo.createKiosk({ name: "Catalog ordering kiosk", key_hash: "ordering", key_prefix: "ordering" });
+    await repo.createDisplayForKiosk(orderingKiosk.id, { name: "Ungrouped catalog display" });
+    const orderingSource = await saveSimpleVmsSource(repo, secrets, orderingKiosk.id, { ...config, instanceId: "ordering-instance", name: "Ordering NVR", linkedKioskIds: [] });
+    await applySimpleVmsSnapshot(repo, orderingSource.id, { ...snapshot(), instanceId: "ordering-instance", name: "Ordering NVR", groups: [] });
+    const all = repo.adapter.all.bind(repo.adapter); let reverseCatalog = false;
+    repo.adapter.all = (async (sql: string, params: Parameters<typeof all>[1]) => {
+      const rows = await all(sql, params);
+      return reverseCatalog && sql.includes("FROM simple_vms_cameras c JOIN simple_vms_sources") ? [...rows].reverse() : rows;
+    }) as typeof repo.adapter.all;
+    try {
+      const key = secrets.generateClusterKey();
+      const first = (await generateBundle(repo, secrets, orderingKiosk.id, key))!;
+      reverseCatalog = true;
+      const reversed = (await generateBundle(repo, secrets, orderingKiosk.id, key))!;
+      assert.equal(first.cameras.length, 2);
+      assert.deepEqual(reversed.cameras.map(camera => camera.id), first.cameras.map(camera => camera.id));
+      assert.equal(reversed.version, first.version, "Query order must not change an ungrouped camera catalog's bundle hash");
+    } finally { repo.adapter.all = all; }
     const tenant = await repo.createTenant({ name: "Other tenant", slug: "other-tenant" });
     await createTenantSchema(repo.adapter, tenant.slug, log);
     await repo.adapter.withSearchPath(tenant.schema_name, async () => {

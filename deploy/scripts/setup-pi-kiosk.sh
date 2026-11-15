@@ -31,6 +31,18 @@
 
 set -euo pipefail
 
+retire_pi_legacy_gateway() {
+  local marker=${1:-/var/lib/betterframe/kiosk/firmware-applying.json}
+  local previously_pending=${2:-0}
+  if [[ -f $marker || $previously_pending == 1 ]] || ! systemctl is-active --quiet betterframe-kiosk.service; then
+    echo 'Legacy media gateway retained until BF starts successfully; rerun setup afterward to retire it.'
+    return 0
+  fi
+  if [[ $(systemctl show betterframe-mediamtx.service -p LoadState --value 2>/dev/null || echo not-found) != not-found ]]; then
+    systemctl disable --now betterframe-mediamtx.service || echo 'Could not retire the legacy media gateway; BF startup is unaffected.' >&2
+  fi
+}
+
 if [ "$EUID" -ne 0 ]; then
   echo "error: must run as root (sudo $0)" >&2
   exit 1
@@ -360,7 +372,13 @@ EOF
   systemctl enable betterframe-kiosk.service
   systemctl enable betterframe-rauc-mark-good.service
   # Restart picks up new binary on re-run.
-  systemctl restart betterframe-kiosk.service || true
+  upgrade_pending=0
+  if [[ -f /var/lib/betterframe/kiosk/firmware-applying.json ]]; then upgrade_pending=1; fi
+  if systemctl restart betterframe-kiosk.service; then
+    retire_pi_legacy_gateway /var/lib/betterframe/kiosk/firmware-applying.json "$upgrade_pending"
+  else
+    echo 'BF restart failed; the legacy media gateway is retained.' >&2
+  fi
 
   # --------------------------------------------------------------------------
   # 9. Plymouth boot splash — hide kernel text + Pi rainbow, show BF logo

@@ -2096,7 +2096,15 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       availableLayouts,
       kioskName: kiosk?.name ?? null,
       kiosk,
+      hasDisconnectedSimpleVmsDefault: !!await deps.repo.adapter.get("SELECT 1 FROM simple_vms_display_defaults WHERE display_id = ?", [id]),
     }));
+  });
+
+  app.post("/admin/displays/:id/clear-default", async event => {
+    const id = getRouterParam(event, "id") ?? "";
+    await deps.repo.clearDisplayDefault(id);
+    notifyKiosks();
+    return new Response(null, { status: 303, headers: { location: `/admin/displays/${id}` } });
   });
 
   app.post("/admin/displays/:id", async (event) => {

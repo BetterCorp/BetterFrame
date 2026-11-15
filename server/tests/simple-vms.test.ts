@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { H3 } from "h3";
 import { registerSimpleVmsIngress } from "../src/shared/simple-vms-http.js";
 import { registerSimpleVmsAdminRoutes } from "../src/plugins/service-admin-http/routes-simple-vms.js";
+import { DisplayEditPage } from "../src/web-templates/admin-pages.js";
 
 function snapshot(revision = 1): VmsSnapshot {
   return { version: 1, instanceId: "recorder-one", revision, name: "Property NVR", cameras: [
@@ -164,6 +165,17 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     assert.equal(await repo.adapter.get("SELECT 1 FROM simple_vms_display_defaults WHERE display_id = ?", [display.id]), undefined);
     await saveSimpleVmsSource(repo, secrets, owner.id, config);
     assert.equal((await repo.getDisplayById(display.id))?.default_layout_id, null, "A changed selection ending in no default must not be restored");
+    await repo.updateDisplay(display.id, { default_layout_id: managedLayout.id });
+    await saveSimpleVmsSource(repo, secrets, owner.id, { ...config, enabled: false });
+    const disconnected = (await repo.getDisplayById(display.id))!;
+    assert.equal(disconnected.default_layout_id, null);
+    const page = String(DisplayEditPage({ user: "admin", display: disconnected, attachedLayouts: [], availableLayouts: [], hasDisconnectedSimpleVmsDefault: true }));
+    assert.match(page, /Keep no default/);
+    assert.ok(page.includes(`/admin/displays/${display.id}/clear-default`));
+    await repo.clearDisplayDefault(display.id);
+    assert.equal(await repo.adapter.get("SELECT 1 FROM simple_vms_display_defaults WHERE display_id = ?", [display.id]), undefined);
+    await saveSimpleVmsSource(repo, secrets, owner.id, config);
+    assert.equal((await repo.getDisplayById(display.id))?.default_layout_id, null, "Explicit clear cancels restoration even while the default is already NULL");
     const empty = snapshot(3); empty.cameras = []; empty.groups = [];
     await applySimpleVmsSnapshot(repo, source.id, empty);
     assert.equal(await repo.getLayoutById(managedLayout.id), null);

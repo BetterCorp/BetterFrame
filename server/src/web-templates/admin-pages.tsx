@@ -3674,6 +3674,7 @@ interface DisplayEditPageProps {
   availableLayouts: LayoutType[];
   kioskName?: string | null;
   kiosk?: Pick<Kiosk, "capabilities"> | null;
+  hasDisconnectedSimpleVmsDefault?: boolean;
   error?: string;
   success?: string;
 }
@@ -3944,6 +3945,10 @@ export function DisplayEditPage(props: DisplayEditPageProps) {
             <button type="submit" class="btn btn-primary">Save</button>
             <a href="/admin/displays" class="btn btn-ghost" style="margin-left:0.5rem">Back</a>
           </form>
+          {props.hasDisconnectedSimpleVmsDefault ? <form method="post" action={`/admin/displays/${d.id}/clear-default`} style="margin-top:1rem">
+            <p>A disconnected SimpleVMS layout will return as the default when its recorder reconnects.</p>
+            <button type="submit" class="btn btn-ghost">Keep no default</button>
+          </form> : null}
         </div>
 
         {/* Layout attachments */}

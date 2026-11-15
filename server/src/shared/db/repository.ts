@@ -710,6 +710,15 @@ export class Repository {
     return (r?.m ?? -1) + 1;
   }
 
+  /** Explicitly keep no default, including when an automatic detach already cleared the field. */
+  async clearDisplayDefault(id: string): Promise<void> {
+    await this.transact(async () => {
+      await this.adapter.get("SELECT id FROM displays WHERE id = ? FOR UPDATE", [id]);
+      await this.updateDisplay(id, { default_layout_id: null });
+      await this._run("DELETE FROM simple_vms_display_defaults WHERE display_id = ?", [id]);
+    });
+  }
+
   async updateDisplay(id: string, patch: Partial<Display>): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];

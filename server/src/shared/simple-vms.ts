@@ -102,6 +102,12 @@ export async function reconcileSimpleVmsAssignments(repo: Repository, sourceId?:
         eligible.add(source.owner_kiosk_id);
         for (const k of await repo.adapter.all<{ kiosk_id: string }>("SELECT kiosk_id FROM simple_vms_linked_kiosks WHERE source_id = ?", [source.id])) eligible.add(k.kiosk_id);
       }
+      if (!layouts.length) return;
+      const kioskIds = [...eligible];
+      // Serialize default restoration with explicit display edits; use one global lock order across sources.
+      await repo.adapter.all(`SELECT d.id FROM displays d WHERE ${kioskIds.length ? `d.kiosk_id IN (${kioskIds.map(() => "?").join(",")}) OR ` : ""}
+        EXISTS (SELECT 1 FROM display_layouts dl JOIN simple_vms_groups g ON g.layout_id = dl.layout_id WHERE dl.display_id = d.id AND g.source_id = ?)
+        ORDER BY d.id FOR UPDATE OF d`, [...kioskIds, source.id]);
       for (const { layout_id } of layouts) {
         for (const display of await repo.listDisplaysForLayout(layout_id)) {
           if (!display.kiosk_id || !eligible.has(display.kiosk_id)) {

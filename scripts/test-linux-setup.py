@@ -643,6 +643,31 @@ def CDLL(name):
             self.assertIn('stop betterframe-mediamtx.service', result.stdout)
             self.assertIn('disable betterframe-mediamtx.service', result.stdout)
 
+    def test_pi_upgrade_retires_only_a_safe_legacy_gateway(self):
+        script = (ROOT/'deploy/scripts/setup-pi-kiosk.sh').read_text()
+        start = script.index('retire_pi_legacy_gateway() {')
+        function = script[start:script.index('\n}\n', start) + 3]
+        for pending, previously_pending, active, loaded, failure in [(False, False, True, True, False), (True, False, True, True, False),
+                    (False, True, True, True, False), (False, False, False, True, False), (False, False, True, False, False), (False, False, True, True, True)]:
+            with self.subTest(pending=pending, previously_pending=previously_pending, active=active, loaded=loaded, failure=failure), tempfile.TemporaryDirectory() as tmp:
+                marker = Path(tmp)/'pending.json'
+                if pending:
+                    marker.write_text('{}')
+                result = subprocess.run(['bash', '-c', f'''set -euo pipefail
+                    {function}
+                    systemctl() {{
+                        case "$1" in
+                            is-active) return {0 if active else 1};;
+                            show) echo {'loaded' if loaded else 'not-found'};;
+                            *) echo "$*"; return {1 if failure else 0};;
+                        esac
+                    }}
+                    retire_pi_legacy_gateway {shlex.quote(str(marker))} {int(previously_pending)}
+                    echo completed
+                '''], text=True, capture_output=True, check=True)
+                self.assertIn('completed', result.stdout)
+                self.assertEqual('disable --now betterframe-mediamtx.service' in result.stdout, not pending and not previously_pending and active and loaded)
+
     def test_start_success_requires_a_stable_process_after_reset(self):
         self.shell('''
             sleep() { :; }

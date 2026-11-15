@@ -25,6 +25,8 @@ Install the published output as a `BetterFrame` plugin directory using the recor
 
 The RTSP listener defaults to `127.0.0.1:8554` and supports H.264/H.265 over interleaved TCP. Configure a private bind address for remote kiosks. For RTSPS, configure the certificate/key PEM paths and use `rtsps://` in BF. The browser media listener defaults to `http://127.0.0.1:8555`. Remote browser media requires HTTPS, using the configured certificate or a private HTTPS reverse proxy. Kiosks must trust the issuer; certificate verification remains enabled.
 
+Managed images allow TCP 8554 and 8555 only from private/link-local IPv4 and IPv6 networks. When changing native listener or reverse-proxy ports, update `/etc/nftables.conf` to allow those ports for the same trusted source networks, then reload it with `sudo nft -f /etc/nftables.conf`. Binding a listener and configuring its external BF address do not change the firewall automatically.
+
 Each owning kiosk can use its own localhost recorder address; SimpleVMS identity is scoped by instance, not by that local endpoint. To correct an instance ID or disconnect a recorder, use **Remove SimpleVMS connection** on its kiosk connection page. This atomically removes BF's imported NVR/cameras/generated layouts and clears references while preserving custom layouts. Deleting the owning kiosk performs the same cleanup. Neither operation deletes native cameras, recording policies or recorder history.
 
 Native camera labels are retained where unique in BF. Duplicate labels are qualified by recorder name, with an external-reference suffix only when still ambiguous. Renames and name swaps retain camera IDs and layout references.

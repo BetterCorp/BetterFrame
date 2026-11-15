@@ -3141,11 +3141,13 @@ export class Repository {
     ) as Array<{ key_hash: string }>;
   }
 
-  async deleteKiosk(id: string): Promise<void> {
+  /** Return surviving kiosks that need a fresh bundle after their source owner is removed. */
+  async deleteKiosk(id: string): Promise<string[]> {
     const displays = await this.listDisplaysForKiosk(id);
+    let affectedKiosks: string[] = [];
     await this.transact(async () => {
       const source = await this.adapter.get<{ id: string }>("SELECT id FROM simple_vms_sources WHERE owner_kiosk_id = ?", [id]);
-      if (source) await removeSimpleVmsSource(this, source.id);
+      if (source) affectedKiosks = await removeSimpleVmsSource(this, source.id);
       for (const display of displays) {
         await this._run(`DELETE FROM display_layouts WHERE display_id = ?`, [display.id]);
       }
@@ -3164,6 +3166,7 @@ export class Repository {
       void this.notify("displays", "delete", display.id);
     }
     void this.notify("kiosks", "delete", id);
+    return affectedKiosks.filter(kioskId => kioskId !== id);
   }
 
   async detachCameraLabel(cameraId: string, labelId: string): Promise<void> {

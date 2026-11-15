@@ -54,6 +54,7 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     const otherDisplay = await repo.createDisplayForKiosk(other.id, { name: "Other display" });
     const androidDisplay = await repo.createDisplayForKiosk(android.id, { name: "TV display" });
     const config = { instanceId: "recorder-one", name: "Property NVR", localAddress: "rtsp://127.0.0.1:8554", externalAddress: "rtsp://nvr.property.lan:8554",
+      localHttpAddress: "http://127.0.0.1:8555", externalHttpAddress: "https://nvr.property.lan:8555",
       linkedKioskIds: [linked.id, android.id], enabled: true, autoSync: true, viewerUsername: "betterframe", viewerPassword: "test-viewer-password", ingestToken: "test-integration-token-01234567890123456789" };
     const source = await saveSimpleVmsSource(repo, secrets, owner.id, config);
     const app = new H3(); registerSimpleVmsIngress(app, repo);
@@ -113,6 +114,9 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     assert.match(ownBundle!.cameras.find(c => c.id === camera.id)!.streams[0]!.rtsp_uri, /^rtsp:\/\/127\.0\.0\.1:8554\/bf\/entrance\/Profile_001$/);
     assert.match(linkedBundle!.cameras.find(c => c.id === camera.id)!.streams[0]!.rtsp_uri, /^rtsp:\/\/nvr\.property\.lan:8554\//);
     assert.ok(!JSON.stringify(ownBundle).includes(config.viewerPassword));
+    assert.equal(ownBundle!.operator_console.simple_vms.enabled, true);
+    assert.equal(linkedBundle!.operator_console.simple_vms.enabled, true, "Linked kiosks can use native recording export");
+    assert.equal(viewerBundle!.operator_console.simple_vms.enabled, false);
     const custom = await repo.createLayout({ name: "My layout" });
     await repo.createLayoutCell({ layout_id: custom.id, row: 0, col: 0, camera_id: camera.id, content_type: "camera" });
     await repo.createLayoutCell({ layout_id: custom.id, row: 0, col: 1, entity_id: (await repo.getEntityForCamera(camera.id))!.id });
@@ -128,6 +132,7 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     for (const kioskId of [linked.id, android.id]) {
       const revokedBundle = (await generateBundle(repo, secrets, kioskId, undefined))!;
       assert.equal(revokedBundle.cameras.length, 0);
+      assert.equal(revokedBundle.operator_console.simple_vms.enabled, false);
       assert.deepEqual(revokedBundle.layouts.find(layout => layout.id === custom.id)!.cells, []);
       assert.deepEqual(revokedBundle.layouts.find(layout => layout.id === custom.id)!.preload_camera_ids, []);
       assert.ok(!revokedBundle.layouts.some(layout => layout.id === (cell.entity_id ?? "missing")));
@@ -202,9 +207,9 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     assert.equal((await repo.listCamerasByDevice(source.device_id)).length, 2);
 
     // An incorrect immutable instance ID can be corrected after removing its connection.
-    const corrected = await saveSimpleVmsSource(repo, secrets, other.id, { ...config, instanceId: "corrected-instance", linkedKioskIds: [] });
+    const corrected = await saveSimpleVmsSource(repo, secrets, other.id, { ...config, instanceId: "corrected-instance", linkedKioskIds: [linked.id] });
     await applySimpleVmsSnapshot(repo, corrected.id, { ...snapshot(), instanceId: "corrected-instance", name: "Corrected NVR" });
-    await repo.deleteKiosk(other.id);
+    assert.deepEqual(await repo.deleteKiosk(other.id), [linked.id]);
     assert.equal(await repo.getKioskById(other.id), null);
     assert.equal(await repo.getCameraDeviceById(corrected.device_id), null);
     assert.equal(await repo.adapter.get("SELECT 1 FROM simple_vms_sources WHERE owner_kiosk_id = ?", [other.id]), undefined);

@@ -688,7 +688,7 @@ export async function generateBundle(
       port: kiosk.operator_console_port,
       tools: viewer ? [] : parseOperatorTools(kiosk.operator_tools_json),
       simple_vms: {
-        enabled: !viewer && kiosk.simple_vms_enabled,
+        enabled: !viewer && [...vmsCameras.values()].some(source => source.owner_kiosk_id === kioskId ? !!source.local_http_address : !!source.external_http_address),
         storage_path: viewer ? null : kiosk.simple_vms_storage_path,
         settings: viewer ? {} : parseJsonObject(kiosk.simple_vms_settings_json),
       },

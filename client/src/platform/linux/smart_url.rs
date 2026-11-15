@@ -805,6 +805,7 @@ mod tests {
         let config = serde_json::from_value(serde_json::json!({"revision":"r1",
             "on_load":[{"type":"javascript","script":"if (!document.querySelector('#done')) { await fetch('/premature-on-load'); throw new Error('not authenticated'); } await fetch('/on-load');"}],
             "groups":{"custom":[{"type":"javascript","script":"await fetch('/custom');"}],
+                "deferred":[{"type":"wait","delay_ms":300},{"type":"javascript","script":"await fetch('/deferred');"}],
                 "navigate":[{"type":"navigate","url":"/done"},{"type":"wait_for","selector":"#done"},{"type":"javascript","script":"await fetch('/group-navigation');"}],
                 "failure":[{"type":"javascript","script":"throw new Error('failed');"},{"type":"javascript","script":"await fetch('/should-not-run');"}]}
         })).unwrap();
@@ -832,7 +833,13 @@ mod tests {
         wait_until(|| result.borrow().is_some());
         assert!(result.borrow().as_ref().unwrap().is_err());
         assert_eq!(fixture.count("/should-not-run"), 0);
+        result.replace(None);
+        let completed = result.clone();
+        actions.invoke("deferred", "r1", move |r| { completed.replace(Some(r)); }).unwrap();
         action_wv.set_visible(false);
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok());
+        assert_eq!(fixture.count("/deferred"), 1, "accepted groups continue as authored in a cached block");
         assert!(actions.invoke("custom", "r1", |_| panic!("hidden action ran")).is_err());
         pump(Duration::from_millis(400));
         assert_eq!(fixture.count("/custom"), 1, "hiding the block performs no custom actions");

@@ -26,6 +26,28 @@ class TrustedCaJournalTest {
         } finally { base.delete(); backup.delete() }
         assertEquals(0, readTrustJournal(AtomicFile(base)).length())
     }
+    @Test fun incompleteTrustCleanupRetainsItsMarkerAndGuidanceUntilRetried() {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext
+        val store = ProtectedStore(app); val before = store.read()
+        val token = "trust-cleanup-${UUID.randomUUID()}"; val browser = AtomicInteger()
+        try {
+            store.write(JSONObject().put(EnrollmentCleanup.MARKER, token))
+            val failed = CountDownLatch(1)
+            EnrollmentCleanup.request(app, token, { _, callback -> browser.incrementAndGet(); callback(true) },
+                { TrustedCaPolicy.requireRemovalApplied(JSONObject().put("state", "manual_action")) },
+                { failed.countDown() })
+            assertTrue(failed.await(10, TimeUnit.SECONDS))
+            assertEquals(token, store.read().getString(EnrollmentCleanup.MARKER)); assertEquals(0, browser.get())
+            assertTrue(EnrollmentCleanup.failureReason(app)!!.contains("Android Settings"))
+            val completed = CountDownLatch(1)
+            EnrollmentCleanup.request(app, token, { _, callback -> browser.incrementAndGet(); callback(true) },
+                { TrustedCaPolicy.requireRemovalApplied(JSONObject().put("state", "applied")) },
+                { completed.countDown() })
+            assertTrue(completed.await(10, TimeUnit.SECONDS))
+            assertFalse(store.read().has(EnrollmentCleanup.MARKER)); assertEquals(1, browser.get())
+            assertNull(EnrollmentCleanup.failureReason(app))
+        } finally { store.write(before) }
+    }
     @Test fun obsoleteCleanupCannotRemoveTrustOrBrowserSessionsFromNewEnrollment() {
         val app = InstrumentationRegistry.getInstrumentation().targetContext
         val store = ProtectedStore(app); val before = store.read()

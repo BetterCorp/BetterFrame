@@ -51,6 +51,17 @@ fn reconcile(cas: &[crate::bundle::TrustedCa]) -> Result<(bool, Option<String>),
     }
 }
 
+/// Reset completion requires confirmed removal, including manual installations.
+pub(super) fn complete_reset() -> Result<(), String> {
+    let (_, error) = reconcile(&[])?;
+    if let Some(error) = error { return Err(error); }
+    let report = trust_report().ok_or("Missing certificate removal report")?;
+    if report.state != "applied" {
+        return Err(if report.message.is_empty() { "Certificate removal is incomplete".into() } else { report.message });
+    }
+    Ok(())
+}
+
 /// The elevated agent owns machine trust; an unelevated agent reports manual action.
 pub(super) fn reconcile_cached() -> bool {
     let cas = match load_trusted_cas() {

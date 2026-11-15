@@ -29,6 +29,7 @@ internal object EnrollmentCleanup {
         var started = false
     }
     private val jobs = mutableMapOf<String, Job>()
+    private val failures = mutableMapOf<String, String>()
     private data class ResetVersion(val generation: Long, val token: String)
     // Keep the tombstone after cleanup so delayed writes stay invalidated.
     private val versions = mutableMapOf<String, ResetVersion>()
@@ -37,6 +38,7 @@ internal object EnrollmentCleanup {
     private fun key(context: Context) = context.noBackupFilesDir.absolutePath
 
     @Synchronized fun pending(context: Context): String? = jobs[key(context)]?.token
+    @Synchronized fun failureReason(context: Context): String? = failures[key(context)]
 
     @Synchronized fun begin(context: Context, token: String): Claim {
         val path = key(context)
@@ -73,13 +75,13 @@ internal object EnrollmentCleanup {
 
     @Synchronized fun request(context: Context, token: String, clear: (Context, (Boolean) -> Unit) -> Unit,
         cleanTrust: (Context) -> Unit = { app ->
-            val report = TrustedCas(app).sync(JSONArray())
-            check(report.optString("state") != "error") { report.optString("message") }
+            TrustedCaPolicy.requireRemovalApplied(TrustedCas(app).sync(JSONArray()))
         }, done: (Boolean) -> Unit) {
         val path = key(context)
         val job = jobs.getOrPut(path) { Job(token, CompletableFuture.completedFuture(Unit)) }
         job.listeners.add(done)
         if (job.started) return
+        failures.remove(path)
         job.started = true
         val store = ProtectedStore(context)
         fun finish(success: Boolean) {
@@ -117,7 +119,10 @@ internal object EnrollmentCleanup {
                         }
                     } catch (_: Exception) { finish(false) }
                 }
-            } catch (_: Exception) { finish(false) }
+            } catch (error: Exception) {
+                if (error is TrustedCaPolicy.CleanupIncomplete) synchronized(this) { failures[path] = error.message.orEmpty() }
+                finish(false)
+            }
         }
     }
 }
@@ -536,7 +541,7 @@ class ViewerSession internal constructor(context: Context, private val listener:
                     listener.onPairing("")
                     listener.onStatus("Enrollment cleared. Ready to pair.")
                     if (restart != null) start(restart.server)
-                } else listener.onStatus("Unable to clear saved enrollment")
+                } else listener.onStatus(EnrollmentCleanup.failureReason(app) ?: "Unable to clear saved enrollment")
             }
         }
     }

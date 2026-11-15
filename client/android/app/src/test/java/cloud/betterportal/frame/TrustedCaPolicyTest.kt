@@ -73,6 +73,20 @@ class TrustedCaPolicyTest {
         assertEquals("applied", store.sync(JSONArray()).getString("state"))
         assertFalse(JSONObject(store.saved).getJSONObject("previous").has(fp))
     }
+    @Test fun enrollmentCleanupRequiresConfirmedManualRemoval() {
+        val ca = certificate(); val fp = ca.getString("fingerprint_sha256"); val store = Store(); store.owner = false
+        store.sync(JSONArray().put(ca)); store.installed.add(fp)
+        try {
+            TrustedCaPolicy.requireRemovalApplied(store.sync(JSONArray()))
+            fail("Manual removal must keep enrollment cleanup pending")
+        } catch (error: TrustedCaPolicy.CleanupIncomplete) { assertTrue(error.message!!.contains("Android Settings")) }
+        store.installed.remove(fp)
+        TrustedCaPolicy.requireRemovalApplied(store.sync(JSONArray()))
+        try {
+            TrustedCaPolicy.requireRemovalApplied(JSONObject().put("state", "error").put("message", "Store unavailable"))
+            fail("Store errors must keep cleanup pending")
+        } catch (error: TrustedCaPolicy.CleanupIncomplete) { assertEquals("Store unavailable", error.message) }
+    }
     @Test fun invalidAssignmentsCannotChangeExistingTrust() {
         val ca = certificate(); val store = Store()
         store.sync(JSONArray().put(ca))

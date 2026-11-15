@@ -174,10 +174,10 @@ fn update_state_file(
 
 pub(super) fn complete_demo_exit() -> Result<(), String> {
     ensure_secure_state_dir()?;
-    complete_demo_exit_at(&state_dir(), &webview_data_dir(), || { let _ = super::trusted_cas::reconcile_cached(); })
+    complete_demo_exit_at(&state_dir(), &webview_data_dir(), super::trusted_cas::complete_reset)
 }
 
-fn complete_demo_exit_at(directory: &std::path::Path, browser: &std::path::Path, reconcile: impl FnOnce()) -> Result<(), String> {
+fn complete_demo_exit_at(directory: &std::path::Path, browser: &std::path::Path, reconcile: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
     let marker = directory.join("exit-demo");
     if !marker.exists() { return Ok(()); }
     update_state_file(&directory.join("state.json"), |latest| {
@@ -191,7 +191,7 @@ fn complete_demo_exit_at(directory: &std::path::Path, browser: &std::path::Path,
     if browser.exists() { fs::remove_dir_all(browser).map_err(|error| error.to_string())?; }
     // Commit the exit last. A crash or cleanup error leaves a retryable journal,
     // regardless of whether the credentials have already been cleared.
-    reconcile();
+    reconcile()?;
     fs::remove_file(marker).map_err(|error| error.to_string())
 }
 
@@ -794,7 +794,7 @@ mod tests {
         fs::write(directory.join("bundle.json"), b"cached-demo-content").unwrap();
         // A non-directory browser path injects a cleanup error after state reset.
         fs::write(&browser, b"blocked-browser-cleanup").unwrap();
-        assert!(complete_demo_exit_at(&directory, &browser, || {}).is_err());
+        assert!(complete_demo_exit_at(&directory, &browser, || Ok(())).is_err());
         assert!(marker.exists());
         let cleared = load_state_file(&state).unwrap();
         assert!(!cleared.demo);
@@ -805,8 +805,12 @@ mod tests {
         fs::write(browser.join("cookies"), b"old-session").unwrap();
         // Restart resumes the journal even though demo is already false.
         // The injected operation proves this fixture never reads global machine state.
+        for error in ["Remove previously requested roots manually", "Transient trust-store failure"] {
+            assert!(complete_demo_exit_at(&directory, &browser, || Err(error.into())).is_err());
+            assert!(marker.exists(), "Incomplete trust cleanup must retain its retry marker");
+        }
         let reconciled = std::cell::Cell::new(false);
-        complete_demo_exit_at(&directory, &browser, || reconciled.set(true)).unwrap();
+        complete_demo_exit_at(&directory, &browser, || { reconciled.set(true); Ok(()) }).unwrap();
         assert!(reconciled.get());
         assert!(!marker.exists());
         assert!(!browser.exists());
@@ -816,7 +820,7 @@ mod tests {
             latest.kiosk_key = Some("new-demo-key".into());
             Ok(())
         }).unwrap();
-        complete_demo_exit_at(&directory, &browser, || {}).unwrap();
+        complete_demo_exit_at(&directory, &browser, || Ok(())).unwrap();
         assert_eq!(load_state_file(&state).unwrap().kiosk_key.as_deref(), Some("new-demo-key"));
         fs::remove_dir_all(directory).unwrap();
     }

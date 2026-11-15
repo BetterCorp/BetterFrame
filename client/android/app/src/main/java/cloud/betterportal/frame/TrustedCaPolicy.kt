@@ -9,6 +9,14 @@ import java.util.Base64
 
 /** Pure reconciliation policy; the Android adapter supplies storage and device-owner APIs. */
 internal object TrustedCaPolicy {
+    class CleanupIncomplete(message: String) : IllegalStateException(message)
+    fun requireRemovalApplied(report: JSONObject) {
+        if (report.optString("state") == "applied") return
+        throw CleanupIncomplete(if (report.optString("state") == "manual_action")
+            "Remove certificates previously requested by BetterFrame in Android Settings, then retry clearing enrollment."
+            else report.optString("message").ifBlank { "Certificate removal is incomplete. Retry clearing enrollment." })
+    }
+
     fun fingerprint(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     private fun parse(item: JSONObject): X509Certificate {
         val pem = item.getString("pem")

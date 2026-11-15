@@ -2,6 +2,8 @@
 
 SimpleVMS owns cameras, names, profiles, recording policies and display-group membership. BetterFrame owns layouts authored by operators and the list of kiosks permitted to use each recorder. No camera/recording configuration is pushed from BetterFrame to SimpleVMS. MediaMTX is not part of this integration.
 
+Each snapshot is limited to 4,096 playable cameras, 32 supported profiles per camera, and 4 MiB of JSON. Oversized catalogs export a stable prefix in camera-ID order that fits both limits; groups reference only those exported cameras. The native plugin logs a warning when cameras are omitted because of unsupported profiles or catalog limits. Omitted cameras are unavailable in BF until they fit in the exported catalog.
+
 ## Build and install
 
 Build against **the same SimpleVMS source used by the target recorder**. The host must expose `PluginContext.CameraRegistry`, `EventBus`, `StreamTap` and the native H.264/H.265 format contracts. Browser media uses that source tree's Fmp4 muxer; recording export also requires `RecordingAccess` and `ffmpeg` on the recorder. The extended control-room host in the simpleVMS workspace supplies these APIs; this is not a claim of compatibility with an unmodified upstream release.

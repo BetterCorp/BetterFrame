@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using OneOf;
 using Shared.Models;
 using Shared.Models.Events;
+using Microsoft.Extensions.Logging;
 
 namespace BetterCorp.BetterFrame;
 
@@ -74,7 +75,10 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
           if (cameras.IsT1) throw new InvalidOperationException("Native camera registry unavailable");
           var allowed = await FilterPolicyAsync(cameras.AsT0, ct);
           bool force; lock (_gate) { force = _force; _force = false; }
-          _outbox.Enqueue(CatalogBuilder.Build(_outbox.InstanceId, 0, Config("name", "SimpleVMS"), allowed, Groups()), force);
+          var catalog = CatalogBuilder.Build(_outbox.InstanceId, 0, Config("name", "SimpleVMS"), allowed, Groups());
+          if (catalog.Cameras.Length < allowed.Count) _context.LoggerFactory.CreateLogger("BetterFrame")
+            .LogWarning("Exporting {Exported} of {Available} cameras: unsupported profiles or the 4096-camera/4-MiB catalog limit excluded cameras", catalog.Cameras.Length, allowed.Count);
+          _outbox.Enqueue(catalog, force);
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { await Task.Delay(TimeSpan.FromSeconds(5), ct); _changes.Writer.TryWrite(true); continue; }
       }

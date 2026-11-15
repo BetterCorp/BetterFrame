@@ -194,6 +194,30 @@ public sealed class IntegrationTests
     Assert.That(profiles.First().Id, Is.EqualTo("p-39")); Assert.That(profiles.First().Role, Is.EqualTo("main"));
     Assert.That(profiles.Last().Id, Is.EqualTo("p-08")); Assert.That(profiles.Last().Role, Is.EqualTo("sub"));
   }
+  [Test] public void CatalogCameraLimitPreservesOnlyExportedGroupReferences()
+  {
+    var cameras = Enumerable.Range(1, 4097).Select(index => Camera(Guid.Parse($"00000000-0000-0000-0000-{index:D12}"), $"Camera {index}")).ToArray();
+    var group = new DisplayGroup(Guid.NewGuid(), "Boundary", cameras.Take(16).Concat(cameras.TakeLast(16)).Select(camera => camera.Id).ToArray());
+    var catalog = CatalogBuilder.Build("instance", 0, "NVR", cameras, [group]);
+    Assert.That(catalog.Cameras, Has.Length.EqualTo(CatalogBuilder.MaxCameras));
+    Assert.That(catalog.Groups.Single().CameraIds, Does.Not.Contain(cameras.Last().Id.ToString()));
+    Assert.That(catalog.Groups.Single().CameraIds, Does.Contain(cameras.First().Id.ToString()));
+  }
+  [Test] public void CatalogByteLimitIncludesUnicodeProfilesGroupsAndDurableRevision()
+  {
+    var streams = Enumerable.Range(0, 32).Select(index => new StreamProfile { Id = Guid.NewGuid(), Profile = $"{index:D3}" + new string('界', 125), Kind = StreamKind.Quality,
+      FormatId = "h264", Codec = "h264", Resolution = "1920x1080", IsRootStream = true, Uri = "unused" }).ToArray();
+    var cameras = Enumerable.Range(1, 100).Select(index => new CameraInfo { Id = Guid.Parse($"00000000-0000-0000-0000-{index:D12}"),
+      Name = new string('界', 255), Address = "unused", ProviderId = "onvif", Capabilities = [], Streams = streams }).ToArray();
+    var groups = new[] { new DisplayGroup(Guid.NewGuid(), new string('界', 255), cameras.Take(16).Concat(cameras.TakeLast(16)).Select(camera => camera.Id).ToArray()) };
+    var catalog = CatalogBuilder.Build("instance", 0, "NVR", cameras, groups);
+    Assert.That(catalog.Cameras.Length, Is.InRange(1, 99));
+    var bytes = JsonSerializer.SerializeToUtf8Bytes(catalog with { Revision = 9007199254740991 }, CatalogBuilder.Json);
+    Assert.That(bytes.Length, Is.LessThanOrEqualTo(4 * 1024 * 1024));
+    var included = catalog.Cameras.Select(camera => camera.Id).ToHashSet();
+    Assert.That(catalog.Groups.SelectMany(group => group.CameraIds).All(included.Contains), Is.True);
+    Assert.That(CatalogBuilder.Build("instance", 0, "NVR", cameras, groups).Cameras.Select(camera => camera.Id), Is.EqualTo(catalog.Cameras.Select(camera => camera.Id)));
+  }
   [Test] public void OutboxSurvivesRestartAndLostAcknowledgements()
   {
     var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());

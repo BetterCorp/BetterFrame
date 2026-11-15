@@ -12,6 +12,9 @@ public sealed record Catalog(int Version, string InstanceId, long Revision, stri
 public static class CatalogBuilder
 {
   public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+  public const int MaxCameras = 4096;
+  // Leave space for the outbox's durable revision, which is assigned after building.
+  public const int MaxCatalogBytes = 4 * 1024 * 1024 - 256;
   public static DisplayGroup[] ParseGroups(string input)
   {
     var groups = JsonSerializer.Deserialize<DisplayGroup[]>(input, Json) ?? throw new ArgumentException("Groups must be an array");
@@ -36,10 +39,25 @@ public static class CatalogBuilder
         return new Profile(s.Profile, s.Profile, index == 0 ? "main" : index == streams.Length - 1 ? "sub" : "other", s.Codec!, width, height, s.Fps ?? 0);
       }).ToArray();
       return new Camera(camera.Id.ToString(), camera.Name, true, profiles);
-    }).Where(camera => camera.Profiles.Length > 0).ToArray();
-    var present = result.Select(c => c.Id).ToHashSet();
-    return new(1, instance, revision, name, result, groups.OrderBy(g => g.Id).Select(g => new Group(g.Id.ToString(), g.Name,
-      g.CameraIds.Select(id => id.ToString()).Where(present.Contains).ToArray())).ToArray());
+    }).Where(camera => camera.Profiles.Length > 0).Take(MaxCameras).ToArray();
+    Catalog Prefix(int count) {
+      var selected = result.Take(count).ToArray();
+      var present = selected.Select(c => c.Id).ToHashSet();
+      return new(1, instance, revision, name, selected, groups.OrderBy(g => g.Id).Select(g => new Group(g.Id.ToString(), g.Name,
+        g.CameraIds.Select(id => id.ToString()).Where(present.Contains).ToArray())).ToArray());
+    }
+    var catalog = Prefix(result.Length);
+    if (JsonSerializer.SerializeToUtf8Bytes(catalog, Json).Length <= MaxCatalogBytes) return catalog;
+    // Membership only grows with this stable prefix, so serialized size is monotonic.
+    var low = 0; var high = result.Length;
+    while (low < high) {
+      var count = low + (high - low + 1) / 2;
+      if (JsonSerializer.SerializeToUtf8Bytes(Prefix(count), Json).Length <= MaxCatalogBytes) low = count;
+      else high = count - 1;
+    }
+    catalog = Prefix(low);
+    if (JsonSerializer.SerializeToUtf8Bytes(catalog, Json).Length > MaxCatalogBytes) throw new ArgumentException("Display-group metadata exceeds the catalog size limit");
+    return catalog;
   }
   private static long Pixels(string? value)
   {

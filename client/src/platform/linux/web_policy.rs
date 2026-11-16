@@ -78,43 +78,62 @@ pub(super) fn install(view: &webkit6::WebView, config: WebPermissions, source: O
     let key = key.to_string();
     view.connect_decide_policy(move |view, decision, kind| {
         if kind != webkit6::PolicyDecisionType::NewWindowAction { return false; }
-        let uri = decision.downcast_ref::<webkit6::NavigationPolicyDecision>()
-            .and_then(|decision| decision.navigation_action()).and_then(|mut action| action.request())
-            .and_then(|request| request.uri());
+        let request = decision.downcast_ref::<webkit6::NavigationPolicyDecision>()
+            .and_then(|decision| decision.navigation_action()).and_then(|mut action| action.request());
         decision.ignore();
-        if let Some(uri) = uri {
+        if let Some(request) = request {
             let weak = view.downgrade();
             let server = server.clone();
             let key = key.clone();
             glib::idle_add_local_once(move || {
-                if let Some(view) = weak.upgrade() { super::load_webview_url(&view, &uri, &server, &key); }
+                if let Some(view) = weak.upgrade() { super::load_webview_request(&view, &request, &server, &key); }
             });
         }
         true
     });
-    install_recovery(view);
 }
 
-fn install_recovery(view: &webkit6::WebView) {
+pub(super) fn cancelled_load(error: &glib::Error) -> bool {
+    error.matches(webkit6::NetworkError::Cancelled)
+        || error.matches(webkit6::PolicyError::FrameLoadInterruptedByPolicyChange)
+        || error.matches(webkit6::MediaError::Load)
+}
+
+const FAILED_KEY: &str = "betterframe-web-page-failed";
+
+pub(super) fn page_failed(view: &webkit6::WebView) -> bool {
+    // This private key is written once, with this exact type, before loading.
+    unsafe { view.data::<Cell<bool>>(FAILED_KEY).is_some_and(|value| value.as_ref().get()) }
+}
+
+fn set_page_failed(view: &webkit6::WebView, failed: bool) {
+    unsafe { if let Some(value) = view.data::<Cell<bool>>(FAILED_KEY) { value.as_ref().set(failed); } }
+}
+
+pub(super) fn install_recovery(view: &webkit6::WebView) {
+    unsafe { view.set_data(FAILED_KEY, Cell::new(false)); }
     struct Recovery { pending: Cell<bool>, failed: Cell<bool>, attempts: RefCell<Vec<Instant>> }
     let recovery = Rc::new(Recovery { pending: Cell::new(false), failed: Cell::new(false), attempts: RefCell::new(Vec::new()) });
     let state = recovery.clone();
-    view.connect_load_changed(move |_, event| match event {
-        webkit6::LoadEvent::Started => state.failed.set(false),
+    view.connect_load_changed(move |view, event| match event {
+        webkit6::LoadEvent::Started => { state.failed.set(false); set_page_failed(view, false); },
         webkit6::LoadEvent::Finished if !state.failed.get() => state.pending.set(false),
         _ => {}
     });
     let state = recovery.clone();
-    view.connect_load_failed(move |_, _, _, error| {
-        if !error.matches(webkit6::NetworkError::Cancelled) {
-            state.failed.set(true); state.pending.set(true);
+    view.connect_load_failed(move |view, _, _, error| {
+        if !cancelled_load(error) {
+            state.failed.set(true); state.pending.set(true); set_page_failed(view, true);
             tracing::warn!("web page load failed (network {:?}, domain {:?}); recovery pending", error.kind::<webkit6::NetworkError>(), error.domain());
         }
-        false
+        // Shared page health lets later action runners observe this failure
+        // even though the handled signal stops propagation. Suppress WebKit's
+        // alternate error document, whose load events look like a success.
+        true
     });
     let state = recovery.clone();
-    view.connect_web_process_terminated(move |_, reason| {
-        state.failed.set(true); state.pending.set(true);
+    view.connect_web_process_terminated(move |view, reason| {
+        state.failed.set(true); state.pending.set(true); set_page_failed(view, true);
         tracing::warn!("web process terminated ({reason:?}); recovery pending");
     });
     let weak = view.downgrade();

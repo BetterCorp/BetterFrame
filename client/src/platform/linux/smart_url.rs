@@ -18,6 +18,7 @@ struct Runner {
     auth_ready: Option<Readiness>,
     manual: bool,
     action_pauses: Cell<u32>,
+    page_failed: Cell<bool>,
     settled: RefCell<Option<(u64, String)>>,
     settling: RefCell<Option<(u64, String)>>,
 }
@@ -36,7 +37,7 @@ impl Readiness {
             return false;
         }
         let Some(runner) = self.0.upgrade() else { return true };
-        if runner.progress.borrow().is_running()
+        if super::web_policy::page_failed(webview) || runner.page_failed.get() || runner.progress.borrow().is_running()
             || runner.progress.borrow().has_failed()
             || runner.progress.borrow().is_cancelled()
         {
@@ -139,13 +140,19 @@ fn install_runner(webview: &webkit6::WebView, config: SmartUrlConfig, server_url
         kiosk_key: kiosk_key.into(),
         started: Instant::now(),
         completion: RefCell::new(completion), auth_ready, manual,
-        action_pauses: Cell::new(0),
+        action_pauses: Cell::new(0), page_failed: Cell::new(false),
         settled: RefCell::new(None), settling: RefCell::new(None),
     });
     let controller = Controller { runner: runner.clone(), webview: webview.downgrade(), handlers: RefCell::new(Vec::new()) };
     let state = runner.clone();
     let changed = webview.connect_load_changed(move |wv, event| match event {
         webkit6::LoadEvent::Started => {
+            let recovering = state.page_failed.replace(false) || super::web_policy::page_failed(wv);
+            if recovering && !state.manual && !state.progress.borrow().is_cancelled() {
+                state.progress.borrow_mut().reset_after_page_failure();
+                state.settled.replace(None);
+                state.settling.replace(None);
+            }
             let interrupted = state.progress.borrow_mut().load_started_for_steps(&state.config.steps, state.started.elapsed());
             if let Some(index) = interrupted {
                 finish(&state, Err(format!("Step {} interrupted by navigation", index + 1)));
@@ -156,16 +163,19 @@ fn install_runner(webview: &webkit6::WebView, config: SmartUrlConfig, server_url
     });
     let state = runner.clone();
     let failed = webview.connect_load_failed(move |_, _, _, error| {
-        if state.action_pauses.get() == 0 && !error.matches(webkit6::NetworkError::Cancelled)
-            && (state.manual || state.progress.borrow().is_running()) {
-            state.progress.borrow_mut().fail(state.started.elapsed());
-            finish(&state, Err("Page load failed".into()));
+        if state.action_pauses.get() == 0 && !super::web_policy::cancelled_load(error) {
+            state.page_failed.set(true);
+            if state.manual || state.progress.borrow().is_running() {
+                state.progress.borrow_mut().fail(state.started.elapsed());
+                finish(&state, Err("Page load failed".into()));
+            }
         }
         false
     });
 
     let state = runner.clone();
     let terminated = webview.connect_web_process_terminated(move |_, _| {
+        state.page_failed.set(true);
         if state.manual || state.progress.borrow().is_running() {
             state.progress.borrow_mut().fail(state.started.elapsed());
             finish(&state, Err("Web process terminated".into()));
@@ -218,7 +228,17 @@ fn install_runner(webview: &webkit6::WebView, config: SmartUrlConfig, server_url
 /// Recheck a loaded view after navigation, mapping, or a periodic timer.
 /// Loading and disposed views are skipped; an eligible flow advances one step.
 fn check_url(webview: &webkit6::WebView, runner: &Rc<Runner>) {
-    if webview.is_loading() || runner.progress.borrow().is_cancelled() || runner.action_pauses.get() > 0 {
+    if super::web_policy::page_failed(webview) {
+        if runner.action_pauses.get() == 0 {
+            runner.page_failed.set(true);
+            if runner.manual || runner.progress.borrow().is_running() {
+                runner.progress.borrow_mut().fail(runner.started.elapsed());
+                finish(runner, Err("Page load failed".into()));
+            }
+        }
+        return;
+    }
+    if runner.page_failed.get() || webview.is_loading() || runner.progress.borrow().is_cancelled() || runner.action_pauses.get() > 0 {
         return;
     }
     observe_url(webview, runner);
@@ -239,7 +259,7 @@ fn observe_url(webview: &webkit6::WebView, runner: &Runner) {
 /// Arm a future login transition after a completed non-login page stays settled.
 /// The delayed confirmation requires the same URL and document generation.
 fn confirm_settled_page(webview: &webkit6::WebView, runner: &Rc<Runner>) {
-    if runner.manual || runner.progress.borrow().is_running() || webview.is_loading() {
+    if runner.page_failed.get() || runner.manual || runner.progress.borrow().is_running() || webview.is_loading() {
         return;
     }
     let Some(url) = webview.uri() else { return };
@@ -258,7 +278,7 @@ fn confirm_settled_page(webview: &webkit6::WebView, runner: &Rc<Runner>) {
     let runner = runner.clone();
     glib::timeout_add_local_once(Duration::from_secs(1), move || {
         if let Some(wv) = weak.upgrade() {
-            if !wv.is_loading()
+            if !runner.page_failed.get() && !wv.is_loading()
                 && wv.uri().as_deref() == Some(candidate.1.as_str())
                 && runner.progress.borrow().generation() == candidate.0
                 && !runner.progress.borrow().is_running()
@@ -454,7 +474,10 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            Self::from_listener(TcpListener::bind("127.0.0.1:0").unwrap())
+        }
+
+        fn from_listener(listener: TcpListener) -> Self {
             listener.set_nonblocking(true).unwrap();
             let root = format!("http://{}", listener.local_addr().unwrap());
             let hits = Arc::new(Mutex::new(HashMap::<String, usize>::new()));
@@ -474,7 +497,18 @@ mod tests {
                     let Ok(length) = stream.read(&mut bytes) else {
                         continue;
                     };
-                    let request = String::from_utf8_lossy(&bytes[..length]);
+                    let mut request = String::from_utf8_lossy(&bytes[..length]).into_owned();
+                    if let Some(end) = request.find("\r\n\r\n") {
+                        let content_length = request[..end].lines().find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().ok()).flatten()
+                        }).unwrap_or(0);
+                        while request.len() < end + 4 + content_length {
+                            let Ok(count) = stream.read(&mut bytes) else { break };
+                            if count == 0 { break; }
+                            request.push_str(&String::from_utf8_lossy(&bytes[..count]));
+                        }
+                    }
                     let path = request
                         .split_whitespace()
                         .nth(1)
@@ -483,6 +517,11 @@ mod tests {
                         .next()
                         .unwrap_or("/");
                     *thread_hits.lock().unwrap().entry(path.into()).or_default() += 1;
+                    if path == "/post-window" {
+                        let method = request.split_whitespace().next().unwrap_or("");
+                        let body = request.split_once("\r\n\r\n").map(|(_,body)| body).unwrap_or("");
+                        *thread_hits.lock().unwrap().entry(format!("/post-window:{method}:{body}")).or_default() += 1;
+                    }
                     let (status, headers, body) = match path {
                         "/redirect" => ("302 Found", "Location: /lovelace/2\r\n", ""),
                         "/lovelace/2" => (
@@ -535,6 +574,7 @@ mod tests {
 
     impl Drop for Fixture {
         fn drop(&mut self) {
+            if std::thread::panicking() { eprintln!("Fixture requests: {:?}", self.hits.lock().unwrap()); }
             self.stop.store(true, Ordering::Relaxed);
             self.thread.take().unwrap().join().unwrap();
         }
@@ -551,11 +591,13 @@ mod tests {
         }
     }
 
+    #[track_caller]
     fn wait_until(ready: impl FnMut() -> bool) {
         wait_with_timeout(Duration::from_secs(20), ready);
     }
 
     /// Pump GTK while waiting for a browser condition, bounded by `timeout`.
+    #[track_caller]
     fn wait_with_timeout(timeout: Duration, mut ready: impl FnMut() -> bool) {
         let deadline = Instant::now() + timeout;
         while !ready() && Instant::now() < deadline {
@@ -601,6 +643,7 @@ mod tests {
             let view = web_policy::create(config, ephemeral);
             webkit6::prelude::WebViewExt::settings(&view).unwrap().set_enable_mock_capture_devices(true);
             web_policy::install(&view, config.clone(), Some(&fixture.root), &fixture.root, "test-key");
+            web_policy::install_recovery(&view);
             view.load_uri(&format!("{}/plain", fixture.root));
             row.append(&view);
             wait_until(|| view.is_mapped() && !view.is_loading() && view.uri().is_some());
@@ -616,8 +659,10 @@ mod tests {
         for index in 0..samples { wav.extend((if index % 20 < 10 { 2000i16 } else { -2000i16 }).to_le_bytes()); }
         let wav = base64::engine::general_purpose::STANDARD.encode(wav);
         let play = |view: &webkit6::WebView, label: &str| {
-            evaluate(view, &format!(r#"window.testAudio = new Audio('data:audio/wav;base64,{wav}');
-                testAudio.play().then(() => fetch('/{label}-ok'), error => fetch('/{label}-' + error.name));"#));
+            // Page-authored startup script: evaluate_javascript forces user
+            // activation and would invalidate an unattended-autoplay probe.
+            view.load_html(&format!(r#"<body><script>window.testAudio = new Audio('data:audio/wav;base64,{wav}');
+                testAudio.play().then(() => fetch('/{label}-ok'), error => fetch('/{label}-' + error.name));</script>"#), Some(&fixture.root));
         };
         for ephemeral in [false, true] {
             let view = make(&WebPermissions::default(), ephemeral);
@@ -644,6 +689,9 @@ mod tests {
             // A new window navigates the original block.
             evaluate(&view, "window.open('/new-window', '_blank');");
             wait_until(|| view.uri().is_some_and(|uri| uri.ends_with("/new-window")));
+            evaluate(&view, "document.body.innerHTML='<form method=post action=/post-window target=_blank><input name=token value=kept></form>'; document.querySelector('form').submit();");
+            wait_until(|| fixture.count("/post-window:POST:token=kept") >= if ephemeral { 2 } else { 1 });
+            assert_eq!(fixture.count("/post-window:GET:"),0,"new-window routing must retain form submissions");
             row.remove(&view);
         }
         let disabled = WebPermissions {audio:false,autoplay:false,..WebPermissions::default()};
@@ -678,6 +726,41 @@ mod tests {
         capture.set_visible(true);
         wait_until(|| fixture.count("/other-origin") == before + 1);
         row.remove(&capture);
+        // A real refused connection must remain failed until a visible retry
+        // reaches the recovered server. It must never release on-load actions.
+        let reserved = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = reserved.local_addr().unwrap();
+        let unavailable = format!("http://{address}");
+        drop(reserved);
+        let failed = web_policy::create(&WebPermissions::default(), false);
+        web_policy::install(&failed, WebPermissions::default(), Some(&unavailable), &fixture.root, "test-key");
+        let auth = super::install(&failed, serde_json::from_value(serde_json::json!({
+            "login_detect_url":"/auth","steps":[{"type":"click","selector":"#login"}],"session_check_interval_ms":0
+        })).unwrap(), &fixture.root, "test-key").unwrap();
+        let readiness = auth.readiness();
+        let actions = super::super::web_actions::Actions::new(&failed, serde_json::from_value(serde_json::json!({
+            "revision":"failure", "on_load":[{"type":"javascript", "script":format!("await fetch('{}/after-recovery');",fixture.root)}], "groups":{}
+        })).unwrap(), Some(readiness.clone()), &fixture.root, "test-key");
+        web_policy::install_recovery(&failed);
+        failed.load_uri(&format!("{unavailable}/outage"));
+        row.append(&failed);
+        wait_until(|| web_policy::page_failed(&failed) && !failed.is_loading());
+        pump(Duration::from_millis(1300));
+        assert!(!readiness.ready(&failed));
+        assert_eq!(fixture.count("/after-recovery"), 0, "a failed destination cannot run on-load steps");
+        failed.set_visible(false);
+        let starts = Rc::new(Cell::new(0));
+        let observed = starts.clone();
+        failed.connect_load_changed(move |_, event| { if event == webkit6::LoadEvent::Started { observed.set(observed.get()+1); } });
+        pump(Duration::from_secs(3));
+        assert_eq!(starts.get(),0,"hidden failed pages wait for activation");
+        let recovered = Fixture::from_listener(TcpListener::bind(address).unwrap());
+        failed.set_visible(true);
+        wait_until(|| recovered.count("/outage") >= 1 && !web_policy::page_failed(&failed) && !failed.is_loading());
+        wait_until(|| fixture.count("/after-recovery") == 1);
+        assert!(readiness.ready(&failed));
+        drop(actions);
+        row.remove(&failed);
         window.close();
         pump(Duration::from_millis(100));
     }
@@ -1077,6 +1160,7 @@ mod tests {
         login_wv.emit_by_name::<bool>("load-failed", &[&webkit6::LoadEvent::Started, &"about:blank", &error]);
         wait_until(|| result.borrow().is_some());
         assert!(result.borrow().as_ref().unwrap().is_err());
+        login_wv.load_uri(&format!("{}/done", fixture.root));
         wait_until(|| readiness.ready(&login_wv));
         drop(login_actions);
 

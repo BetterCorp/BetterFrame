@@ -3241,18 +3241,18 @@ fn heal_stalled_streams() {
 }
 
 fn load_webview_url(webview: &webkit6::WebView, url: &str, server_url: &str, kiosk_key: &str) {
-    if should_attach_kiosk_auth(url, server_url) {
-        // The trusted server exchanges the initial header for a host-only,
-        // HttpOnly cookie used by subsequent sub-resource requests.
-        let request = webkit6::URIRequest::new(url);
-        if let Some(headers) = request.http_headers() {
-            headers.append("Authorization", &format!("Bearer {kiosk_key}"));
-        }
-        webkit6::prelude::WebViewExt::load_request(webview, &request);
-        return;
-    }
+    load_webview_request(webview, &webkit6::URIRequest::new(url), server_url, kiosk_key);
+}
 
-    webkit6::prelude::WebViewExt::load_uri(webview, url);
+fn load_webview_request(webview: &webkit6::WebView, request: &webkit6::URIRequest, server_url: &str, kiosk_key: &str) {
+    if request.uri().is_some_and(|uri| should_attach_kiosk_auth(&uri, server_url)) {
+        // Preserve the method/body of new-window forms while attaching kiosk
+        // authentication only to the trusted server's display routes.
+        if let Some(headers) = request.http_headers() {
+            headers.replace("Authorization", &format!("Bearer {kiosk_key}"));
+        }
+    }
+    webkit6::prelude::WebViewExt::load_request(webview, request);
 }
 
 fn js_string_lit(s: &str) -> String {
@@ -3621,6 +3621,8 @@ fn ensure_web(
     let actions = event_meta.as_ref().and_then(|meta| meta.actions.clone()).map(|config|
         web_actions::Actions::new(&wv, config, smart_url.as_ref().map(|auth| auth.readiness()), server_url, kiosk_key));
 
+    // Initial runners observe failures first; shared health covers later groups.
+    web_policy::install_recovery(&wv);
     match source {
         WebSource::Html(html) => {
             webkit6::prelude::WebViewExt::load_html(&wv, html, None);

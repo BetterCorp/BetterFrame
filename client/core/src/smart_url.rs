@@ -77,6 +77,14 @@ impl SmartUrlProgress {
         self.retry_after = None;
     }
 
+    /// A transport/process failure requires fresh authentication on its reload.
+    /// Keep generations increasing so old document callbacks remain invalid.
+    pub fn reset_after_page_failure(&mut self) {
+        let generation = self.generation + 1;
+        *self = Self::default();
+        self.generation = generation;
+    }
+
     pub fn is_running(&self) -> bool {
         self.triggered && !self.complete && !self.failed && !self.cancelled
     }
@@ -227,6 +235,18 @@ mod tests {
         let granted = web_cell_key("d", "l", &cell);
         cell.web_permissions.as_mut().unwrap().microphone = false;
         assert_ne!(granted, web_cell_key("d", "l", &cell));
+    }
+
+    #[test]
+    fn page_recovery_restarts_auth_without_accepting_old_callbacks() {
+        let mut run = SmartUrlProgress::default();
+        run.observe_url("https://app.test/auth", Some("/auth"), Duration::ZERO);
+        let (_, old_generation) = run.take_step(2, Duration::ZERO).unwrap();
+        run.fail(Duration::ZERO);
+        run.reset_after_page_failure();
+        run.observe_url("https://app.test/auth", Some("/auth"), Duration::ZERO);
+        assert_eq!(run.take_step(2, Duration::ZERO).unwrap().0, 0);
+        assert!(!run.finish_step(old_generation, true, Duration::ZERO));
     }
 
     #[test]

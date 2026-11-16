@@ -163,6 +163,7 @@ test("PostgreSQL overlay migration and repository remain tenant scoped and survi
     const repo = new Repository(adapter, async () => {});
     await adapter.withSearchPath(schemas[0]!, async () => {
       await repo.saveOverlayTemplate(template);
+      await adapter.run("UPDATE layout_cells SET options = ?::jsonb WHERE id = ?", [JSON.stringify({ untouched: { nested: null }, rotation: 0 }), "block"]);
       const cell = await repo.getLayoutCellById("block");
       const app = new H3();
       registerOverlayRoutes(app, { repo } as never);
@@ -178,6 +179,8 @@ test("PostgreSQL overlay migration and repository remain tenant scoped and survi
       assert.deepEqual(await repo.getOverlayTemplate(template.id), template);
       await repo.saveOverlayTemplate({ ...template, html: "Updated {{progress}}" });
       assert.equal((await repo.listOverlayTemplates()).length, 1);
+      // Concurrent editors must preserve both keys while normalizing legacy JSON null.
+      await adapter.run("UPDATE layout_cells SET options = 'null'::jsonb WHERE id = ?", ["block"]);
     });
     // Separate connections edit independent keys on the same row concurrently.
     await Promise.all([
@@ -203,6 +206,57 @@ test("PostgreSQL overlay migration and repository remain tenant scoped and survi
     } finally { await reopened.close(); }
   } finally {
     for (const schema of schemas) await adapter.exec(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await adapter.close();
+  }
+});
+
+test("PostgreSQL overlay assignments and removals repair non-object block settings", { skip: !process.env["BF_TEST_PG_URL"] }, async () => {
+  const adapter = new PgAdapter(process.env["BF_TEST_PG_URL"]!);
+  const schema = "overlay_scalar_test_" + randomBytes(6).toString("hex");
+  const repo = new Repository(adapter, async () => {});
+  const originalCoordinator = getCoordinator();
+  setCoordinator({ ...originalCoordinator, notifyBundleChanged: () => {} });
+  try {
+    await adapter.exec(`CREATE SCHEMA ${schema}`);
+    await adapter.withSearchPath(schema, async () => {
+      await adapter.exec(TENANT_MIGRATIONS.find(sql => sql.startsWith("CREATE TABLE overlay_templates"))!);
+      await adapter.exec("CREATE TABLE simple_vms_groups (layout_id TEXT)");
+      await adapter.exec("CREATE TABLE layout_cells (id TEXT PRIMARY KEY, layout_id TEXT, options JSONB DEFAULT '{}')");
+      await repo.saveOverlayTemplate({ id: "template", name: "Printer", html: "<b>{{progress}}</b>", sample_data: {} });
+      const app = new H3();
+      registerOverlayRoutes(app, { repo } as never);
+      const post = (id: string, value: unknown) => app.request(`http://bf.test/admin/overlays/blocks/${id}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(value),
+      });
+      const shapes = [
+        { name: "json-null", stored: "null" }, { name: "sql-null", stored: null },
+        { name: "string", stored: '"legacy"' }, { name: "number", stored: "42" },
+        { name: "boolean", stored: "false" }, { name: "empty-array", stored: "[]" },
+        { name: "array", stored: '[{"old":true}]' },
+      ];
+      for (const { name, stored } of shapes) {
+        await adapter.run("INSERT INTO layout_cells(id, layout_id, options) VALUES (?, ?, ?::jsonb)", [name, "layout", stored]);
+        const assigned = await post(name, { template_id: "template", data: { progress: 25 } });
+        const page = await assigned.text();
+        assert.equal(assigned.status, 200, name);
+        assert.doesNotMatch(page, /cannot set path in scalar|path element.*integer/i, name);
+        assert.deepEqual((await repo.getLayoutCellById(name))?.options, {
+          overlay: { template_id: "template", data: { progress: 25 } },
+        }, name);
+        // The same atomic helper is used by the independent web-action editor.
+        await adapter.run("UPDATE layout_cells SET options = ?::jsonb WHERE id = ?", [stored, name]);
+        await repo.updateLayoutCellOption(name, "web_actions", { on_load: [], groups: {} });
+        assert.deepEqual((await repo.getLayoutCellById(name))?.options, { web_actions: { on_load: [], groups: {} } }, name);
+        // Removing an overlay must also recover malformed pre-existing settings.
+        await adapter.run("UPDATE layout_cells SET options = ?::jsonb WHERE id = ?", [stored, name]);
+        const removed = await post(name, { template_id: "", data: "unused" });
+        assert.doesNotMatch(await removed.text(), /cannot delete from scalar/i, name);
+        assert.deepEqual((await repo.getLayoutCellById(name))?.options, {}, name);
+      }
+    });
+  } finally {
+    setCoordinator(originalCoordinator);
+    await adapter.exec(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
     await adapter.close();
   }
 });

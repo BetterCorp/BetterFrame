@@ -697,6 +697,9 @@ mod tests {
             evaluate(&view, "document.body.innerHTML='<form method=post action=/post-window target=_blank><input name=token value=kept></form>'; document.querySelector('form').submit();");
             wait_until(|| fixture.count("/post-window:POST:token=kept") >= if ephemeral { 2 } else { 1 });
             assert_eq!(fixture.count("/post-window:GET:"),0,"new-window routing must retain form submissions");
+            super::super::load_webview_url(&view, &format!("{}/café?q=é", fixture.root), &fixture.root, "test-key");
+            wait_until(|| fixture.count("/caf%C3%A9") >= if ephemeral { 2 } else { 1 });
+            assert_eq!(fixture.count("/caf%C3%83%C2%A9"),0,"configured Unicode URLs must retain UTF-8 encoding");
             row.remove(&view);
         }
         let disabled = WebPermissions {audio:false,autoplay:false,..WebPermissions::default()};

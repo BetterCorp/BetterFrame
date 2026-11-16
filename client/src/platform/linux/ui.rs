@@ -3241,7 +3241,13 @@ fn heal_stalled_streams() {
 }
 
 fn load_webview_url(webview: &webkit6::WebView, url: &str, server_url: &str, kiosk_key: &str) {
-    load_webview_request(webview, &webkit6::URIRequest::new(url), server_url, kiosk_key);
+    // URIRequest's native constructor interprets raw bytes as Latin-1. The
+    // URL parser supplies IDNA hosts and UTF-8 percent-encoded paths/queries.
+    if let Ok(normalized) = Url::parse(url) {
+        load_webview_request(webview, &webkit6::URIRequest::new(normalized.as_str()), server_url, kiosk_key);
+    } else {
+        webkit6::prelude::WebViewExt::load_uri(webview, url);
+    }
 }
 
 fn load_webview_request(webview: &webkit6::WebView, request: &webkit6::URIRequest, server_url: &str, kiosk_key: &str) {

@@ -1,4 +1,5 @@
 use serde_json::Value;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OperatorFocusRequest {
@@ -10,8 +11,19 @@ pub struct OperatorFocusRequest {
     pub duration_seconds: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct WebActionRequest {
+    pub request_id: String,
+    pub display_id: String,
+    pub layout_id: String,
+    pub cell_id: String,
+    pub group: String,
+    pub revision: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerCommand {
+    WebAction(WebActionRequest),
     ReloadBundle,
     Standby(Option<String>),
     Wake(Option<String>),
@@ -42,6 +54,7 @@ pub fn decode(text: &str) -> Result<Option<ServerCommand>, serde_json::Error> {
     let message: Value = serde_json::from_str(text)?;
     let id = |name: &str| message.get(name).and_then(flexible_id);
     let command = match message.get("type").and_then(Value::as_str).unwrap_or("") {
+        "web-action" => ServerCommand::WebAction(serde_json::from_value(message)?),
         "reload-bundle" => ServerCommand::ReloadBundle,
         "standby" => ServerCommand::Standby(id("display_id")),
         "wake" => ServerCommand::Wake(id("display_id")),
@@ -155,5 +168,20 @@ mod tests {
             Some(ServerCommand::VolumeSet(100))
         );
         assert_eq!(decode(r#"{"type":"layout-switch"}"#).unwrap(), None);
+    }
+}
+
+
+#[cfg(test)]
+mod web_action_tests {
+    use super::*;
+    #[test]
+    fn decodes_bound_groups_and_rejects_missing_binding_fields() {
+        let mut message = serde_json::json!({"type":"web-action","request_id":"request","display_id":"d","layout_id":"l","cell_id":"c","group":"custom","revision":"rev"});
+        let Some(ServerCommand::WebAction(action)) = decode(&message.to_string()).unwrap() else { panic!("missing action") };
+        assert_eq!(action.cell_id, "c");
+        assert_eq!(action.group, "custom");
+        message.as_object_mut().unwrap().remove("revision");
+        assert!(decode(&message.to_string()).is_err());
     }
 }

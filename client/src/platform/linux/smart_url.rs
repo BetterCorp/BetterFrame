@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -14,15 +14,85 @@ struct Runner {
     server_url: String,
     kiosk_key: String,
     started: Instant,
+    completion: RefCell<Option<Box<dyn FnOnce(Result<(), String>)>>>,
+    auth_ready: Option<Readiness>,
+    manual: bool,
+    action_pauses: Cell<u32>,
+    settled: RefCell<Option<(u64, String)>>,
+    settling: RefCell<Option<(u64, String)>>,
 }
 
-pub(super) struct Controller(Rc<Runner>);
-
-impl Controller {
-    /// Permanently cancel this view's auth flow, including delayed callbacks.
-    pub(super) fn stop(&self) {
-        self.0.progress.borrow_mut().cancel();
+#[derive(Clone)]
+pub(super) struct Readiness(std::rc::Weak<Runner>);
+impl Readiness {
+    pub(super) fn pause_for_actions(&self, webview: &webkit6::WebView) -> Option<AuthPause> {
+        let runner = self.0.upgrade()?;
+        runner.action_pauses.set(runner.action_pauses.get().saturating_add(1));
+        Some(AuthPause { runner: self.0.clone(), webview: webview.downgrade() })
     }
+
+    pub(super) fn ready(&self, webview: &webkit6::WebView) -> bool {
+        if webview.is_loading() {
+            return false;
+        }
+        let Some(runner) = self.0.upgrade() else { return true };
+        if runner.progress.borrow().is_running()
+            || runner.progress.borrow().has_failed()
+            || runner.progress.borrow().is_cancelled()
+        {
+            return false;
+        }
+        let Some(url) = webview.uri() else { return false };
+        if runner.config.login_detect_url.as_deref().is_some_and(|prefix| login_url_matches(&url, prefix)) {
+            return false;
+        }
+        // A healthy-looking destination can still redirect to login after its
+        // Finished event. Share the same settled-document check used to arm auth.
+        confirm_settled_page(webview, &runner);
+        let candidate = (runner.progress.borrow().generation(), url.to_string());
+        let ready = runner.settled.borrow().as_ref() == Some(&candidate);
+        ready
+    }
+}
+
+/// An accepted group owns the page until completion. Entity login resumes on
+/// the next idle callback, including when periodic session checks are disabled.
+pub(super) struct AuthPause {
+    runner: std::rc::Weak<Runner>,
+    webview: glib::WeakRef<webkit6::WebView>,
+}
+impl Drop for AuthPause {
+    fn drop(&mut self) {
+        let Some(runner) = self.runner.upgrade() else { return };
+        runner.action_pauses.set(runner.action_pauses.get().saturating_sub(1));
+        let weak = self.webview.clone();
+        glib::idle_add_local_once(move || {
+            if let Some(view) = weak.upgrade() {
+                check_url(&view, &runner);
+            }
+        });
+    }
+}
+
+pub(super) struct Controller {
+    runner: Rc<Runner>,
+    webview: glib::WeakRef<webkit6::WebView>,
+    handlers: RefCell<Vec<glib::SignalHandlerId>>,
+}
+impl Controller {
+    pub(super) fn stop(&self) {
+        self.runner.progress.borrow_mut().cancel();
+        if let Some(webview) = self.webview.upgrade() {
+            for handler in self.handlers.borrow_mut().drain(..) { webview.disconnect(handler); }
+        }
+        finish(&self.runner, Err("View disposed".into()));
+    }
+    pub(super) fn readiness(&self) -> Readiness { Readiness(Rc::downgrade(&self.runner)) }
+    pub(super) fn is_finished(&self) -> bool { self.runner.completion.borrow().is_none() }
+}
+fn finish(runner: &Runner, result: Result<(), String>) {
+    let callback = runner.completion.borrow_mut().take();
+    if let Some(callback) = callback { callback(result); }
 }
 
 impl Drop for Controller {
@@ -47,24 +117,48 @@ pub(super) fn install(
     {
         return None;
     }
+    Some(install_runner(webview, config, server_url, kiosk_key, None, None))
+}
+
+pub(super) fn run_sequence(webview: &webkit6::WebView, steps: Vec<SmartUrlStep>, server_url: &str,
+    kiosk_key: &str, auth_ready: Option<Readiness>, done: impl FnOnce(Result<(), String>) + 'static) -> Controller {
+    let config = SmartUrlConfig { steps, login_detect_url: None, session_check_interval_ms: Some(100) };
+    let controller = install_runner(webview, config, server_url, kiosk_key, auth_ready, Some(Box::new(done)));
+    controller.runner.progress.borrow_mut().start_sequence();
+    drive(webview, &controller.runner);
+    controller
+}
+
+fn install_runner(webview: &webkit6::WebView, config: SmartUrlConfig, server_url: &str, kiosk_key: &str,
+    auth_ready: Option<Readiness>, completion: Option<Box<dyn FnOnce(Result<(), String>)>>) -> Controller {
+    let manual = completion.is_some();
     let runner = Rc::new(Runner {
         config,
         progress: RefCell::new(SmartUrlProgress::default()),
         server_url: server_url.into(),
         kiosk_key: kiosk_key.into(),
         started: Instant::now(),
+        completion: RefCell::new(completion), auth_ready, manual,
+        action_pauses: Cell::new(0),
+        settled: RefCell::new(None), settling: RefCell::new(None),
     });
-    let controller = Controller(runner.clone());
+    let controller = Controller { runner: runner.clone(), webview: webview.downgrade(), handlers: RefCell::new(Vec::new()) };
     let state = runner.clone();
-    webview.connect_load_changed(move |wv, event| match event {
-        webkit6::LoadEvent::Started => state.progress.borrow_mut().load_started(),
+    let changed = webview.connect_load_changed(move |wv, event| match event {
+        webkit6::LoadEvent::Started => {
+            let interrupted = state.progress.borrow_mut().load_started_for_steps(&state.config.steps, state.started.elapsed());
+            if let Some(index) = interrupted {
+                finish(&state, Err(format!("Step {} interrupted by navigation", index + 1)));
+            }
+        }
         webkit6::LoadEvent::Finished => check_url(wv, &state),
         _ => {}
     });
     let state = runner.clone();
-    webview.connect_load_failed(move |_, _, _, error| {
-        if !error.matches(webkit6::NetworkError::Cancelled) {
+    let failed = webview.connect_load_failed(move |_, _, _, error| {
+        if state.action_pauses.get() == 0 && !error.matches(webkit6::NetworkError::Cancelled) {
             state.progress.borrow_mut().fail(state.started.elapsed());
+            finish(&state, Err("Page load failed".into()));
         }
         false
     });
@@ -72,7 +166,7 @@ pub(super) fn install(
     // A warm view can return to the screen without navigation or another
     // Finished signal. Defer outside GTK's map signal: the pool may be borrowed.
     let state = runner.clone();
-    webview.connect_map(move |wv| {
+    let mapped = webview.connect_map(move |wv| {
         let weak = wv.downgrade();
         let state = state.clone();
         glib::idle_add_local_once(move || {
@@ -87,11 +181,11 @@ pub(super) fn install(
     // Active sequences and redirect chains never start overlapping attempts.
     let interval = runner.config.session_check_interval_ms.unwrap_or(5000);
     if interval > 0
-        && runner
+        && (manual || runner
             .config
             .login_detect_url
             .as_deref()
-            .is_some_and(|s| !s.trim().is_empty())
+            .is_some_and(|s| !s.trim().is_empty()))
     {
         let weak = webview.downgrade();
         glib::timeout_add_local(
@@ -100,7 +194,7 @@ pub(super) fn install(
                 let Some(wv) = weak.upgrade() else {
                     return glib::ControlFlow::Break;
                 };
-                if runner.progress.borrow().is_cancelled() {
+                if runner.progress.borrow().is_cancelled() || (runner.manual && runner.completion.borrow().is_none()) {
                     return glib::ControlFlow::Break;
                 }
                 check_url(&wv, &runner);
@@ -108,13 +202,14 @@ pub(super) fn install(
             },
         );
     }
-    Some(controller)
+    *controller.handlers.borrow_mut() = vec![changed, failed, mapped];
+    controller
 }
 
 /// Recheck a loaded view after navigation, mapping, or a periodic timer.
 /// Loading and disposed views are skipped; an eligible flow advances one step.
 fn check_url(webview: &webkit6::WebView, runner: &Rc<Runner>) {
-    if webview.is_loading() || runner.progress.borrow().is_cancelled() {
+    if webview.is_loading() || runner.progress.borrow().is_cancelled() || runner.action_pauses.get() > 0 {
         return;
     }
     observe_url(webview, runner);
@@ -135,29 +230,37 @@ fn observe_url(webview: &webkit6::WebView, runner: &Runner) {
 /// Arm a future login transition after a completed non-login page stays settled.
 /// The delayed confirmation requires the same URL and document generation.
 fn confirm_settled_page(webview: &webkit6::WebView, runner: &Rc<Runner>) {
-    if !runner.progress.borrow().is_complete() {
+    if runner.manual || runner.progress.borrow().is_running() || webview.is_loading() {
         return;
     }
-    let Some(url) = webview.uri() else {
-        return;
-    };
+    let Some(url) = webview.uri() else { return };
     let prefix = runner.config.login_detect_url.as_deref().unwrap_or("");
     if login_url_matches(&url, prefix) {
         return;
     }
-    let generation = runner.progress.borrow().generation();
+    let candidate = (runner.progress.borrow().generation(), url.to_string());
+    if runner.settled.borrow().as_ref() == Some(&candidate)
+        || runner.settling.borrow().as_ref() == Some(&candidate)
+    {
+        return;
+    }
+    runner.settling.replace(Some(candidate.clone()));
     let weak = webview.downgrade();
     let runner = runner.clone();
-    // Client-side redirects can report Finished for an intermediate page.
-    // Never arm retries until the final non-login URL has actually settled.
     glib::timeout_add_local_once(Duration::from_secs(1), move || {
         if let Some(wv) = weak.upgrade() {
             if !wv.is_loading()
-                && wv.uri().as_ref() == Some(&url)
-                && runner.progress.borrow().generation() == generation
+                && wv.uri().as_deref() == Some(candidate.1.as_str())
+                && runner.progress.borrow().generation() == candidate.0
+                && !runner.progress.borrow().is_running()
+                && !runner.progress.borrow().is_cancelled()
             {
+                runner.settled.replace(Some(candidate.clone()));
                 runner.progress.borrow_mut().confirm_authenticated();
             }
+        }
+        if runner.settling.borrow().as_ref() == Some(&candidate) {
+            runner.settling.replace(None);
         }
     });
 }
@@ -165,14 +268,14 @@ fn confirm_settled_page(webview: &webkit6::WebView, runner: &Rc<Runner>) {
 /// Dispatch at most one eligible step, then wait for its callback or navigation.
 /// Completion and failure use the same monotonic clock as periodic auth checks.
 fn drive(webview: &webkit6::WebView, runner: &Rc<Runner>) {
-    if webview.is_loading() {
-        return;
-    }
+    if webview.is_loading() || runner.progress.borrow().is_cancelled() || runner.action_pauses.get() > 0
+        || runner.auth_ready.as_ref().is_some_and(|ready| !ready.ready(webview)) { return; }
     let next = runner
         .progress
         .borrow_mut()
         .take_step(runner.config.steps.len(), runner.started.elapsed());
     let Some((index, generation)) = next else {
+        if runner.progress.borrow().is_complete() { finish(runner, Ok(())); }
         confirm_settled_page(webview, runner);
         return;
     };
@@ -211,6 +314,7 @@ fn drive(webview: &webkit6::WebView, runner: &Rc<Runner>) {
             });
         } else {
             runner.progress.borrow_mut().fail(runner.started.elapsed());
+            finish(runner, Err(format!("Step {}: invalid navigation", index + 1)));
             tracing::warn!(
                 "smart URL step {} has an invalid navigation target",
                 index + 1
@@ -240,8 +344,9 @@ fn drive(webview: &webkit6::WebView, runner: &Rc<Runner>) {
                     runner.started.elapsed(),
                 ) {
                     drive(&wv, &runner);
-                } else if !success && !wv.is_loading() {
+                } else if !success && !wv.is_loading() && runner.progress.borrow().generation() == generation {
                     // Never log scripts, field values, or URLs containing tokens.
+                    finish(&runner, Err(format!("Step {} failed", index + 1)));
                     tracing::warn!("smart URL step {} did not complete", index + 1);
                 }
             });
@@ -387,6 +492,11 @@ mod tests {
                             };
                         </script>"#,
                         ),
+                        "/delayed-redirect" => (
+                            "200 OK", "",
+                            "<script>setTimeout(() => location.href='/auth/authorize?delayed=1', 350)</script>",
+                        ),
+                        "/recovery-form" => ("200 OK", "", "<input id=recovered value=kept>"),
                         "/done" => ("200 OK", "", "<div id='done'>Dashboard</div>"),
                         _ => (
                             "200 OK",
@@ -715,6 +825,232 @@ mod tests {
         );
         assert_eq!(fixture.count("/edited"), 1);
         assert_eq!(fixture.count("/stay-run"), 1);
+        super::super::purge_obsolete_webviews(&HashSet::new());
+        // Generic groups run after entity login; user-authored groups are never
+        // implicitly paired or compensated when a block becomes hidden.
+        let mut generic = cell(&fixture, "actions", serde_json::json!([
+            {"type":"navigate","url":"/auth/form"},
+            {"type":"fill","selector":"#username","value":"person@example.test"},
+            {"type":"click","selector":"#login"},
+            {"type":"wait_for","selector":"#done"}
+        ]));
+        generic.web_url = Some(format!("{}/delayed-redirect", fixture.root));
+        let (_, action_wv) = browser(&generic);
+        let readiness = super::super::WARM_WEBVIEWS.with(|pool| pool.borrow().values()
+            .find(|entry| entry.webview == action_wv).unwrap().smart_url.as_ref().unwrap().readiness());
+        let config = serde_json::from_value(serde_json::json!({"revision":"r1",
+            "on_load":[{"type":"javascript","script":"if (!document.querySelector('#done')) { await fetch('/premature-on-load'); throw new Error('not authenticated'); } await fetch('/on-load');"}],
+            "groups":{"custom":[{"type":"javascript","script":"await fetch('/custom');"}],
+                "deferred":[{"type":"wait","delay_ms":300},{"type":"javascript","script":"await fetch('/deferred');"}],
+                "navigate":[{"type":"navigate","url":"/done"},{"type":"wait_for","selector":"#done"},{"type":"javascript","script":"await fetch('/group-navigation');"}],
+                "failure":[{"type":"javascript","script":"throw new Error('failed');"},{"type":"javascript","script":"await fetch('/should-not-run');"}]}
+        })).unwrap();
+        let actions = super::super::web_actions::Actions::new(&action_wv, config, Some(readiness.clone()), "http://frame.invalid", "test-key");
+        row.append(&action_wv);
+        wait_until(|| fixture.count("/on-load") == 1);
+        assert!(action_wv.uri().unwrap().ends_with("/done"));
+        assert_eq!(fixture.count("/premature-on-load"), 0, "on-load waits through asynchronous login redirects");
+        let result = Rc::new(RefCell::new(None));
+        let completed = result.clone();
+        assert!(actions.invoke("custom", "r1", move |r| { completed.replace(Some(r)); }).is_ok());
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok());
+        assert_eq!(fixture.count("/custom"), 1);
+        assert!(actions.invoke("custom", "outdated", |_| panic!("stale action ran")).is_err());
+        result.replace(None);
+        let completed = result.clone();
+        actions.invoke("navigate", "r1", move |r| { completed.replace(Some(r)); }).unwrap();
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok());
+        assert_eq!(fixture.count("/group-navigation"), 1);
+        wait_until(|| readiness.ready(&action_wv));
+        result.replace(None);
+        let completed = result.clone();
+        actions.invoke("failure", "r1", move |r| { completed.replace(Some(r)); }).unwrap();
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_err());
+        assert_eq!(fixture.count("/should-not-run"), 0);
+        result.replace(None);
+        let completed = result.clone();
+        actions.invoke("deferred", "r1", move |r| { completed.replace(Some(r)); }).unwrap();
+        action_wv.set_visible(false);
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok());
+        assert_eq!(fixture.count("/deferred"), 1, "accepted groups continue as authored in a cached block");
+        assert!(actions.invoke("custom", "r1", |_| panic!("hidden action ran")).is_err());
+        pump(Duration::from_millis(400));
+        assert_eq!(fixture.count("/custom"), 1, "hiding the block performs no custom actions");
+        action_wv.set_visible(true);
+        wait_until(|| fixture.count("/on-load") == 2);
+        assert_eq!(fixture.count("/custom"), 1, "on-load never replays named groups");
+        drop(actions);
+
+        // An interrupted wait must fail, including when it is the last step.
+        for (kind, last) in [("wait", false), ("wait_for", false), ("wait_for", true)] {
+            let mut steps = serde_json::json!([
+                {"type":kind,"selector":"#never-present","delay_ms":10000,"timeout_ms":10000}
+            ]).as_array().unwrap().clone();
+            if !last {
+                steps.push(serde_json::json!({"type":"javascript","script":"await fetch('/after-interrupted-wait');"}));
+            }
+            result.replace(None);
+            let completed = result.clone();
+            let job = run_sequence(&action_wv, serde_json::from_value(serde_json::Value::Array(steps)).unwrap(),
+                "http://frame.invalid", "test-key", None, move |r| { completed.replace(Some(r)); });
+            pump(Duration::from_millis(150));
+            action_wv.load_uri(&format!("{}/done?interrupt={kind}-{last}", fixture.root));
+            wait_until(|| result.borrow().is_some() && !action_wv.is_loading());
+            assert!(result.borrow().as_ref().unwrap().is_err());
+            assert!(job.is_finished());
+            assert_eq!(fixture.count("/after-interrupted-wait"), 0);
+        }
+
+        // Missing encrypted values are unavailable, never implicit blank fills.
+        evaluate(&action_wv, "document.body.insertAdjacentHTML('beforeend', '<input id=keep-value value=kept>');");
+        result.replace(None);
+        let completed = result.clone();
+        let missing_fill = run_sequence(&action_wv, serde_json::from_value(serde_json::json!([
+            {"type":"fill","selector":"#keep-value"}
+        ])).unwrap(), "http://frame.invalid", "test-key", None, move |r| { completed.replace(Some(r)); });
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_err());
+        evaluate(&action_wv, "if (document.querySelector('#keep-value').value !== 'kept') throw new Error('field changed');");
+        drop(missing_fill);
+
+        // Invocation readiness must not gate the inside of a user-authored group.
+        let mut login_path = cell(&fixture, "login-path", serde_json::json!([
+            {"type":"navigate","url":"/done"},
+            {"type":"javascript","script":"await fetch('/entity-login-path');"}
+        ]));
+        login_path.web_url = Some(format!("{}/healthy-group", fixture.root));
+        login_path.smart_url.as_mut().unwrap().session_check_interval_ms = Some(0);
+        let (_, login_wv) = browser(&login_path);
+        let readiness = super::super::WARM_WEBVIEWS.with(|pool| pool.borrow().values()
+            .find(|entry| entry.webview == login_wv).unwrap().smart_url.as_ref().unwrap().readiness());
+        let login_actions = super::super::web_actions::Actions::new(&login_wv,
+            serde_json::from_value(serde_json::json!({"revision":"login-path", "on_load":[],
+                "groups":{"custom":[{"type":"navigate","url":"/auth/manual"},
+                    {"type":"wait_for","selector":"#page"},
+                    {"type":"javascript","script":"await fetch('/group-under-login');"},
+                    {"type":"navigate","url":"/done"}],
+                    "leave_login":[{"type":"navigate","url":"/auth/manual"},{"type":"wait","delay_ms":200},
+                        {"type":"javascript","script":"await fetch('/group-left-at-login');"}]}})).unwrap(),
+            Some(readiness.clone()), "http://frame.invalid", "test-key");
+        row.append(&login_wv);
+        wait_until(|| readiness.ready(&login_wv));
+        result.replace(None);
+        let completed = result.clone();
+        login_actions.invoke("custom", "login-path", move |r| { completed.replace(Some(r)); }).unwrap();
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok());
+        assert_eq!(fixture.count("/group-under-login"), 1);
+        wait_until(|| readiness.ready(&login_wv));
+        result.replace(None);
+        let completed = result.clone();
+        login_actions.invoke("custom", "login-path", move |r| { completed.replace(Some(r)); }).unwrap();
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok());
+        assert_eq!(fixture.count("/group-under-login"), 2, "the block is not left busy");
+        assert_eq!(fixture.count("/entity-login-path"), 0, "entity login cannot navigate during an accepted group");
+        wait_until(|| readiness.ready(&login_wv));
+        result.replace(None);
+        let completed = result.clone();
+        login_actions.invoke("leave_login", "login-path", move |r| { completed.replace(Some(r)); }).unwrap();
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok());
+        assert_eq!(fixture.count("/group-left-at-login"), 1);
+        wait_until(|| fixture.count("/entity-login-path") == 1 && readiness.ready(&login_wv));
+        result.replace(None);
+        let completed = result.clone();
+        login_actions.invoke("leave_login", "login-path", move |r| { completed.replace(Some(r)); }).unwrap();
+        // Signal a group-owned load error before its first navigation completes.
+        let error = glib::Error::new(gio::IOErrorEnum::Failed, "Fixture group load failure");
+        login_wv.emit_by_name::<bool>("load-failed", &[&webkit6::LoadEvent::Started, &"about:blank", &error]);
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_err());
+        wait_until(|| readiness.ready(&login_wv));
+        drop(login_actions);
+
+        let failed_auth = cell(&fixture, "failed-auth", serde_json::json!([
+            {"type":"navigate","url":"/done"},
+            {"type":"javascript","script":"throw new Error('incomplete login');"}
+        ]));
+        let (_, failed_wv) = browser(&failed_auth);
+        let readiness = super::super::WARM_WEBVIEWS.with(|pool| pool.borrow().values()
+            .find(|entry| entry.webview == failed_wv).unwrap().smart_url.as_ref().unwrap().readiness());
+        let failed_actions = super::super::web_actions::Actions::new(&failed_wv,
+            serde_json::from_value(serde_json::json!({"revision":"failed",
+                "on_load":[{"type":"javascript","script":"await fetch('/after-failed-auth');"}],"groups":{}})).unwrap(),
+            Some(readiness), "http://frame.invalid", "test-key");
+        row.append(&failed_wv);
+        wait_until(|| !failed_wv.is_loading() && failed_wv.uri().is_some_and(|url| url.ends_with("/done")));
+        pump(Duration::from_secs(2));
+        assert_eq!(fixture.count("/after-failed-auth"), 0, "failed entity authentication never releases on-load actions");
+        drop(failed_actions);
+
+        // A cached view must recover resolved action values without remapping.
+        // Changing only an unreadable nonce must preserve an in-flight group.
+        let recovery_key = "recovered-action-values".to_string();
+        let mut recovery_cell: crate::bundle::BundleCell = serde_json::from_value(serde_json::json!({
+            "view_id":"recovered", "row":0,"col":0,"row_span":1,"col_span":1,"content_type":"html",
+            "web_actions":{"revision":"recovery", "on_load":[], "groups":{
+                "fill":[{"type":"fill","selector":"#recovered","value_encrypted":"unreadable-nonce-one"}],
+                "deferred":[{"type":"wait","delay_ms":1500},{"type":"javascript","script":"document.body.dataset.completed='yes';"}]}}
+        })).unwrap();
+        let recovery_meta = |cell: &crate::bundle::BundleCell| super::super::WebEventMeta {
+            server_url: fixture.root.clone(), kiosk_key:"test-key".into(), tenant_slug:"default".into(),
+            kiosk_id:"test".into(), display_id:"display".into(), view_id:cell.view_id.clone(), entity_id:None,
+            actions:super::super::resolved_web_actions(cell),
+        };
+        let recovery_html = "<input id=recovered value=kept>";
+        let recovered_wv = super::super::ensure_web(recovery_key.clone(), super::super::WebSource::Html(recovery_html),
+            &fixture.root, "test-key", None, None, Some(recovery_meta(&recovery_cell)));
+        row.append(&recovered_wv);
+        wait_until(|| recovered_wv.is_mapped() && !recovered_wv.is_loading());
+        result.replace(None);
+        let completed = result.clone();
+        super::super::WARM_WEBVIEWS.with(|pool| pool.borrow().get(&recovery_key).unwrap().actions.as_ref().unwrap()
+            .invoke("deferred", "recovery", move |r| { completed.replace(Some(r)); })).unwrap();
+        pump(Duration::from_millis(100));
+        recovery_cell.web_actions.as_mut().unwrap().groups.get_mut("fill").unwrap()[0].value_encrypted = Some("unreadable-nonce-two".into());
+        assert_eq!(super::super::ensure_web(recovery_key.clone(), super::super::WebSource::Html(recovery_html),
+            &fixture.root, "test-key", None, None, Some(recovery_meta(&recovery_cell))), recovered_wv);
+        recovery_cell.web_actions.as_mut().unwrap().groups.get_mut("fill").unwrap()[0].value = Some("restored".into());
+        assert_eq!(super::super::ensure_web(recovery_key.clone(), super::super::WebSource::Html(recovery_html),
+            &fixture.root, "test-key", None, None, Some(recovery_meta(&recovery_cell))), recovered_wv);
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok(), "nonce and resolved-value updates preserve accepted groups");
+        result.replace(None);
+        let completed = result.clone();
+        super::super::WARM_WEBVIEWS.with(|pool| pool.borrow().get(&recovery_key).unwrap().actions.as_ref().unwrap()
+            .invoke("fill", "recovery", move |r| { completed.replace(Some(r)); })).unwrap();
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok(), "the cached controller receives newly resolved values");
+        evaluate(&recovered_wv, "if (document.querySelector('#recovered').value !== 'restored') throw new Error('stale actions');");
+
+        // Updating resolved values while auth is pending must retain on-load work.
+        let mut pending = cell(&fixture, "pending-recovery", serde_json::json!([
+            {"type":"wait_for","selector":"#login-ready"},
+            {"type":"navigate","url":"/recovery-form"}
+        ]));
+        pending.web_url = Some(format!("{}/auth/pending-recovery", fixture.root));
+        pending.web_actions = Some(serde_json::from_value(serde_json::json!({"revision":"pending", "on_load":[
+            {"type":"fill","selector":"#recovered"},
+            {"type":"javascript","script":"await fetch('/pending-on-load-complete');"}], "groups":{}})).unwrap());
+        let pending_key = super::super::web_cell_key("display", "layout", &pending);
+        let pending_wv = super::super::ensure_web(pending_key.clone(),
+            super::super::WebSource::Url(pending.web_url.as_deref().unwrap()), &fixture.root, "test-key",
+            None, pending.smart_url.as_ref(), Some(recovery_meta(&pending)));
+        row.append(&pending_wv);
+        wait_until(|| pending_wv.is_mapped() && !pending_wv.is_loading());
+        assert_eq!(fixture.count("/pending-on-load-complete"), 0);
+        pending.web_actions.as_mut().unwrap().on_load[0].value = Some("pending-restored".into());
+        assert_eq!(super::super::ensure_web(pending_key,
+            super::super::WebSource::Url(pending.web_url.as_deref().unwrap()), &fixture.root, "test-key",
+            None, pending.smart_url.as_ref(), Some(recovery_meta(&pending))), pending_wv);
+        evaluate(&pending_wv, "document.body.insertAdjacentHTML('beforeend', '<input id=login-ready>');");
+        wait_until(|| fixture.count("/pending-on-load-complete") == 1);
+        evaluate(&pending_wv, "if (document.querySelector('#recovered').value !== 'pending-restored') throw new Error('pending on-load lost');");
         super::super::purge_obsolete_webviews(&HashSet::new());
         window.close();
     }

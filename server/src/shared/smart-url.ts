@@ -1,14 +1,14 @@
 import { smartUrlConfig, type SmartUrlConfig } from "../schemas/wire/smart-url.js";
 
 /** Parse the entity's step builder, including gaps left by deleted rows. */
-export function smartUrlFormDraft(body: Record<string, string>): SmartUrlConfig {
+export function smartUrlStepsDraft(body: Record<string, string>, prefix = "step") {
   const indices = Object.keys(body).flatMap((key) => {
-    const match = /^step_(\d+)_type$/.exec(key);
+    const match = new RegExp(`^${prefix}_(\\d+)_type$`).exec(key);
     return match ? [Number(match[1])] : [];
   }).sort((a, b) => a - b);
   const steps = indices.map((index) => {
-    const type = body[`step_${index}_type`]!;
-    const value = body[`step_${index}_value`] ?? "";
+    const type = body[`${prefix}_${index}_type`]!;
+    const value = body[`${prefix}_${index}_value`] ?? "";
     if (type === "navigate") return { type, url: value };
     if (type === "fill") {
       // Attribute selectors commonly contain '=' (input[name="username"]).
@@ -30,6 +30,11 @@ export function smartUrlFormDraft(body: Record<string, string>): SmartUrlConfig 
     if (type === "javascript") return { type, script: value };
     return { type, selector: value };
   });
+  return steps;
+}
+
+export function smartUrlFormDraft(body: Record<string, string>): SmartUrlConfig {
+  const steps = smartUrlStepsDraft(body);
   return { steps, login_detect_url: (body["smart_url_login_detect"] ?? "").trim() } as SmartUrlConfig;
 }
 

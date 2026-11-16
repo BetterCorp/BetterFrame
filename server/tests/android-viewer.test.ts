@@ -38,6 +38,7 @@ function fixture() {
     listEntities: async () => { throw new Error("operator content accessed"); },
   };
   const secrets = {
+    deriveKey: () => Buffer.alloc(32, 9),
     encryptForCluster: (value: string) => `encrypted:${value}`,
     encryptString: (value: string) => Buffer.from(value).toString("base64url"),
     decryptString: (value: string) => value === "token" ? "signage-token" : Buffer.from(value, "base64url").toString(),

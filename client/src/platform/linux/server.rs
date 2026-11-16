@@ -617,7 +617,7 @@ pub fn initiate_pairing(server: &str) -> Result<PairInitiateResponse, String> {
             "proposed_name": hostname,
             "hardware_model": hw_model,
             "firmware_target": crate::firmware::FIRMWARE_TARGET,
-            "capabilities": ["rtsp", "gstreamer", "gtk4"],
+            "capabilities": ["rtsp", "gstreamer", "gtk4", "web-action-groups-v1"],
             "managed_image": std::path::Path::new("/etc/betterframe/managed-image").is_file(),
             "secure_claim": true
         }))
@@ -994,6 +994,7 @@ pub fn heartbeat(
     let network_interfaces = read_network_interfaces();
     let managed_report = MANAGED_CONFIG_REPORT.lock().ok().and_then(|g| g.clone());
     let mut payload = serde_json::json!({
+        "capabilities": ["rtsp", "gstreamer", "gtk4", "web-action-groups-v1"],
         "trusted_ca_status": match load_trusted_cas() {
             Ok(cas) => crate::linux_trusted_cas::sync(&cas),
             Err(error) => crate::trusted_cas::load_error(error),
@@ -1664,4 +1665,13 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+}
+
+
+pub fn report_web_action_result(server: &str, key: &str, request: &crate::core::commands::WebActionRequest, result: Result<(), String>) {
+    let _ = crate::network::blocking_client().post(format!("{server}/api/kiosk/web-actions/result"))
+        .header("Authorization", format!("Bearer {key}"))
+        .json(&serde_json::json!({ "request_id": request.request_id, "display_id": request.display_id,
+            "cell_id": request.cell_id, "group": request.group, "ok": result.is_ok(), "error": result.err() }))
+        .timeout(Duration::from_secs(10)).send();
 }

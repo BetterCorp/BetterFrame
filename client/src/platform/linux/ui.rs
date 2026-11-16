@@ -1,5 +1,7 @@
 #[path = "smart_url.rs"]
 mod smart_url;
+#[path = "web_actions.rs"]
+mod web_actions;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -126,6 +128,7 @@ type PoolKey = (String, char);
 /// page state, JS execution, and avoids a full reload.
 struct WebEntry {
     smart_url: Option<smart_url::Controller>,
+    actions: Option<web_actions::Actions>,
     webview: webkit6::WebView,
     state: WarmthState,
     cooling_until: Option<Instant>,
@@ -146,6 +149,7 @@ struct WebEventMeta {
     display_id: String,
     view_id: Option<String>,
     entity_id: Option<String>,
+    actions: Option<crate::bundle::WebActions>,
 }
 
 thread_local! {
@@ -471,6 +475,7 @@ fn activate(app: &Application) {
         std::thread::spawn(move || {
             for msg in ws_rx {
                 match msg {
+                    ServerMsg::WebAction(request) => { let _ = tx_for_reload.send(WorkerMsg::WebAction(request)); }
                     ServerMsg::ReloadBundle => {
                         info!("reloading bundle");
                         match server::fetch_bundle(&server_for_reload, &key_for_reload) {
@@ -633,6 +638,7 @@ fn activate(app: &Application) {
     gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         while let Ok(msg) = rx.try_recv() {
             match msg {
+                WorkerMsg::WebAction(request) => invoke_web_action(request),
                 WorkerMsg::StartupStatus(action) => {
                     show_startup_status(&pairing_window_clone, &action)
                 }
@@ -683,6 +689,7 @@ fn activate(app: &Application) {
 }
 
 pub enum WorkerMsg {
+    WebAction(crate::core::commands::WebActionRequest),
     StartupStatus(String),
     ReadyStartupStatus(String),
     ShowPairingCode(String),
@@ -1620,6 +1627,9 @@ fn render_comparison_bundle(bundle: &KioskBundle, decrypt_key: Option<&str>) -> 
         .chain(comparable.layouts.iter_mut())
     {
         for cell in &mut layout.cells {
+            if let Some(actions) = &mut cell.web_actions {
+                for step in actions.on_load.iter_mut().chain(actions.groups.values_mut().flatten()) { normalize(&mut step.value_encrypted); }
+            }
             if let Some(smart) = &mut cell.smart_url {
                 for step in &mut smart.steps {
                     normalize(&mut step.value_encrypted);
@@ -2456,6 +2466,7 @@ fn apply_operator_overrides(display_id: &str, layout: &mut crate::bundle::Bundle
             cooling_timeout_seconds: None,
             fit: "cover".to_string(),
             smart_url: None,
+            web_actions: None,
             local_storage: None,
             input_options: None,
         });
@@ -3366,6 +3377,22 @@ fn resolved_smart_config(cell: &BundleCell) -> Option<crate::bundle::SmartUrlCon
     Some(config)
 }
 
+fn resolved_web_actions(cell: &BundleCell) -> Option<crate::bundle::WebActions> {
+    let mut config = cell.web_actions.clone()?;
+    let key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
+    for step in config.on_load.iter_mut().chain(config.groups.values_mut().flatten()) {
+        if step.value.is_none() {
+            if let Some(value) = step.value_encrypted.as_ref().and_then(|encrypted| key.as_deref().and_then(|key| onvif_events::decrypt_cluster_public(encrypted,key))) {
+                step.value = Some(value);
+            }
+        }
+        // Runtime controllers compare resolved values; nonce changes cannot
+        // replace a controller, including while a key remains unavailable.
+        step.value_encrypted = None;
+    }
+    Some(config)
+}
+
 fn web_cell_key(display_id: &str, layout_id: &str, cell: &BundleCell) -> WebKey {
     let mut comparable = cell.clone();
     comparable.smart_url = resolved_smart_config(cell);
@@ -3387,6 +3414,43 @@ fn web_event_meta(
         display_id: display_id.to_string(),
         view_id: cell.view_id.clone(),
         entity_id: cell.entity_id.clone(),
+        actions: resolved_web_actions(cell),
+    }
+}
+
+fn report_web_action(request: crate::core::commands::WebActionRequest, result: Result<(), String>) {
+    tracing::info!("web action {} {}: {}", request.request_id, request.group,
+        result.as_ref().err().map(String::as_str).unwrap_or("completed"));
+    let auth = CURRENT_AUTH.with(|auth| auth.borrow().clone());
+    if let Some((server, key)) = auth {
+        std::thread::spawn(move || server::report_web_action_result(&server, &key, &request, result));
+    }
+}
+
+fn invoke_web_action(request: crate::core::commands::WebActionRequest) {
+    let keys = DISPLAYS.with(|displays| {
+        let displays = displays.borrow();
+        let display = displays.get(&request.display_id).ok_or("Display not found")?;
+        if display.current_layout_id.as_deref() != Some(request.layout_id.as_str()) {
+            return Err("Layout is not active");
+        }
+        Ok(display.web_positions.iter().map(|position| position.key.clone()).collect::<Vec<_>>())
+    });
+    let result = keys.map_err(str::to_string).and_then(|keys| WARM_WEBVIEWS.with(|pool| {
+        let pool = pool.borrow();
+        let entry = keys.iter().filter_map(|key| pool.get(key)).find(|entry| {
+            entry.event_meta.as_ref().is_some_and(|meta| {
+                meta.view_id.as_deref() == Some(request.cell_id.as_str())
+            })
+        }).ok_or("Block is not active")?;
+        let actions = entry.actions.as_ref().ok_or("Block has no web action groups")?;
+        let completed_request = request.clone();
+        actions.invoke(&request.group, &request.revision, move |result| {
+            report_web_action(completed_request, result);
+        })
+    }));
+    if let Err(error) = result {
+        report_web_action(request, Err(error));
     }
 }
 
@@ -3439,6 +3503,20 @@ fn ensure_web(
             if let Some(e) = m.borrow_mut().get_mut(&key) {
                 if e.event_meta != event_meta {
                     e.last_reported_url = None;
+                }
+                if e.event_meta.as_ref().map(|meta| (&meta.actions, &meta.server_url, &meta.kiosk_key))
+                    != event_meta.as_ref().map(|meta| (&meta.actions, &meta.server_url, &meta.kiosk_key))
+                {
+                    if let Some(config) = event_meta.as_ref().and_then(|meta| meta.actions.clone()) {
+                        if let Some(actions) = &e.actions {
+                            actions.update(config, server_url, kiosk_key);
+                        } else {
+                            e.actions = Some(web_actions::Actions::new(&wv, config,
+                                e.smart_url.as_ref().map(|auth| auth.readiness()), server_url, kiosk_key));
+                        }
+                    } else {
+                        e.actions = None;
+                    }
                 }
                 e.event_meta = event_meta.clone();
                 if e.state == WarmthState::Cooling {
@@ -3536,6 +3614,8 @@ fn ensure_web(
     }
 
     let smart_url = smart_config.and_then(|config| smart_url::install(&wv, config.clone(), server_url, kiosk_key));
+    let actions = event_meta.as_ref().and_then(|meta| meta.actions.clone()).map(|config|
+        web_actions::Actions::new(&wv, config, smart_url.as_ref().map(|auth| auth.readiness()), server_url, kiosk_key));
 
     match source {
         WebSource::Html(html) => {
@@ -3550,6 +3630,7 @@ fn ensure_web(
             key.clone(),
             WebEntry {
                 smart_url,
+                actions,
                 webview: wv.clone(),
                 state: WarmthState::Warm,
                 cooling_until: None,

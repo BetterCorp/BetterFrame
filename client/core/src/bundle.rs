@@ -188,6 +188,8 @@ pub struct BundleCell {
     pub fit: String,
     #[serde(default)]
     pub smart_url: Option<SmartUrlConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_actions: Option<WebActions>,
     #[serde(default)]
     pub local_storage: Option<std::collections::HashMap<String, String>>,
     #[serde(default)]
@@ -207,7 +209,16 @@ pub struct SmartUrlConfig {
     pub session_check_interval_ms: Option<u32>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct WebActions {
+    pub revision: String,
+    #[serde(default)]
+    pub on_load: Vec<SmartUrlStep>,
+    #[serde(default)]
+    pub groups: std::collections::BTreeMap<String, Vec<SmartUrlStep>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SmartUrlStep {
     #[serde(rename = "type")]
     pub step_type: String,

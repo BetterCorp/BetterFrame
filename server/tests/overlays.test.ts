@@ -48,7 +48,11 @@ function fixture() {
     saveOverlayTemplate: async (template: any) => { templates.set(template.id, template); },
     deleteOverlayTemplate: async (id: string) => { templates.delete(id); },
     getLayoutCellById: async (id: string) => cells.get(id) ?? null,
-    updateLayoutCell: async (id: string, patch: any) => { cells.set(id, { ...cells.get(id), ...patch }); },
+    updateLayoutCellOption: async (id: string, key: string, value: unknown) => {
+      const cell=cells.get(id), options={...cell.options};
+      if (value == null) delete options[key]; else options[key]=value;
+      cells.set(id,{...cell,options});
+    },
   };
   const app = new H3();
   registerOverlayRoutes(app, { repo } as never);
@@ -174,6 +178,18 @@ test("PostgreSQL overlay migration and repository remain tenant scoped and survi
       assert.deepEqual(await repo.getOverlayTemplate(template.id), template);
       await repo.saveOverlayTemplate({ ...template, html: "Updated {{progress}}" });
       assert.equal((await repo.listOverlayTemplates()).length, 1);
+    });
+    // Separate connections edit independent keys on the same row concurrently.
+    await Promise.all([
+      adapter.withSearchPath(schemas[0]!, () => repo.updateLayoutCellOption("block", "web_actions", {on_load:[],groups:{custom:[]}})),
+      adapter.withSearchPath(schemas[0]!, () => repo.updateLayoutCellOption("block", "overlay", {template_id:template.id,data:{progress:42}})),
+    ]);
+    await adapter.withSearchPath(schemas[0]!, async () => {
+      assert.deepEqual((await repo.getLayoutCellById("block"))?.options, {
+        web_actions:{on_load:[],groups:{custom:[]}},overlay:{template_id:template.id,data:{progress:42}},
+      });
+      await repo.updateLayoutCellOption("block", "web_actions", null);
+      assert.deepEqual((await repo.getLayoutCellById("block"))?.options, {overlay:{template_id:template.id,data:{progress:42}}});
     });
     await adapter.withSearchPath(schemas[1]!, async () => {
       assert.equal(await repo.getOverlayTemplate(template.id), null);

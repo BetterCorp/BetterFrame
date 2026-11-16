@@ -7,9 +7,9 @@ import { EntityEditPage, EntityNewPage, renderCellSidebar } from "../src/web-tem
 import { registerAdminRoutes } from "../src/plugins/service-admin-http/routes-admin.js";
 
 const auth = { login_detect_url: "/auth", steps: [{ type: "fill" as const, selector: "#username", value: "person=example" }] };
-function fixture() {
+export function fixture() {
   const entity = { id: "entity", name: "Home Assistant", type: "web", web_url: "http://ha/lovelace/2", smart_url_json: structuredClone(auth), input_options_json: {} };
-  const cells = [0, 1].map((col) => ({ id: `block${col}`, entity_id: "entity", content_type: "web", web_url: entity.web_url, row: 0, col, row_span: 1, col_span: 1, options: { smart_url: { steps: [{ type: "navigate", url: "http://wrong" }] } } }));
+  const cells = [0, 1].map((col) => ({ id: `block${col}`, layout_id: "layout", entity_id: "entity", content_type: "web", web_url: entity.web_url, row: 0, col, row_span: 1, col_span: 1, options: { smart_url: { steps: [{ type: "navigate", url: "http://wrong" }] } } }));
   let nonce = 0;
   const repo = {
     adapter: { all: async () => [], get: async () => undefined, withSearchPath: async (_: string, fn: () => unknown) => fn() },
@@ -22,7 +22,7 @@ function fixture() {
     listCameraDevices: async () => [], listGpioBindings: async () => [], trustedCasForKiosk: async () => [], releaseStaleEventOwnership: async () => {},
     getEntityById: async () => entity, listEntities: async () => [entity],
   };
-  const secrets = { encryptForCluster: (value: string) => `cipher-${++nonce}:${value}` };
+  const secrets = { deriveKey: () => Buffer.alloc(32, 9), encryptForCluster: (value: string) => `cipher-${++nonce}:${value}` };
   return { entity, cells, repo, secrets };
 }
 

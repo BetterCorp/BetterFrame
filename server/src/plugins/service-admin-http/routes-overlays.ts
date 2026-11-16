@@ -81,7 +81,7 @@ export function registerOverlayRoutes(app: H3, deps: AdminDeps): void {
         renderOverlay(template.html, data);
         options["overlay"] = { template_id, data };
       } else delete options["overlay"];
-      await deps.repo.updateLayoutCell(cell.id, { options });
+      await deps.repo.updateLayoutCellOption(cell.id, "overlay", options["overlay"] ?? null);
       getCoordinator().notifyBundleChanged();
       return htmlFragment(BlockOverlayEditor({ cell: { ...cell, options }, templates: await deps.repo.listOverlayTemplates(), saved: true }));
     } catch (cause) {
@@ -101,7 +101,7 @@ export function registerOverlayRoutes(app: H3, deps: AdminDeps): void {
       const body = await readBody<Record<string, unknown>>(event);
       const data = parseData(body?.["data"]);
       renderOverlay(template.html, data);
-      await deps.repo.updateLayoutCell(cell.id, { options: { ...cell.options, overlay: { template_id: template.id, data } } });
+      await deps.repo.updateLayoutCellOption(cell.id, "overlay", { template_id: template.id, data });
       getCoordinator().notifyBundleChanged();
       return json({ overlay: { template_id: template.id, data } });
     } catch (cause) { return failure(cause); }

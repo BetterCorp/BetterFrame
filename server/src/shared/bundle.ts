@@ -1,3 +1,4 @@
+import { bundleWebActions, type BundleWebActions } from "./web-actions.js";
 import { simpleVmsViewerCredentials, reconcileSimpleVmsAssignments, simpleVmsCamerasForKiosk } from "./simple-vms.js";
 import { simpleVmsStreamUri } from "./simple-vms-schema.js";
 import { simpleVmsLayoutAllowed } from "./simple-vms-access.js";
@@ -8,7 +9,7 @@ import { blockOverlay, createOverlayBatchRenderer, overlayPlaybackDocument } fro
  * kiosk → enabled displays → layouts/cells plus operate-label cameras.
  */
 import type { BundleTrustedCa } from "./trusted-cas.js";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import type { Observable } from "@bsb/base";
 import type { Repository } from "./db/repository.js";
 import type { SecretsApi } from "./secrets.js";
@@ -84,6 +85,7 @@ export interface BundleCamera {
 }
 
 export interface BundleCell {
+  web_actions?: BundleWebActions;
   overlay_html?: string;
   view_id: string;
   entity_id: string | null;
@@ -284,7 +286,7 @@ export async function generateBundle(
 
   function encryptForBundle(plaintext: string, key: string, stableContext: string): string {
     const ciphertext = secrets.encryptForCluster(plaintext, key);
-    stableEncryptedValues.set(ciphertext, stableSecretFingerprint(stableContext, plaintext));
+    stableEncryptedValues.set(ciphertext, stableSecretFingerprint(secrets.deriveKey("bundle:secret-fingerprint:v1"), stableContext, plaintext));
     return ciphertext;
   }
 
@@ -296,13 +298,30 @@ export async function generateBundle(
       steps: raw.steps.map((source) => {
         const step = { ...source };
         const key = kioskEncryptKey ?? clusterKey;
-        if (step.value != null && step.type === "fill" && key) {
-          step.value_encrypted = encryptForBundle(step.value, key, `smart-url:entity:${ent.id}:${String(step.selector ?? "")}`);
+        if (step.value != null && step.type === "fill") {
+          if (key) step.value_encrypted = encryptForBundle(step.value, key, `smart-url:entity:${ent.id}:${String(step.selector ?? "")}`);
           delete step.value;
         }
         return step;
       }),
     };
+  }
+
+  function cellWebActions(cell: import("./types.js").LayoutCell, entity: Entity | null): BundleWebActions | undefined {
+    if (viewer) return undefined;
+    const config = bundleWebActions(cell, entity, secrets);
+    if (!config) return undefined;
+    const key = kioskEncryptKey ?? clusterKey;
+    const encryptSteps = (steps: typeof config.on_load) => steps.map(source => {
+      const step = { ...source };
+      if (step.type === "fill" && step.value != null) {
+        if (key) step.value_encrypted = encryptForBundle(step.value, key, `web-action:${cell.id}:${step.selector ?? ""}`);
+        delete step.value;
+      }
+      return step;
+    });
+    return { revision: config.revision, on_load: encryptSteps(config.on_load),
+      groups: Object.fromEntries(Object.entries(config.groups).map(([name,steps]) => [name,encryptSteps(steps)])) };
   }
 
   async function resolveEntityContent(ent: Entity): Promise<{
@@ -368,12 +387,14 @@ export async function generateBundle(
         let cellLocalStorage: Record<string, string> | undefined;
         let cellInputOptions: Record<string, unknown> | undefined = c.input_options_json;
         let cellSmartUrl: BundleCell["smart_url"];
+        let actionEntity: Entity | null = null;
         let cameraId = c.camera_id;
         let webUrl = c.web_url;
         let htmlContent = c.html_content;
         if (c.entity_id != null) {
           const ent = await repo.getEntityById(c.entity_id);
           if (ent) {
+            actionEntity = ent;
             const resolved = await resolveEntityContent(ent);
             contentType = resolved.contentType;
             cameraId = resolved.cameraId;
@@ -414,6 +435,7 @@ export async function generateBundle(
           fit: c.fit,
           // Blocks cannot override entity authentication.
           smart_url: cellSmartUrl,
+          web_actions: cellWebActions(c, actionEntity),
           local_storage: cellLocalStorage,
           input_options: cellInputOptions,
         };
@@ -423,7 +445,7 @@ export async function generateBundle(
           if (ent) {
             // Entity fullscreen views have no originating block. Keep block data
             // and click/hold actions out of their reusable virtual cells.
-            const { overlay_html: _blockOverlay, ...entityCell } = bundleCell;
+            const { overlay_html: _blockOverlay, web_actions: _blockActions, ...entityCell } = bundleCell;
             const { events: _cellEvents, ...fullscreenInputOptions } =
               (bundleCell.input_options ?? {}) as Record<string, unknown>;
             virtualLayouts.set(c.entity_id, {
@@ -761,8 +783,8 @@ function stripDisplayKioskPrefix(displayName: string, kioskName: string): string
   return displayName.startsWith(prefix) ? displayName.slice(prefix.length) : displayName;
 }
 
-function stableSecretFingerprint(context: string, plaintext: string): string {
-  return `secret:${createHash("sha256").update(context).update("\0").update(plaintext).digest("hex")}`;
+function stableSecretFingerprint(key: Buffer, context: string, plaintext: string): string {
+  return `secret:${createHmac("sha256", key).update(context).update("\0").update(plaintext).digest("hex")}`;
 }
 
 function stableBundleForVersion(value: unknown, encryptedValues: Map<string, string>): unknown {

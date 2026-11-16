@@ -64,3 +64,12 @@ test("every entity block receives the same permissions; edits update the bundle 
   Object.assign(f.secrets,{decryptString:()=>"cluster"});
   assert.ok((await make())!.displays.every(d=>d.layouts.every(l=>l.cells.every(c=>c.web_permissions===undefined))));
 });
+
+
+test("operator-only entities retain permissions even without a layout block", async () => {
+  const f=fixture();
+  f.repo.listEntities=async()=>[{...f.entity,id:"operator-only",web_permissions_json:{audio:false,camera:true}}];
+  const bundle=(await generateBundle(f.repo as never,f.secrets as never,"kiosk","cluster"))!;
+  const cell=bundle.displays[0]!.layouts.find(l=>l.id==="operator-only")!.cells[0]!;
+  assert.deepEqual(cell.web_permissions,resolveWebPermissions({audio:false,camera:true}));
+});

@@ -521,6 +521,7 @@ export async function generateBundle(
           cooling_timeout_seconds: null,
           fit: "contain",
           smart_url: entitySmartUrl(ent),
+          web_permissions: resolveWebPermissions(ent.web_permissions_json),
           local_storage: resolved.localStorage,
           input_options: viewer ? undefined : ent.input_options_json,
         }],

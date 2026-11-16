@@ -569,17 +569,19 @@ mod tests {
     fn evaluate(webview: &webkit6::WebView, script: &str) {
         let result = Rc::new(RefCell::new(None));
         let output = result.clone();
+        // WebKit cannot serialize a returned Promise. Fixture scripts report
+        // asynchronous outcomes through HTTP hits; return undefined instead.
         webview.evaluate_javascript(
-            script,
+            &format!("{script}\n;void 0;"),
             None,
             None,
             None::<&gio::Cancellable>,
             move |value| {
-                *output.borrow_mut() = Some(value.is_ok());
+                *output.borrow_mut() = Some(value.map(|_| ()).map_err(|error| error.to_string()));
             },
         );
         wait_until(|| result.borrow().is_some());
-        assert_eq!(*result.borrow(), Some(true), "fixture script failed");
+        assert_eq!(*result.borrow(), Some(Ok(())), "fixture script failed: {}", script.chars().take(100).collect::<String>());
     }
 
     /// Real WebKit media decisions, visibility and window restrictions on localhost.
@@ -669,7 +671,7 @@ mod tests {
         // Failure recovery waits until a layout is visible and reloads its page.
         capture.set_visible(false);
         let before = fixture.count("/other-origin");
-        capture.emit_by_name::<()>("web-process-terminated", &[&webkit6::WebProcessTerminationReason::Crashed]);
+        capture.terminate_web_process();
         pump(Duration::from_secs(3));
         assert_eq!(fixture.count("/other-origin"), before);
         capture.set_visible(true);

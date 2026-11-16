@@ -84,7 +84,7 @@ jobs:
       - name: Install native client dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwebkitgtk-6.0-dev libssl-dev xvfb xauth dbus-x11 pulseaudio gstreamer1.0-plugins-good
+          sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwebkitgtk-6.0-dev libssl-dev xvfb xauth dbus-x11 pulseaudio gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
       - run: cargo test --manifest-path client/Cargo.toml --workspace --locked
       - name: Overlay updates preserve base content
         # This fixture-only harness loads static local HTML. Hosted Ubuntu runners

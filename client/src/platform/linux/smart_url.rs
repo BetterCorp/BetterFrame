@@ -597,7 +597,7 @@ mod tests {
         window.present();
         let make = |config: &WebPermissions, ephemeral: bool| {
             let view = web_policy::create(config, ephemeral);
-            view.settings().unwrap().set_enable_mock_capture_devices(true);
+            webkit6::prelude::WebViewExt::settings(&view).unwrap().set_enable_mock_capture_devices(true);
             web_policy::install(&view, config.clone(), Some(&fixture.root), &fixture.root, "test-key");
             view.load_uri(&format!("{}/plain", fixture.root));
             row.append(&view);

@@ -11,7 +11,7 @@ pub(super) fn create(config: &WebPermissions, ephemeral: bool) -> webkit6::WebVi
     let view = if ephemeral {
         builder.network_session(&webkit6::NetworkSession::new_ephemeral()).build()
     } else { builder.build() };
-    if let Some(settings) = view.settings() {
+    if let Some(settings) = webkit6::prelude::WebViewExt::settings(&view) {
         settings.set_enable_media(true);
         settings.set_enable_media_stream(true);
         settings.set_media_playback_requires_user_gesture(!config.autoplay);
@@ -42,7 +42,7 @@ pub(super) fn install(view: &webkit6::WebView, config: WebPermissions, source: O
         let (kind, allowed) = if let Some(media) = request.downcast_ref::<webkit6::UserMediaPermissionRequest>() {
             let audio = media.is_for_audio_device();
             let video = media.is_for_video_device();
-            let display = webkit6::user_media_permission_is_for_display_device(media);
+            let display = webkit6::functions::user_media_permission_is_for_display_device(media);
             ("media capture", !display && (audio || video) && (!audio || config.microphone) && (!video || config.camera))
         } else if request.is::<webkit6::GeolocationPermissionRequest>() { ("location", config.location) }
         else if request.is::<webkit6::NotificationPermissionRequest>() { ("notifications", config.notifications) }

@@ -3507,9 +3507,16 @@ fn ensure_web(
                 if e.event_meta.as_ref().map(|meta| (&meta.actions, &meta.server_url, &meta.kiosk_key))
                     != event_meta.as_ref().map(|meta| (&meta.actions, &meta.server_url, &meta.kiosk_key))
                 {
-                    e.actions = event_meta.as_ref().and_then(|meta| meta.actions.clone()).map(|config| {
-                        web_actions::Actions::new(&wv, config, e.smart_url.as_ref().map(|auth| auth.readiness()), server_url, kiosk_key)
-                    });
+                    if let Some(config) = event_meta.as_ref().and_then(|meta| meta.actions.clone()) {
+                        if let Some(actions) = &e.actions {
+                            actions.update(config, server_url, kiosk_key);
+                        } else {
+                            e.actions = Some(web_actions::Actions::new(&wv, config,
+                                e.smart_url.as_ref().map(|auth| auth.readiness()), server_url, kiosk_key));
+                        }
+                    } else {
+                        e.actions = None;
+                    }
                 }
                 e.event_meta = event_meta.clone();
                 if e.state == WarmthState::Cooling {

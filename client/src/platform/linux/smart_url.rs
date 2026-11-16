@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,7 @@ struct Runner {
     completion: RefCell<Option<Box<dyn FnOnce(Result<(), String>)>>>,
     auth_ready: Option<Readiness>,
     manual: bool,
+    action_pauses: Cell<u32>,
     settled: RefCell<Option<(u64, String)>>,
     settling: RefCell<Option<(u64, String)>>,
 }
@@ -24,6 +25,12 @@ struct Runner {
 #[derive(Clone)]
 pub(super) struct Readiness(std::rc::Weak<Runner>);
 impl Readiness {
+    pub(super) fn pause_for_actions(&self, webview: &webkit6::WebView) -> Option<AuthPause> {
+        let runner = self.0.upgrade()?;
+        runner.action_pauses.set(runner.action_pauses.get().saturating_add(1));
+        Some(AuthPause { runner: self.0.clone(), webview: webview.downgrade() })
+    }
+
     pub(super) fn ready(&self, webview: &webkit6::WebView) -> bool {
         if webview.is_loading() {
             return false;
@@ -45,6 +52,25 @@ impl Readiness {
         let candidate = (runner.progress.borrow().generation(), url.to_string());
         let ready = runner.settled.borrow().as_ref() == Some(&candidate);
         ready
+    }
+}
+
+/// An accepted group owns the page until completion. Entity login resumes on
+/// the next idle callback, including when periodic session checks are disabled.
+pub(super) struct AuthPause {
+    runner: std::rc::Weak<Runner>,
+    webview: glib::WeakRef<webkit6::WebView>,
+}
+impl Drop for AuthPause {
+    fn drop(&mut self) {
+        let Some(runner) = self.runner.upgrade() else { return };
+        runner.action_pauses.set(runner.action_pauses.get().saturating_sub(1));
+        let weak = self.webview.clone();
+        glib::idle_add_local_once(move || {
+            if let Some(view) = weak.upgrade() {
+                check_url(&view, &runner);
+            }
+        });
     }
 }
 
@@ -113,6 +139,7 @@ fn install_runner(webview: &webkit6::WebView, config: SmartUrlConfig, server_url
         kiosk_key: kiosk_key.into(),
         started: Instant::now(),
         completion: RefCell::new(completion), auth_ready, manual,
+        action_pauses: Cell::new(0),
         settled: RefCell::new(None), settling: RefCell::new(None),
     });
     let controller = Controller { runner: runner.clone(), webview: webview.downgrade(), handlers: RefCell::new(Vec::new()) };
@@ -182,7 +209,7 @@ fn install_runner(webview: &webkit6::WebView, config: SmartUrlConfig, server_url
 /// Recheck a loaded view after navigation, mapping, or a periodic timer.
 /// Loading and disposed views are skipped; an eligible flow advances one step.
 fn check_url(webview: &webkit6::WebView, runner: &Rc<Runner>) {
-    if webview.is_loading() || runner.progress.borrow().is_cancelled() {
+    if webview.is_loading() || runner.progress.borrow().is_cancelled() || runner.action_pauses.get() > 0 {
         return;
     }
     observe_url(webview, runner);
@@ -241,7 +268,7 @@ fn confirm_settled_page(webview: &webkit6::WebView, runner: &Rc<Runner>) {
 /// Dispatch at most one eligible step, then wait for its callback or navigation.
 /// Completion and failure use the same monotonic clock as periodic auth checks.
 fn drive(webview: &webkit6::WebView, runner: &Rc<Runner>) {
-    if webview.is_loading() || runner.progress.borrow().is_cancelled()
+    if webview.is_loading() || runner.progress.borrow().is_cancelled() || runner.action_pauses.get() > 0
         || runner.auth_ready.as_ref().is_some_and(|ready| !ready.ready(webview)) { return; }
     let next = runner
         .progress
@@ -469,6 +496,7 @@ mod tests {
                             "200 OK", "",
                             "<script>setTimeout(() => location.href='/auth/authorize?delayed=1', 350)</script>",
                         ),
+                        "/recovery-form" => ("200 OK", "", "<input id=recovered value=kept>"),
                         "/done" => ("200 OK", "", "<div id='done'>Dashboard</div>"),
                         _ => (
                             "200 OK",
@@ -891,6 +919,7 @@ mod tests {
 
         // Invocation readiness must not gate the inside of a user-authored group.
         let mut login_path = cell(&fixture, "login-path", serde_json::json!([
+            {"type":"navigate","url":"/done"},
             {"type":"javascript","script":"await fetch('/entity-login-path');"}
         ]));
         login_path.web_url = Some(format!("{}/healthy-group", fixture.root));
@@ -903,7 +932,9 @@ mod tests {
                 "groups":{"custom":[{"type":"navigate","url":"/auth/manual"},
                     {"type":"wait_for","selector":"#page"},
                     {"type":"javascript","script":"await fetch('/group-under-login');"},
-                    {"type":"navigate","url":"/done"}]}})).unwrap(),
+                    {"type":"navigate","url":"/done"}],
+                    "leave_login":[{"type":"navigate","url":"/auth/manual"},{"type":"wait","delay_ms":200},
+                        {"type":"javascript","script":"await fetch('/group-left-at-login');"}]}})).unwrap(),
             Some(readiness.clone()), "http://frame.invalid", "test-key");
         row.append(&login_wv);
         wait_until(|| readiness.ready(&login_wv));
@@ -920,6 +951,15 @@ mod tests {
         wait_until(|| result.borrow().is_some());
         assert!(result.borrow().as_ref().unwrap().is_ok());
         assert_eq!(fixture.count("/group-under-login"), 2, "the block is not left busy");
+        assert_eq!(fixture.count("/entity-login-path"), 0, "entity login cannot navigate during an accepted group");
+        wait_until(|| readiness.ready(&login_wv));
+        result.replace(None);
+        let completed = result.clone();
+        login_actions.invoke("leave_login", "login-path", move |r| { completed.replace(Some(r)); }).unwrap();
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok());
+        assert_eq!(fixture.count("/group-left-at-login"), 1);
+        wait_until(|| fixture.count("/entity-login-path") == 1 && readiness.ready(&login_wv));
         drop(login_actions);
 
         let failed_auth = cell(&fixture, "failed-auth", serde_json::json!([
@@ -966,11 +1006,11 @@ mod tests {
         recovery_cell.web_actions.as_mut().unwrap().groups.get_mut("fill").unwrap()[0].value_encrypted = Some("unreadable-nonce-two".into());
         assert_eq!(super::super::ensure_web(recovery_key.clone(), super::super::WebSource::Html(recovery_html),
             &fixture.root, "test-key", None, None, Some(recovery_meta(&recovery_cell))), recovered_wv);
-        wait_until(|| result.borrow().is_some());
-        assert!(result.borrow().as_ref().unwrap().is_ok(), "nonce changes preserve the current controller");
         recovery_cell.web_actions.as_mut().unwrap().groups.get_mut("fill").unwrap()[0].value = Some("restored".into());
         assert_eq!(super::super::ensure_web(recovery_key.clone(), super::super::WebSource::Html(recovery_html),
             &fixture.root, "test-key", None, None, Some(recovery_meta(&recovery_cell))), recovered_wv);
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_ok(), "nonce and resolved-value updates preserve accepted groups");
         result.replace(None);
         let completed = result.clone();
         super::super::WARM_WEBVIEWS.with(|pool| pool.borrow().get(&recovery_key).unwrap().actions.as_ref().unwrap()
@@ -978,6 +1018,30 @@ mod tests {
         wait_until(|| result.borrow().is_some());
         assert!(result.borrow().as_ref().unwrap().is_ok(), "the cached controller receives newly resolved values");
         evaluate(&recovered_wv, "if (document.querySelector('#recovered').value !== 'restored') throw new Error('stale actions');");
+
+        // Updating resolved values while auth is pending must retain on-load work.
+        let mut pending = cell(&fixture, "pending-recovery", serde_json::json!([
+            {"type":"wait_for","selector":"#login-ready"},
+            {"type":"navigate","url":"/recovery-form"}
+        ]));
+        pending.web_url = Some(format!("{}/auth/pending-recovery", fixture.root));
+        pending.web_actions = Some(serde_json::from_value(serde_json::json!({"revision":"pending", "on_load":[
+            {"type":"fill","selector":"#recovered"},
+            {"type":"javascript","script":"await fetch('/pending-on-load-complete');"}], "groups":{}})).unwrap());
+        let pending_key = super::super::web_cell_key("display", "layout", &pending);
+        let pending_wv = super::super::ensure_web(pending_key.clone(),
+            super::super::WebSource::Url(pending.web_url.as_deref().unwrap()), &fixture.root, "test-key",
+            None, pending.smart_url.as_ref(), Some(recovery_meta(&pending)));
+        row.append(&pending_wv);
+        wait_until(|| pending_wv.is_mapped() && !pending_wv.is_loading());
+        assert_eq!(fixture.count("/pending-on-load-complete"), 0);
+        pending.web_actions.as_mut().unwrap().on_load[0].value = Some("pending-restored".into());
+        assert_eq!(super::super::ensure_web(pending_key,
+            super::super::WebSource::Url(pending.web_url.as_deref().unwrap()), &fixture.root, "test-key",
+            None, pending.smart_url.as_ref(), Some(recovery_meta(&pending))), pending_wv);
+        evaluate(&pending_wv, "document.body.insertAdjacentHTML('beforeend', '<input id=login-ready>');");
+        wait_until(|| fixture.count("/pending-on-load-complete") == 1);
+        evaluate(&pending_wv, "if (document.querySelector('#recovered').value !== 'pending-restored') throw new Error('pending on-load lost');");
         super::super::purge_obsolete_webviews(&HashSet::new());
         window.close();
     }

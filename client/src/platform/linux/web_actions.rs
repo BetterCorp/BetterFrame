@@ -13,9 +13,9 @@ pub(super) struct Actions(Rc<State>, Option<glib::SignalHandlerId>);
 
 struct State {
     view: glib::WeakRef<webkit6::WebView>,
-    config: WebActions,
-    server: String,
-    key: String,
+    config: RefCell<WebActions>,
+    server: RefCell<String>,
+    key: RefCell<String>,
     auth: Option<smart_url::Readiness>,
     pending_load: Cell<bool>,
     current: RefCell<Option<smart_url::Controller>>,
@@ -31,9 +31,9 @@ impl Actions {
     ) -> Self {
         let state = Rc::new(State {
             view: view.downgrade(),
-            config,
-            server: server.into(),
-            key: key.into(),
+            config: RefCell::new(config),
+            server: RefCell::new(server.into()),
+            key: RefCell::new(key.into()),
             auth,
             pending_load: Cell::new(false),
             current: RefCell::new(None),
@@ -61,8 +61,9 @@ impl Actions {
                 && state.auth.as_ref().is_none_or(|auth| auth.ready(&view))
             {
                 state.pending_load.set(false);
-                if !state.config.on_load.is_empty() {
-                    state.start(state.config.on_load.clone(), state.auth.clone(), |result| {
+                let steps = state.config.borrow().on_load.clone();
+                if !steps.is_empty() {
+                    state.start(steps, false, |result| {
                         if let Err(error) = result {
                             tracing::warn!("web on-load actions: {error}");
                         }
@@ -74,6 +75,14 @@ impl Actions {
         Self(state, Some(mapped))
     }
 
+    /// Replace future definitions without dropping pending on-load work or an
+    /// accepted sequence, whose runner already owns its steps and credentials.
+    pub(super) fn update(&self, config: WebActions, server: &str, key: &str) {
+        self.0.config.replace(config);
+        self.0.server.replace(server.into());
+        self.0.key.replace(key.into());
+    }
+
     pub(super) fn invoke(
         &self,
         group: &str,
@@ -82,7 +91,7 @@ impl Actions {
     ) -> Result<(), String> {
         let state = &self.0;
         let view = state.view.upgrade().ok_or("View disposed")?;
-        if revision != state.config.revision {
+        if revision != state.config.borrow().revision {
             return Err("Block configuration changed; waiting for bundle refresh".into());
         }
         if !view.is_mapped()
@@ -94,8 +103,8 @@ impl Actions {
         if state.pending_load.get() || state.busy() {
             return Err("Another sequence is pending or running in this block".into());
         }
-        let steps = state.config.groups.get(group).ok_or("Group not found")?.clone();
-        state.start(steps, None, done);
+        let steps = state.config.borrow().groups.get(group).ok_or("Group not found")?.clone();
+        state.start(steps, true, done);
         Ok(())
     }
 }
@@ -108,7 +117,7 @@ impl State {
     fn start(
         &self,
         steps: Vec<crate::bundle::SmartUrlStep>,
-        auth_ready: Option<smart_url::Readiness>,
+        named_group: bool,
         done: impl FnOnce(Result<(), String>) + 'static,
     ) {
         self.current.borrow_mut().take();
@@ -116,8 +125,13 @@ impl State {
             done(Err("View disposed".into()));
             return;
         };
+        let auth_ready = if named_group { None } else { self.auth.clone() };
+        let pause = if named_group { self.auth.as_ref().and_then(|auth| auth.pause_for_actions(&view)) } else { None };
         let controller = smart_url::run_sequence(
-            &view, steps, &self.server, &self.key, auth_ready, done,
+            &view, steps, &self.server.borrow(), &self.key.borrow(), auth_ready, move |result| {
+                drop(pause);
+                done(result);
+            },
         );
         self.current.replace(Some(controller));
     }

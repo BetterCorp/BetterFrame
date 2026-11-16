@@ -1162,10 +1162,12 @@ export class Repository {
   /** Merge one independently edited option atomically; other option writers use this too. */
   async updateLayoutCellOption(id: string, key: "web_actions" | "overlay", value: unknown | null): Promise<void> {
     await assertSimpleVmsWritable(this.adapter, "cell", id);
+    // JSON null is not SQL NULL; legacy scalars/arrays also need an object before editing a key.
+    const objectOptions = "CASE WHEN jsonb_typeof(options) = 'object' THEN options ELSE '{}'::jsonb END";
     if (value == null) {
-      await this._run("UPDATE layout_cells SET options = COALESCE(options, '{}'::jsonb) - ?::text WHERE id = ?", [key, id]);
+      await this._run(`UPDATE layout_cells SET options = (${objectOptions}) - ?::text WHERE id = ?`, [key, id]);
     } else {
-      await this._run("UPDATE layout_cells SET options = jsonb_set(COALESCE(options, '{}'::jsonb), ARRAY[?::text], ?::jsonb, true) WHERE id = ?", [key, J(value), id]);
+      await this._run(`UPDATE layout_cells SET options = jsonb_set(${objectOptions}, ARRAY[?::text], ?::jsonb, true) WHERE id = ?`, [key, J(value), id]);
     }
     void this.notify("layout_cells", "update", id);
   }

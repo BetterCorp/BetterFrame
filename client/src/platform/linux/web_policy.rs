@@ -78,11 +78,16 @@ pub(super) fn install(view: &webkit6::WebView, config: WebPermissions, source: O
     let key = key.to_string();
     let create_server = server.clone();
     let create_key = key.clone();
-    view.connect_create(move |view, action| {
-        if let Some(request) = action.clone().request() {
-            route_new_window(view, request, &create_server, &create_key);
+    // webkit6 0.4's typed create binding requires a non-null Widget, although
+    // WebKit explicitly accepts null to decline window creation. Use the typed
+    // GObject values so no extra WebView/window is ever allocated.
+    view.connect_local("create", false, move |values| {
+        let view = values[0].get::<webkit6::WebView>().expect("create view");
+        let mut action = values[1].get::<webkit6::NavigationAction>().expect("navigation action");
+        if let Some(request) = action.request() {
+            route_new_window(&view, request, &create_server, &create_key);
         }
-        None
+        Some(Option::<gtk4::Widget>::None.to_value())
     });
     view.connect_decide_policy(move |view, decision, kind| {
         if kind != webkit6::PolicyDecisionType::NewWindowAction { return false; }

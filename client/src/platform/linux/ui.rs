@@ -3622,7 +3622,7 @@ fn ensure_web(
         web_actions::Actions::new(&wv, config, smart_url.as_ref().map(|auth| auth.readiness()), server_url, kiosk_key));
 
     // Initial runners observe failures first; shared health covers later groups.
-    web_policy::install_recovery(&wv);
+    web_policy::install_recovery(&wv, server_url, kiosk_key, match &source { WebSource::Html(html) => Some(*html), _ => None });
     match source {
         WebSource::Html(html) => {
             webkit6::prelude::WebViewExt::load_html(&wv, html, None);

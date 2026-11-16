@@ -498,6 +498,11 @@ mod tests {
                         continue;
                     };
                     let mut request = String::from_utf8_lossy(&bytes[..length]).into_owned();
+                    while !request.contains("\r\n\r\n") {
+                        let Ok(count) = stream.read(&mut bytes) else { break };
+                        if count == 0 { break; }
+                        request.push_str(&String::from_utf8_lossy(&bytes[..count]));
+                    }
                     if let Some(end) = request.find("\r\n\r\n") {
                         let content_length = request[..end].lines().find_map(|line| {
                             let (name, value) = line.split_once(':')?;
@@ -643,7 +648,7 @@ mod tests {
             let view = web_policy::create(config, ephemeral);
             webkit6::prelude::WebViewExt::settings(&view).unwrap().set_enable_mock_capture_devices(true);
             web_policy::install(&view, config.clone(), Some(&fixture.root), &fixture.root, "test-key");
-            web_policy::install_recovery(&view);
+            web_policy::install_recovery(&view, &fixture.root, "test-key", None);
             view.load_uri(&format!("{}/plain", fixture.root));
             row.append(&view);
             wait_until(|| view.is_mapped() && !view.is_loading() && view.uri().is_some());
@@ -741,7 +746,7 @@ mod tests {
         let actions = super::super::web_actions::Actions::new(&failed, serde_json::from_value(serde_json::json!({
             "revision":"failure", "on_load":[{"type":"javascript", "script":format!("await fetch('{}/after-recovery');",fixture.root)}], "groups":{}
         })).unwrap(), Some(readiness.clone()), &fixture.root, "test-key");
-        web_policy::install_recovery(&failed);
+        web_policy::install_recovery(&failed, &fixture.root, "test-key", None);
         failed.load_uri(&format!("{unavailable}/outage"));
         row.append(&failed);
         wait_until(|| web_policy::page_failed(&failed) && !failed.is_loading());
@@ -761,6 +766,16 @@ mod tests {
         assert!(readiness.ready(&failed));
         drop(actions);
         row.remove(&failed);
+        let inline = web_policy::create(&WebPermissions::default(), false);
+        let html = format!("<script>fetch('{}/html-loaded',{{mode:'no-cors'}});</script>",fixture.root);
+        web_policy::install(&inline, WebPermissions::default(), None, &fixture.root, "test-key");
+        web_policy::install_recovery(&inline, &fixture.root, "test-key", Some(&html));
+        inline.load_html(&html, None);
+        row.append(&inline);
+        wait_until(|| fixture.count("/html-loaded") == 1);
+        inline.terminate_web_process();
+        wait_until(|| fixture.count("/html-loaded") == 2);
+        row.remove(&inline);
         window.close();
         pump(Duration::from_millis(100));
     }

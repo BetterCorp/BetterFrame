@@ -127,20 +127,24 @@ fn set_page_failed(view: &webkit6::WebView, failed: bool) {
     unsafe { if let Some(value) = view.data::<Cell<bool>>(FAILED_KEY) { value.as_ref().set(failed); } }
 }
 
-pub(super) fn install_recovery(view: &webkit6::WebView) {
+pub(super) fn install_recovery(view: &webkit6::WebView, server: &str, key: &str, html: Option<&str>) {
+    let server = server.to_string();
+    let key = key.to_string();
+    let html = html.map(str::to_string);
     unsafe { view.set_data(FAILED_KEY, Cell::new(false)); }
-    struct Recovery { pending: Cell<bool>, failed: Cell<bool>, attempts: RefCell<Vec<Instant>> }
-    let recovery = Rc::new(Recovery { pending: Cell::new(false), failed: Cell::new(false), attempts: RefCell::new(Vec::new()) });
+    struct Recovery { pending: Cell<bool>, failed: Cell<bool>, target: RefCell<Option<String>>, attempts: RefCell<Vec<Instant>> }
+    let recovery = Rc::new(Recovery { pending: Cell::new(false), failed: Cell::new(false), target: RefCell::new(None), attempts: RefCell::new(Vec::new()) });
     let state = recovery.clone();
     view.connect_load_changed(move |view, event| match event {
         webkit6::LoadEvent::Started => { state.failed.set(false); set_page_failed(view, false); },
-        webkit6::LoadEvent::Finished if !state.failed.get() => state.pending.set(false),
+        webkit6::LoadEvent::Finished if !state.failed.get() => { state.pending.set(false); state.target.replace(None); },
         _ => {}
     });
     let state = recovery.clone();
-    view.connect_load_failed(move |view, _, _, error| {
+    view.connect_load_failed(move |view, _, uri, error| {
         if !cancelled_load(error) {
             state.failed.set(true); state.pending.set(true); set_page_failed(view, true);
+            state.target.replace(Some(uri.to_string()));
             tracing::warn!("web page load failed (network {:?}, domain {:?}); recovery pending", error.kind::<webkit6::NetworkError>(), error.domain());
         }
         // Shared page health lets later action runners observe this failure
@@ -151,6 +155,7 @@ pub(super) fn install_recovery(view: &webkit6::WebView) {
     let state = recovery.clone();
     view.connect_web_process_terminated(move |view, reason| {
         state.failed.set(true); state.pending.set(true); set_page_failed(view, true);
+        if state.target.borrow().is_none() { state.target.replace(view.uri().map(|uri| uri.to_string())); }
         tracing::warn!("web process terminated ({reason:?}); recovery pending");
     });
     let weak = view.downgrade();
@@ -164,7 +169,14 @@ pub(super) fn install_recovery(view: &webkit6::WebView) {
             if attempts.len() < 3 {
                 attempts.push(now); recovery.pending.set(false);
                 tracing::info!("reloading visible web page after failure");
-                view.reload();
+                let target = recovery.target.borrow().clone();
+                if html.is_some() && target.as_deref().is_none_or(|uri| uri == "about:blank") {
+                    view.load_html(html.as_deref().unwrap(), None);
+                } else if let Some(uri) = target {
+                    super::load_webview_url(&view, &uri, &server, &key);
+                } else {
+                    view.reload();
+                }
             }
         }
         glib::ControlFlow::Continue

@@ -156,7 +156,7 @@ fn install_runner(webview: &webkit6::WebView, config: SmartUrlConfig, server_url
     });
     let state = runner.clone();
     let failed = webview.connect_load_failed(move |_, _, _, error| {
-        if !error.matches(webkit6::NetworkError::Cancelled) {
+        if state.action_pauses.get() == 0 && !error.matches(webkit6::NetworkError::Cancelled) {
             state.progress.borrow_mut().fail(state.started.elapsed());
             finish(&state, Err("Page load failed".into()));
         }
@@ -960,6 +960,15 @@ mod tests {
         assert!(result.borrow().as_ref().unwrap().is_ok());
         assert_eq!(fixture.count("/group-left-at-login"), 1);
         wait_until(|| fixture.count("/entity-login-path") == 1 && readiness.ready(&login_wv));
+        result.replace(None);
+        let completed = result.clone();
+        login_actions.invoke("leave_login", "login-path", move |r| { completed.replace(Some(r)); }).unwrap();
+        // Signal a group-owned load error before its first navigation completes.
+        let error = glib::Error::new(gio::IOErrorEnum::Failed, "Fixture group load failure");
+        login_wv.emit_by_name::<bool>("load-failed", &[&webkit6::LoadEvent::Started, &"about:blank", &error]);
+        wait_until(|| result.borrow().is_some());
+        assert!(result.borrow().as_ref().unwrap().is_err());
+        wait_until(|| readiness.ready(&login_wv));
         drop(login_actions);
 
         let failed_auth = cell(&fixture, "failed-auth", serde_json::json!([

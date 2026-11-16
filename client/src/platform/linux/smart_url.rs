@@ -635,7 +635,7 @@ mod tests {
             assert!(!view.is_muted());
             // No modal dialog can block a script, even without keyboard or mouse.
             evaluate(&view, "alert('fixture'); if (confirm('fixture')) throw new Error('confirm'); if (prompt('fixture') !== null) throw new Error('prompt');");
-            evaluate(&view, "document.body.requestFullscreen().then(()=>fetch('/fullscreen-allowed'),()=>fetch('/fullscreen-denied'));");
+            evaluate(&view, "if (!document.body.requestFullscreen) fetch('/fullscreen-denied'); else document.body.requestFullscreen().then(()=>fetch('/fullscreen-allowed'),()=>fetch('/fullscreen-denied'));");
             wait_until(|| fixture.count("/fullscreen-denied") >= 1);
             assert_eq!(fixture.count("/fullscreen-allowed"), 0);
             evaluate(&view, "navigator.mediaDevices.getUserMedia({audio:true}).then(s=>{s.getTracks().forEach(t=>t.stop());fetch('/default-capture-allowed')},()=>fetch('/default-capture-denied'));");

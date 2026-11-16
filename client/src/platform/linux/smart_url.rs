@@ -1136,6 +1136,9 @@ mod tests {
         let (_, login_wv) = browser(&login_path);
         let readiness = super::super::WARM_WEBVIEWS.with(|pool| pool.borrow().values()
             .find(|entry| entry.webview == login_wv).unwrap().smart_url.as_ref().unwrap().readiness());
+        let unavailable_group = TcpListener::bind("127.0.0.1:0").unwrap();
+        let failed_group_url = format!("http://{}/group-load-failure", unavailable_group.local_addr().unwrap());
+        drop(unavailable_group);
         let login_actions = super::super::web_actions::Actions::new(&login_wv,
             serde_json::from_value(serde_json::json!({"revision":"login-path", "on_load":[],
                 "groups":{"custom":[{"type":"navigate","url":"/auth/manual"},
@@ -1143,7 +1146,9 @@ mod tests {
                     {"type":"javascript","script":"await fetch('/group-under-login');"},
                     {"type":"navigate","url":"/done"}],
                     "leave_login":[{"type":"navigate","url":"/auth/manual"},{"type":"wait","delay_ms":200},
-                        {"type":"javascript","script":"await fetch('/group-left-at-login');"}]}})).unwrap(),
+                        {"type":"javascript","script":"await fetch('/group-left-at-login');"}],
+                    "load_failure":[{"type":"navigate","url":failed_group_url},
+                        {"type":"javascript","script":format!("await fetch('{}/after-failed-group',{{mode:'no-cors'}});",fixture.root)}]}})).unwrap(),
             Some(readiness.clone()), "http://frame.invalid", "test-key");
         row.append(&login_wv);
         wait_until(|| readiness.ready(&login_wv));
@@ -1171,12 +1176,11 @@ mod tests {
         wait_until(|| fixture.count("/entity-login-path") == 1 && readiness.ready(&login_wv));
         result.replace(None);
         let completed = result.clone();
-        login_actions.invoke("leave_login", "login-path", move |r| { completed.replace(Some(r)); }).unwrap();
-        // Signal a group-owned load error before its first navigation completes.
-        let error = glib::Error::new(gio::IOErrorEnum::Failed, "Fixture group load failure");
-        login_wv.emit_by_name::<bool>("load-failed", &[&webkit6::LoadEvent::Started, &"about:blank", &error]);
+        // A real failed group navigation emits both load-failed and Finished.
+        login_actions.invoke("load_failure", "login-path", move |r| { completed.replace(Some(r)); }).unwrap();
         wait_until(|| result.borrow().is_some());
         assert!(result.borrow().as_ref().unwrap().is_err());
+        assert_eq!(fixture.count("/after-failed-group"),0,"failed navigation stops later group actions");
         login_wv.load_uri(&format!("{}/done", fixture.root));
         wait_until(|| readiness.ready(&login_wv));
         drop(login_actions);

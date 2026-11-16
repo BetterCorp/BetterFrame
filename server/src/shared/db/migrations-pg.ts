@@ -1124,4 +1124,6 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     layout_id TEXT NOT NULL REFERENCES layouts(id) ON DELETE CASCADE
   )`,
 
+  `ALTER TABLE entities ADD COLUMN IF NOT EXISTS web_permissions_json JSONB NOT NULL DEFAULT '{}'`,
+
 ];

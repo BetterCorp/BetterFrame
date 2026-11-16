@@ -608,6 +608,7 @@ fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
                             fit: "cover".to_string(),
                             smart_url: None,
                             web_actions: None,
+            web_permissions: None,
                             local_storage: cell.local_storage,
                             input_options: cell.input_options,
                         })

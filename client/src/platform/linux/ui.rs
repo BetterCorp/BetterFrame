@@ -2,6 +2,8 @@
 mod smart_url;
 #[path = "web_actions.rs"]
 mod web_actions;
+#[path = "web_policy.rs"]
+mod web_policy;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -150,6 +152,7 @@ struct WebEventMeta {
     view_id: Option<String>,
     entity_id: Option<String>,
     actions: Option<crate::bundle::WebActions>,
+    web_permissions: Option<crate::bundle::WebPermissions>,
 }
 
 thread_local! {
@@ -2467,6 +2470,7 @@ fn apply_operator_overrides(display_id: &str, layout: &mut crate::bundle::Bundle
             fit: "cover".to_string(),
             smart_url: None,
             web_actions: None,
+            web_permissions: None,
             local_storage: None,
             input_options: None,
         });
@@ -3415,6 +3419,7 @@ fn web_event_meta(
         view_id: cell.view_id.clone(),
         entity_id: cell.entity_id.clone(),
         actions: resolved_web_actions(cell),
+        web_permissions: cell.web_permissions.clone(),
     }
 }
 
@@ -3532,14 +3537,13 @@ fn ensure_web(
         return wv;
     }
 
-    // Demo pages never retain browser cookies/storage after local exit or reboot.
-    let wv = if server::demo_mode() {
-        webkit6::WebView::builder()
-            .network_session(&webkit6::NetworkSession::new_ephemeral())
-            .build()
-    } else {
-        webkit6::WebView::new()
-    };
+    let mut permissions = event_meta.as_ref().and_then(|meta| meta.web_permissions.clone()).unwrap_or_default();
+    if key.starts_with("overlay:") {
+        permissions.audio = false;
+        permissions.autoplay = false;
+    }
+    let wv = web_policy::create(&permissions, server::demo_mode());
+    web_policy::install(&wv, permissions, match &source { WebSource::Url(uri) => Some(*uri), WebSource::Html(_) => None }, server_url, kiosk_key);
     wv.set_vexpand(true);
     wv.set_hexpand(true);
     if key.starts_with("overlay:") {

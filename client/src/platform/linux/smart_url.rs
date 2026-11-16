@@ -156,11 +156,20 @@ fn install_runner(webview: &webkit6::WebView, config: SmartUrlConfig, server_url
     });
     let state = runner.clone();
     let failed = webview.connect_load_failed(move |_, _, _, error| {
-        if state.action_pauses.get() == 0 && !error.matches(webkit6::NetworkError::Cancelled) {
+        if state.action_pauses.get() == 0 && !error.matches(webkit6::NetworkError::Cancelled)
+            && (state.manual || state.progress.borrow().is_running()) {
             state.progress.borrow_mut().fail(state.started.elapsed());
             finish(&state, Err("Page load failed".into()));
         }
         false
+    });
+
+    let state = runner.clone();
+    let terminated = webview.connect_web_process_terminated(move |_, _| {
+        if state.manual || state.progress.borrow().is_running() {
+            state.progress.borrow_mut().fail(state.started.elapsed());
+            finish(&state, Err("Web process terminated".into()));
+        }
     });
 
     // A warm view can return to the screen without navigation or another
@@ -202,7 +211,7 @@ fn install_runner(webview: &webkit6::WebView, config: SmartUrlConfig, server_url
             },
         );
     }
-    *controller.handlers.borrow_mut() = vec![changed, failed, mapped];
+    *controller.handlers.borrow_mut() = vec![changed, failed, mapped, terminated];
     controller
 }
 
@@ -571,6 +580,103 @@ mod tests {
         );
         wait_until(|| result.borrow().is_some());
         assert_eq!(*result.borrow(), Some(true), "fixture script failed");
+    }
+
+    /// Real WebKit media decisions, visibility and window restrictions on localhost.
+    #[test]
+    #[ignore = "requires Xvfb, WebKit and an audio sink"]
+    fn web_permissions_browser_regression() {
+        use base64::Engine;
+        use crate::bundle::WebPermissions;
+        use super::super::web_policy;
+        gtk4::init().unwrap();
+        let fixture = Fixture::new();
+        let window = gtk4::Window::builder().default_width(640).default_height(480).build();
+        let row = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        window.set_child(Some(&row));
+        window.present();
+        let make = |config: &WebPermissions, ephemeral: bool| {
+            let view = web_policy::create(config, ephemeral);
+            view.settings().unwrap().set_enable_mock_capture_devices(true);
+            web_policy::install(&view, config.clone(), Some(&fixture.root), &fixture.root, "test-key");
+            view.load_uri(&format!("{}/plain", fixture.root));
+            row.append(&view);
+            wait_until(|| view.is_mapped() && !view.is_loading() && view.uri().is_some());
+            view
+        };
+        // A second of audible PCM, rather than a muted/no-audio video, tests policy.
+        let samples = 8000u32;
+        let mut wav = Vec::new();
+        wav.extend(b"RIFF"); wav.extend((36 + samples * 2).to_le_bytes()); wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes()); wav.extend(1u16.to_le_bytes()); wav.extend(1u16.to_le_bytes());
+        wav.extend(8000u32.to_le_bytes()); wav.extend(16000u32.to_le_bytes());
+        wav.extend(2u16.to_le_bytes()); wav.extend(16u16.to_le_bytes()); wav.extend(b"data"); wav.extend((samples * 2).to_le_bytes());
+        for index in 0..samples { wav.extend((if index % 20 < 10 { 2000i16 } else { -2000i16 }).to_le_bytes()); }
+        let wav = base64::engine::general_purpose::STANDARD.encode(wav);
+        let play = |view: &webkit6::WebView, label: &str| {
+            evaluate(view, &format!(r#"window.testAudio = new Audio('data:audio/wav;base64,{wav}');
+                testAudio.play().then(() => fetch('/{label}-ok'), error => fetch('/{label}-' + error.name));"#));
+        };
+        for ephemeral in [false, true] {
+            let view = make(&WebPermissions::default(), ephemeral);
+            assert_eq!(view.website_policies().unwrap().autoplay(), webkit6::AutoplayPolicy::Allow);
+            assert!(!view.is_muted());
+            let label = if ephemeral { "ephemeral-audio" } else { "audio" };
+            play(&view, label);
+            wait_until(|| fixture.count(&format!("/{label}-ok")) == 1 || fixture.count(&format!("/{label}-NotAllowedError")) == 1 || fixture.count(&format!("/{label}-NotSupportedError")) == 1);
+            assert_eq!(fixture.count(&format!("/{label}-ok")), 1, "audible playback requires explicit Allow on every session type");
+            view.set_visible(false);
+            pump(Duration::from_millis(100));
+            assert!(view.is_muted(), "hidden layout content must be muted");
+            view.set_visible(true);
+            pump(Duration::from_millis(100));
+            assert!(!view.is_muted());
+            // No modal dialog can block a script, even without keyboard or mouse.
+            evaluate(&view, "alert('fixture'); if (confirm('fixture')) throw new Error('confirm'); if (prompt('fixture') !== null) throw new Error('prompt');");
+            evaluate(&view, "document.body.requestFullscreen().then(()=>fetch('/fullscreen-allowed'),()=>fetch('/fullscreen-denied'));");
+            wait_until(|| fixture.count("/fullscreen-denied") >= 1);
+            assert_eq!(fixture.count("/fullscreen-allowed"), 0);
+            evaluate(&view, "navigator.mediaDevices.getUserMedia({audio:true}).then(s=>{s.getTracks().forEach(t=>t.stop());fetch('/default-capture-allowed')},()=>fetch('/default-capture-denied'));");
+            wait_until(|| fixture.count("/default-capture-denied") >= if ephemeral { 2 } else { 1 });
+            assert_eq!(fixture.count("/default-capture-allowed"), 0);
+            // A new window navigates the original block.
+            evaluate(&view, "window.open('/new-window', '_blank');");
+            wait_until(|| view.uri().is_some_and(|uri| uri.ends_with("/new-window")));
+            row.remove(&view);
+        }
+        let disabled = WebPermissions {audio:false,autoplay:false,..WebPermissions::default()};
+        let denied = make(&disabled, false);
+        assert!(denied.is_muted());
+        assert_eq!(denied.website_policies().unwrap().autoplay(), webkit6::AutoplayPolicy::Deny);
+        // Unmute only this fixture to distinguish an autoplay denial from mute.
+        denied.set_is_muted(false);
+        play(&denied, "disabled-audio");
+        wait_until(|| fixture.count("/disabled-audio-NotAllowedError") == 1);
+        denied.set_visible(false); denied.set_visible(true);
+        assert!(denied.is_muted(), "an entity with Sound unchecked stays muted when activated");
+        row.remove(&denied);
+
+        let capture = make(&WebPermissions { microphone:true,camera:true,..WebPermissions::default() }, false);
+        evaluate(&capture, "navigator.mediaDevices.getUserMedia({audio:true,video:true}).then(s=>{s.getTracks().forEach(t=>t.stop());fetch('/capture-allowed')},e=>fetch('/capture-error-'+e.name));");
+        wait_until(|| fixture.count("/capture-allowed") == 1 || fixture.count("/capture-error-NotAllowedError") == 1 || fixture.count("/capture-error-NotFoundError") == 1);
+        assert_eq!(fixture.count("/capture-allowed"), 1, "explicit capture grants must resolve without a permission dialog");
+        // Origin changes cannot carry capture grants to another website.
+        capture.load_uri(&format!("{}/other-origin", fixture.root.replace("127.0.0.1", "localhost")));
+        wait_until(|| !capture.is_loading() && capture.uri().is_some_and(|uri| uri.ends_with("/other-origin")));
+        evaluate(&capture, "navigator.mediaDevices.getUserMedia({audio:true}).then(s=>{s.getTracks().forEach(t=>t.stop());fetch('/wrong-origin-allowed')},()=>fetch('/wrong-origin-denied'));");
+        wait_until(|| fixture.count("/wrong-origin-denied") == 1);
+        assert_eq!(fixture.count("/wrong-origin-allowed"), 0);
+        // Failure recovery waits until a layout is visible and reloads its page.
+        capture.set_visible(false);
+        let before = fixture.count("/other-origin");
+        capture.emit_by_name::<()>("web-process-terminated", &[&webkit6::WebProcessTerminationReason::Crashed]);
+        pump(Duration::from_secs(3));
+        assert_eq!(fixture.count("/other-origin"), before);
+        capture.set_visible(true);
+        wait_until(|| fixture.count("/other-origin") == before + 1);
+        row.remove(&capture);
+        window.close();
+        pump(Duration::from_millis(100));
     }
 
     fn cell(fixture: &Fixture, block: &str, steps: serde_json::Value) -> crate::bundle::BundleCell {
@@ -1000,7 +1106,7 @@ mod tests {
         let recovery_meta = |cell: &crate::bundle::BundleCell| super::super::WebEventMeta {
             server_url: fixture.root.clone(), kiosk_key:"test-key".into(), tenant_slug:"default".into(),
             kiosk_id:"test".into(), display_id:"display".into(), view_id:cell.view_id.clone(), entity_id:None,
-            actions:super::super::resolved_web_actions(cell),
+            actions:super::super::resolved_web_actions(cell), web_permissions:cell.web_permissions.clone(),
         };
         let recovery_html = "<input id=recovered value=kept>";
         let recovered_wv = super::super::ensure_web(recovery_key.clone(), super::super::WebSource::Html(recovery_html),

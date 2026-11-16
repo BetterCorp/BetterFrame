@@ -1,3 +1,5 @@
+import { WebPermissionsEditor } from "./web-permissions-editor.js";
+import { webPermissionsForm } from "../shared/web-permissions.js";
 import { WebActionsEditor } from "./web-actions-editor.js";
 import type { WebActions } from "../shared/web-actions.js";
 import { smartUrlFormDraft } from "../shared/smart-url.js";
@@ -1119,7 +1121,7 @@ function entityFormScript(rootId: string): string {
     `function t(){var v=sel?sel.value:"html";` +
     `if(cf)cf.style.display=v==='camera'?'block':'none';` +
     `if(wf)wf.style.display=v==='web'?'block':'none';` +
-    `if(hf)hf.style.display=v==='html'?'block':'none';}` +
+    `if(hf)hf.style.display=v==='html'?'block':'none';var p=root.querySelector('[data-web-permissions]');if(p)p.style.display=v==='camera'?'none':'block';}` +
     `if(sel)sel.addEventListener('change',t);t();})()`
   );
 }
@@ -1217,6 +1219,7 @@ export function EntityNewPage(props: EntityNewPageProps) {
             </div>
           </div>
 
+          <div data-web-permissions="1" style={selType === "camera" ? "display:none" : ""}><WebPermissionsEditor config={v["web_permissions_present"] ? webPermissionsForm(v) : undefined} /></div>
           <button type="submit" class="btn btn-primary">Create Entity</button>
           <a href="/admin/entities" class="btn btn-ghost" style="margin-left:0.5rem">Cancel</a>
         </form>
@@ -1334,6 +1337,7 @@ export function EntityEditPage(props: EntityEditPageProps) {
               </div>
             )}
 
+            {["web","html","dashboard","ablesign"].includes(e.type) && <WebPermissionsEditor config={props.values?.["web_permissions_present"] ? webPermissionsForm(props.values) : e.web_permissions_json} />}
             <div class="card" style="box-shadow:none; border:1px solid #eee; margin:1rem 0; padding:1rem">
               <h3 style="margin:0 0 0.75rem; font-size:0.95rem">ioBOX Input</h3>
               <div class="form-group">

@@ -3116,12 +3116,13 @@ export class Repository {
     dashboard_id?: string | null;
     ablesign_screen_id?: string | null;
     managed?: boolean;
+    web_permissions_json?: Entity["web_permissions_json"];
     smart_url_json?: Entity["smart_url_json"];
   }): Promise<Entity> {
     const id = uuidv7();
     await this._run(
-      `INSERT INTO entities (id, name, type, description, camera_id, html_content, web_url, dashboard_id, ablesign_screen_id, managed, smart_url_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO entities (id, name, type, description, camera_id, html_content, web_url, dashboard_id, ablesign_screen_id, managed, smart_url_json, web_permissions_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.name,
@@ -3134,6 +3135,7 @@ export class Repository {
         input.type === "ablesign" ? (input.ablesign_screen_id ?? null) : null,
         input.managed ?? false,
         input.type === "web" ? J(input.smart_url_json ?? null) : null,
+        J(input.web_permissions_json ?? {}),
       ],
     );
     void this.notify("entities", "create", id);
@@ -3161,6 +3163,7 @@ export class Repository {
       web_url?: string | null;
       dashboard_id?: string | null;
       input_options_json?: Record<string, unknown>;
+      web_permissions_json?: Entity["web_permissions_json"];
       smart_url_json?: Entity["smart_url_json"];
     },
   ): Promise<void> {
@@ -3169,7 +3172,7 @@ export class Repository {
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
       sets.push(`${k} = ?`);
-      vals.push(k === "input_options_json" ? J(v ?? {}) : k === "smart_url_json" ? J(v ?? null) : v === undefined ? null : v);
+      vals.push((k === "input_options_json" || k === "web_permissions_json") ? J(v ?? {}) : k === "smart_url_json" ? J(v ?? null) : v === undefined ? null : v);
     }
     if (sets.length === 0) return;
     vals.push(id);

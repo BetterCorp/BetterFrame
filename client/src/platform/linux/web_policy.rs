@@ -76,20 +76,32 @@ pub(super) fn install(view: &webkit6::WebView, config: WebPermissions, source: O
     view.connect_show_notification(|_, notification| { notification.close(); true });
     let server = server.to_string();
     let key = key.to_string();
+    let create_server = server.clone();
+    let create_key = key.clone();
+    view.connect_create(move |view, action| {
+        if let Some(request) = action.clone().request() {
+            route_new_window(view, request, &create_server, &create_key);
+        }
+        None
+    });
     view.connect_decide_policy(move |view, decision, kind| {
         if kind != webkit6::PolicyDecisionType::NewWindowAction { return false; }
         let request = decision.downcast_ref::<webkit6::NavigationPolicyDecision>()
             .and_then(|decision| decision.navigation_action()).and_then(|mut action| action.request());
         decision.ignore();
         if let Some(request) = request {
-            let weak = view.downgrade();
-            let server = server.clone();
-            let key = key.clone();
-            glib::idle_add_local_once(move || {
-                if let Some(view) = weak.upgrade() { super::load_webview_request(&view, &request, &server, &key); }
-            });
+            route_new_window(view, request, &server, &key);
         }
         true
+    });
+}
+
+fn route_new_window(view: &webkit6::WebView, request: webkit6::URIRequest, server: &str, key: &str) {
+    let weak = view.downgrade();
+    let server = server.to_string();
+    let key = key.to_string();
+    glib::idle_add_local_once(move || {
+        if let Some(view) = weak.upgrade() { super::load_webview_request(&view, &request, &server, &key); }
     });
 }
 

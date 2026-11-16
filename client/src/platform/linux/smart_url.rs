@@ -658,7 +658,8 @@ mod tests {
         assert!(denied.is_muted(), "an entity with Sound unchecked stays muted when activated");
         row.remove(&denied);
 
-        let capture = make(&WebPermissions { microphone:true,camera:true,..WebPermissions::default() }, false);
+        let capture = make(&WebPermissions { microphone:true,camera:true,protected_media:true,..WebPermissions::default() }, false);
+        evaluate(&capture, "if (typeof navigator.requestMediaKeySystemAccess !== 'function') throw new Error('EME disabled');");
         evaluate(&capture, "navigator.mediaDevices.getUserMedia({audio:true,video:true}).then(s=>{s.getTracks().forEach(t=>t.stop());fetch('/capture-allowed')},e=>fetch('/capture-error-'+e.name));");
         wait_until(|| fixture.count("/capture-allowed") == 1 || fixture.count("/capture-error-NotAllowedError") == 1 || fixture.count("/capture-error-NotFoundError") == 1);
         assert_eq!(fixture.count("/capture-allowed"), 1, "explicit capture grants must resolve without a permission dialog");

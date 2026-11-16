@@ -14,6 +14,7 @@ pub(super) fn create(config: &WebPermissions, ephemeral: bool) -> webkit6::WebVi
     if let Some(settings) = webkit6::prelude::WebViewExt::settings(&view) {
         settings.set_enable_media(true);
         settings.set_enable_media_stream(true);
+        settings.set_enable_encrypted_media(config.protected_media);
         settings.set_media_playback_requires_user_gesture(!config.autoplay);
         settings.set_media_playback_allows_inline(true);
         settings.set_enable_fullscreen(false);

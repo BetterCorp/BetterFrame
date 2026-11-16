@@ -1,3 +1,4 @@
+import { webPermissionsForm } from "../../shared/web-permissions.js";
 import { registerWebActionRoutes } from "./routes-web-actions.js";
 import { parseWebActions, webActionsFormDraft } from "../../shared/web-actions.js";
 import { registerSimpleVmsAdminRoutes, simpleVmsManagedPage } from "./routes-simple-vms.js";
@@ -1475,6 +1476,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       html_content: htmlContent,
       web_url: webUrl,
       smart_url_json: smartUrl,
+      web_permissions_json: (type === "web" || type === "html") && body?.["web_permissions_present"] === "1" ? webPermissionsForm(body) : {},
     });
     notifyKiosks();
     return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
@@ -1501,10 +1503,14 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     const id = (getRouterParam(event, "id") ?? "");
     const ent = await deps.repo.getEntityById(id);
     if (!ent) return new Response(null, { status: 302, headers: { location: "/admin/entities" } });
+    const body = await readBody<Record<string, string>>(event);
     if ((ent as any).managed) {
+      if (["web","html","dashboard","ablesign"].includes(ent.type) && body?.["web_permissions_present"] === "1") {
+        await deps.repo.updateEntity(id, { web_permissions_json: webPermissionsForm(body) });
+        notifyKiosks();
+      }
       return new Response(null, { status: 302, headers: { location: `/admin/entities/${String(id)}` } });
     }
-    const body = await readBody<Record<string, string>>(event);
     const patch: {
       name?: string;
       description?: string | null;
@@ -1513,11 +1519,13 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       web_url?: string | null;
       input_options_json?: Record<string, unknown>;
       smart_url_json?: import("../../schemas/wire/smart-url.js").SmartUrlConfig | null;
+      web_permissions_json?: import("../../shared/web-permissions.js").WebPermissions;
     } = {
       name: (body?.["name"] ?? ent.name).trim(),
       description: (body?.["description"] ?? "").trim() || null,
       input_options_json: elementInputOptions(body ?? {}),
     };
+    if (["web","html","dashboard","ablesign"].includes(ent.type) && body?.["web_permissions_present"] === "1") patch.web_permissions_json = webPermissionsForm(body);
     if (ent.type === "camera") {
       patch.camera_id = body?.["camera_id"] ? String(body["camera_id"] ?? "") : null;
     } else if (ent.type === "html") {

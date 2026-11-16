@@ -190,6 +190,8 @@ pub struct BundleCell {
     pub smart_url: Option<SmartUrlConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_actions: Option<WebActions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_permissions: Option<WebPermissions>,
     #[serde(default)]
     pub local_storage: Option<std::collections::HashMap<String, String>>,
     #[serde(default)]
@@ -207,6 +209,37 @@ pub struct SmartUrlConfig {
     pub login_detect_url: Option<String>,
     #[serde(default)]
     pub session_check_interval_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WebPermissions {
+    pub audio: bool,
+    pub autoplay: bool,
+    pub microphone: bool,
+    pub camera: bool,
+    pub location: bool,
+    pub notifications: bool,
+    pub clipboard: bool,
+    pub device_info: bool,
+    pub protected_media: bool,
+    pub cross_site_storage: bool,
+    pub pointer_lock: bool,
+}
+impl Default for WebPermissions {
+    fn default() -> Self { Self {
+        audio: true,
+        autoplay: true,
+        microphone: false,
+        camera: false,
+        location: false,
+        notifications: false,
+        clipboard: false,
+        device_info: false,
+        protected_media: false,
+        cross_site_storage: false,
+        pointer_lock: false,
+    } }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

@@ -386,6 +386,7 @@ export function rowToEntity(r: Row): Entity {
     ablesign_screen_id: sn(r["ablesign_screen_id"]),
     managed: !!r["managed"],
     input_options_json: j<Record<string, unknown>>(r["input_options_json"], {}),
+    web_permissions_json: j<NonNullable<Entity["web_permissions_json"]>>(r["web_permissions_json"], {}),
     smart_url_json: j<Entity["smart_url_json"]>(r["smart_url_json"], null),
     created_at: s(r["created_at"]),
   };

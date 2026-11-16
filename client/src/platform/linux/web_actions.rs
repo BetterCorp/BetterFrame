@@ -57,6 +57,7 @@ impl Actions {
             if state.pending_load.get()
                 && view.is_mapped()
                 && !view.is_loading()
+                && !super::web_policy::page_failed(&view)
                 && !state.busy()
                 && state.auth.as_ref().is_none_or(|auth| auth.ready(&view))
             {
@@ -96,6 +97,7 @@ impl Actions {
         }
         if !view.is_mapped()
             || view.is_loading()
+            || super::web_policy::page_failed(&view)
             || state.auth.as_ref().is_some_and(|auth| !auth.ready(&view))
         {
             return Err("Block is not ready".into());

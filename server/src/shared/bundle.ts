@@ -1,3 +1,4 @@
+import { resolveWebPermissions, type WebPermissions } from "./web-permissions.js";
 import { bundleWebActions, type BundleWebActions } from "./web-actions.js";
 import { simpleVmsViewerCredentials, reconcileSimpleVmsAssignments, simpleVmsCamerasForKiosk } from "./simple-vms.js";
 import { simpleVmsStreamUri } from "./simple-vms-schema.js";
@@ -86,6 +87,7 @@ export interface BundleCamera {
 
 export interface BundleCell {
   web_actions?: BundleWebActions;
+  web_permissions?: WebPermissions;
   overlay_html?: string;
   view_id: string;
   entity_id: string | null;
@@ -436,6 +438,7 @@ export async function generateBundle(
           // Blocks cannot override entity authentication.
           smart_url: cellSmartUrl,
           web_actions: cellWebActions(c, actionEntity),
+          ...(!viewer && ["web","html"].includes(contentType) ? { web_permissions: resolveWebPermissions(actionEntity?.web_permissions_json) } : {}),
           local_storage: cellLocalStorage,
           input_options: cellInputOptions,
         };
@@ -518,6 +521,7 @@ export async function generateBundle(
           cooling_timeout_seconds: null,
           fit: "contain",
           smart_url: entitySmartUrl(ent),
+          web_permissions: resolveWebPermissions(ent.web_permissions_json),
           local_storage: resolved.localStorage,
           input_options: viewer ? undefined : ent.input_options_json,
         }],

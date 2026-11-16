@@ -21,6 +21,10 @@ test("entity auth persists and legacy migration promotes only agreeing block con
     const second = { ...first, login_detect_url: "/login" };
     const entity = await repo.createEntity({ name: "HA", type: "web", web_url: "http://ha/lovelace/2", smart_url_json: first });
     assert.deepEqual(entity.smart_url_json, first);
+    assert.deepEqual(entity.web_permissions_json, {});
+    const permissions = { audio: false, autoplay: true, microphone: true, camera: false };
+    await repo.updateEntity(entity.id, { web_permissions_json: permissions });
+    assert.deepEqual((await repo.getEntityById(entity.id))?.web_permissions_json, permissions);
     await repo.updateEntity(entity.id, { smart_url_json: second });
     assert.deepEqual((await repo.getEntityById(entity.id))?.smart_url_json, second);
     await repo.updateEntity(entity.id, { smart_url_json: null });
@@ -40,7 +44,8 @@ test("entity auth persists and legacy migration promotes only agreeing block con
     assert.ok((await repo.layoutCells(layout.id)).every((cell) => cell.options?.["untouched"] === true));
     await createTenantSchema(repo.adapter, "new-tenant", { info() {}, warn() {} });
     await repo.adapter.withSearchPath(tenantSchemaName("new-tenant"), async () => {
-      const scoped = await repo.createEntity({ name: "Tenant HA", type: "web", web_url: "http://ha", smart_url_json: first });
+      const scoped = await repo.createEntity({ name: "Tenant HA", type: "web", web_url: "http://ha", smart_url_json: first, web_permissions_json: { camera: true } });
+      assert.deepEqual(scoped.web_permissions_json, { camera: true });
       assert.deepEqual(scoped.smart_url_json, first, "new tenant schemas support entity authentication");
     });
   } finally {

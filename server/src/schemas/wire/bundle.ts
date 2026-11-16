@@ -1,3 +1,4 @@
+import { webPermissionsSchema } from "../../shared/web-permissions.js";
 import * as av from "anyvali";
 
 const id = av.string().minLength(1).maxLength(128);
@@ -91,6 +92,7 @@ const bundleCell = av.object(
     cooling_timeout_seconds: av.nullable(av.int().min(0)),
     fit: av.enum_(["cover", "contain", "fill"] as const),
     smart_url: av.optional(smartUrl),
+    web_permissions: av.optional(webPermissionsSchema),
     web_actions: av.optional(av.object({ revision: av.string(), on_load: av.array(smartUrlStep), groups: av.record(av.array(smartUrlStep)) }, { unknownKeys: "reject" })),
     local_storage: av.optional(av.record(av.string())),
   },

@@ -2,6 +2,8 @@
 mod smart_url;
 #[path = "web_actions.rs"]
 mod web_actions;
+#[path = "web_policy.rs"]
+mod web_policy;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -150,6 +152,7 @@ struct WebEventMeta {
     view_id: Option<String>,
     entity_id: Option<String>,
     actions: Option<crate::bundle::WebActions>,
+    web_permissions: Option<crate::bundle::WebPermissions>,
 }
 
 thread_local! {
@@ -2467,6 +2470,7 @@ fn apply_operator_overrides(display_id: &str, layout: &mut crate::bundle::Bundle
             fit: "cover".to_string(),
             smart_url: None,
             web_actions: None,
+            web_permissions: None,
             local_storage: None,
             input_options: None,
         });
@@ -3237,18 +3241,24 @@ fn heal_stalled_streams() {
 }
 
 fn load_webview_url(webview: &webkit6::WebView, url: &str, server_url: &str, kiosk_key: &str) {
-    if should_attach_kiosk_auth(url, server_url) {
-        // The trusted server exchanges the initial header for a host-only,
-        // HttpOnly cookie used by subsequent sub-resource requests.
-        let request = webkit6::URIRequest::new(url);
-        if let Some(headers) = request.http_headers() {
-            headers.append("Authorization", &format!("Bearer {kiosk_key}"));
-        }
-        webkit6::prelude::WebViewExt::load_request(webview, &request);
-        return;
+    // URIRequest's native constructor interprets raw bytes as Latin-1. The
+    // URL parser supplies IDNA hosts and UTF-8 percent-encoded paths/queries.
+    if let Ok(normalized) = Url::parse(url) {
+        load_webview_request(webview, &webkit6::URIRequest::new(normalized.as_str()), server_url, kiosk_key);
+    } else {
+        webkit6::prelude::WebViewExt::load_uri(webview, url);
     }
+}
 
-    webkit6::prelude::WebViewExt::load_uri(webview, url);
+fn load_webview_request(webview: &webkit6::WebView, request: &webkit6::URIRequest, server_url: &str, kiosk_key: &str) {
+    if request.uri().is_some_and(|uri| should_attach_kiosk_auth(&uri, server_url)) {
+        // Preserve the method/body of new-window forms while attaching kiosk
+        // authentication only to the trusted server's display routes.
+        if let Some(headers) = request.http_headers() {
+            headers.replace("Authorization", &format!("Bearer {kiosk_key}"));
+        }
+    }
+    webkit6::prelude::WebViewExt::load_request(webview, request);
 }
 
 fn js_string_lit(s: &str) -> String {
@@ -3415,6 +3425,7 @@ fn web_event_meta(
         view_id: cell.view_id.clone(),
         entity_id: cell.entity_id.clone(),
         actions: resolved_web_actions(cell),
+        web_permissions: cell.web_permissions.clone(),
     }
 }
 
@@ -3532,14 +3543,13 @@ fn ensure_web(
         return wv;
     }
 
-    // Demo pages never retain browser cookies/storage after local exit or reboot.
-    let wv = if server::demo_mode() {
-        webkit6::WebView::builder()
-            .network_session(&webkit6::NetworkSession::new_ephemeral())
-            .build()
-    } else {
-        webkit6::WebView::new()
-    };
+    let mut permissions = event_meta.as_ref().and_then(|meta| meta.web_permissions.clone()).unwrap_or_default();
+    if key.starts_with("overlay:") {
+        permissions.audio = false;
+        permissions.autoplay = false;
+    }
+    let wv = web_policy::create(&permissions, server::demo_mode());
+    web_policy::install(&wv, permissions, match &source { WebSource::Url(uri) => Some(*uri), WebSource::Html(_) => None }, server_url, kiosk_key);
     wv.set_vexpand(true);
     wv.set_hexpand(true);
     if key.starts_with("overlay:") {
@@ -3617,6 +3627,8 @@ fn ensure_web(
     let actions = event_meta.as_ref().and_then(|meta| meta.actions.clone()).map(|config|
         web_actions::Actions::new(&wv, config, smart_url.as_ref().map(|auth| auth.readiness()), server_url, kiosk_key));
 
+    // Initial runners observe failures first; shared health covers later groups.
+    web_policy::install_recovery(&wv, server_url, kiosk_key, match &source { WebSource::Html(html) => Some(*html), _ => None });
     match source {
         WebSource::Html(html) => {
             webkit6::prelude::WebViewExt::load_html(&wv, html, None);

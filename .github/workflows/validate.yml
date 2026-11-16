@@ -61,6 +61,8 @@ jobs:
           TSX_TSCONFIG_PATH=server/tsconfig.test.json node --import tsx scripts/test-overlay-preview.mjs
       - name: Web action group editor in Chromium
         run: TSX_TSCONFIG_PATH=server/tsconfig.test.json node --import tsx scripts/test-web-actions-editor.mjs
+      - name: Web permission editor in Chromium
+        run: TSX_TSCONFIG_PATH=server/tsconfig.test.json node --import tsx scripts/test-web-permissions-editor.mjs
       - name: Node-RED routing and deployment syntax
         env:
           BF_NODERED_MANAGER_SECRET: 0123456789abcdef0123456789abcdef
@@ -82,7 +84,7 @@ jobs:
       - name: Install native client dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwebkitgtk-6.0-dev libssl-dev xvfb xauth dbus-x11
+          sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwebkitgtk-6.0-dev libssl-dev xvfb xauth dbus-x11 pulseaudio gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
       - run: cargo test --manifest-path client/Cargo.toml --workspace --locked
       - name: Overlay updates preserve base content
         # This fixture-only harness loads static local HTML. Hosted Ubuntu runners
@@ -91,6 +93,16 @@ jobs:
           WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
           GTK_A11Y: none
         run: xvfb-run -a dbus-run-session -- cargo run --manifest-path client/Cargo.toml -- --test-overlays
+      - name: WebKit permissions and audible autoplay
+        env:
+          GDK_BACKEND: x11
+          # Only the localhost media fixture runs with the hosted-runner workaround.
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
+          GTK_A11Y: none
+        run: |
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=fixture
+          xvfb-run -a dbus-run-session -- cargo test --manifest-path client/Cargo.toml --bin betterframe-client web_permissions_browser_regression -- --ignored --test-threads=1
       - name: Smart URL browser regressions
         env:
           GDK_BACKEND: x11

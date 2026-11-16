@@ -18,6 +18,7 @@ struct Runner {
     auth_ready: Option<Readiness>,
     manual: bool,
     action_pauses: Cell<u32>,
+    page_failed: Cell<bool>,
     settled: RefCell<Option<(u64, String)>>,
     settling: RefCell<Option<(u64, String)>>,
 }
@@ -36,7 +37,7 @@ impl Readiness {
             return false;
         }
         let Some(runner) = self.0.upgrade() else { return true };
-        if runner.progress.borrow().is_running()
+        if super::web_policy::page_failed(webview) || runner.page_failed.get() || runner.progress.borrow().is_running()
             || runner.progress.borrow().has_failed()
             || runner.progress.borrow().is_cancelled()
         {
@@ -139,13 +140,19 @@ fn install_runner(webview: &webkit6::WebView, config: SmartUrlConfig, server_url
         kiosk_key: kiosk_key.into(),
         started: Instant::now(),
         completion: RefCell::new(completion), auth_ready, manual,
-        action_pauses: Cell::new(0),
+        action_pauses: Cell::new(0), page_failed: Cell::new(false),
         settled: RefCell::new(None), settling: RefCell::new(None),
     });
     let controller = Controller { runner: runner.clone(), webview: webview.downgrade(), handlers: RefCell::new(Vec::new()) };
     let state = runner.clone();
     let changed = webview.connect_load_changed(move |wv, event| match event {
         webkit6::LoadEvent::Started => {
+            let recovering = state.page_failed.replace(false) || super::web_policy::page_failed(wv);
+            if recovering && !state.manual && !state.progress.borrow().is_cancelled() {
+                state.progress.borrow_mut().reset_after_page_failure();
+                state.settled.replace(None);
+                state.settling.replace(None);
+            }
             let interrupted = state.progress.borrow_mut().load_started_for_steps(&state.config.steps, state.started.elapsed());
             if let Some(index) = interrupted {
                 finish(&state, Err(format!("Step {} interrupted by navigation", index + 1)));
@@ -156,11 +163,23 @@ fn install_runner(webview: &webkit6::WebView, config: SmartUrlConfig, server_url
     });
     let state = runner.clone();
     let failed = webview.connect_load_failed(move |_, _, _, error| {
-        if state.action_pauses.get() == 0 && !error.matches(webkit6::NetworkError::Cancelled) {
-            state.progress.borrow_mut().fail(state.started.elapsed());
-            finish(&state, Err("Page load failed".into()));
+        if state.action_pauses.get() == 0 && !super::web_policy::cancelled_load(error) {
+            state.page_failed.set(true);
+            if state.manual || state.progress.borrow().is_running() {
+                state.progress.borrow_mut().fail(state.started.elapsed());
+                finish(&state, Err("Page load failed".into()));
+            }
         }
         false
+    });
+
+    let state = runner.clone();
+    let terminated = webview.connect_web_process_terminated(move |_, _| {
+        state.page_failed.set(true);
+        if state.manual || state.progress.borrow().is_running() {
+            state.progress.borrow_mut().fail(state.started.elapsed());
+            finish(&state, Err("Web process terminated".into()));
+        }
     });
 
     // A warm view can return to the screen without navigation or another
@@ -202,14 +221,24 @@ fn install_runner(webview: &webkit6::WebView, config: SmartUrlConfig, server_url
             },
         );
     }
-    *controller.handlers.borrow_mut() = vec![changed, failed, mapped];
+    *controller.handlers.borrow_mut() = vec![changed, failed, mapped, terminated];
     controller
 }
 
 /// Recheck a loaded view after navigation, mapping, or a periodic timer.
 /// Loading and disposed views are skipped; an eligible flow advances one step.
 fn check_url(webview: &webkit6::WebView, runner: &Rc<Runner>) {
-    if webview.is_loading() || runner.progress.borrow().is_cancelled() || runner.action_pauses.get() > 0 {
+    if super::web_policy::page_failed(webview) {
+        if runner.action_pauses.get() == 0 {
+            runner.page_failed.set(true);
+            if runner.manual || runner.progress.borrow().is_running() {
+                runner.progress.borrow_mut().fail(runner.started.elapsed());
+                finish(runner, Err("Page load failed".into()));
+            }
+        }
+        return;
+    }
+    if runner.page_failed.get() || webview.is_loading() || runner.progress.borrow().is_cancelled() || runner.action_pauses.get() > 0 {
         return;
     }
     observe_url(webview, runner);
@@ -230,7 +259,7 @@ fn observe_url(webview: &webkit6::WebView, runner: &Runner) {
 /// Arm a future login transition after a completed non-login page stays settled.
 /// The delayed confirmation requires the same URL and document generation.
 fn confirm_settled_page(webview: &webkit6::WebView, runner: &Rc<Runner>) {
-    if runner.manual || runner.progress.borrow().is_running() || webview.is_loading() {
+    if runner.page_failed.get() || runner.manual || runner.progress.borrow().is_running() || webview.is_loading() {
         return;
     }
     let Some(url) = webview.uri() else { return };
@@ -249,7 +278,7 @@ fn confirm_settled_page(webview: &webkit6::WebView, runner: &Rc<Runner>) {
     let runner = runner.clone();
     glib::timeout_add_local_once(Duration::from_secs(1), move || {
         if let Some(wv) = weak.upgrade() {
-            if !wv.is_loading()
+            if !runner.page_failed.get() && !wv.is_loading()
                 && wv.uri().as_deref() == Some(candidate.1.as_str())
                 && runner.progress.borrow().generation() == candidate.0
                 && !runner.progress.borrow().is_running()
@@ -445,7 +474,10 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            Self::from_listener(TcpListener::bind("127.0.0.1:0").unwrap())
+        }
+
+        fn from_listener(listener: TcpListener) -> Self {
             listener.set_nonblocking(true).unwrap();
             let root = format!("http://{}", listener.local_addr().unwrap());
             let hits = Arc::new(Mutex::new(HashMap::<String, usize>::new()));
@@ -465,7 +497,23 @@ mod tests {
                     let Ok(length) = stream.read(&mut bytes) else {
                         continue;
                     };
-                    let request = String::from_utf8_lossy(&bytes[..length]);
+                    let mut request = String::from_utf8_lossy(&bytes[..length]).into_owned();
+                    while !request.contains("\r\n\r\n") {
+                        let Ok(count) = stream.read(&mut bytes) else { break };
+                        if count == 0 { break; }
+                        request.push_str(&String::from_utf8_lossy(&bytes[..count]));
+                    }
+                    if let Some(end) = request.find("\r\n\r\n") {
+                        let content_length = request[..end].lines().find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().ok()).flatten()
+                        }).unwrap_or(0);
+                        while request.len() < end + 4 + content_length {
+                            let Ok(count) = stream.read(&mut bytes) else { break };
+                            if count == 0 { break; }
+                            request.push_str(&String::from_utf8_lossy(&bytes[..count]));
+                        }
+                    }
                     let path = request
                         .split_whitespace()
                         .nth(1)
@@ -474,6 +522,11 @@ mod tests {
                         .next()
                         .unwrap_or("/");
                     *thread_hits.lock().unwrap().entry(path.into()).or_default() += 1;
+                    if path == "/post-window" {
+                        let method = request.split_whitespace().next().unwrap_or("");
+                        let body = request.split_once("\r\n\r\n").map(|(_,body)| body).unwrap_or("");
+                        *thread_hits.lock().unwrap().entry(format!("/post-window:{method}:{body}")).or_default() += 1;
+                    }
                     let (status, headers, body) = match path {
                         "/redirect" => ("302 Found", "Location: /lovelace/2\r\n", ""),
                         "/lovelace/2" => (
@@ -526,6 +579,7 @@ mod tests {
 
     impl Drop for Fixture {
         fn drop(&mut self) {
+            if std::thread::panicking() { eprintln!("Fixture requests: {:?}", self.hits.lock().unwrap()); }
             self.stop.store(true, Ordering::Relaxed);
             self.thread.take().unwrap().join().unwrap();
         }
@@ -542,11 +596,13 @@ mod tests {
         }
     }
 
+    #[track_caller]
     fn wait_until(ready: impl FnMut() -> bool) {
         wait_with_timeout(Duration::from_secs(20), ready);
     }
 
     /// Pump GTK while waiting for a browser condition, bounded by `timeout`.
+    #[track_caller]
     fn wait_with_timeout(timeout: Duration, mut ready: impl FnMut() -> bool) {
         let deadline = Instant::now() + timeout;
         while !ready() && Instant::now() < deadline {
@@ -560,17 +616,173 @@ mod tests {
     fn evaluate(webview: &webkit6::WebView, script: &str) {
         let result = Rc::new(RefCell::new(None));
         let output = result.clone();
+        // WebKit cannot serialize a returned Promise. Fixture scripts report
+        // asynchronous outcomes through HTTP hits; return undefined instead.
         webview.evaluate_javascript(
-            script,
+            &format!("{script}\n;void 0;"),
             None,
             None,
             None::<&gio::Cancellable>,
             move |value| {
-                *output.borrow_mut() = Some(value.is_ok());
+                *output.borrow_mut() = Some(value.map(|_| ()).map_err(|error| error.to_string()));
             },
         );
         wait_until(|| result.borrow().is_some());
-        assert_eq!(*result.borrow(), Some(true), "fixture script failed");
+        assert_eq!(*result.borrow(), Some(Ok(())), "fixture script failed: {}", script.chars().take(100).collect::<String>());
+    }
+
+    /// Real WebKit media decisions, visibility and window restrictions on localhost.
+    #[test]
+    #[ignore = "requires Xvfb, WebKit and an audio sink"]
+    fn web_permissions_browser_regression() {
+        use base64::Engine;
+        use crate::bundle::WebPermissions;
+        use super::super::web_policy;
+        gtk4::init().unwrap();
+        let fixture = Fixture::new();
+        let window = gtk4::Window::builder().default_width(640).default_height(480).build();
+        let row = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        window.set_child(Some(&row));
+        window.present();
+        let make = |config: &WebPermissions, ephemeral: bool| {
+            let view = web_policy::create(config, ephemeral);
+            webkit6::prelude::WebViewExt::settings(&view).unwrap().set_enable_mock_capture_devices(true);
+            web_policy::install(&view, config.clone(), Some(&fixture.root), &fixture.root, "test-key");
+            web_policy::install_recovery(&view, &fixture.root, "test-key", None);
+            view.load_uri(&format!("{}/plain", fixture.root));
+            row.append(&view);
+            wait_until(|| view.is_mapped() && !view.is_loading() && view.uri().is_some());
+            view
+        };
+        // A second of audible PCM, rather than a muted/no-audio video, tests policy.
+        let samples = 8000u32;
+        let mut wav = Vec::new();
+        wav.extend(b"RIFF"); wav.extend((36 + samples * 2).to_le_bytes()); wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes()); wav.extend(1u16.to_le_bytes()); wav.extend(1u16.to_le_bytes());
+        wav.extend(8000u32.to_le_bytes()); wav.extend(16000u32.to_le_bytes());
+        wav.extend(2u16.to_le_bytes()); wav.extend(16u16.to_le_bytes()); wav.extend(b"data"); wav.extend((samples * 2).to_le_bytes());
+        for index in 0..samples { wav.extend((if index % 20 < 10 { 2000i16 } else { -2000i16 }).to_le_bytes()); }
+        let wav = base64::engine::general_purpose::STANDARD.encode(wav);
+        let play = |view: &webkit6::WebView, label: &str| {
+            // Page-authored startup script: evaluate_javascript forces user
+            // activation and would invalidate an unattended-autoplay probe.
+            view.load_html(&format!(r#"<body><script>window.testAudio = new Audio('data:audio/wav;base64,{wav}');
+                testAudio.play().then(() => fetch('/{label}-ok'), error => fetch('/{label}-' + error.name));</script>"#), Some(&fixture.root));
+        };
+        for ephemeral in [false, true] {
+            let view = make(&WebPermissions::default(), ephemeral);
+            assert_eq!(view.website_policies().unwrap().autoplay(), webkit6::AutoplayPolicy::Allow);
+            assert!(!view.is_muted());
+            let label = if ephemeral { "ephemeral-audio" } else { "audio" };
+            play(&view, label);
+            wait_until(|| fixture.count(&format!("/{label}-ok")) == 1 || fixture.count(&format!("/{label}-NotAllowedError")) == 1 || fixture.count(&format!("/{label}-NotSupportedError")) == 1);
+            assert_eq!(fixture.count(&format!("/{label}-ok")), 1, "audible playback requires explicit Allow on every session type");
+            view.set_visible(false);
+            pump(Duration::from_millis(100));
+            assert!(view.is_muted(), "hidden layout content must be muted");
+            view.set_visible(true);
+            pump(Duration::from_millis(100));
+            assert!(!view.is_muted());
+            // No modal dialog can block a script, even without keyboard or mouse.
+            evaluate(&view, "alert('fixture'); if (confirm('fixture')) throw new Error('confirm'); if (prompt('fixture') !== null) throw new Error('prompt');");
+            evaluate(&view, "if (!document.body.requestFullscreen) fetch('/fullscreen-denied'); else document.body.requestFullscreen().then(()=>fetch('/fullscreen-allowed'),()=>fetch('/fullscreen-denied'));");
+            wait_until(|| fixture.count("/fullscreen-denied") >= 1);
+            assert_eq!(fixture.count("/fullscreen-allowed"), 0);
+            evaluate(&view, "navigator.mediaDevices.getUserMedia({audio:true}).then(s=>{s.getTracks().forEach(t=>t.stop());fetch('/default-capture-allowed')},()=>fetch('/default-capture-denied'));");
+            wait_until(|| fixture.count("/default-capture-denied") >= if ephemeral { 2 } else { 1 });
+            assert_eq!(fixture.count("/default-capture-allowed"), 0);
+            // A new window navigates the original block.
+            evaluate(&view, "window.open('/new-window', '_blank');");
+            wait_until(|| view.uri().is_some_and(|uri| uri.ends_with("/new-window")));
+            evaluate(&view, "document.body.innerHTML='<form method=post action=/post-window target=_blank><input name=token value=kept></form>'; document.querySelector('form').submit();");
+            wait_until(|| fixture.count("/post-window:POST:token=kept") >= if ephemeral { 2 } else { 1 });
+            assert_eq!(fixture.count("/post-window:GET:"),0,"new-window routing must retain form submissions");
+            super::super::load_webview_url(&view, &format!("{}/café?q=é", fixture.root), &fixture.root, "test-key");
+            wait_until(|| fixture.count("/caf%C3%A9") >= if ephemeral { 2 } else { 1 });
+            assert_eq!(fixture.count("/caf%C3%83%C2%A9"),0,"configured Unicode URLs must retain UTF-8 encoding");
+            row.remove(&view);
+        }
+        let disabled = WebPermissions {audio:false,autoplay:false,..WebPermissions::default()};
+        let denied = make(&disabled, false);
+        assert!(denied.is_muted());
+        assert_eq!(denied.website_policies().unwrap().autoplay(), webkit6::AutoplayPolicy::Deny);
+        // Unmute only this fixture to distinguish an autoplay denial from mute.
+        denied.set_is_muted(false);
+        play(&denied, "disabled-audio");
+        wait_until(|| fixture.count("/disabled-audio-NotAllowedError") == 1);
+        denied.set_visible(false); denied.set_visible(true);
+        assert!(denied.is_muted(), "an entity with Sound unchecked stays muted when activated");
+        row.remove(&denied);
+
+        let capture = make(&WebPermissions { microphone:true,camera:true,protected_media:true,..WebPermissions::default() }, false);
+        // Hosted WebKit builds may omit EME/CDMs entirely. Verify the native
+        // setting without assuming an installed protected-media key system.
+        assert!(webkit6::prelude::WebViewExt::settings(&capture).unwrap().enables_encrypted_media());
+        evaluate(&capture, "navigator.mediaDevices.getUserMedia({audio:true,video:true}).then(s=>{s.getTracks().forEach(t=>t.stop());fetch('/capture-allowed')},e=>fetch('/capture-error-'+e.name));");
+        wait_until(|| fixture.count("/capture-allowed") == 1 || fixture.count("/capture-error-NotAllowedError") == 1 || fixture.count("/capture-error-NotFoundError") == 1);
+        assert_eq!(fixture.count("/capture-allowed"), 1, "explicit capture grants must resolve without a permission dialog");
+        // Origin changes cannot carry capture grants to another website.
+        capture.load_uri(&format!("{}/other-origin", fixture.root.replace("127.0.0.1", "localhost")));
+        wait_until(|| !capture.is_loading() && capture.uri().is_some_and(|uri| uri.ends_with("/other-origin")));
+        evaluate(&capture, "navigator.mediaDevices.getUserMedia({audio:true}).then(s=>{s.getTracks().forEach(t=>t.stop());fetch('/wrong-origin-allowed')},()=>fetch('/wrong-origin-denied'));");
+        wait_until(|| fixture.count("/wrong-origin-denied") == 1);
+        assert_eq!(fixture.count("/wrong-origin-allowed"), 0);
+        // Failure recovery waits until a layout is visible and reloads its page.
+        capture.set_visible(false);
+        let before = fixture.count("/other-origin");
+        capture.terminate_web_process();
+        pump(Duration::from_secs(3));
+        assert_eq!(fixture.count("/other-origin"), before);
+        capture.set_visible(true);
+        wait_until(|| fixture.count("/other-origin") == before + 1);
+        row.remove(&capture);
+        // A real refused connection must remain failed until a visible retry
+        // reaches the recovered server. It must never release on-load actions.
+        let reserved = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = reserved.local_addr().unwrap();
+        let unavailable = format!("http://{address}");
+        drop(reserved);
+        let failed = web_policy::create(&WebPermissions::default(), false);
+        web_policy::install(&failed, WebPermissions::default(), Some(&unavailable), &fixture.root, "test-key");
+        let auth = super::install(&failed, serde_json::from_value(serde_json::json!({
+            "login_detect_url":"/auth","steps":[{"type":"click","selector":"#login"}],"session_check_interval_ms":0
+        })).unwrap(), &fixture.root, "test-key").unwrap();
+        let readiness = auth.readiness();
+        let actions = super::super::web_actions::Actions::new(&failed, serde_json::from_value(serde_json::json!({
+            "revision":"failure", "on_load":[{"type":"javascript", "script":format!("await fetch('{}/after-recovery');",fixture.root)}], "groups":{}
+        })).unwrap(), Some(readiness.clone()), &fixture.root, "test-key");
+        web_policy::install_recovery(&failed, &fixture.root, "test-key", None);
+        failed.load_uri(&format!("{unavailable}/outage"));
+        row.append(&failed);
+        wait_until(|| web_policy::page_failed(&failed) && !failed.is_loading());
+        pump(Duration::from_millis(1300));
+        assert!(!readiness.ready(&failed));
+        assert_eq!(fixture.count("/after-recovery"), 0, "a failed destination cannot run on-load steps");
+        failed.set_visible(false);
+        let starts = Rc::new(Cell::new(0));
+        let observed = starts.clone();
+        failed.connect_load_changed(move |_, event| { if event == webkit6::LoadEvent::Started { observed.set(observed.get()+1); } });
+        pump(Duration::from_secs(3));
+        assert_eq!(starts.get(),0,"hidden failed pages wait for activation");
+        let recovered = Fixture::from_listener(TcpListener::bind(address).unwrap());
+        failed.set_visible(true);
+        wait_until(|| recovered.count("/outage") >= 1 && !web_policy::page_failed(&failed) && !failed.is_loading());
+        wait_until(|| fixture.count("/after-recovery") == 1);
+        assert!(readiness.ready(&failed));
+        drop(actions);
+        row.remove(&failed);
+        let inline = web_policy::create(&WebPermissions::default(), false);
+        let html = format!("<script>fetch('{}/html-loaded',{{mode:'no-cors'}});</script>",fixture.root);
+        web_policy::install(&inline, WebPermissions::default(), None, &fixture.root, "test-key");
+        web_policy::install_recovery(&inline, &fixture.root, "test-key", Some(&html));
+        inline.load_html(&html, None);
+        row.append(&inline);
+        wait_until(|| fixture.count("/html-loaded") == 1);
+        inline.terminate_web_process();
+        wait_until(|| fixture.count("/html-loaded") == 2);
+        row.remove(&inline);
+        window.close();
+        pump(Duration::from_millis(100));
     }
 
     fn cell(fixture: &Fixture, block: &str, steps: serde_json::Value) -> crate::bundle::BundleCell {
@@ -927,6 +1139,9 @@ mod tests {
         let (_, login_wv) = browser(&login_path);
         let readiness = super::super::WARM_WEBVIEWS.with(|pool| pool.borrow().values()
             .find(|entry| entry.webview == login_wv).unwrap().smart_url.as_ref().unwrap().readiness());
+        let unavailable_group = TcpListener::bind("127.0.0.1:0").unwrap();
+        let failed_group_url = format!("http://{}/group-load-failure", unavailable_group.local_addr().unwrap());
+        drop(unavailable_group);
         let login_actions = super::super::web_actions::Actions::new(&login_wv,
             serde_json::from_value(serde_json::json!({"revision":"login-path", "on_load":[],
                 "groups":{"custom":[{"type":"navigate","url":"/auth/manual"},
@@ -934,7 +1149,9 @@ mod tests {
                     {"type":"javascript","script":"await fetch('/group-under-login');"},
                     {"type":"navigate","url":"/done"}],
                     "leave_login":[{"type":"navigate","url":"/auth/manual"},{"type":"wait","delay_ms":200},
-                        {"type":"javascript","script":"await fetch('/group-left-at-login');"}]}})).unwrap(),
+                        {"type":"javascript","script":"await fetch('/group-left-at-login');"}],
+                    "load_failure":[{"type":"navigate","url":failed_group_url},
+                        {"type":"javascript","script":format!("await fetch('{}/after-failed-group',{{mode:'no-cors'}});",fixture.root)}]}})).unwrap(),
             Some(readiness.clone()), "http://frame.invalid", "test-key");
         row.append(&login_wv);
         wait_until(|| readiness.ready(&login_wv));
@@ -962,12 +1179,12 @@ mod tests {
         wait_until(|| fixture.count("/entity-login-path") == 1 && readiness.ready(&login_wv));
         result.replace(None);
         let completed = result.clone();
-        login_actions.invoke("leave_login", "login-path", move |r| { completed.replace(Some(r)); }).unwrap();
-        // Signal a group-owned load error before its first navigation completes.
-        let error = glib::Error::new(gio::IOErrorEnum::Failed, "Fixture group load failure");
-        login_wv.emit_by_name::<bool>("load-failed", &[&webkit6::LoadEvent::Started, &"about:blank", &error]);
+        // A real failed group navigation emits both load-failed and Finished.
+        login_actions.invoke("load_failure", "login-path", move |r| { completed.replace(Some(r)); }).unwrap();
         wait_until(|| result.borrow().is_some());
         assert!(result.borrow().as_ref().unwrap().is_err());
+        assert_eq!(fixture.count("/after-failed-group"),0,"failed navigation stops later group actions");
+        login_wv.load_uri(&format!("{}/done", fixture.root));
         wait_until(|| readiness.ready(&login_wv));
         drop(login_actions);
 
@@ -1000,7 +1217,7 @@ mod tests {
         let recovery_meta = |cell: &crate::bundle::BundleCell| super::super::WebEventMeta {
             server_url: fixture.root.clone(), kiosk_key:"test-key".into(), tenant_slug:"default".into(),
             kiosk_id:"test".into(), display_id:"display".into(), view_id:cell.view_id.clone(), entity_id:None,
-            actions:super::super::resolved_web_actions(cell),
+            actions:super::super::resolved_web_actions(cell), web_permissions:cell.web_permissions.clone(),
         };
         let recovery_html = "<input id=recovered value=kept>";
         let recovered_wv = super::super::ensure_web(recovery_key.clone(), super::super::WebSource::Html(recovery_html),

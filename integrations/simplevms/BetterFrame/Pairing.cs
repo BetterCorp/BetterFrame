@@ -21,6 +21,7 @@ public sealed partial class BetterFramePlugin
   private readonly SemaphoreSlim _pairingGate = new(1);
   private static string NewProof() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
   private static string Challenge(string verifier) => Convert.ToBase64String(SHA256.HashData(Encoding.ASCII.GetBytes(verifier))).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+  private static string RtspBindAddress(string host) => host is "*" or "+" ? IPAddress.Any.ToString() : host;
   private static string LocalListenerHost(string host)
   {
     host = host.Trim('[', ']');
@@ -30,6 +31,7 @@ public sealed partial class BetterFramePlugin
   }
   internal static Dictionary<string, string> PairingMediaAddresses(string bind, int port, string scheme, Uri http, Uri returnUri)
   {
+    bind = RtspBindAddress(bind);
     var local = new UriBuilder(scheme, LocalListenerHost(bind), port).Uri.AbsoluteUri.TrimEnd('/');
     var external = returnUri.IsLoopback || IPAddress.IsLoopback(IPAddress.Parse(bind)) ? "" : new UriBuilder(scheme, returnUri.Host, port).Uri.AbsoluteUri.TrimEnd('/');
     var localHttpUri = new UriBuilder(http) { Host = LocalListenerHost(http.Host) }.Uri;

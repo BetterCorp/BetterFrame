@@ -20,24 +20,29 @@ public sealed partial class IntegrationTests
   [TestCase("192.168.10.20", "http://192.168.10.20:8555", "192.168.10.20", "")]
   [TestCase("0:0:0:0:0:0:0:0", "http://[0:0:0:0:0:0:0:0]:8555", "::1", "::1")]
   [TestCase("127.0.0.2", "http://127.0.0.2:8555", "127.0.0.2", "")]
+  [TestCase("*", "http://127.0.0.1:8555", "127.0.0.1", "127.0.0.1")]
+  [TestCase("+", "http://127.0.0.1:8555", "127.0.0.1", "127.0.0.1")]
   public void PairingAdvertisesConfiguredLocalBindHosts(string bind, string http, string expectedRtspHost, string expectedHttpHost)
   {
     var query = BetterFramePlugin.PairingMediaAddresses(bind, 8554, "rtsp", new Uri(http), new Uri("https://recorder.test/betterframe-pairing-return"));
     var local = new Uri(query["local_address"]); Assert.That(local.Host.Trim('[', ']'), Is.EqualTo(expectedRtspHost)); Assert.That(local.Port, Is.EqualTo(8554));
     if (expectedHttpHost == "") Assert.That(query["local_http_address"], Is.Empty);
     else { var browser = new Uri(query["local_http_address"]); Assert.That(browser.Host.Trim('[', ']'), Is.EqualTo(expectedHttpHost)); Assert.That(browser.Port, Is.EqualTo(8555)); }
-    if (IPAddress.IsLoopback(IPAddress.Parse(bind))) Assert.That(query["external_address"], Is.Empty);
+    if (IPAddress.TryParse(bind, out var address) && IPAddress.IsLoopback(address)) Assert.That(query["external_address"], Is.Empty);
   }
-  [TestCase("listenAddress", "127.0.0.2")]
-  [TestCase("rtspPort", "9554")]
-  [TestCase("httpListenUrl", "http://127.0.0.1:9555")]
-  [TestCase("tlsCertificate", "replacement.pem")]
-  public async Task PairingRequiresRestartAfterListenerConfigurationChanges(string key, string value)
+  [TestCase("listenAddress", "127.0.0.2", "127.0.0.1")]
+  [TestCase("rtspPort", "9554", "127.0.0.1")]
+  [TestCase("httpListenUrl", "http://127.0.0.1:9555", "127.0.0.1")]
+  [TestCase("tlsCertificate", "replacement.pem", "127.0.0.1")]
+  [TestCase("listenAddress", "127.0.0.2", "*")]
+  [TestCase("listenAddress", "127.0.0.2", "+")]
+  public async Task PairingRequiresRestartAfterListenerConfigurationChanges(string key, string value, string initialBind)
   {
     using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
     var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
     static int Port() { var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop(); return port; }
     var config = new Config(); config.Set("rtspPort", Port().ToString()); config.Set("httpListenUrl", $"http://127.0.0.1:{Port()}"); config.Set("betterFrameUrl", "https://frame.test");
+    config.Set("listenAddress", initialBind);
     var plugin = new BetterFramePlugin(); plugin.Initialize(new PluginContext { Config = config, Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = new Registry(), EventBus = new Bus(), StreamTap = new Tap() });
     try {
       Assert.That((await plugin.StartAsync(stop.Token)).IsT0, Is.True);

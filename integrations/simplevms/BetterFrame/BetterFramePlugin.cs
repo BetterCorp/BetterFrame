@@ -21,7 +21,7 @@ public sealed partial class BetterFramePlugin : IPlugin, IPluginSettings, IPlugi
   private NativeRtspServer? _rtsp;
   private sealed record ListenerSettings(string Bind, int Port, string Certificate, string Key, string Http);
   private ListenerSettings? _listeners;
-  private ListenerSettings ListenerConfiguration() => new(Config("listenAddress", "127.0.0.1"), int.Parse(Config("rtspPort", "8554")), Config("tlsCertificate"), Config("tlsKey"), Config("httpListenUrl", "http://127.0.0.1:8555"));
+  private ListenerSettings ListenerConfiguration() => new(RtspBindAddress(Config("listenAddress", "127.0.0.1")), int.Parse(Config("rtspPort", "8554")), Config("tlsCertificate"), Config("tlsKey"), Config("httpListenUrl", "http://127.0.0.1:8555"));
   private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(15) };
   private readonly object _gate = new();
   private bool _force;

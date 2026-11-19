@@ -2,11 +2,12 @@ diff --git a/src/Shared.Models/IPluginPairing.cs b/src/Shared.Models/IPluginPair
 new file mode 100644
 --- /dev/null
 +++ b/src/Shared.Models/IPluginPairing.cs
-@@ -0,0 +1,7 @@
+@@ -0,0 +1,8 @@
 +namespace Shared.Models;
 +
 +public interface IPluginPairing
 +{
++  bool IsTrustedPairingAdministration(string origin, string proof) => false;
 +  Task<OneOf<IReadOnlyDictionary<string, string>, Error>> BeginPairingAsync(IReadOnlyDictionary<string, string> values, CancellationToken ct);
 +  Task<OneOf<IReadOnlyDictionary<string, string>, Error>> CompletePairingAsync(IReadOnlyDictionary<string, string> values, CancellationToken ct);
 +}
@@ -14,7 +15,7 @@ diff --git a/src/Server.Api/Endpoints/BetterFramePairingEndpoint.cs b/src/Server
 new file mode 100644
 --- /dev/null
 +++ b/src/Server.Api/Endpoints/BetterFramePairingEndpoint.cs
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,57 @@
 +using System.Net;
 +using System.Text.Json;
 +using Server.Core;
@@ -38,23 +39,24 @@ new file mode 100644
 +    app.MapPost("/api/v1/plugins/bettercorp-betterframe/pairing/begin", (HttpContext ctx, CancellationToken ct) => Handle(ctx, false, ct));
 +    app.MapPost("/api/v1/plugins/bettercorp-betterframe/pairing/complete", (HttpContext ctx, CancellationToken ct) => Handle(ctx, true, ct));
 +  }
-+  public static bool IsAllowed(HttpContext context, bool configWriter, bool localAdministration)
++  public static bool IsAllowed(HttpContext context, bool configWriter, bool localAdministration, bool trustedPrivateAdministration = false)
 +  {
 +    if (!HttpMethods.IsPost(context.Request.Method) || !context.Request.HasJsonContentType()) return false;
 +    if (!Uri.TryCreate(context.Request.Headers.Origin.ToString(), UriKind.Absolute, out var origin)
-+      || origin.GetLeftPart(UriPartial.Authority) != $"{context.Request.Scheme}://{context.Request.Host}") return false;
-+    return configWriter || (localAdministration && context.Connection.RemoteIpAddress is { } ip && IPAddress.IsLoopback(ip));
++      || (origin.GetLeftPart(UriPartial.Authority) != $"{context.Request.Scheme}://{context.Request.Host}" && !trustedPrivateAdministration)) return false;
++    return configWriter || (localAdministration && (trustedPrivateAdministration || context.Connection.RemoteIpAddress is { } ip && IPAddress.IsLoopback(ip)));
 +  }
 +  private static async Task<IResult> Handle(HttpContext context, bool complete, CancellationToken ct)
 +  {
 +    var host = context.RequestServices.GetRequiredService<IPluginHost>();
++    var entry = host.Plugins.FirstOrDefault(p => p.Metadata.Id == "bettercorp-betterframe");
++    if (entry?.Plugin is not IPluginPairing pairing) return Results.NotFound();
++    var trustedProxy = pairing.IsTrustedPairingAdministration(context.Request.Headers.Origin.ToString(), context.Request.Headers["X-BetterFrame-Pairing-Admin"].ToString());
 +    var identity = context.Items["Identity"] as string;
 +    var writer = host.AuthProviders.Count > 0 && !string.IsNullOrEmpty(identity) && host.AuthzProviders.Count > 0
 +      && await host.AuthzProviders[0].AuthorizeAsync(identity, ConfigOperation, null, ct);
-+    if (!IsAllowed(context, writer, host.AuthProviders.Count == 0)) return ApiResponse.Err(
++    if (!IsAllowed(context, writer, host.AuthProviders.Count == 0, trustedProxy)) return ApiResponse.Err(
 +      new Error(Result.Forbidden, new DebugTag(ModuleIds.Api, 0x0020), "Pairing requires same-origin recorder administration. Sign in with configuration-write permission or use the recorder's local browser."));
-+    var entry = host.Plugins.FirstOrDefault(p => p.Metadata.Id == "bettercorp-betterframe");
-+    if (entry?.Plugin is not IPluginPairing pairing) return Results.NotFound();
 +    if (context.Request.ContentLength > 8192) return Results.BadRequest();
 +    using var body = new MemoryStream(); var buffer = new byte[4096]; int read;
 +    while ((read = await context.Request.Body.ReadAsync(buffer, ct)) > 0) {
@@ -248,7 +250,7 @@ diff --git a/tests/Tests.Unit/Api/BetterFramePairingSecurityTests.cs b/tests/Tes
 new file mode 100644
 --- /dev/null
 +++ b/tests/Tests.Unit/Api/BetterFramePairingSecurityTests.cs
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,55 @@
 +using System.Net;
 +using Microsoft.AspNetCore.Http;
 +using NUnit.Framework;
@@ -278,6 +280,24 @@ new file mode 100644
 +  {
 +    var context = Context(); context.Request.Headers.Origin = origin; context.Request.ContentType = contentType; context.Request.Method = method;
 +    Assert.That(BetterFramePairingEndpoint.IsAllowed(context, true, true), Is.False);
++  }
++  [TestCase(false, true, true)]
++  [TestCase(false, false, false)]
++  [TestCase(true, false, true)]
++  public void ATrustedPrivateProxyRetainsConfiguredAuthenticationRequirements(bool writer, bool local, bool expected)
++  {
++    var context = Context(); context.Request.Scheme = "http"; context.Request.Host = new HostString("internal", 8080);
++    context.Connection.RemoteIpAddress = IPAddress.Parse("172.20.0.2");
++    Assert.That(BetterFramePairingEndpoint.IsAllowed(context, writer, local, true), Is.EqualTo(expected));
++    Assert.That(BetterFramePairingEndpoint.IsAllowed(context, false, local, false), Is.False);
++  }
++  [TestCase("", "application/json", "POST")]
++  [TestCase("https://recorder.test", "text/plain", "POST")]
++  [TestCase("https://recorder.test", "application/json", "GET")]
++  public void ATrustedProxyStillRequiresOriginJsonAndPost(string origin, string contentType, string method)
++  {
++    var context = Context(); context.Request.Headers.Origin = origin; context.Request.ContentType = contentType; context.Request.Method = method;
++    Assert.That(BetterFramePairingEndpoint.IsAllowed(context, true, true, true), Is.False);
 +  }
 +  private static DefaultHttpContext Context()
 +  {

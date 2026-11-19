@@ -15,6 +15,7 @@ public sealed partial class BetterFramePlugin
   private sealed record PendingPairing(Uri Frame, string State, string Verifier, DateTimeOffset Expires);
   private sealed record RecoveryConnections(string ActiveTokenHash, PairedConnection[] Connections);
   private string _pairedConnectionPath = "";
+  private string _pairingAdministrationPath = "";
   private string _stagedConnectionPath = "";
   private PairedConnection? _pairedConnection;
   private PairedConnection? _stagedConnection;
@@ -24,6 +25,21 @@ public sealed partial class BetterFramePlugin
   private readonly System.Threading.Channels.Channel<bool> _pairingRecovery = System.Threading.Channels.Channel.CreateBounded<bool>(1);
   private PendingPairing? _pendingPairing;
   private readonly SemaphoreSlim _pairingGate = new(1);
+  private sealed record ProxyAdministration(string Origin, string Token);
+  public bool IsTrustedPairingAdministration(string origin, string proof)
+  {
+    if (origin.Length > 1024 || proof.Length is < 32 or > 256) return false;
+    try {
+      var file = new FileInfo(_pairingAdministrationPath);
+      if (!file.Exists || file.Length > 4096) return false;
+      var admin = JsonSerializer.Deserialize<ProxyAdministration>(File.ReadAllText(file.FullName), CatalogBuilder.Json);
+      if (admin == null || admin.Token.Length is < 32 or > 256) return false;
+      if (!Uri.TryCreate(admin.Origin, UriKind.Absolute, out var configured) || configured.Scheme != "https" || configured.UserInfo != "" || configured.AbsolutePath != "/" || configured.Query != "" || configured.Fragment != "") return false;
+      if (!Uri.TryCreate(origin, UriKind.Absolute, out var request) || request.UserInfo != "" || request.AbsolutePath != "/" || request.Query != "" || request.Fragment != ""
+        || request.GetLeftPart(UriPartial.Authority) != configured.GetLeftPart(UriPartial.Authority)) return false;
+      return CryptographicOperations.FixedTimeEquals(SHA256.HashData(Encoding.UTF8.GetBytes(proof)), SHA256.HashData(Encoding.UTF8.GetBytes(admin.Token)));
+    } catch { return false; }
+  }
   private static string NewProof() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
   private static string Challenge(string verifier) => Convert.ToBase64String(SHA256.HashData(Encoding.ASCII.GetBytes(verifier))).TrimEnd('=').Replace('+', '-').Replace('/', '_');
   private static string RtspBindAddress(string host) => host is "*" or "+" ? IPAddress.Any.ToString() : host;

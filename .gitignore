@@ -72,3 +72,4 @@ server/src/shared/db/MULTI_TENANT.md
 # Native SimpleVMS plugin build output
 integrations/simplevms/**/bin/
 integrations/simplevms/**/obj/
+integrations/simplevms/**/__pycache__/

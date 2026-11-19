@@ -12,6 +12,24 @@ namespace BetterFrame.Tests;
 
 public sealed partial class IntegrationTests
 {
+  [Test] public void PrivateProxyAdministrationRequiresItsProtectedSecretAndExactHttpsOrigin()
+  {
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    var plugin = new BetterFramePlugin(); plugin.Initialize(new PluginContext { Config = new Config(), Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = new Registry(), EventBus = new Bus(), StreamTap = new Tap() });
+    var token = new string('x', 43); var origin = "https://recorder.test:8080";
+    var path = Path.Combine(directory, "betterframe", "proxy-admin.json");
+    try {
+      Assert.That(plugin.IsTrustedPairingAdministration(origin, token), Is.False);
+      File.WriteAllText(path, JsonSerializer.Serialize(new { origin, token }));
+      Assert.That(plugin.IsTrustedPairingAdministration(origin, token), Is.True);
+      foreach (var wrong in new[] { "https://evil.test:8080", "http://recorder.test:8080", "https://recorder.test", origin + "/other", "null" })
+        Assert.That(plugin.IsTrustedPairingAdministration(wrong, token), Is.False);
+      Assert.That(plugin.IsTrustedPairingAdministration(origin, new string('y', 43)), Is.False);
+      Assert.That(plugin.IsTrustedPairingAdministration(origin, ""), Is.False);
+      Assert.That(plugin.GetValues().Values, Does.Not.Contain(token));
+      File.WriteAllText(path, "{}"); Assert.That(plugin.IsTrustedPairingAdministration(origin, token), Is.False);
+    } finally { Directory.Delete(directory, true); }
+  }
   [Test] public void PairingDirectorySynchronizationWorksAndFailsClosedForMissingDirectories()
   {
     if (OperatingSystem.IsWindows()) Assert.Ignore("Unix directory synchronization");

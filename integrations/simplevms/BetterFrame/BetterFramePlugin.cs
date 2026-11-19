@@ -35,6 +35,7 @@ public sealed partial class BetterFramePlugin : IPlugin, IPluginSettings, IPlugi
     if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     _outbox = new CatalogOutbox(directory); _access = new ReaderAccessCache(directory);
     _pairedConnectionPath = Path.Combine(directory, "connection.json");
+    _pairingAdministrationPath = Path.Combine(directory, "proxy-admin.json");
     if (File.Exists(_pairedConnectionPath)) _pairedConnection = JsonSerializer.Deserialize<PairedConnection>(File.ReadAllText(_pairedConnectionPath), CatalogBuilder.Json);
     _stagedConnectionPath = Path.Combine(directory, "pending-connection.json");
     if (File.Exists(_stagedConnectionPath)) _stagedConnection = JsonSerializer.Deserialize<PairedConnection>(File.ReadAllText(_stagedConnectionPath), CatalogBuilder.Json);

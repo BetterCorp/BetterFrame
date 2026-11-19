@@ -159,7 +159,7 @@ def main():
         raise ConfigurationError("Unexpected recorder data mount")
     edge_mounts = {m["Target"]: m for m in edge["TaskTemplate"]["ContainerSpec"].get("Mounts", [])}
     caddy = Path(edge_mounts["/etc/caddy/Caddyfile"]["Source"])
-    if caddy != Path("/var/lib/controlroom-ca/edge/Caddyfile") or caddy.is_symlink():
+    if caddy != Path("/var/lib/controlroom/edge/Caddyfile") or caddy.is_symlink():
         raise ConfigurationError("Unexpected private proxy configuration path")
     manifest = Path("/var/lib/controlroom-ca/private-ca.stack.json")
     folder = Path("/var/lib/controlroom/data/vms/betterframe")

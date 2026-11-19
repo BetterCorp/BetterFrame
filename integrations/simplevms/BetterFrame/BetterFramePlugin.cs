@@ -209,9 +209,9 @@ public sealed partial class BetterFramePlugin : IPlugin, IPluginSettings, IPlugi
     ("controlRoomUrl", "ControlRoom policy URL", "string", ""), ("controlRoomKey", "ControlRoom service key", "password", "")
   ];
   public IReadOnlyList<SettingGroup> GetSchema() => [new() { Key = "betterframe", Order = 0, Label = "BetterFrame",
-    Description = _pairedConnection == null ? "Enter your BetterFrame URL and pair. Credentials are generated automatically." : "Paired with BetterFrame. Pair again to reconnect; existing BF cameras and layouts are preserved.",
+    Description = _stagedConnection != null ? "Connection activation is pending. Pair again to cancel the pending handoff and start a new pairing; the active connection is retained." : _pairedConnection == null ? "Enter your BetterFrame URL and pair. Credentials are generated automatically." : "Paired with BetterFrame. Pair again to reconnect; existing BF cameras and layouts are preserved.",
     Fields = Fields.Where(f => f.Key is "name" or "betterFrameUrl").Select((f, i) => new SettingField { Key = f.Key, Label = f.Label, Type = f.Type, Order = i, DefaultValue = f.Default })
-      .Append(new SettingField { Key = "pair", Label = "Pair with BetterFrame", Type = "pairing", Order = 2 }).ToArray() },
+      .Append(new SettingField { Key = "pair", Label = _stagedConnection != null ? "Cancel pending pairing and pair again" : "Pair with BetterFrame", Type = "pairing", Order = 2 }).ToArray() },
     new() { Key = "advanced", Order = 1, Label = "Advanced media and policy", Description = "Listener addresses, certificates and optional recorder policy. Pairing credentials are managed automatically.",
       Fields = Fields.Where(f => f.Key is not ("name" or "betterFrameUrl")).Select((f, i) => new SettingField { Key = f.Key, Label = f.Label, Type = f.Type, Order = i, DefaultValue = f.Default }).ToArray() },
     new() { Key = "displayGroups", Order = 2, Label = "Display groups", Description = "Groups create read-only layouts in BetterFrame. Assign cameras through each camera's BetterFrame settings. Recording policies are independent.",

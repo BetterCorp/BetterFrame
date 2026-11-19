@@ -121,8 +121,10 @@ export async function claimSimpleVmsPairing(repo: Repository, secrets: SecretsAp
 }
 
 /** The recorder confirms durable storage with its new secret; activation is safely retryable. */
+export class SimpleVmsActivationError extends Error {}
+
 export async function activateSimpleVmsPairing(repo: Repository, secrets: SecretsApi, input: { instanceId: string; sourceId: string; integrationToken: string }): Promise<string> {
-  if (!proof.test(input.integrationToken) || !input.instanceId || input.instanceId.length > 128 || !input.sourceId || input.sourceId.length > 128) throw new Error("Invalid activation proof");
+  if (!proof.test(input.integrationToken) || !input.instanceId || input.instanceId.length > 128 || !input.sourceId || input.sourceId.length > 128) throw new SimpleVmsActivationError("Invalid activation proof");
   return repo.transact(async () => {
     const key = simpleVmsTokenHash(input.integrationToken);
     const pending = await repo.adapter.get<{ instance_id: string; grant_encrypted: string; expires_at: string; claimed_at: string | null; activated_at: string | null; previous_key_hash: string | null }>(
@@ -131,10 +133,10 @@ export async function activateSimpleVmsPairing(repo: Repository, secrets: Secret
     const previous = await repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE instance_id = ? FOR UPDATE", [input.instanceId]);
     // Also works after expired grant cleanup, but never restores a superseded token or deleted recorder.
     if (previous?.id === input.sourceId && previous.ingest_key_hash === key) return input.sourceId;
-    if (!pending || !pending.claimed_at || pending.activated_at || pending.instance_id !== input.instanceId || new Date(pending.expires_at).getTime() <= Date.now()) throw new Error("Activation expired or superseded; pair again");
+    if (!pending || !pending.claimed_at || pending.activated_at || pending.instance_id !== input.instanceId || new Date(pending.expires_at).getTime() <= Date.now()) throw new SimpleVmsActivationError("Activation expired or superseded; pair again");
     const grant = JSON.parse(secrets.decryptString(pending.grant_encrypted, "simple-vms-pairing")) as SimpleVmsPairGrant;
-    if (grant.sourceId !== input.sourceId || (previous?.ingest_key_hash ?? null) !== pending.previous_key_hash || (previous && previous.id !== grant.sourceId)) throw new Error("Connection changed; pair again");
-    if (!grant.externalAddress && await repo.adapter.get("SELECT 1 FROM simple_vms_linked_kiosks WHERE source_id = ? AND use_local_address = false", [grant.sourceId])) throw new Error("A network kiosk is using this media address");
+    if (grant.sourceId !== input.sourceId || (previous?.ingest_key_hash ?? null) !== pending.previous_key_hash || (previous && previous.id !== grant.sourceId)) throw new SimpleVmsActivationError("Connection changed; pair again");
+    if (!grant.externalAddress && await repo.adapter.get("SELECT 1 FROM simple_vms_linked_kiosks WHERE source_id = ? AND use_local_address = false", [grant.sourceId])) throw new SimpleVmsActivationError("A network kiosk is using this media address");
     const deviceId = previous?.device_id ?? uuidv7();
     if (!previous) await repo.adapter.run(`INSERT INTO camera_devices(id, name, type, host, port, discovery_runner)
       VALUES (?, ?, 'simplevms', ?, ?, 'server')`, [deviceId, grant.name, new URL(grant.externalAddress || grant.localAddress).hostname,

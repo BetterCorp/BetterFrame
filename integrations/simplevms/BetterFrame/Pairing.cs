@@ -63,13 +63,15 @@ public sealed partial class BetterFramePlugin
   }
   private OneOf<IReadOnlyDictionary<string, string>, Error> BeginPairing(IReadOnlyDictionary<string, string> values)
   {
-    if (_stagedConnection != null) return Error.Create(0x10bf, 3, Result.BadRequest, "The previous connection is still being activated. Try again shortly.");
     if (_listeners != ListenerConfiguration()) return Error.Create(0x10bf, 3, Result.BadRequest, "Restart the BetterFrame plugin to apply media listener changes before pairing.");
     var frame = Authority(Config("betterFrameUrl"));
     if (frame.UserInfo != "" || frame.AbsolutePath != "/" || frame.Query != "" || frame.Fragment != "") throw new ArgumentException("Use the BetterFrame server URL");
     var returnUri = new Uri(values["returnUrl"], UriKind.Absolute);
     if (returnUri.Scheme is not ("http" or "https") || returnUri.UserInfo != "" || returnUri.Query != "" || returnUri.Fragment != ""
       || returnUri.AbsolutePath != "/betterframe-pairing-return") throw new ArgumentException("Invalid SimpleVMS return URL");
+    // Begin is guarded by the host's configuration-write authorization and serialized with recovery.
+    // An administrator starting a new Pair explicitly abandons only the pending handoff.
+    if (_stagedConnection != null) { File.Delete(_stagedConnectionPath); _stagedConnection = null; }
     var pending = new PendingPairing(frame, NewProof(), NewProof(), DateTimeOffset.UtcNow.AddMinutes(10));
     var listeners = _listeners!;
     var parameters = PairingMediaAddresses(listeners.Bind, listeners.Port, listeners.Certificate == "" ? "rtsp" : "rtsps", new Uri(listeners.Http), returnUri);

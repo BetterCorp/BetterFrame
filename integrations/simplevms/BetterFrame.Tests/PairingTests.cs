@@ -12,6 +12,46 @@ namespace BetterFrame.Tests;
 
 public sealed partial class IntegrationTests
 {
+  [Test] public async Task AdministratorCanCancelAnUnavailableStageAndPairAgainWithoutChangingTheActiveConnection()
+  {
+    using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    var privateDirectory = Path.Combine(directory, "betterframe"); Directory.CreateDirectory(privateDirectory);
+    var outbox = new CatalogOutbox(privateDirectory);
+    static int Port() { var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop(); return port; }
+    var root = $"http://127.0.0.1:{Port()}"; var source = Guid.NewGuid().ToString();
+    var activePath = Path.Combine(privateDirectory, "connection.json"); var stagedPath = Path.Combine(privateDirectory, "pending-connection.json");
+    var active = JsonSerializer.Serialize(new { instanceId = outbox.InstanceId, sourceId = source, callbackUrl = "", managementUrl = "https://frame.test/simplevms/instance/" + source,
+      integrationToken = new string('a', 43), viewerUsername = "bf-active", viewerPassword = new string('p', 43) }, CatalogBuilder.Json);
+    File.WriteAllText(activePath, active);
+    File.WriteAllText(stagedPath, JsonSerializer.Serialize(new { instanceId = outbox.InstanceId, sourceId = source, callbackUrl = root + "/events", managementUrl = root,
+      activationUrl = root + "/api/simplevms/inactive/pair/activate", integrationToken = new string('s', 43), viewerUsername = "bf-staged", viewerPassword = new string('q', 43) }, CatalogBuilder.Json));
+    using var receiver = new HttpListener(); receiver.Prefixes.Add(root + "/"); receiver.Start();
+    var attempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var serving = Task.Run(async () => {
+      while (!stop.IsCancellationRequested) {
+        var request = await receiver.GetContextAsync().WaitAsync(stop.Token);
+        request.Response.StatusCode = 404; request.Response.Close(); attempted.TrySetResult();
+      }
+    });
+    var config = new Config(); config.Set("betterFrameUrl", "https://frame.test"); config.Set("rtspPort", Port().ToString()); config.Set("httpListenUrl", $"http://127.0.0.1:{Port()}");
+    var context = new PluginContext { Config = config, Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = new Registry(), EventBus = new Bus(), StreamTap = new Tap() };
+    var plugin = new BetterFramePlugin(); plugin.Initialize(context);
+    try {
+      Assert.That((await plugin.StartAsync(stop.Token)).IsT0, Is.True); await attempted.Task.WaitAsync(stop.Token);
+      var values = new Dictionary<string, string> { ["returnUrl"] = "https://recorder.test/betterframe-pairing-return" };
+      var fresh = await plugin.BeginPairingAsync(values, stop.Token);
+      Assert.That(fresh.IsT0, Is.True); Assert.That(File.Exists(stagedPath), Is.False); Assert.That(File.ReadAllText(activePath), Is.EqualTo(active));
+      await plugin.StopAsync(CancellationToken.None);
+      plugin = new BetterFramePlugin(); plugin.Initialize(context); Assert.That((await plugin.StartAsync(stop.Token)).IsT0, Is.True);
+      Assert.That((await plugin.BeginPairingAsync(values, stop.Token)).IsT0, Is.True, "Cancelled recovery must not reappear after restart");
+      Assert.That(File.Exists(stagedPath), Is.False); Assert.That(File.ReadAllText(activePath), Is.EqualTo(active));
+    } finally {
+      await plugin.StopAsync(CancellationToken.None); stop.Cancel(); receiver.Stop();
+      try { await serving; } catch (OperationCanceledException) { } catch (HttpListenerException) { }
+      Directory.Delete(directory, true);
+    }
+  }
   [TestCase("127.0.0.1", "http://127.0.0.1:8555", "127.0.0.1", "127.0.0.1")]
   [TestCase("0.0.0.0", "http://0.0.0.0:8555", "127.0.0.1", "127.0.0.1")]
   [TestCase("::", "http://[::]:8555", "::1", "::1")]

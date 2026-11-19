@@ -128,6 +128,20 @@ test("SimpleVMS browser approval requires an administrator; PKCE redemption is b
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ instanceId: input.instance_id, sourceId: grant.sourceId, integrationToken: grant.integrationToken, ...patch }) });
   assert.equal((await activate({ integrationToken: proof() })).status, 400);
   assert.equal((await activate({}, other.slug)).status, 400);
+  const originalAll = repo.adapter.all.bind(repo.adapter); const originalTransaction = repo.transact.bind(repo);
+  let transactionDepth = 0; let activationCommitted = false;
+  repo.transact = (async (...args: Parameters<typeof originalTransaction>) => {
+    transactionDepth++;
+    try { const result = await originalTransaction(...args); if (transactionDepth === 1) activationCommitted = true; return result; }
+    finally { transactionDepth--; }
+  }) as typeof repo.transact;
+  repo.adapter.all = (async (...args: Parameters<typeof originalAll>) => {
+    if (activationCommitted && args[0] === "SELECT kiosk_id FROM simple_vms_linked_kiosks WHERE source_id = ?") throw new Error("Injected post-commit notification query failure");
+    return originalAll(...args);
+  }) as typeof repo.adapter.all;
+  try { assert.equal((await activate()).status, 503, "A failure after credential commit must leave native activation retryable"); }
+  finally { repo.adapter.all = originalAll; repo.transact = originalTransaction; }
+  assert.ok(simpleVmsTokenMatches((await getSimpleVmsSource(repo, grant.sourceId))!, grant.integrationToken), "The injected failure occurs after the new credentials commit");
   assert.equal((await activate()).status, 200); assert.equal((await activate()).status, 200, "Lost activation responses can be retried");
   const source = (await getSimpleVmsSource(repo, grant.sourceId))!;
   assert.equal(source.owner_kiosk_id, null); assert.equal(source.enabled, true); assert.equal(source.auto_sync, true);

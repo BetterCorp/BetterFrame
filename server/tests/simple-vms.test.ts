@@ -3,6 +3,7 @@ import test from "node:test";
 import { randomBytes } from "node:crypto";
 import { PgAdapter } from "../src/shared/db/pg-adapter.js";
 import { initDb, createTenantSchema } from "../src/shared/db/init.js";
+import { TENANT_MIGRATIONS } from "../src/shared/db/migrations-pg.js";
 import { saveSimpleVmsSource, removeSimpleVmsSource, applySimpleVmsSnapshot, simpleVmsCamerasForKiosk, simpleVmsTokenMatches, reconcileSimpleVmsAssignments } from "../src/shared/simple-vms.js";
 import { simpleVmsAddress, validateSimpleVmsSnapshot, type VmsSnapshot } from "../src/shared/simple-vms-schema.js";
 import { generateBundle } from "../src/shared/bundle.js";
@@ -78,6 +79,7 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     const viewerBundle = await generateBundle(repo, secrets, android.id, undefined);
     assert.equal(viewerBundle!.cameras.length, 1);
     assert.equal(viewerBundle!.cameras[0]!.name, "Entrance");
+    assert.deepEqual(viewerBundle!.layouts[0]!.cells.map(cell => cell.fit), ["contain"]);
     assert.ok(viewerBundle!.cameras[0]!.playback_username?.endsWith(`${android.id}/entrance`));
     assert.equal((await repo.listLayoutsForDisplay(androidDisplay.id)).length, 1);
     assert.ok(simpleVmsTokenMatches(source, config.ingestToken)); assert.ok(!simpleVmsTokenMatches(source, "wrong"));
@@ -119,14 +121,20 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     await assert.rejects(repo.updateLayout(managedLayout.id, { name: "forbidden" }));
     await assert.rejects(repo.deleteLayout(managedLayout.id));
     const cell = (await repo.listLayoutCells(managedLayout.id))[0]!;
+    assert.equal(cell.fit, "contain");
     await assert.rejects(repo.updateLayoutCell(cell.id, { row: 7 }));
     await assert.rejects(repo.assignCellEntity(cell.id, null));
     assert.deepEqual(await applySimpleVmsSnapshot(repo, source.id, snapshot()), { revision: 1, applied: false });
+    // A newer snapshot repairs an existing legacy cell as well as adding new cells.
+    await repo.adapter.run("UPDATE layout_cells SET fit = 'cover' WHERE id = ?", [cell.id]);
     const updated = snapshot(2); updated.cameras[0]!.name = "Front entrance";
     await applySimpleVmsSnapshot(repo, source.id, updated);
     assert.equal((await repo.getCameraById(camera.id))?.name, "Front entrance");
     assert.equal((await repo.getEntityForCamera(camera.id))?.name, "Front entrance");
     assert.equal((await repo.listLayouts())[0]?.id, managedLayout.id);
+    const syncedCells = await repo.listLayoutCells(managedLayout.id);
+    assert.equal(syncedCells.find(current => current.camera_id === camera.id)?.id, cell.id);
+    assert.deepEqual(syncedCells.map(current => current.fit), ["contain", "contain"]);
     assert.deepEqual(await applySimpleVmsSnapshot(repo, source.id, snapshot()), { revision: 2, applied: false });
     assert.equal((await simpleVmsCamerasForKiosk(repo, owner.id)).length, 2);
     assert.equal((await simpleVmsCamerasForKiosk(repo, linked.id)).length, 2);
@@ -141,10 +149,25 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     assert.equal(viewerBundle!.operator_console.simple_vms.enabled, false);
     const custom = await repo.createLayout({ name: "My layout" });
     await repo.createLayoutCell({ layout_id: custom.id, row: 0, col: 0, camera_id: camera.id, content_type: "camera" });
-    await repo.createLayoutCell({ layout_id: custom.id, row: 0, col: 1, entity_id: (await repo.getEntityForCamera(camera.id))!.id });
+    await repo.createLayoutCell({ layout_id: custom.id, row: 0, col: 1, entity_id: (await repo.getEntityForCamera(camera.id))!.id, fit: "fill" });
     await repo.updateLayout(custom.id, { preload_camera_ids: [camera.id] });
     await repo.attachLayoutToDisplay(linkedDisplay.id, custom.id);
     await repo.attachLayoutToDisplay(androidDisplay.id, custom.id);
+    // Upgrade already-generated layouts without a new recorder event, preserving
+    // custom fits even when those cells use the same imported camera/entity.
+    await repo.adapter.run("UPDATE layout_cells SET fit = 'cover' WHERE layout_id = ?", [managedLayout.id]);
+    const legacyBundle = (await generateBundle(repo, secrets, linked.id, undefined))!;
+    const fitMigration = TENANT_MIGRATIONS.find(sql => sql.startsWith("UPDATE layout_cells SET fit = 'contain'"));
+    assert.ok(fitMigration);
+    await repo.adapter.exec(fitMigration);
+    await repo.adapter.exec(fitMigration);
+    const upgradedCells = await repo.listLayoutCells(managedLayout.id);
+    assert.deepEqual(upgradedCells.map(current => current.id), syncedCells.map(current => current.id));
+    assert.deepEqual(upgradedCells.map(current => current.fit), ["contain", "contain"]);
+    assert.deepEqual((await repo.listLayoutCells(custom.id)).map(current => current.fit), ["cover", "fill"]);
+    const upgradedBundle = (await generateBundle(repo, secrets, linked.id, undefined))!;
+    assert.notEqual(upgradedBundle.version, legacyBundle.version);
+    assert.deepEqual(upgradedBundle.layouts.find(layout => layout.id === managedLayout.id)!.cells.map(current => current.fit), ["contain", "contain"]);
     assert.equal((await generateBundle(repo, secrets, linked.id, undefined))!.layouts.find(layout => layout.id === custom.id)!.cells.length, 2);
     await repo.updateDisplay(linkedDisplay.id, { default_layout_id: managedLayout.id });
     await saveSimpleVmsSource(repo, secrets, owner.id, { ...config, linkedKioskIds: [], viewerPassword: "", ingestToken: "" });

@@ -1142,4 +1142,8 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `ALTER TABLE simple_vms_pairings ADD COLUMN previous_key_hash TEXT`,
   `ALTER TABLE simple_vms_pairings ADD COLUMN activated_at TIMESTAMPTZ`,
 
+  // Generated group layouts preserve the full camera frame, including existing layouts.
+  `UPDATE layout_cells SET fit = 'contain'
+    WHERE fit <> 'contain' AND layout_id IN (SELECT layout_id FROM simple_vms_groups)`,
+
 ];

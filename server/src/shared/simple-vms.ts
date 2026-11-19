@@ -236,12 +236,12 @@ export async function applySimpleVmsSnapshot(repo: Repository, sourceId: string,
         const cameraId = cameraIds.get(externalId)!;
         const existing = cells.find(cell => cell.camera_id === cameraId);
         if (existing) {
-          await repo.updateLayoutCell(existing.id, { row: Math.floor(index / columns), col: index % columns });
+          await repo.updateLayoutCell(existing.id, { row: Math.floor(index / columns), col: index % columns, fit: "contain" });
           continue;
         }
         const entity = await repo.adapter.get<{ id: string }>("SELECT id FROM entities WHERE camera_id = ?", [cameraId]);
         await repo.createLayoutCell({ layout_id: layoutId, row: Math.floor(index / columns), col: index % columns,
-          content_type: "camera", camera_id: cameraId, entity_id: entity?.id ?? null });
+          content_type: "camera", camera_id: cameraId, entity_id: entity?.id ?? null, fit: "contain" });
       }
     }
     for (const old of groups) if (!keep.has(old.external_id)) {

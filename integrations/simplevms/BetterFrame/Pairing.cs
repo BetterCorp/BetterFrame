@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Net;
+using System.Runtime.InteropServices;
 using OneOf;
 using Shared.Models;
 
@@ -71,7 +72,7 @@ public sealed partial class BetterFramePlugin
       || returnUri.AbsolutePath != "/betterframe-pairing-return") throw new ArgumentException("Invalid SimpleVMS return URL");
     // Begin is guarded by the host's configuration-write authorization and serialized with recovery.
     // An administrator starting a new Pair explicitly abandons only the pending handoff.
-    if (_stagedConnection != null) { File.Delete(_stagedConnectionPath); _stagedConnection = null; }
+    if (_stagedConnection != null) ClearStagedConnection();
     var pending = new PendingPairing(frame, NewProof(), NewProof(), DateTimeOffset.UtcNow.AddMinutes(10));
     var listeners = _listeners!;
     var parameters = PairingMediaAddresses(listeners.Bind, listeners.Port, listeners.Certificate == "" ? "rtsp" : "rtsps", new Uri(listeners.Http), returnUri);
@@ -120,18 +121,40 @@ public sealed partial class BetterFramePlugin
     using (var file = new FileStream(temporary, options)) { JsonSerializer.Serialize(file, paired, CatalogBuilder.Json); file.Flush(true); }
     if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
     File.Move(temporary, path, true);
+    SyncConnectionDirectory(Path.GetDirectoryName(path)!);
+  }
+  [DllImport("libc", SetLastError = true, EntryPoint = "open")]
+  private static extern int OpenDirectory([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags);
+  [DllImport("libc", SetLastError = true, EntryPoint = "fsync")]
+  private static extern int SyncDirectory(int descriptor);
+  [DllImport("libc", SetLastError = true, EntryPoint = "close")]
+  private static extern int CloseDirectory(int descriptor);
+  internal static void SyncConnectionDirectory(string directory)
+  {
+    if (OperatingSystem.IsWindows()) return;
+    var descriptor = OpenDirectory(directory, 0);
+    if (descriptor < 0) throw new IOException("Cannot open the pairing connection directory for synchronization");
+    try { if (SyncDirectory(descriptor) != 0) throw new IOException("Cannot synchronize the pairing connection directory"); }
+    finally { CloseDirectory(descriptor); }
+  }
+  private void ClearStagedConnection()
+  {
+    File.Delete(_stagedConnectionPath); _stagedConnection = null;
+    SyncConnectionDirectory(Path.GetDirectoryName(_stagedConnectionPath)!);
   }
   private async Task ActivateSavedConnectionAsync(CancellationToken ct)
   {
     var paired = _stagedConnection; if (paired == null) return;
+    // Also cover a stage loaded after a process restart following a failed directory sync.
+    SyncConnectionDirectory(Path.GetDirectoryName(_stagedConnectionPath)!);
     using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromSeconds(15));
     using var request = new HttpRequestMessage(HttpMethod.Post, paired.ActivationUrl) { Content = new StringContent(JsonSerializer.Serialize(new {
       instanceId = paired.InstanceId, sourceId = paired.SourceId, integrationToken = paired.IntegrationToken }), Encoding.UTF8, "application/json") };
     using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token); response.EnsureSuccessStatusCode();
     SaveConnection(_pairedConnectionPath, paired);
     _pairedConnection = paired;
-    File.Delete(_stagedConnectionPath); _stagedConnection = null;
     Changed(true);
+    ClearStagedConnection();
   }
   private async Task RecoverPairingAsync(CancellationToken ct)
   {
@@ -143,7 +166,7 @@ public sealed partial class BetterFramePlugin
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (HttpRequestException error) when (error.StatusCode == HttpStatusCode.BadRequest) {
           // BF rejected an expired/superseded stage; keep the previous active connection and allow a new Pair.
-          File.Delete(_stagedConnectionPath); _stagedConnection = null;
+          try { ClearStagedConnection(); } catch { /* An invalid stage cannot activate; active credentials remain intact. */ }
         }
         catch { /* Retain the private durable stage for retry, including across recorder restarts. */ }
         finally { _pairingGate.Release(); }

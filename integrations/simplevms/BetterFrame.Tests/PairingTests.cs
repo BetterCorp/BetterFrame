@@ -12,6 +12,14 @@ namespace BetterFrame.Tests;
 
 public sealed partial class IntegrationTests
 {
+  [Test] public void PairingDirectorySynchronizationWorksAndFailsClosedForMissingDirectories()
+  {
+    if (OperatingSystem.IsWindows()) Assert.Ignore("Unix directory synchronization");
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString()); Directory.CreateDirectory(directory);
+    try { Assert.DoesNotThrow(() => BetterFramePlugin.SyncConnectionDirectory(directory));
+      Assert.Throws<IOException>(() => BetterFramePlugin.SyncConnectionDirectory(Path.Combine(directory, "missing"))); }
+    finally { Directory.Delete(directory, true); }
+  }
   [Test] public async Task AdministratorCanCancelAnUnavailableStageAndPairAgainWithoutChangingTheActiveConnection()
   {
     using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(20));

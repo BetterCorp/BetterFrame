@@ -14,6 +14,14 @@ bash integrations/simplevms/build.sh /absolute/path/to/extended/simple-vms /tmp/
 
 The build script copies the host into an isolated temporary directory and applies `host-pairing/browser-pairing.patch`; it never edits the source checkout. It produces `plugin/`, matching `host/Shared.Models.dll` and `host/Server.Api.dll`, and `host/wwwroot/`. Deploy these together using the recorder's normal deployment process, then enable the plugin. Installing only the plugin DLL does not add the native Pair button or its guarded endpoints. The optional overlay Dockerfile consumes this package directory. Keep the recorder's existing data volume and single writer. Do not replace or initialize its databases.
 
+Build the overlay from the same clean BF Git checkout used for the package. `BASE_IMAGE` must be the target recorder's existing compatible native image. The required `BETTERFRAME_REVISION` argument stamps its full BF commit in `com.betterframe.revision`; the private proxy deployment helper verifies this label before changing configuration.
+
+```sh
+docker build --build-arg BASE_IMAGE=<existing-native-image> \
+  --build-arg BETTERFRAME_REVISION="$(git rev-parse HEAD)" \
+  -f integrations/simplevms/Dockerfile -t <new-native-image> /tmp/bf-vms-package
+```
+
 The companion host change exposes only BetterFrame pairing begin/complete operations, guarded by same-origin JSON requests and the existing plugin-configuration write permission. A host with no authentication provider permits these operations only from loopback; use its local browser or an authenticated native admin deployment. Reverse proxies must preserve the correct request origin through the host's trusted forwarding configuration. The public return document only performs a same-origin navigation; it cannot change settings or redeem pairing grants.
 
 A private admin proxy may opt in using a dedicated generated credential in the recorder's protected `betterframe/proxy-admin.json`. The proxy must restrict its existing admin boundary, require the exact admin Origin and inject the credential only for the two pairing endpoints. The browser never receives it, and a configured native login/authorization provider remains mandatory. Direct remote access stays denied. For the existing control-room installation, run `configure-controlroom-pairing.py --origin https://<native-admin-host>:8080 --revision <released-bf-commit>` as root from its clean BF Git checkout after installing the matching native image. This validates the existing private Caddy site, generates/reuses protected credentials, validates and updates only its pairing routes, restarts the edge with backups/rollback and preserves other routes. Rerun it after regenerating the private CA/proxy configuration. It neither pairs a recorder nor changes cameras, recording policies or integration credentials. Test this helper with `PYTHONDONTWRITEBYTECODE=1 python3 integrations/simplevms/test_private_admin.py`.

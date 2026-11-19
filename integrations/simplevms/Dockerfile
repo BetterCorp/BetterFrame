@@ -2,6 +2,10 @@
 # Context: its output directory containing plugin/ and host/.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
+ARG BETTERFRAME_REVISION
+RUN test "${#BETTERFRAME_REVISION}" -eq 40 && \
+    case "$BETTERFRAME_REVISION" in *[!0-9a-f]*) exit 1 ;; esac
+LABEL com.betterframe.revision="${BETTERFRAME_REVISION}"
 COPY --chown=0:0 plugin/ /app/plugins/BetterFrame/
 COPY --chown=0:0 host/Shared.Models.dll /app/Shared.Models.dll
 COPY --chown=0:0 host/Server.Api.dll /app/Server.Api.dll

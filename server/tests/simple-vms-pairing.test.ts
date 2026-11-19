@@ -131,6 +131,7 @@ test("Paired regional recorders sync before kiosk selection; kiosk linking, bund
     profiles: [{ id: "High", name: "Main", role: "main" as const, codec: "h264", width: 1920, height: 1080, fps: 25 }] }], groups: [{ id: "outside", name: "Outside", cameraIds: ["camera-one"] }] };
   await applySimpleVmsSnapshot(repo, first.sourceId, cameraSnapshot);
   const camera = (await repo.listCameras())[0]!; const layout = (await repo.listLayouts())[0]!;
+  await applySimpleVmsSnapshot(repo, second.sourceId, { ...cameraSnapshot, instanceId: "south", name: "South", cameras: [{ ...cameraSnapshot.cameras[0]!, name: "South entrance" }] });
   const kiosk = await repo.createKiosk({ name: "North kiosk", key_hash: "north", key_prefix: "north" });
   const display = await repo.createDisplayForKiosk(kiosk.id, { name: "Wall" });
   assert.equal((await simpleVmsCamerasForKiosk(repo, kiosk.id)).length, 0);
@@ -140,17 +141,29 @@ test("Paired regional recorders sync before kiosk selection; kiosk linking, bund
   await linkSimpleVmsKiosk(repo, second.sourceId, kiosk.id, true);
   assert.equal((await listSimpleVmsSources(repo, kiosk.id)).filter(s => s.connected).length, 2);
   assert.equal((await repo.getKioskById(kiosk.id))!.simple_vms_enabled, true);
-  assert.equal((await repo.listLayoutsForDisplay(display.id))[0]!.id, layout.id);
+  assert.equal((await repo.listLayoutsForDisplay(display.id)).length, 2);
+  const app = new H3(); registerSimpleVmsAdminRoutes(app, { repo, secrets } as never);
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const [saved] = await Promise.all([
+      app.request(`http://127.0.0.1/admin/simplevms/${first.sourceId}`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ enabled: "1", auto_sync: "1", local_address: "rtsp://127.0.0.1:8554", external_address: "rtsp://recorder.test:8554",
+          local_http_address: "http://127.0.0.1:8555", external_http_address: "https://recorder.test:8555" }).toString() }),
+      linkSimpleVmsKiosk(repo, second.sourceId, kiosk.id, true),
+    ]);
+    assert.equal(saved.status, 303, "Updating one recorder while linking another must not deadlock shared kiosk/display rows");
+  }
   const bundle = (await generateBundle(repo, secrets, kiosk.id, secrets.generateClusterKey()))!;
   assert.equal(bundle.cameras[0]!.streams[0]!.rtsp_uri, "rtsp://recorder.test:8554/bf/camera-one/High");
   await linkSimpleVmsKiosk(repo, first.sourceId, kiosk.id, true, true);
   const localBundle = (await generateBundle(repo, secrets, kiosk.id, secrets.generateClusterKey()))!;
   assert.equal(localBundle.cameras[0]!.streams[0]!.rtsp_uri, "rtsp://127.0.0.1:8554/bf/camera-one/High");
   const reconnect = await pair("north"); assert.equal(reconnect.sourceId, first.sourceId); assert.notEqual(reconnect.integrationToken, first.integrationToken);
-  assert.equal((await repo.listCameras())[0]!.id, camera.id); assert.equal((await repo.listLayouts())[0]!.id, layout.id);
+  assert.ok(await repo.getCameraById(camera.id)); assert.ok(await repo.getLayoutById(layout.id));
   assert.equal((await listSimpleVmsSources(repo, kiosk.id)).filter(s => s.connected).length, 2);
   await linkSimpleVmsKiosk(repo, first.sourceId, kiosk.id, false);
-  assert.equal((await simpleVmsCamerasForKiosk(repo, kiosk.id)).length, 0); assert.equal((await repo.listLayoutsForDisplay(display.id)).length, 0);
+  const remaining = await simpleVmsCamerasForKiosk(repo, kiosk.id);
+  assert.equal(remaining.length, 1); assert.equal(remaining[0]!.source_id, second.sourceId);
+  assert.equal((await repo.listLayoutsForDisplay(display.id)).length, 1);
   assert.equal((await repo.getKioskById(kiosk.id))!.simple_vms_enabled, true, "A second connected recorder keeps the kiosk integration enabled");
   await repo.deleteKiosk(kiosk.id); assert.ok(await getSimpleVmsSource(repo, first.sourceId)); assert.ok(await getSimpleVmsSource(repo, second.sourceId));
 }));

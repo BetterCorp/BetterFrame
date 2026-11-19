@@ -4,7 +4,7 @@ import { deflateRawSync, inflateRawSync } from "node:zlib";
 import type { Repository } from "./db/repository.js";
 import type { SecretsApi } from "./secrets.js";
 import { simpleVmsAddress } from "./simple-vms-schema.js";
-import { getSimpleVmsSource, simpleVmsTokenHash, reconcileSimpleVmsAssignments, refreshSimpleVmsKioskEnabled, type SimpleVmsSource } from "./simple-vms.js";
+import { getSimpleVmsSource, simpleVmsTokenHash, reconcileSimpleVmsAssignments, refreshSimpleVmsKioskEnabled, lockSimpleVmsKiosks, type SimpleVmsSource } from "./simple-vms.js";
 
 const secret = () => randomBytes(32).toString("base64url");
 const digest = (value: string) => createHash("sha256").update(value).digest("base64url");
@@ -105,6 +105,7 @@ export async function claimSimpleVmsPairing(repo: Repository, secrets: SecretsAp
     [grant.sourceId, input.instanceId, deviceId, grant.localAddress, grant.externalAddress || null, grant.localHttpAddress || null,
       grant.externalHttpAddress || null, grant.viewerUsername, secrets.encryptString(grant.viewerPassword, "simple-vms-viewer"), simpleVmsTokenHash(grant.integrationToken)]);
     await repo.adapter.run("UPDATE simple_vms_pairings SET claimed_at = now() WHERE code_hash = ?", [simpleVmsTokenHash(input.code)]);
+    await lockSimpleVmsKiosks(repo, grant.sourceId);
     const linked = await repo.adapter.all<{ kiosk_id: string }>("SELECT kiosk_id FROM simple_vms_linked_kiosks WHERE source_id = ?", [grant.sourceId]);
     for (const id of [previous?.owner_kiosk_id, ...linked.map(k => k.kiosk_id)].filter((id): id is string => !!id)) await refreshSimpleVmsKioskEnabled(repo, id);
     await reconcileSimpleVmsAssignments(repo, grant.sourceId);

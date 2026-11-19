@@ -31,11 +31,23 @@ export async function listSimpleVmsSources(repo: Repository, kioskId = ""): Prom
     (s.owner_kiosk_id = ? OR COALESCE((SELECT k.use_local_address FROM simple_vms_linked_kiosks k WHERE k.source_id = s.id AND k.kiosk_id = ?), false)) IS TRUE AS use_local_address
     FROM simple_vms_sources s JOIN camera_devices d ON d.id = s.device_id ORDER BY d.name, s.id`, [kioskId, kioskId, kioskId, kioskId]);
 }
+/** Source -> kiosk -> display lock order is shared by enrollment, removal and reconciliation. */
+export async function lockSimpleVmsKiosks(repo: Repository, sourceId: string, extraIds: string[] = []): Promise<string[]> {
+  const rows = await repo.adapter.all<{ id: string }>(`SELECT k.id FROM kiosks k WHERE
+    ${extraIds.length ? `k.id IN (${extraIds.map(() => "?").join(",")}) OR ` : ""}
+    k.id = (SELECT owner_kiosk_id FROM simple_vms_sources WHERE id = ?) OR
+    EXISTS (SELECT 1 FROM simple_vms_linked_kiosks l WHERE l.source_id = ? AND l.kiosk_id = k.id) OR
+    EXISTS (SELECT 1 FROM displays d JOIN display_layouts dl ON dl.display_id = d.id
+      JOIN simple_vms_groups g ON g.layout_id = dl.layout_id WHERE d.kiosk_id = k.id AND g.source_id = ?)
+    ORDER BY k.id FOR UPDATE OF k`, [...extraIds, sourceId, sourceId, sourceId]);
+  return rows.map(row => row.id);
+}
 /** Remove BF's imported copies atomically; the native recorder and its recordings remain untouched. */
 export async function removeSimpleVmsSource(repo: Repository, sourceId: string): Promise<string[]> {
   return withSimpleVmsSync(() => repo.transact(async () => {
     const source = await repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE id = ? FOR UPDATE", [sourceId]);
     if (!source) return [];
+    await lockSimpleVmsKiosks(repo, source.id);
     const linked = await repo.adapter.all<{ kiosk_id: string }>("SELECT kiosk_id FROM simple_vms_linked_kiosks WHERE source_id = ?", [sourceId]);
     const groups = await repo.adapter.all<{ layout_id: string | null }>("SELECT layout_id FROM simple_vms_groups WHERE source_id = ?", [sourceId]);
     for (const group of groups) if (group.layout_id) await repo.deleteLayout(group.layout_id);
@@ -77,6 +89,7 @@ export async function saveSimpleVmsSource(repo: Repository, secrets: SecretsApi,
     if (!/^[a-zA-Z0-9_.-]{1,128}$/.test(input.viewerUsername) || ((!previous || input.viewerPassword) && input.viewerPassword.length < 16) || input.viewerPassword.length > 512) throw new Error("Use a viewer username and a password of at least 16 characters");
     const id = previous?.id ?? uuidv7();
     const deviceId = previous?.device_id ?? uuidv7();
+    await lockSimpleVmsKiosks(repo, id, [ownerId, ...linked]);
     if (!previous) {
       // Existing NVR hierarchy, with a provider-specific device type.
       await repo.adapter.run(`INSERT INTO camera_devices(id, name, type, host, port, discovery_runner)
@@ -107,6 +120,7 @@ export async function reconcileSimpleVmsAssignments(repo: Repository, sourceId?:
     for (const candidate of sources) await repo.transact(async () => {
       const source = await repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE id = ? FOR UPDATE", [candidate.id]);
       if (!source) return;
+      await lockSimpleVmsKiosks(repo, source.id);
       const layouts = await repo.adapter.all<{ layout_id: string }>("SELECT layout_id FROM simple_vms_groups WHERE source_id = ? AND layout_id IS NOT NULL", [source.id]);
       const eligible = new Set<string>();
       if (source.enabled) {
@@ -148,6 +162,7 @@ export async function applySimpleVmsSnapshot(repo: Repository, sourceId: string,
     if (!source?.enabled || !source.auto_sync) throw new Error("SimpleVMS synchronization is disabled");
     if (source.instance_id !== snapshot.instanceId) throw new Error("SimpleVMS instance identity mismatch");
     if (snapshot.revision <= Number(source.revision)) return { revision: Number(source.revision), applied: false };
+    await lockSimpleVmsKiosks(repo, sourceId);
     const cameraIds = new Map<string, string>();
     const previous = await repo.adapter.all<{ external_id: string; camera_id: string }>("SELECT external_id, camera_id FROM simple_vms_cameras WHERE source_id = ?", [sourceId]);
     // Free this source's names inside the transaction so swaps and replacements stay atomic.
@@ -259,6 +274,8 @@ export async function refreshSimpleVmsKioskEnabled(repo: Repository, kioskId: st
 export async function linkSimpleVmsKiosk(repo: Repository, sourceId: string, kioskId: string, linked: boolean, local = false): Promise<void> {
   await withSimpleVmsSync(() => repo.transact(async () => {
     const source = await repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE id = ? FOR UPDATE", [sourceId]);
+    if (!source) throw new Error("SimpleVMS instance not found");
+    await lockSimpleVmsKiosks(repo, sourceId, [kioskId]);
     const kiosk = await repo.getKioskById(kioskId);
     if (!source || !kiosk?.enabled) throw new Error("Select an available SimpleVMS instance and enabled kiosk");
     if (linked) {

@@ -2,7 +2,7 @@ import { getRouterParam, getQuery, readBody, type H3, type H3Event } from "h3";
 import type { AdminDeps } from "./index.js";
 import { htmlPage } from "./html-response.js";
 import { getCoordinator } from "../../shared/coordinator-registry.js";
-import { saveSimpleVmsSource, removeSimpleVmsSource, listSimpleVmsSources, linkSimpleVmsKiosk, reconcileSimpleVmsAssignments, refreshSimpleVmsKioskEnabled, type SimpleVmsSource } from "../../shared/simple-vms.js";
+import { saveSimpleVmsSource, removeSimpleVmsSource, listSimpleVmsSources, linkSimpleVmsKiosk, reconcileSimpleVmsAssignments, refreshSimpleVmsKioskEnabled, lockSimpleVmsKiosks, type SimpleVmsSource } from "../../shared/simple-vms.js";
 import { SimpleVmsManagedPage, SimpleVmsInstancesPage, SimpleVmsInstancePage, SimpleVmsPairPage, SimpleVmsHandoffPage } from "../../web-templates/simple-vms-pages.js";
 import { approveSimpleVmsPairing, validateSimpleVmsPairRequest, simpleVmsBrowserAddress } from "../../shared/simple-vms-pairing.js";
 import { simpleVmsAddress } from "../../shared/simple-vms-schema.js";
@@ -93,11 +93,12 @@ export function registerSimpleVmsAdminRoutes(app: H3, deps: AdminDeps): void {
       await deps.repo.transact(async () => {
         const source = await deps.repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE id = ? FOR UPDATE", [id]);
         if (!source) throw new Error("SimpleVMS instance not found");
+        const affected = await lockSimpleVmsKiosks(deps.repo, id);
         if (!external && await deps.repo.adapter.get("SELECT 1 FROM simple_vms_linked_kiosks WHERE source_id = ? AND use_local_address = false", [id])) throw new Error("A network kiosk is using this media address");
         await deps.repo.adapter.run(`UPDATE simple_vms_sources SET enabled = ?, auto_sync = ?, local_address = ?, external_address = ?,
           local_http_address = ?, external_http_address = ? WHERE id = ?`, [form.enabled === "1", form.auto_sync === "1", local, external, localHttp || null, externalHttp || null, id]);
+        for (const kioskId of affected) await refreshSimpleVmsKioskEnabled(deps.repo, kioskId);
         await reconcileSimpleVmsAssignments(deps.repo, id);
-        for (const kiosk of await deps.repo.listKiosks()) await refreshSimpleVmsKioskEnabled(deps.repo, kiosk.id);
       });
       for (const kiosk of await deps.repo.listKiosks()) getCoordinator().notifyKioskBundleChanged(kiosk.id);
       return redirect(`/admin/simplevms/${id}`);

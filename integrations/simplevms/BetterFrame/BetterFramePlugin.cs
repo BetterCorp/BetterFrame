@@ -19,6 +19,9 @@ public sealed partial class BetterFramePlugin : IPlugin, IPluginSettings, IPlugi
   private CancellationTokenSource? _stop;
   private Task[] _tasks = [];
   private NativeRtspServer? _rtsp;
+  private sealed record ListenerSettings(string Bind, int Port, string Certificate, string Key, string Http);
+  private ListenerSettings? _listeners;
+  private ListenerSettings ListenerConfiguration() => new(Config("listenAddress", "127.0.0.1"), int.Parse(Config("rtspPort", "8554")), Config("tlsCertificate"), Config("tlsKey"), Config("httpListenUrl", "http://127.0.0.1:8555"));
   private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(15) };
   private readonly object _gate = new();
   private bool _force;
@@ -33,6 +36,8 @@ public sealed partial class BetterFramePlugin : IPlugin, IPluginSettings, IPlugi
     _outbox = new CatalogOutbox(directory); _access = new ReaderAccessCache(directory);
     _pairedConnectionPath = Path.Combine(directory, "connection.json");
     if (File.Exists(_pairedConnectionPath)) _pairedConnection = JsonSerializer.Deserialize<PairedConnection>(File.ReadAllText(_pairedConnectionPath), CatalogBuilder.Json);
+    _stagedConnectionPath = Path.Combine(directory, "pending-connection.json");
+    if (File.Exists(_stagedConnectionPath)) _stagedConnection = JsonSerializer.Deserialize<PairedConnection>(File.ReadAllText(_stagedConnectionPath), CatalogBuilder.Json);
     return new Success();
   }
   private string Config(string key, string fallback = "") => PairedValue(key) ?? _context.Config.Get(key, fallback);
@@ -54,16 +59,18 @@ public sealed partial class BetterFramePlugin : IPlugin, IPluginSettings, IPlugi
     _stop = CancellationTokenSource.CreateLinkedTokenSource(ct); var token = _stop.Token;
     _rtsp = new NativeRtspServer(_context.StreamTap!, CanViewAsync, () => (Config("viewerUsername", "betterframe"), Config("viewerPassword")), ValidateViewerAsync, ViewerCameraMatches);
     var http = new NativeHttpServer(_context, CanViewAsync, ValidateViewerAsync, ViewerCameraMatches);
-    var rtspRun = _rtsp.RunAsync(Config("listenAddress", "127.0.0.1"), int.Parse(Config("rtspPort", "8554")), Config("tlsCertificate"), Config("tlsKey"), token);
-    var httpRun = http.RunAsync(Config("httpListenUrl", "http://127.0.0.1:8555"), token);
+    var listeners = _listeners = ListenerConfiguration();
+    var rtspRun = _rtsp.RunAsync(listeners.Bind, listeners.Port, listeners.Certificate, listeners.Key, token);
+    var httpRun = http.RunAsync(listeners.Http, token);
     _tasks = [Watch<CameraAdded>(token), Watch<CameraUpdated>(token), Watch<CameraRemoved>(token), Watch<CameraConfigChanged>(token),
       Watch<StreamStarted>(token, false), Watch<CameraRecordingChanged>(token, false),
-      SynchronizeAsync(token), rtspRun, httpRun];
+      SynchronizeAsync(token), RecoverPairingAsync(token), rtspRun, httpRun];
     try {
       var ready = Task.WhenAll(_rtsp.ListeningPort, http.Ready);
       var first = await Task.WhenAny(ready, rtspRun, httpRun).WaitAsync(token);
       await first;
       if (first != ready) throw new InvalidOperationException("Native media stopped during startup");
+      if (_stagedConnection != null) _pairingRecovery.Writer.TryWrite(true);
       Changed(true); return new Success();
     } catch {
       _stop.Cancel(); try { await Task.WhenAll(_tasks); } catch { }

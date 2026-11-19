@@ -4,7 +4,7 @@ import { applySimpleVmsSnapshot, getSimpleVmsSource, simpleVmsTokenMatches } fro
 import { getCoordinator } from "./coordinator-registry.js";
 import { isAndroidViewer, viewerAssignment } from "./android-viewer.js";
 import type { SecretsApi } from "./secrets.js";
-import { claimSimpleVmsPairing } from "./simple-vms-pairing.js";
+import { claimSimpleVmsPairing, activateSimpleVmsPairing } from "./simple-vms-pairing.js";
 
 async function assignedViewerCameraIds(repo: Repository, kiosk: import("./types.js").Kiosk): Promise<Set<string>> {
   const assignment = await viewerAssignment(repo, kiosk);
@@ -56,10 +56,22 @@ export function registerSimpleVmsIngress(app: H3, repo: Repository, secrets?: Se
         const body = await boundedSimpleVmsJson(event.req, 8192) as Record<string, unknown>;
         if (!body || typeof body.code !== "string" || typeof body.verifier !== "string" || typeof body.instanceId !== "string") throw new Error("Invalid pairing proof");
         const grant = await claimSimpleVmsPairing(repo, secrets, { code: body.code, verifier: body.verifier, instanceId: body.instanceId });
-        const linked = await repo.adapter.all<{ kiosk_id: string }>("SELECT kiosk_id FROM simple_vms_linked_kiosks WHERE source_id = ?", [grant.sourceId]);
-        for (const { kiosk_id } of linked) getCoordinator().notifyKioskBundleChanged(kiosk_id);
         return Response.json(grant, { headers: { "cache-control": "no-store", "pragma": "no-cache" } });
       } catch { return Response.json({ error: "Pairing could not be completed. Start pairing again from SimpleVMS." }, { status: 400, headers: { "cache-control": "no-store" } }); }
+    });
+  });
+  app.post("/api/simplevms/:tenantSlug/pair/activate", async event => {
+    const tenant = await repo.getTenantBySlug(getRouterParam(event, "tenantSlug") ?? "");
+    if (!tenant?.is_active || !secrets) return new Response(null, { status: 404 });
+    return repo.adapter.withSearchPath(tenant.schema_name, async () => {
+      try {
+        const body = await boundedSimpleVmsJson(event.req, 8192) as Record<string, unknown>;
+        if (!body || typeof body.instanceId !== "string" || typeof body.sourceId !== "string" || typeof body.integrationToken !== "string") throw new Error("Invalid activation proof");
+        const id = await activateSimpleVmsPairing(repo, secrets, { instanceId: body.instanceId, sourceId: body.sourceId, integrationToken: body.integrationToken });
+        const linked = await repo.adapter.all<{ kiosk_id: string }>("SELECT kiosk_id FROM simple_vms_linked_kiosks WHERE source_id = ?", [id]);
+        for (const { kiosk_id } of linked) getCoordinator().notifyKioskBundleChanged(kiosk_id);
+        return Response.json({ activated: true }, { headers: { "cache-control": "no-store" } });
+      } catch { return Response.json({ error: "Activation could not be completed. Pair again from SimpleVMS." }, { status: 400, headers: { "cache-control": "no-store" } }); }
     });
   });
   app.get("/api/simplevms/:tenantSlug/:sourceId/access", async event => {

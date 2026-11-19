@@ -25,14 +25,19 @@ export function SimpleVmsInstancesPage(props: { user?: string; sources: SimpleVm
   </Layout>;
 }
 
-export function SimpleVmsPairPage(props: { user?: string; request: SimpleVmsPairRequest; tenantName: string; reconnect: boolean }) {
+export function SimpleVmsPairPage(props: { user?: string; request: SimpleVmsPairRequest; tenantName: string; reconnect: boolean; networkConfirmation?: { media: string; browser: string } }) {
   return <Layout title="Pair SimpleVMS" user={props.user} activeNav="simplevms">
     <h1>Pair {props.request.name} with BetterFrame</h1>
     <p>Connect this recorder to <strong>{props.tenantName}</strong>. Cameras and display groups will sync automatically. Select the kiosks that can access them after pairing.</p>
     <p>Return to SimpleVMS at <strong>{new URL(props.request.redirect_uri).origin}</strong>.</p>
     {props.reconnect ? <p>This recorder already exists in this tenant. Pairing again replaces its connection credentials and preserves its cameras, layouts and kiosk links.</p> : ""}
     <form method="post" action="/admin/simplevms/pair">
-      {Object.entries(props.request).map(([key, value]) => <input type="hidden" name={key} value={value} />)}
+      {Object.entries(props.request).filter(([key]) => !props.networkConfirmation || !["external_address", "external_http_address"].includes(key)).map(([key, value]) => <input type="hidden" name={key} value={value} />)}
+      {props.networkConfirmation ? <fieldset><legend>Confirm network media addresses</legend>
+        <p>The recorder's listener port or protocol changed. Confirm or update the addresses other kiosks use. A reverse proxy may use a different port.</p>
+        <div class="form-group"><label>Media address for other kiosks</label><input class="form-input" name="external_address" value={props.networkConfirmation.media} /></div>
+        <div class="form-group"><label>HTTPS browser media address for other kiosks</label><input class="form-input" name="external_http_address" value={props.networkConfirmation.browser} /></div>
+      </fieldset> : ""}
       <button class="btn btn-primary" type="submit">{props.reconnect ? "Reconnect SimpleVMS" : "Pair SimpleVMS"}</button>
       <a class="btn" href="/admin/simplevms">Cancel</a>
     </form>

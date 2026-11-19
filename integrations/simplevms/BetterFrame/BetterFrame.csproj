@@ -4,6 +4,7 @@
     <EnableDynamicLoading>true</EnableDynamicLoading>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="BetterFrame.Tests" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="$(SimpleVmsSource)/src/Shared.Models/Shared.Models.csproj" />
     <ProjectReference Include="$(SimpleVmsSource)/src/plugins/format/Fmp4/Fmp4.csproj" />

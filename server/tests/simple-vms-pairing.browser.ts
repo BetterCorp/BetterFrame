@@ -21,8 +21,9 @@ import { htmlPage } from "../src/plugins/service-admin-http/html-response.js";
 import type { SimpleVmsPairGrant } from "../src/shared/simple-vms-pairing.js";
 
 const pg = process.env.BF_TEST_PG_URL;
-const webRoot = process.env.BF_PAIRING_NATIVE_WEB_ROOT;
-if (!pg || !webRoot) throw new Error("Set BF_TEST_PG_URL and BF_PAIRING_NATIVE_WEB_ROOT to the patched native Client.Web/dist directory");
+const configuredWebRoot = process.env.BF_PAIRING_NATIVE_WEB_ROOT;
+if (!pg || !configuredWebRoot) throw new Error("Set BF_TEST_PG_URL and BF_PAIRING_NATIVE_WEB_ROOT to the patched native Client.Web/dist directory");
+const webRoot = resolve(configuredWebRoot);
 const { chromium } = await import(process.env.BF_PAIRING_PLAYWRIGHT_MODULE || "playwright");
 const admin = new PgAdapter(pg); const database = `bf_pair_browser_${randomBytes(8).toString("hex")}`;
 const cleanup: Array<() => Promise<unknown>> = [() => admin.close()];
@@ -85,13 +86,16 @@ try {
       const claimed = await fetch(`${frameUrl}/api/simplevms/${payload.tenantSlug}/pair/claim`, { method: "POST",
         headers: { "content-type": "application/json" }, body: JSON.stringify({ code: payload.code, verifier, instanceId: instance }) });
       assert.equal(claimed.status, 200); grant = await claimed.json() as SimpleVmsPairGrant;
+      const activated = await fetch(grant.activationUrl, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ instanceId: instance, sourceId: grant.sourceId, integrationToken: grant.integrationToken }) });
+      assert.equal(activated.status, 200);
       const synced = await fetch(grant.callbackUrl, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + grant.integrationToken },
         body: JSON.stringify({ version: 1, instanceId: instance, revision: 1, name, cameras: [{ id: "camera", name: "Entrance", enabled: true,
           profiles: [{ id: "High", name: "Main", role: "main", codec: "h264", width: 1920, height: 1080, fps: 25 }] }], groups: [{ id: "outside", name: "Outside", cameraIds: ["camera"] }] }) });
       assert.equal(synced.status, 200); envelope(response, { redirectUrl: grant.managementUrl }); return;
     }
     const file = path.startsWith("/assets/") ? resolve(webRoot, "." + path) : join(webRoot, "index.html");
-    if (!file.startsWith(resolve(webRoot) + "/")) { response.writeHead(404); response.end(); return; }
+    if (!file.startsWith(webRoot + "/")) { response.writeHead(404); response.end(); return; }
     const types: Record<string, string> = { ".html": "text/html", ".js": "application/javascript", ".css": "text/css", ".woff2": "font/woff2" };
     response.setHeader("content-type", types[extname(file)] || "application/octet-stream"); response.end(await readFile(file));
   })().catch(error => { response.writeHead(500); response.end(String(error)); }); });

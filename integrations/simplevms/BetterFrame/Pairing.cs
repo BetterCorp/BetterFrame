@@ -10,10 +10,13 @@ namespace BetterCorp.BetterFrame;
 public sealed partial class BetterFramePlugin
 {
   private sealed record PairedConnection(string InstanceId, string SourceId, string CallbackUrl, string ManagementUrl,
-    string IntegrationToken, string ViewerUsername, string ViewerPassword);
+    string IntegrationToken, string ViewerUsername, string ViewerPassword, string ActivationUrl = "");
   private sealed record PendingPairing(Uri Frame, string State, string Verifier, DateTimeOffset Expires);
   private string _pairedConnectionPath = "";
+  private string _stagedConnectionPath = "";
   private PairedConnection? _pairedConnection;
+  private PairedConnection? _stagedConnection;
+  private readonly System.Threading.Channels.Channel<bool> _pairingRecovery = System.Threading.Channels.Channel.CreateBounded<bool>(1);
   private PendingPairing? _pendingPairing;
   private readonly SemaphoreSlim _pairingGate = new(1);
   private static string NewProof() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
@@ -22,8 +25,18 @@ public sealed partial class BetterFramePlugin
   {
     host = host.Trim('[', ']');
     if (host is "*" or "+" || host == IPAddress.Any.ToString()) return IPAddress.Loopback.ToString();
-    if (host == IPAddress.IPv6Any.ToString()) return IPAddress.IPv6Loopback.ToString();
+    if (IPAddress.TryParse(host, out var address) && address.Equals(IPAddress.IPv6Any)) return IPAddress.IPv6Loopback.ToString();
     return host;
+  }
+  internal static Dictionary<string, string> PairingMediaAddresses(string bind, int port, string scheme, Uri http, Uri returnUri)
+  {
+    var local = new UriBuilder(scheme, LocalListenerHost(bind), port).Uri.AbsoluteUri.TrimEnd('/');
+    var external = returnUri.IsLoopback || IPAddress.IsLoopback(IPAddress.Parse(bind)) ? "" : new UriBuilder(scheme, returnUri.Host, port).Uri.AbsoluteUri.TrimEnd('/');
+    var localHttpUri = new UriBuilder(http) { Host = LocalListenerHost(http.Host) }.Uri;
+    // Match BF's explicit HTTP host allowlist, which is narrower than .NET's IsLoopback.
+    var localHttp = localHttpUri.Scheme == "http" && localHttpUri.Host.Trim('[', ']') is not ("localhost" or "127.0.0.1" or "::1") ? "" : localHttpUri.GetLeftPart(UriPartial.Authority);
+    var externalHttp = http.Scheme != "https" || returnUri.IsLoopback || http.IsLoopback ? "" : new UriBuilder(http) { Host = returnUri.Host }.Uri.GetLeftPart(UriPartial.Authority);
+    return new() { ["local_address"] = local, ["external_address"] = external, ["local_http_address"] = localHttp, ["external_http_address"] = externalHttp };
   }
   private string? PairedValue(string key)
   {
@@ -48,23 +61,18 @@ public sealed partial class BetterFramePlugin
   }
   private OneOf<IReadOnlyDictionary<string, string>, Error> BeginPairing(IReadOnlyDictionary<string, string> values)
   {
+    if (_stagedConnection != null) return Error.Create(0x10bf, 3, Result.BadRequest, "The previous connection is still being activated. Try again shortly.");
+    if (_listeners != ListenerConfiguration()) return Error.Create(0x10bf, 3, Result.BadRequest, "Restart the BetterFrame plugin to apply media listener changes before pairing.");
     var frame = Authority(Config("betterFrameUrl"));
     if (frame.UserInfo != "" || frame.AbsolutePath != "/" || frame.Query != "" || frame.Fragment != "") throw new ArgumentException("Use the BetterFrame server URL");
     var returnUri = new Uri(values["returnUrl"], UriKind.Absolute);
     if (returnUri.Scheme is not ("http" or "https") || returnUri.UserInfo != "" || returnUri.Query != "" || returnUri.Fragment != ""
       || returnUri.AbsolutePath != "/betterframe-pairing-return") throw new ArgumentException("Invalid SimpleVMS return URL");
     var pending = new PendingPairing(frame, NewProof(), NewProof(), DateTimeOffset.UtcNow.AddMinutes(10));
-    var port = int.Parse(Config("rtspPort", "8554")); var scheme = Config("tlsCertificate") == "" ? "rtsp" : "rtsps";
-    var local = new UriBuilder(scheme, LocalListenerHost(Config("listenAddress", "127.0.0.1")), port).Uri.AbsoluteUri.TrimEnd('/');
-    var external = returnUri.IsLoopback || Config("listenAddress", "127.0.0.1") is "127.0.0.1" or "::1" ? "" : new UriBuilder(scheme, returnUri.Host, port).Uri.AbsoluteUri.TrimEnd('/');
-    var http = new Uri(Config("httpListenUrl", "http://127.0.0.1:8555"));
-    var localHttpUri = new UriBuilder(http) { Host = LocalListenerHost(http.Host) }.Uri;
-    // BF permits cleartext browser media only on loopback; camera pairing can still work without preview.
-    var localHttp = localHttpUri.Scheme == "http" && !localHttpUri.IsLoopback ? "" : localHttpUri.GetLeftPart(UriPartial.Authority);
-    var externalHttp = http.Scheme != "https" || returnUri.IsLoopback || http.IsLoopback ? "" : new UriBuilder(http) { Host = returnUri.Host }.Uri.GetLeftPart(UriPartial.Authority);
-    var parameters = new Dictionary<string, string> { ["instance_id"] = _outbox.InstanceId, ["name"] = Config("name", "SimpleVMS"),
-      ["redirect_uri"] = returnUri.AbsoluteUri, ["state"] = pending.State, ["challenge"] = Challenge(pending.Verifier),
-      ["local_address"] = local, ["external_address"] = external, ["local_http_address"] = localHttp, ["external_http_address"] = externalHttp };
+    var listeners = _listeners!;
+    var parameters = PairingMediaAddresses(listeners.Bind, listeners.Port, listeners.Certificate == "" ? "rtsp" : "rtsps", new Uri(listeners.Http), returnUri);
+    parameters["instance_id"] = _outbox.InstanceId; parameters["name"] = Config("name", "SimpleVMS");
+    parameters["redirect_uri"] = returnUri.AbsoluteUri; parameters["state"] = pending.State; parameters["challenge"] = Challenge(pending.Verifier);
     var redirect = new UriBuilder(new Uri(frame, "/simplevms/pair")) {
       Query = string.Join("&", parameters.Select(item => Uri.EscapeDataString(item.Key) + "=" + Uri.EscapeDataString(item.Value)))
     };
@@ -89,17 +97,54 @@ public sealed partial class BetterFramePlugin
     var paired = JsonSerializer.Deserialize<PairedConnection>(body.ToArray(), CatalogBuilder.Json) ?? throw new ArgumentException("Invalid pairing response");
     if (paired.InstanceId != _outbox.InstanceId || !Guid.TryParse(paired.SourceId, out _) || paired.IntegrationToken.Length is < 32 or > 256 || paired.ViewerPassword.Length is < 16 or > 512
       || !System.Text.RegularExpressions.Regex.IsMatch(paired.ViewerUsername, "^[a-zA-Z0-9_.-]{1,128}$")) throw new ArgumentException("Invalid pairing credentials");
-    var callback = Authority(paired.CallbackUrl); var management = Authority(paired.ManagementUrl);
+    var callback = Authority(paired.CallbackUrl); var management = Authority(paired.ManagementUrl); var activation = Authority(paired.ActivationUrl);
     if (callback.GetLeftPart(UriPartial.Authority) != pending.Frame.GetLeftPart(UriPartial.Authority) || management.GetLeftPart(UriPartial.Authority) != pending.Frame.GetLeftPart(UriPartial.Authority)
       || callback.AbsolutePath != $"/api/simplevms/{Uri.EscapeDataString(tenant)}/{paired.SourceId}/events" || management.AbsolutePath != $"/simplevms/instance/{paired.SourceId}"
-      || callback.Query != "" || callback.Fragment != "" || management.Query != "" || management.Fragment != "") throw new ArgumentException("Invalid pairing destination");
-    var temporary = _pairedConnectionPath + ".tmp";
+      || activation.GetLeftPart(UriPartial.Authority) != pending.Frame.GetLeftPart(UriPartial.Authority) || activation.AbsolutePath != $"/api/simplevms/{Uri.EscapeDataString(tenant)}/pair/activate"
+      || activation.Query != "" || activation.Fragment != "" || callback.Query != "" || callback.Fragment != "" || management.Query != "" || management.Fragment != "") throw new ArgumentException("Invalid pairing destination");
+    SaveConnection(_stagedConnectionPath, paired);
+    _stagedConnection = paired; _pendingPairing = null;
+    try { await ActivateSavedConnectionAsync(token); }
+    finally { if (_stagedConnection != null) _pairingRecovery.Writer.TryWrite(true); }
+    return OneOf<IReadOnlyDictionary<string, string>, Error>.FromT0(new Dictionary<string, string> { ["redirectUrl"] = paired.ManagementUrl });
+  }
+  private static void SaveConnection(string path, PairedConnection paired)
+  {
+    var temporary = path + ".tmp";
     var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None };
     if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
     using (var file = new FileStream(temporary, options)) { JsonSerializer.Serialize(file, paired, CatalogBuilder.Json); file.Flush(true); }
     if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-    File.Move(temporary, _pairedConnectionPath, true);
-    _pairedConnection = paired; _pendingPairing = null; Changed(true);
-    return OneOf<IReadOnlyDictionary<string, string>, Error>.FromT0(new Dictionary<string, string> { ["redirectUrl"] = paired.ManagementUrl });
+    File.Move(temporary, path, true);
+  }
+  private async Task ActivateSavedConnectionAsync(CancellationToken ct)
+  {
+    var paired = _stagedConnection; if (paired == null) return;
+    using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromSeconds(15));
+    using var request = new HttpRequestMessage(HttpMethod.Post, paired.ActivationUrl) { Content = new StringContent(JsonSerializer.Serialize(new {
+      instanceId = paired.InstanceId, sourceId = paired.SourceId, integrationToken = paired.IntegrationToken }), Encoding.UTF8, "application/json") };
+    using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token); response.EnsureSuccessStatusCode();
+    SaveConnection(_pairedConnectionPath, paired);
+    _pairedConnection = paired;
+    File.Delete(_stagedConnectionPath); _stagedConnection = null;
+    Changed(true);
+  }
+  private async Task RecoverPairingAsync(CancellationToken ct)
+  {
+    while (!ct.IsCancellationRequested) {
+      await _pairingRecovery.Reader.ReadAsync(ct);
+      while (_stagedConnection != null) {
+        await _pairingGate.WaitAsync(ct);
+        try { await ActivateSavedConnectionAsync(ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (HttpRequestException error) when (error.StatusCode == HttpStatusCode.BadRequest) {
+          // BF rejected an expired/superseded stage; keep the previous active connection and allow a new Pair.
+          File.Delete(_stagedConnectionPath); _stagedConnection = null;
+        }
+        catch { /* Retain the private durable stage for retry, including across recorder restarts. */ }
+        finally { _pairingGate.Release(); }
+        if (_stagedConnection != null) await Task.Delay(TimeSpan.FromSeconds(5), ct);
+      }
+    }
   }
 }

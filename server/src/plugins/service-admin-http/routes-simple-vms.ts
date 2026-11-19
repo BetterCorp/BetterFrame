@@ -4,7 +4,7 @@ import { htmlPage } from "./html-response.js";
 import { getCoordinator } from "../../shared/coordinator-registry.js";
 import { saveSimpleVmsSource, removeSimpleVmsSource, listSimpleVmsSources, linkSimpleVmsKiosk, reconcileSimpleVmsAssignments, refreshSimpleVmsKioskEnabled, lockSimpleVmsKiosks, type SimpleVmsSource } from "../../shared/simple-vms.js";
 import { SimpleVmsManagedPage, SimpleVmsInstancesPage, SimpleVmsInstancePage, SimpleVmsPairPage, SimpleVmsHandoffPage } from "../../web-templates/simple-vms-pages.js";
-import { approveSimpleVmsPairing, validateSimpleVmsPairRequest, simpleVmsBrowserAddress } from "../../shared/simple-vms-pairing.js";
+import { approveSimpleVmsPairing, validateSimpleVmsPairRequest, simpleVmsBrowserAddress, simpleVmsPairNeedsNetworkConfirmation } from "../../shared/simple-vms-pairing.js";
 import { simpleVmsAddress } from "../../shared/simple-vms-schema.js";
 import type { Repository } from "../../shared/db/repository.js";
 
@@ -57,9 +57,11 @@ export function registerSimpleVmsAdminRoutes(app: H3, deps: AdminDeps): void {
     if (event.context.user?.role !== "admin") return new Response("Administrator access required", { status: 403 });
     try {
       const request = validateSimpleVmsPairRequest(getQuery(event));
-      const existing = await deps.repo.adapter.get("SELECT 1 FROM simple_vms_sources WHERE instance_id = ?", [request.instance_id]);
+      const existing = await deps.repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE instance_id = ?", [request.instance_id]);
       const response = htmlPage(SimpleVmsPairPage({ user: event.context.user.username, request,
-        tenantName: event.context.tenant?.name ?? "Default", reconnect: !!existing }));
+        tenantName: event.context.tenant?.name ?? "Default", reconnect: !!existing,
+        networkConfirmation: existing && simpleVmsPairNeedsNetworkConfirmation(request, existing) ? {
+          media: request.external_address || existing.external_address || "", browser: request.external_http_address || existing.external_http_address || "" } : undefined }));
       response.headers.set("cache-control", "no-store"); response.headers.set("referrer-policy", "same-origin"); return response;
     } catch { return new Response("Invalid pairing request. Start pairing again from SimpleVMS.", { status: 400 }); }
   });

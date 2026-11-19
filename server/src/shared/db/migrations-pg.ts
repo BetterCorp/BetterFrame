@@ -1138,5 +1138,8 @@ export const TENANT_MIGRATIONS: readonly string[] = [
     grant_encrypted TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL,
     claimed_at TIMESTAMPTZ
   )`,
+  `ALTER TABLE simple_vms_pairings ADD COLUMN activation_key_hash TEXT UNIQUE`,
+  `ALTER TABLE simple_vms_pairings ADD COLUMN previous_key_hash TEXT`,
+  `ALTER TABLE simple_vms_pairings ADD COLUMN activated_at TIMESTAMPTZ`,
 
 ];

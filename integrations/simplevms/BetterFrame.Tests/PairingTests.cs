@@ -18,31 +18,44 @@ public sealed partial class IntegrationTests
   [TestCase("192.168.10.20", "https://192.168.10.20:8555", "192.168.10.20", "192.168.10.20")]
   [TestCase("2001:db8::20", "https://[2001:db8::20]:8555", "2001:db8::20", "2001:db8::20")]
   [TestCase("192.168.10.20", "http://192.168.10.20:8555", "192.168.10.20", "")]
-  public async Task PairingAdvertisesConfiguredLocalBindHosts(string bind, string http, string expectedRtspHost, string expectedHttpHost)
+  [TestCase("0:0:0:0:0:0:0:0", "http://[0:0:0:0:0:0:0:0]:8555", "::1", "::1")]
+  [TestCase("127.0.0.2", "http://127.0.0.2:8555", "127.0.0.2", "")]
+  public void PairingAdvertisesConfiguredLocalBindHosts(string bind, string http, string expectedRtspHost, string expectedHttpHost)
+  {
+    var query = BetterFramePlugin.PairingMediaAddresses(bind, 8554, "rtsp", new Uri(http), new Uri("https://recorder.test/betterframe-pairing-return"));
+    var local = new Uri(query["local_address"]); Assert.That(local.Host.Trim('[', ']'), Is.EqualTo(expectedRtspHost)); Assert.That(local.Port, Is.EqualTo(8554));
+    if (expectedHttpHost == "") Assert.That(query["local_http_address"], Is.Empty);
+    else { var browser = new Uri(query["local_http_address"]); Assert.That(browser.Host.Trim('[', ']'), Is.EqualTo(expectedHttpHost)); Assert.That(browser.Port, Is.EqualTo(8555)); }
+    if (IPAddress.IsLoopback(IPAddress.Parse(bind))) Assert.That(query["external_address"], Is.Empty);
+  }
+  [TestCase("listenAddress", "127.0.0.2")]
+  [TestCase("rtspPort", "9554")]
+  [TestCase("httpListenUrl", "http://127.0.0.1:9555")]
+  [TestCase("tlsCertificate", "replacement.pem")]
+  public async Task PairingRequiresRestartAfterListenerConfigurationChanges(string key, string value)
   {
     using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
     var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
     static int Port() { var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop(); return port; }
-    var config = new Config(); var port = Port(); config.Set("rtspPort", port.ToString()); config.Set("httpListenUrl", $"http://127.0.0.1:{Port()}"); config.Set("betterFrameUrl", "https://frame.test");
+    var config = new Config(); config.Set("rtspPort", Port().ToString()); config.Set("httpListenUrl", $"http://127.0.0.1:{Port()}"); config.Set("betterFrameUrl", "https://frame.test");
     var plugin = new BetterFramePlugin(); plugin.Initialize(new PluginContext { Config = config, Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = new Registry(), EventBus = new Bus(), StreamTap = new Tap() });
     try {
       Assert.That((await plugin.StartAsync(stop.Token)).IsT0, Is.True);
-      // These settings require a listener restart; this test exercises the advertised configuration only.
-      config.Set("listenAddress", bind); config.Set("httpListenUrl", http);
-      var result = await plugin.BeginPairingAsync(new Dictionary<string, string> { ["returnUrl"] = "https://recorder.test/betterframe-pairing-return" }, stop.Token);
-      Assert.That(result.IsT0, Is.True);
-      var query = new Uri(result.AsT0["redirectUrl"]).Query.TrimStart('?').Split('&').Select(pair => pair.Split('=', 2)).ToDictionary(pair => Uri.UnescapeDataString(pair[0]), pair => Uri.UnescapeDataString(pair[1]));
-      var local = new Uri(query["local_address"]); Assert.That(local.Host.Trim('[', ']'), Is.EqualTo(expectedRtspHost)); Assert.That(local.Port, Is.EqualTo(port));
-      if (expectedHttpHost == "") Assert.That(query["local_http_address"], Is.Empty);
-      else { var browser = new Uri(query["local_http_address"]); Assert.That(browser.Host.Trim('[', ']'), Is.EqualTo(expectedHttpHost)); Assert.That(browser.Port, Is.EqualTo(8555)); }
+      var values = new Dictionary<string, string> { ["returnUrl"] = "https://recorder.test/betterframe-pairing-return" };
+      Assert.That((await plugin.BeginPairingAsync(values, stop.Token)).IsT0, Is.True);
+      config.Set(key, value);
+      Assert.That((await plugin.BeginPairingAsync(values, stop.Token)).IsT1, Is.True, "Pending restart must not advertise an address the listener does not use");
     } finally { await plugin.StopAsync(CancellationToken.None); Directory.Delete(directory, true); }
   }
-  [Test] public async Task PairingKeepsCredentialsOffRedirectsPersistsThemAndImmediatelySyncsAcrossRestart()
+  [TestCase(false)]
+  [TestCase(true)]
+  public async Task PairingKeepsCredentialsOffRedirectsPersistsThemAndImmediatelySyncsAcrossRestart(bool activationFailure)
   {
     using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(25));
     var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
     static int Port() { var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop(); return port; }
     var root = $"http://127.0.0.1:{Port()}"; var source = Guid.NewGuid().ToString(); var camera = Guid.NewGuid();
+    var allowActivation = !activationFailure; var activationProofs = Channel.CreateUnbounded<bool>();
     var token = new string('t', 43); var password = new string('p', 43); var username = "bf-generated-viewer";
     using var receiver = new HttpListener(); receiver.Prefixes.Add(root + "/"); receiver.Start();
     var events = Channel.CreateUnbounded<Catalog>(); var claims = Channel.CreateUnbounded<JsonElement>(); var authorizations = Channel.CreateUnbounded<string>();
@@ -54,8 +67,13 @@ public sealed partial class IntegrationTests
         if (request.Request.Url!.AbsolutePath.EndsWith("/pair/claim")) {
           claims.Writer.TryWrite(body.RootElement.Clone());
           response = new { instanceId = body.RootElement.GetProperty("instanceId").GetString(), sourceId = source,
-            callbackUrl = $"{root}/api/simplevms/default/{source}/events", managementUrl = $"{root}/simplevms/instance/{source}",
+            activationUrl = $"{root}/api/simplevms/default/pair/activate", callbackUrl = $"{root}/api/simplevms/default/{source}/events", managementUrl = $"{root}/simplevms/instance/{source}",
             integrationToken = token, viewerUsername = username, viewerPassword = password };
+        } else if (request.Request.Url!.AbsolutePath.EndsWith("/pair/activate")) {
+          var staged = Path.Combine(directory, "betterframe", "pending-connection.json");
+          activationProofs.Writer.TryWrite(File.Exists(staged) && JsonDocument.Parse(File.ReadAllText(staged)).RootElement.GetProperty("integrationToken").GetString() == token);
+          if (!Volatile.Read(ref allowActivation)) request.Response.StatusCode = 503;
+          response = new { activated = true };
         } else {
           var catalog = body.RootElement.Deserialize<Catalog>(CatalogBuilder.Json)!;
           events.Writer.TryWrite(catalog); authorizations.Writer.TryWrite(request.Request.Headers["Authorization"] ?? "");
@@ -82,7 +100,15 @@ public sealed partial class IntegrationTests
       Assert.That(claims.Reader.TryPeek(out _), Is.False);
       values["state"] = query["state"];
       var completed = await plugin.CompletePairingAsync(values, stop.Token);
-      Assert.That(completed.IsT0, Is.True); Assert.That(completed.AsT0["redirectUrl"], Is.EqualTo($"{root}/simplevms/instance/{source}"));
+      if (activationFailure) {
+        Assert.That(completed.IsT1, Is.True);
+        Assert.That(File.Exists(Path.Combine(directory, "betterframe", "pending-connection.json")), Is.True);
+        Assert.That(File.Exists(Path.Combine(directory, "betterframe", "connection.json")), Is.False);
+        await plugin.StopAsync(CancellationToken.None);
+        Volatile.Write(ref allowActivation, true);
+        plugin = new BetterFramePlugin(); plugin.Initialize(context); Assert.That((await plugin.StartAsync(stop.Token)).IsT0, Is.True);
+      } else { Assert.That(completed.IsT0, Is.True); Assert.That(completed.AsT0["redirectUrl"], Is.EqualTo($"{root}/simplevms/instance/{source}")); }
+      Assert.That(await activationProofs.Reader.ReadAsync(stop.Token), Is.True, "Credentials must be durably staged before asking BF to activate them");
       var claimed = await claims.Reader.ReadAsync(stop.Token);
       var verifier = claimed.GetProperty("verifier").GetString()!;
       var digest = Convert.ToBase64String(SHA256.HashData(Encoding.ASCII.GetBytes(verifier))).TrimEnd('=').Replace('+', '-').Replace('/', '_');

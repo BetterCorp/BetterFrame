@@ -9,7 +9,7 @@ import { initDb, createTenantSchema } from "../src/shared/db/init.js";
 import { PgAdapter } from "../src/shared/db/pg-adapter.js";
 import { TENANT_MIGRATIONS } from "../src/shared/db/migrations-pg.js";
 import { initSecrets } from "../src/shared/secrets.js";
-import { approveSimpleVmsPairing, claimSimpleVmsPairing, validateSimpleVmsPairRequest, simpleVmsPairReturn, packSimpleVmsPairReturn, unpackSimpleVmsPairReturn, type SimpleVmsPairGrant, type SimpleVmsPairRequest } from "../src/shared/simple-vms-pairing.js";
+import { approveSimpleVmsPairing, claimSimpleVmsPairing, activateSimpleVmsPairing, validateSimpleVmsPairRequest, simpleVmsPairReturn, packSimpleVmsPairReturn, unpackSimpleVmsPairReturn, type SimpleVmsPairGrant, type SimpleVmsPairRequest } from "../src/shared/simple-vms-pairing.js";
 import { applySimpleVmsSnapshot, listSimpleVmsSources, linkSimpleVmsKiosk, getSimpleVmsSource, saveSimpleVmsSource, simpleVmsTokenMatches, simpleVmsCamerasForKiosk } from "../src/shared/simple-vms.js";
 import { generateBundle } from "../src/shared/bundle.js";
 import { registerSimpleVmsIngress } from "../src/shared/simple-vms-http.js";
@@ -31,10 +31,19 @@ const log = { info() {}, warn() {} };
 const pgUrl = process.env.BF_TEST_PG_URL;
 async function database(run: (repo: Awaited<ReturnType<typeof initDb>>["repo"], secrets: ReturnType<typeof initSecrets>) => Promise<void>) {
   const admin = new PgAdapter(pgUrl!); const name = `bf_pair_${randomBytes(8).toString("hex")}`;
-  await admin.exec(`CREATE DATABASE "${name}"`); const url = new URL(pgUrl!); url.pathname = `/${name}`;
-  const data = await mkdtemp(join(tmpdir(), "bf-svms-pair-")); let db: Awaited<ReturnType<typeof initDb>> | undefined;
-  try { db = await initDb({ url: url.href, host: "", port: 5432, user: "", password: "", database: name, poolMax: 8 }, log); await run(db.repo, initSecrets({ dataDir: data }, log)); }
-  finally { await db?.close(); await admin.exec(`DROP DATABASE "${name}" WITH (FORCE)`); await admin.close(); await rm(data, { recursive: true, force: true }); }
+  const cleanup: Array<() => Promise<unknown>> = [() => admin.close()]; let fixtureError: unknown;
+  try {
+    await admin.exec(`CREATE DATABASE "${name}"`); cleanup.push(() => admin.exec(`DROP DATABASE "${name}" WITH (FORCE)`));
+    const url = new URL(pgUrl!); url.pathname = `/${name}`;
+    const data = await mkdtemp(join(tmpdir(), "bf-svms-pair-")); cleanup.push(() => rm(data, { recursive: true, force: true }));
+    const db = await initDb({ url: url.href, host: "", port: 5432, user: "", password: "", database: name, poolMax: 8 }, log); cleanup.push(() => db.close());
+    await run(db.repo, initSecrets({ dataDir: data }, log));
+  } catch (error) { fixtureError = error; throw error; }
+  finally {
+    const failures: unknown[] = [];
+    for (const dispose of cleanup.reverse()) { try { await dispose(); } catch (error) { failures.push(error); } }
+    if (failures.length) throw new AggregateError([...(fixtureError ? [fixtureError] : []), ...failures], "Pairing fixture cleanup failed");
+  }
 }
 function codeFrom(redirect: string) { return new URLSearchParams(new URL(redirect).hash.slice(1)).get("bf_pair_code")!; }
 
@@ -114,6 +123,12 @@ test("SimpleVMS browser approval requires an administrator; PKCE redemption is b
   assert.equal((await claim({}, other.slug)).status, 400);
   const response = await claim(); assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
   const grant = await response.json() as SimpleVmsPairGrant;
+  assert.equal(await getSimpleVmsSource(repo, grant.sourceId), undefined, "A redeemed grant remains staged until native durable storage is confirmed");
+  const activate = (patch: Record<string, unknown> = {}, tenant = "default") => app.request(`http://127.0.0.1/api/simplevms/${tenant}/pair/activate`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ instanceId: input.instance_id, sourceId: grant.sourceId, integrationToken: grant.integrationToken, ...patch }) });
+  assert.equal((await activate({ integrationToken: proof() })).status, 400);
+  assert.equal((await activate({}, other.slug)).status, 400);
+  assert.equal((await activate()).status, 200); assert.equal((await activate()).status, 200, "Lost activation responses can be retried");
   const source = (await getSimpleVmsSource(repo, grant.sourceId))!;
   assert.equal(source.owner_kiosk_id, null); assert.equal(source.enabled, true); assert.equal(source.auto_sync, true);
   assert.ok(grant.integrationToken.length >= 32); assert.ok(grant.viewerPassword.length >= 32); assert.match(grant.viewerUsername, /^bf-/);
@@ -124,8 +139,36 @@ test("SimpleVMS browser approval requires an administrator; PKCE redemption is b
   await assert.rejects(claimSimpleVmsPairing(repo, secrets, { code: expiredCode, verifier: expired.verifier, instanceId: "expired" }));
 }));
 
+test("Lost claims retain the active connection; activation retries cannot restore expired, superseded or deleted connections", { skip: !pgUrl }, () => database(async (repo, secrets) => {
+  async function stage() {
+    const { input, verifier } = request("recoverable");
+    const code = codeFrom(await approveSimpleVmsPairing(repo, secrets, input, "default", "http://127.0.0.1"));
+    const proof = { code, verifier, instanceId: input.instance_id };
+    return { grant: await claimSimpleVmsPairing(repo, secrets, proof), proof };
+  }
+  const first = (await stage()).grant; await activateSimpleVmsPairing(repo, secrets, first);
+  const lost = await stage();
+  assert.ok(simpleVmsTokenMatches((await getSimpleVmsSource(repo, first.sourceId))!, first.integrationToken));
+  assert.equal(secrets.decryptString((await getSimpleVmsSource(repo, first.sourceId))!.viewer_password_encrypted, "simple-vms-viewer"), first.viewerPassword);
+  await assert.rejects(claimSimpleVmsPairing(repo, secrets, lost.proof), /already used/);
+  await repo.adapter.run("UPDATE simple_vms_pairings SET expires_at = now() - interval '1 second' WHERE activation_key_hash = ?", [createHash("sha256").update(lost.grant.integrationToken).digest("hex")]);
+  await assert.rejects(activateSimpleVmsPairing(repo, secrets, lost.grant), /expired/);
+  assert.ok(simpleVmsTokenMatches((await getSimpleVmsSource(repo, first.sourceId))!, first.integrationToken));
+  const abandoned = (await stage()).grant; const replacement = (await stage()).grant;
+  await activateSimpleVmsPairing(repo, secrets, replacement);
+  await assert.rejects(activateSimpleVmsPairing(repo, secrets, abandoned), /Connection changed/);
+  assert.equal(await activateSimpleVmsPairing(repo, secrets, replacement), first.sourceId);
+  assert.ok(simpleVmsTokenMatches((await getSimpleVmsSource(repo, first.sourceId))!, replacement.integrationToken));
+  assert.equal(simpleVmsTokenMatches((await getSimpleVmsSource(repo, first.sourceId))!, first.integrationToken), false);
+  await assert.rejects(activateSimpleVmsPairing(repo, secrets, first), /superseded/);
+  await repo.adapter.run("DELETE FROM simple_vms_pairings WHERE activation_key_hash = ?", [createHash("sha256").update(replacement.integrationToken).digest("hex")]);
+  assert.equal(await activateSimpleVmsPairing(repo, secrets, replacement), first.sourceId, "Acknowledgement remains idempotent after staging-row cleanup");
+  await repo.adapter.run("DELETE FROM simple_vms_sources WHERE id = ?", [first.sourceId]);
+  await assert.rejects(activateSimpleVmsPairing(repo, secrets, replacement), /expired/);
+}));
+
 test("Paired regional recorders sync before kiosk selection; kiosk linking, bundles and reconnection preserve identities", { skip: !pgUrl }, () => database(async (repo, secrets) => {
-  async function pair(instance: string, patch: Partial<SimpleVmsPairRequest> = {}) { const { input, verifier } = request(instance); const code = codeFrom(await approveSimpleVmsPairing(repo, secrets, { ...input, ...patch } as SimpleVmsPairRequest, "default", "http://127.0.0.1")); return claimSimpleVmsPairing(repo, secrets, { code, verifier, instanceId: instance }); }
+  async function pair(instance: string, patch: Partial<SimpleVmsPairRequest> = {}) { const { input, verifier } = request(instance); const code = codeFrom(await approveSimpleVmsPairing(repo, secrets, { ...input, ...patch } as SimpleVmsPairRequest, "default", "http://127.0.0.1")); const grant = await claimSimpleVmsPairing(repo, secrets, { code, verifier, instanceId: instance }); await activateSimpleVmsPairing(repo, secrets, grant); return grant; }
   const first = await pair("north"); const second = await pair("south"); assert.notEqual(first.sourceId, second.sourceId);
   const cameraSnapshot = { version: 1 as const, instanceId: "north", revision: 1, name: "North", cameras: [{ id: "camera-one", name: "Entrance", enabled: true,
     profiles: [{ id: "High", name: "Main", role: "main" as const, codec: "h264", width: 1920, height: 1080, fps: 25 }] }], groups: [{ id: "outside", name: "Outside", cameraIds: ["camera-one"] }] };
@@ -163,6 +206,13 @@ test("Paired regional recorders sync before kiosk selection; kiosk linking, bund
   await assert.rejects(pair("north", { external_address: "" }), /network kiosk/);
   assert.equal((await getSimpleVmsSource(repo, first.sourceId))!.ingest_key_hash, beforeFailedClaim.ingest_key_hash, "Rejected claims must not rotate active credentials");
   await repo.adapter.run("UPDATE simple_vms_sources SET external_address = ? WHERE id = ?", [beforeFailedClaim.external_address, first.sourceId]);
+  for (const local_address of ["rtsp://127.0.0.1:9554", "rtsps://127.0.0.1:8554"]) {
+    await assert.rejects(pair("north", { local_address, external_address: "" }), /Listener changed/);
+  }
+  const confirmationApp = new H3(); confirmationApp.use(event => { event.context.user = { role: "admin", username: "admin" } as never; });
+  registerSimpleVmsAdminRoutes(confirmationApp, { repo, secrets } as never);
+  const confirmation = await confirmationApp.request("http://127.0.0.1/admin/simplevms/pair?" + new URLSearchParams({ ...request("north").input, local_address: "rtsp://127.0.0.1:9554", external_address: "" }));
+  assert.equal(confirmation.status, 200); assert.match(await confirmation.text(), /Confirm network media addresses/);
   const reconnect = await pair("north", { external_address: "", external_http_address: "" });
   assert.equal(reconnect.sourceId, first.sourceId); assert.notEqual(reconnect.integrationToken, first.integrationToken);
   assert.equal(reconnect.externalAddress, "rtsp://recorder.test:8554"); assert.equal(reconnect.externalHttpAddress, "https://recorder.test:8555");

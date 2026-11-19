@@ -30,7 +30,7 @@ export interface SimpleVmsPairRequest extends Record<string, string> {
   local_address: string; external_address: string; local_http_address: string; external_http_address: string;
 }
 export interface SimpleVmsPairGrant {
-  instanceId: string; sourceId: string; name: string; callbackUrl: string; managementUrl: string;
+  instanceId: string; sourceId: string; name: string; callbackUrl: string; managementUrl: string; activationUrl: string;
   integrationToken: string; viewerUsername: string; viewerPassword: string;
   localAddress: string; externalAddress: string; localHttpAddress: string; externalHttpAddress: string;
 }
@@ -66,20 +66,40 @@ export async function approveSimpleVmsPairing(repo: Repository, secrets: Secrets
   const grant: SimpleVmsPairGrant = { instanceId: request.instance_id, sourceId: id, name: request.name,
     callbackUrl: new URL(`/api/simplevms/${encodeURIComponent(tenantSlug)}/${id}/events`, frame).href,
     managementUrl: new URL(`/simplevms/instance/${id}`, frame).href,
+    activationUrl: new URL(`/api/simplevms/${encodeURIComponent(tenantSlug)}/pair/activate`, frame).href,
     integrationToken: secret(), viewerUsername: `bf-${randomBytes(12).toString("hex")}`, viewerPassword: secret(),
     localAddress: request.local_address, externalAddress: request.external_address,
     localHttpAddress: request.local_http_address, externalHttpAddress: request.external_http_address };
   const code = secret();
   await repo.adapter.run("DELETE FROM simple_vms_pairings WHERE expires_at < now()", []);
-  await repo.adapter.run(`INSERT INTO simple_vms_pairings(code_hash, challenge, instance_id, grant_encrypted, expires_at)
-    VALUES (?, ?, ?, ?, now() + interval '10 minutes')`, [simpleVmsTokenHash(code), request.challenge, request.instance_id,
+  await repo.adapter.run(`INSERT INTO simple_vms_pairings(code_hash, challenge, instance_id, activation_key_hash, grant_encrypted, expires_at)
+    VALUES (?, ?, ?, ?, ?, now() + interval '10 minutes')`, [simpleVmsTokenHash(code), request.challenge, request.instance_id, simpleVmsTokenHash(grant.integrationToken),
     secrets.encryptString(JSON.stringify(grant), "simple-vms-pairing")]);
   const redirect = new URL(request.redirect_uri);
   redirect.hash = new URLSearchParams({ bf_pair_code: code, bf_pair_state: request.state, bf_pair_tenant: tenantSlug }).toString();
   return redirect.href;
 }
 
-/** PKCE binds redemption to the recorder that started the browser flow. */
+function transport(address: string): string {
+  if (!address) return "";
+  const url = new URL(address);
+  return `${url.protocol}//:${url.port || ({ "rtsp:": "554", "rtsps:": "322", "http:": "80", "https:": "443" }[url.protocol] ?? "")}`;
+}
+export function simpleVmsPairNeedsNetworkConfirmation(request: SimpleVmsPairRequest, previous: SimpleVmsSource): boolean {
+  return (!request.external_address && !!previous.external_address && transport(request.local_address) !== transport(previous.local_address))
+    || (!request.external_http_address && !!previous.external_http_address && transport(request.local_http_address) !== transport(previous.local_http_address ?? ""));
+}
+function preserveNetworkRoutes(grant: SimpleVmsPairGrant, previous: SimpleVmsSource | null | undefined): void {
+  if (!previous) return;
+  if ((!grant.externalAddress && previous.external_address && transport(grant.localAddress) !== transport(previous.local_address))
+    || (!grant.externalHttpAddress && previous.external_http_address && transport(grant.localHttpAddress) !== transport(previous.local_http_address ?? ""))) {
+    throw new Error("Listener changed; confirm network media addresses before pairing again");
+  }
+  grant.externalAddress ||= previous.external_address ?? "";
+  grant.externalHttpAddress ||= previous.external_http_address ?? "";
+}
+
+/** Redeem once, staging credentials without changing the current recorder connection. */
 export async function claimSimpleVmsPairing(repo: Repository, secrets: SecretsApi, input: { code: string; verifier: string; instanceId: string }): Promise<SimpleVmsPairGrant> {
   if (!proof.test(input.code) || !proof.test(input.verifier) || !input.instanceId || input.instanceId.length > 128) throw new Error("Invalid pairing proof");
   return repo.transact(async () => {
@@ -92,9 +112,28 @@ export async function claimSimpleVmsPairing(repo: Repository, secrets: SecretsAp
     await repo.adapter.get("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", [`simplevms-pair:${input.instanceId}`]);
     const previous = await repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE instance_id = ? FOR UPDATE", [input.instanceId]);
     if (previous && previous.id !== grant.sourceId) throw new Error("This recorder was paired by another request; pair again");
-    // Local administration cannot always advertise a property address; retain qualified routes on reconnect.
-    grant.externalAddress ||= previous?.external_address ?? "";
-    grant.externalHttpAddress ||= previous?.external_http_address ?? "";
+    preserveNetworkRoutes(grant, previous);
+    if (!grant.externalAddress && await repo.adapter.get("SELECT 1 FROM simple_vms_linked_kiosks WHERE source_id = ? AND use_local_address = false", [grant.sourceId])) throw new Error("A network kiosk is using this media address");
+    await repo.adapter.run(`UPDATE simple_vms_pairings SET claimed_at = now(), previous_key_hash = ?, grant_encrypted = ? WHERE code_hash = ?`,
+      [previous?.ingest_key_hash ?? null, secrets.encryptString(JSON.stringify(grant), "simple-vms-pairing"), simpleVmsTokenHash(input.code)]);
+    return grant;
+  });
+}
+
+/** The recorder confirms durable storage with its new secret; activation is safely retryable. */
+export async function activateSimpleVmsPairing(repo: Repository, secrets: SecretsApi, input: { instanceId: string; sourceId: string; integrationToken: string }): Promise<string> {
+  if (!proof.test(input.integrationToken) || !input.instanceId || input.instanceId.length > 128 || !input.sourceId || input.sourceId.length > 128) throw new Error("Invalid activation proof");
+  return repo.transact(async () => {
+    const key = simpleVmsTokenHash(input.integrationToken);
+    const pending = await repo.adapter.get<{ instance_id: string; grant_encrypted: string; expires_at: string; claimed_at: string | null; activated_at: string | null; previous_key_hash: string | null }>(
+      "SELECT * FROM simple_vms_pairings WHERE activation_key_hash = ? FOR UPDATE", [key]);
+    await repo.adapter.get("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", [`simplevms-pair:${input.instanceId}`]);
+    const previous = await repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE instance_id = ? FOR UPDATE", [input.instanceId]);
+    // Also works after expired grant cleanup, but never restores a superseded token or deleted recorder.
+    if (previous?.id === input.sourceId && previous.ingest_key_hash === key) return input.sourceId;
+    if (!pending || !pending.claimed_at || pending.activated_at || pending.instance_id !== input.instanceId || new Date(pending.expires_at).getTime() <= Date.now()) throw new Error("Activation expired or superseded; pair again");
+    const grant = JSON.parse(secrets.decryptString(pending.grant_encrypted, "simple-vms-pairing")) as SimpleVmsPairGrant;
+    if (grant.sourceId !== input.sourceId || (previous?.ingest_key_hash ?? null) !== pending.previous_key_hash || (previous && previous.id !== grant.sourceId)) throw new Error("Connection changed; pair again");
     if (!grant.externalAddress && await repo.adapter.get("SELECT 1 FROM simple_vms_linked_kiosks WHERE source_id = ? AND use_local_address = false", [grant.sourceId])) throw new Error("A network kiosk is using this media address");
     const deviceId = previous?.device_id ?? uuidv7();
     if (!previous) await repo.adapter.run(`INSERT INTO camera_devices(id, name, type, host, port, discovery_runner)
@@ -108,12 +147,12 @@ export async function claimSimpleVmsPairing(repo: Repository, secrets: SecretsAp
       viewer_username = excluded.viewer_username, viewer_password_encrypted = excluded.viewer_password_encrypted, ingest_key_hash = excluded.ingest_key_hash`,
     [grant.sourceId, input.instanceId, deviceId, grant.localAddress, grant.externalAddress || null, grant.localHttpAddress || null,
       grant.externalHttpAddress || null, grant.viewerUsername, secrets.encryptString(grant.viewerPassword, "simple-vms-viewer"), simpleVmsTokenHash(grant.integrationToken)]);
-    await repo.adapter.run("UPDATE simple_vms_pairings SET claimed_at = now() WHERE code_hash = ?", [simpleVmsTokenHash(input.code)]);
+    await repo.adapter.run("UPDATE simple_vms_pairings SET activated_at = now() WHERE activation_key_hash = ?", [key]);
     await lockSimpleVmsKiosks(repo, grant.sourceId);
     const linked = await repo.adapter.all<{ kiosk_id: string }>("SELECT kiosk_id FROM simple_vms_linked_kiosks WHERE source_id = ?", [grant.sourceId]);
     for (const id of [previous?.owner_kiosk_id, ...linked.map(k => k.kiosk_id)].filter((id): id is string => !!id)) await refreshSimpleVmsKioskEnabled(repo, id);
     await reconcileSimpleVmsAssignments(repo, grant.sourceId);
     if (!await getSimpleVmsSource(repo, grant.sourceId)) throw new Error("Pairing could not be completed");
-    return grant;
+    return grant.sourceId;
   });
 }

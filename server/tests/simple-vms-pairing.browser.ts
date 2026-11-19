@@ -55,7 +55,7 @@ try {
   const frameUrl = `http://127.0.0.1:${(frame.address() as { port: number }).port}`;
   const instance = randomUUID(); const state = randomBytes(32).toString("base64url"); const verifier = randomBytes(32).toString("base64url");
   const name = "North region & cameras %2F"; const configuration: Record<string, string> = { name, betterFrameUrl: frameUrl };
-  let nativeUrl = ""; let grant: SimpleVmsPairGrant | undefined;
+  let nativeUrl = ""; let grant: SimpleVmsPairGrant | undefined; let claimCalls = 0;
   function envelope(response: ServerResponse, body: unknown) { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ result: "success", debugTag: "test", body })); }
   async function body(request: IncomingMessage) { let value = ""; for await (const chunk of request) value += chunk; return JSON.parse(value || "{}"); }
   const native = createServer((request, response) => { void (async () => {
@@ -83,6 +83,8 @@ try {
     }
     if (path === "/api/v1/plugins/bettercorp-betterframe/pairing/complete") {
       assert.equal(request.headers.origin, nativeUrl); const payload = await body(request); assert.equal(payload.state, state);
+      if (payload.confirmation === "preview") { envelope(response, { frameUrl, tenantSlug: payload.tenantSlug, recorderName: name }); return; }
+      assert.equal(payload.confirmed, "true", "Native credential exchange requires explicit SimpleVMS confirmation"); claimCalls++;
       const claimed = await fetch(`${frameUrl}/api/simplevms/${payload.tenantSlug}/pair/claim`, { method: "POST",
         headers: { "content-type": "application/json" }, body: JSON.stringify({ code: payload.code, verifier, instanceId: instance }) });
       assert.equal(claimed.status, 200); grant = await claimed.json() as SimpleVmsPairGrant;
@@ -112,9 +114,27 @@ try {
   page = await context.newPage(); page.setDefaultTimeout(15000);
   await page.goto(nativeUrl + "/settings/plugins/bettercorp-betterframe");
   await page.getByRole("button", { name: "Pair with BetterFrame", exact: true }).click();
+  await page.getByRole("link", { name: "Cancel", exact: true }).click();
+  assert.equal(claimCalls, 0); assert.equal((await listSimpleVmsSources(repo)).length, 0, "Cancelling BF approval must not pair the recorder");
+  await page.goto(nativeUrl + "/settings/plugins/bettercorp-betterframe");
+  await page.getByRole("button", { name: "Pair with BetterFrame", exact: true }).click();
   await page.getByRole("button", { name: "Pair SimpleVMS", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm pairing", exact: true }).waitFor();
+  assert.equal(claimCalls, 0); assert.equal((await listSimpleVmsSources(repo)).length, 0, "BF approval alone must not finish pairing");
+  await page.getByRole("button", { name: "Cancel pairing", exact: true }).click();
+  assert.equal(claimCalls, 0); assert.equal((await listSimpleVmsSources(repo)).length, 0, "Cancelling SimpleVMS confirmation must leave the connection unchanged");
+  await page.getByRole("button", { name: "Pair with BetterFrame", exact: true }).click();
+  await page.getByRole("button", { name: "Pair SimpleVMS", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm pairing", exact: true }).waitFor();
+  await page.reload();
+  assert.equal(claimCalls, 0); assert.equal((await listSimpleVmsSources(repo)).length, 0, "Leaving the native confirmation screen must never auto-complete pairing");
+  await page.getByRole("button", { name: "Pair with BetterFrame", exact: true }).click();
+  await page.getByRole("button", { name: "Pair SimpleVMS", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm pairing", exact: true }).waitFor();
+  assert.equal(claimCalls, 0);
+  await page.getByRole("button", { name: "Confirm pairing", exact: true }).click();
   await page.waitForURL((url: URL) => url.origin === frameUrl && url.pathname.startsWith("/admin/simplevms/") && url.pathname !== "/admin/simplevms/pair");
-  assert.ok(grant); assert.equal(loginHits, 0, "Strict BF cookies must survive native -> BF -> native -> BF navigation");
+  assert.ok(grant); assert.equal(claimCalls, 1); assert.equal(loginHits, 0, "Strict BF cookies must survive native -> BF -> native -> BF navigation");
   assert.equal(nativeAuthFailures, 0, "Strict native cookies must survive the return from BF");
   assert.equal((await listSimpleVmsSources(repo))[0]!.name, name);
   await page.goto(`${frameUrl}/admin/kiosks/${kiosk.id}`);
@@ -124,7 +144,7 @@ try {
   assert.equal((await repo.listLayoutsForDisplay(display.id)).length, 1);
   assert.equal((await repo.getKioskById(kiosk.id))!.simple_vms_enabled, true);
   if (process.env.BF_PAIRING_SCREENSHOT) await page.screenshot({ path: process.env.BF_PAIRING_SCREENSHOT, fullPage: true });
-  console.log("PASS: Native Pair button -> BF approval -> native credential exchange -> initial sync -> kiosk dropdown, with Strict cookies and no repeated sign-in.");
+  console.log("PASS: Cancellation on either side and abandonment never pair; BF approval + explicit SimpleVMS confirmation -> credential exchange -> initial sync -> kiosk dropdown, with Strict cookies and no repeated sign-in.");
 } catch (error) {
   fixtureError = error;
   if (page) {

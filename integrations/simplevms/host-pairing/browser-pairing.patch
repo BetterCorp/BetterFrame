@@ -129,15 +129,17 @@ diff --git a/src/Client.Web/src/api/client.ts b/src/Client.Web/src/api/client.ts
 diff --git a/src/Client.Web/src/views/settings/PluginSettingsView.vue b/src/Client.Web/src/views/settings/PluginSettingsView.vue
 --- a/src/Client.Web/src/views/settings/PluginSettingsView.vue
 +++ b/src/Client.Web/src/views/settings/PluginSettingsView.vue
-@@ -14,6 +14,7 @@
+@@ -14,6 +14,9 @@
  const fieldErrors = ref<Record<string, string>>({})
  const loading = ref(true)
  const saving = ref(false)
 +const pairing = ref(false)
++const pendingConfirmation = ref<Record<string, string> | null>(null)
++const pairingPreview = ref<Record<string, string> | null>(null)
  const error = ref('')
  const success = ref('')
  
-@@ -68,7 +69,8 @@
+@@ -68,7 +71,8 @@
    success.value = ''
    try {
      const coerced: Record<string, string> = {}
@@ -147,7 +149,7 @@ diff --git a/src/Client.Web/src/views/settings/PluginSettingsView.vue b/src/Clie
      await api.plugins.updateConfig(pluginId, coerced)
      success.value = 'Settings saved.'
    } catch (e) {
-@@ -78,7 +80,39 @@
+@@ -78,7 +82,64 @@
    }
  }
  
@@ -169,6 +171,28 @@ diff --git a/src/Client.Web/src/views/settings/PluginSettingsView.vue b/src/Clie
 +  }
 +}
 +
++async function confirmPairing() {
++  const proof = pendingConfirmation.value
++  if (!proof) return
++  pendingConfirmation.value = null
++  pairingPreview.value = null
++  pairing.value = true
++  error.value = ''
++  try {
++    const result = await api.plugins.completeBetterFramePairing({ ...proof, confirmed: 'true' })
++    window.location.replace(result.redirectUrl!)
++  } catch (e) {
++    error.value = e instanceof Error ? e.message : 'Pairing could not be completed. Start pairing again.'
++    pairing.value = false
++  }
++}
++
++function cancelPairing() {
++  pendingConfirmation.value = null
++  pairingPreview.value = null
++  success.value = 'Pairing cancelled. The existing connection is unchanged.'
++}
++
 +onMounted(async () => {
 +  const callback = new URLSearchParams(window.location.hash.slice(1))
 +  if (callback.has('bf_pair_code')) window.history.replaceState(null, '', window.location.pathname + window.location.search)
@@ -176,24 +200,44 @@ diff --git a/src/Client.Web/src/views/settings/PluginSettingsView.vue b/src/Clie
 +  if (pluginId === 'bettercorp-betterframe' && callback.has('bf_pair_code')) {
 +    pairing.value = true
 +    try {
-+      const result = await api.plugins.completeBetterFramePairing({ code: callback.get('bf_pair_code') ?? '',
-+        state: callback.get('bf_pair_state') ?? '', tenantSlug: callback.get('bf_pair_tenant') ?? '' })
-+      window.location.replace(result.redirectUrl!)
++      const proof = { code: callback.get('bf_pair_code') ?? '', state: callback.get('bf_pair_state') ?? '', tenantSlug: callback.get('bf_pair_tenant') ?? '' }
++      const preview = await api.plugins.completeBetterFramePairing({ ...proof, confirmation: 'preview' })
++      pairingPreview.value = preview
++      pendingConfirmation.value = proof
 +    } catch (e) {
-+      error.value = e instanceof Error ? e.message : 'Pairing could not be completed. Start pairing again.'
++      error.value = e instanceof Error ? e.message : 'Pairing could not be verified. Start pairing again.'
++    } finally {
 +      pairing.value = false
 +    }
 +  }
 +})
++
  </script>
  
  <template>
-@@ -111,8 +145,10 @@
+@@ -101,6 +162,16 @@
+       <p>{{ success }}</p>
+     </div>
+ 
++    <section v-if="pendingConfirmation && pairingPreview" class="card p-6 space-y-4">
++      <h2 class="section-subheading">Confirm BetterFrame connection</h2>
++      <p>Connect <strong>{{ pairingPreview.recorderName }}</strong> to <strong>{{ pairingPreview.frameUrl }}</strong> for tenant <strong>{{ pairingPreview.tenantSlug }}</strong>?</p>
++      <p>BetterFrame has approved this recorder. Confirm here to finish pairing and start camera sync. Cancelling leaves the existing connection unchanged.</p>
++      <div class="flex gap-3">
++        <button type="button" class="btn btn-primary" :disabled="pairing" @click="confirmPairing">Confirm pairing</button>
++        <button type="button" class="btn btn-ghost" :disabled="pairing" @click="cancelPairing">Cancel pairing</button>
++      </div>
++    </section>
++
+     <div v-if="loading" class="flex justify-center py-12">
+       <div class="spinner spinner-lg"></div>
+     </div>
+@@ -111,8 +182,10 @@
            <h2 class="section-subheading">{{ group.label }}</h2>
            <p v-if="group.description" class="text-xs text-text-muted">{{ group.description }}</p>
            <template v-for="field in group.fields" :key="field.key">
 +            <button v-if="field.type === 'pairing' && pluginId === 'bettercorp-betterframe'" type="button" class="btn btn-primary"
-+              :disabled="saving || pairing" @click="pairWithBetterFrame">{{ pairing ? 'Pairing…' : field.label }}</button>
++              :disabled="saving || pairing || !!pendingConfirmation" @click="pairWithBetterFrame">{{ pairing ? 'Pairing…' : field.label }}</button>
              <div
 -              v-if="field.type === 'bool' || field.type === 'boolean' || field.type === 'boolean-enable-only'"
 +              v-else-if="field.type === 'bool' || field.type === 'boolean' || field.type === 'boolean-enable-only'"

@@ -13,10 +13,14 @@ public sealed partial class BetterFramePlugin
   private sealed record PairedConnection(string InstanceId, string SourceId, string CallbackUrl, string ManagementUrl,
     string IntegrationToken, string ViewerUsername, string ViewerPassword, string ActivationUrl = "");
   private sealed record PendingPairing(Uri Frame, string State, string Verifier, DateTimeOffset Expires);
+  private sealed record RecoveryConnections(string ActiveTokenHash, PairedConnection[] Connections);
   private string _pairedConnectionPath = "";
   private string _stagedConnectionPath = "";
   private PairedConnection? _pairedConnection;
   private PairedConnection? _stagedConnection;
+  private string _recoveryConnectionPath = "";
+  private RecoveryConnections _recoveryConnections = new("", []);
+  private int _recoveryProbe;
   private readonly System.Threading.Channels.Channel<bool> _pairingRecovery = System.Threading.Channels.Channel.CreateBounded<bool>(1);
   private PendingPairing? _pendingPairing;
   private readonly SemaphoreSlim _pairingGate = new(1);
@@ -72,7 +76,13 @@ public sealed partial class BetterFramePlugin
       || returnUri.AbsolutePath != "/betterframe-pairing-return") throw new ArgumentException("Invalid SimpleVMS return URL");
     // Begin is guarded by the host's configuration-write authorization and serialized with recovery.
     // An administrator starting a new Pair explicitly abandons only the pending handoff.
-    if (_stagedConnection != null) ClearStagedConnection();
+    if (_stagedConnection is { } staged) {
+      var connections = _recoveryConnections.Connections;
+      if (connections.Length >= 64) return Error.Create(0x10bf, 3, Result.BadRequest, "Reconnect BetterFrame to finish recovering earlier pairings before starting another.");
+      var recovery = new RecoveryConnections(ActiveConnectionHash(), [staged, .. connections]);
+      SaveConnection(_recoveryConnectionPath, recovery); _recoveryConnections = recovery;
+      ClearStagedConnection(); _pairingRecovery.Writer.TryWrite(true);
+    }
     var pending = new PendingPairing(frame, NewProof(), NewProof(), DateTimeOffset.UtcNow.AddMinutes(10));
     var listeners = _listeners!;
     var parameters = PairingMediaAddresses(listeners.Bind, listeners.Port, listeners.Certificate == "" ? "rtsp" : "rtsps", new Uri(listeners.Http), returnUri);
@@ -92,6 +102,9 @@ public sealed partial class BetterFramePlugin
     if (pending == null || pending.Expires < DateTimeOffset.UtcNow || !NativeRtspServer.ConstantEquals(values.GetValueOrDefault("state", ""), pending.State)) throw new ArgumentException("Expired pairing");
     var tenant = values.GetValueOrDefault("tenantSlug", ""); var code = values.GetValueOrDefault("code", "");
     if (!System.Text.RegularExpressions.Regex.IsMatch(tenant, "^[a-z0-9][a-z0-9_-]{0,127}$") || !System.Text.RegularExpressions.Regex.IsMatch(code, "^[A-Za-z0-9_-]{43}$")) throw new ArgumentException("Invalid pairing response");
+    if (values.GetValueOrDefault("confirmation") == "preview") return OneOf<IReadOnlyDictionary<string, string>, Error>.FromT0(new Dictionary<string, string> {
+      ["frameUrl"] = pending.Frame.GetLeftPart(UriPartial.Authority), ["tenantSlug"] = tenant, ["recorderName"] = Config("name", "SimpleVMS") });
+    if (values.GetValueOrDefault("confirmed") != "true") throw new ArgumentException("Confirm the connection in SimpleVMS before pairing");
     using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(pending.Frame, $"/api/simplevms/{Uri.EscapeDataString(tenant)}/pair/claim")) {
       Content = new StringContent(JsonSerializer.Serialize(new { code, verifier = pending.Verifier, instanceId = _outbox.InstanceId }), Encoding.UTF8, "application/json")
     };
@@ -113,7 +126,7 @@ public sealed partial class BetterFramePlugin
     finally { if (_stagedConnection != null) _pairingRecovery.Writer.TryWrite(true); }
     return OneOf<IReadOnlyDictionary<string, string>, Error>.FromT0(new Dictionary<string, string> { ["redirectUrl"] = paired.ManagementUrl });
   }
-  private static void SaveConnection(string path, PairedConnection paired)
+  private static void SaveConnection<T>(string path, T paired)
   {
     var temporary = path + ".tmp";
     var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None };
@@ -142,6 +155,20 @@ public sealed partial class BetterFramePlugin
     File.Delete(_stagedConnectionPath); _stagedConnection = null;
     SyncConnectionDirectory(Path.GetDirectoryName(_stagedConnectionPath)!);
   }
+  private string ActiveConnectionHash() => _pairedConnection is { } paired ? Challenge(paired.IntegrationToken) : "";
+  private void LoadRecoveryConnections()
+  {
+    if (!File.Exists(_recoveryConnectionPath)) return;
+    var saved = JsonSerializer.Deserialize<RecoveryConnections>(File.ReadAllText(_recoveryConnectionPath), CatalogBuilder.Json);
+    if (saved == null || saved.Connections.Length > 64) throw new IOException("Invalid pairing recovery record");
+    var current = ActiveConnectionHash();
+    if (saved.ActiveTokenHash != current) {
+      // A durably promoted active file is newer than obsolete recovery metadata.
+      var active = Array.FindIndex(saved.Connections, item => item.IntegrationToken == _pairedConnection?.IntegrationToken);
+      saved = new(current, active >= 0 ? saved.Connections.Take(active).ToArray() : []);
+    }
+    _recoveryConnections = saved;
+  }
   private async Task ActivateSavedConnectionAsync(CancellationToken ct)
   {
     var paired = _stagedConnection; if (paired == null) return;
@@ -154,23 +181,55 @@ public sealed partial class BetterFramePlugin
     SaveConnection(_pairedConnectionPath, paired);
     _pairedConnection = paired;
     Changed(true);
+    // Promotion is durable first: stale archive metadata cannot replace this connection after restart.
+    _recoveryConnections = new(ActiveConnectionHash(), []);
+    if (File.Exists(_recoveryConnectionPath)) SaveConnection(_recoveryConnectionPath, _recoveryConnections);
     ClearStagedConnection();
+  }
+  private async Task RecoverConfirmedConnectionAsync(CancellationToken ct)
+  {
+    var connections = _recoveryConnections.Connections;
+    if (connections.Length == 0) return;
+    var index = _recoveryProbe++ % connections.Length; var paired = connections[index];
+    var callback = Authority(paired.CallbackUrl);
+    if (!callback.AbsolutePath.EndsWith("/events", StringComparison.Ordinal)) throw new IOException("Invalid pairing recovery destination");
+    var access = new UriBuilder(callback) { Path = callback.AbsolutePath[..^6] + "access", Query = "kioskId=pairing-recovery" };
+    using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromSeconds(15));
+    using var request = new HttpRequestMessage(HttpMethod.Get, access.Uri);
+    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", paired.IntegrationToken);
+    using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+    if (response.StatusCode != HttpStatusCode.OK) return;
+    await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token); using var body = new MemoryStream();
+    var buffer = new byte[1024]; int read;
+    while ((read = await stream.ReadAsync(buffer, deadline.Token)) != 0) { if (body.Length + read > 1024) throw new IOException("Invalid recovery response"); body.Write(buffer, 0, read); }
+    using var json = JsonDocument.Parse(body.ToArray());
+    if (!json.RootElement.TryGetProperty("allowed", out var allowed) || allowed.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) throw new IOException("Invalid recovery response");
+    // A successful authenticated access response proves BF already uses this token. Never activate an archived handoff.
+    SaveConnection(_pairedConnectionPath, paired); _pairedConnection = paired; Changed(true);
+    _recoveryConnections = new(ActiveConnectionHash(), connections.Take(index).ToArray()); _recoveryProbe = 0;
+    SaveConnection(_recoveryConnectionPath, _recoveryConnections);
   }
   private async Task RecoverPairingAsync(CancellationToken ct)
   {
     while (!ct.IsCancellationRequested) {
       await _pairingRecovery.Reader.ReadAsync(ct);
-      while (_stagedConnection != null) {
+      var probeArchive = false;
+      while (_stagedConnection != null || _recoveryConnections.Connections.Length > 0) {
         await _pairingGate.WaitAsync(ct);
-        try { await ActivateSavedConnectionAsync(ct); }
+        var activating = false;
+        try {
+          if (_recoveryConnections.Connections.Length > 0 && (_stagedConnection == null || probeArchive)) {
+            probeArchive = false; await RecoverConfirmedConnectionAsync(ct);
+          } else { activating = true; probeArchive = true; await ActivateSavedConnectionAsync(ct); }
+        }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (HttpRequestException error) when (error.StatusCode == HttpStatusCode.BadRequest) {
+        catch (HttpRequestException error) when (activating && error.StatusCode == HttpStatusCode.BadRequest) {
           // BF rejected an expired/superseded stage; keep the previous active connection and allow a new Pair.
           try { ClearStagedConnection(); } catch { /* An invalid stage cannot activate; active credentials remain intact. */ }
         }
         catch { /* Retain the private durable stage for retry, including across recorder restarts. */ }
         finally { _pairingGate.Release(); }
-        if (_stagedConnection != null) await Task.Delay(TimeSpan.FromSeconds(5), ct);
+        if (_stagedConnection != null || _recoveryConnections.Connections.Length > 0) await Task.Delay(TimeSpan.FromSeconds(5), ct);
       }
     }
   }

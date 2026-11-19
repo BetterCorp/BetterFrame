@@ -175,7 +175,7 @@ for the trade-offs of unconfined profiles.
 
 Operator Console preview and recording export use the native SimpleVMS
 BetterFrame plugin. Configure cameras, recording policies, and display groups
-in SimpleVMS, pair its BetterFrame plugin, then select the paired instance in kiosk settings. See the
+in SimpleVMS, pair its BetterFrame plugin with explicit approval in both BF and SimpleVMS, then select the paired instance in kiosk settings. See the
 [integration guide](../integrations/simplevms/README.md) for plugin setup,
 linked kiosks, media addresses, and network access.
 

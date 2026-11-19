@@ -28,7 +28,7 @@ export function SimpleVmsInstancesPage(props: { user?: string; sources: SimpleVm
 export function SimpleVmsPairPage(props: { user?: string; request: SimpleVmsPairRequest; tenantName: string; reconnect: boolean; networkConfirmation?: { media: string; browser: string } }) {
   return <Layout title="Pair SimpleVMS" user={props.user} activeNav="simplevms">
     <h1>Pair {props.request.name} with BetterFrame</h1>
-    <p>Connect this recorder to <strong>{props.tenantName}</strong>. Cameras and display groups will sync automatically. Select the kiosks that can access them after pairing.</p>
+    <p>Approve this recorder for <strong>{props.tenantName}</strong>, then confirm the connection in SimpleVMS. Pairing finishes only after you confirm on both sides. Cameras and display groups will then sync automatically.</p>
     <p>Return to SimpleVMS at <strong>{new URL(props.request.redirect_uri).origin}</strong>.</p>
     {props.reconnect ? <p>This recorder already exists in this tenant. Pairing again replaces its connection credentials and preserves its cameras, layouts and kiosk links.</p> : ""}
     <form method="post" action="/admin/simplevms/pair">

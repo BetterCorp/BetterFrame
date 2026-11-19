@@ -38,6 +38,7 @@ public sealed partial class BetterFramePlugin : IPlugin, IPluginSettings, IPlugi
     if (File.Exists(_pairedConnectionPath)) _pairedConnection = JsonSerializer.Deserialize<PairedConnection>(File.ReadAllText(_pairedConnectionPath), CatalogBuilder.Json);
     _stagedConnectionPath = Path.Combine(directory, "pending-connection.json");
     if (File.Exists(_stagedConnectionPath)) _stagedConnection = JsonSerializer.Deserialize<PairedConnection>(File.ReadAllText(_stagedConnectionPath), CatalogBuilder.Json);
+    _recoveryConnectionPath = Path.Combine(directory, "recovery-connections.json"); LoadRecoveryConnections();
     return new Success();
   }
   private string Config(string key, string fallback = "") => PairedValue(key) ?? _context.Config.Get(key, fallback);
@@ -70,7 +71,7 @@ public sealed partial class BetterFramePlugin : IPlugin, IPluginSettings, IPlugi
       var first = await Task.WhenAny(ready, rtspRun, httpRun).WaitAsync(token);
       await first;
       if (first != ready) throw new InvalidOperationException("Native media stopped during startup");
-      if (_stagedConnection != null) _pairingRecovery.Writer.TryWrite(true);
+      if (_stagedConnection != null || _recoveryConnections.Connections.Length > 0) _pairingRecovery.Writer.TryWrite(true);
       Changed(true); return new Success();
     } catch {
       _stop.Cancel(); try { await Task.WhenAll(_tasks); } catch { }
@@ -209,9 +210,9 @@ public sealed partial class BetterFramePlugin : IPlugin, IPluginSettings, IPlugi
     ("controlRoomUrl", "ControlRoom policy URL", "string", ""), ("controlRoomKey", "ControlRoom service key", "password", "")
   ];
   public IReadOnlyList<SettingGroup> GetSchema() => [new() { Key = "betterframe", Order = 0, Label = "BetterFrame",
-    Description = _stagedConnection != null ? "Connection activation is pending. Pair again to cancel the pending handoff and start a new pairing; the active connection is retained." : _pairedConnection == null ? "Enter your BetterFrame URL and pair. Credentials are generated automatically." : "Paired with BetterFrame. Pair again to reconnect; existing BF cameras and layouts are preserved.",
+    Description = _stagedConnection != null || _recoveryConnections.Connections.Length > 0 ? "An earlier pairing is unfinished. You can pair again; existing connection credentials will be preserved." : _pairedConnection == null ? "Enter your BetterFrame URL and pair. Credentials are generated automatically." : "Paired with BetterFrame. Pair again to reconnect; existing BF cameras and layouts are preserved.",
     Fields = Fields.Where(f => f.Key is "name" or "betterFrameUrl").Select((f, i) => new SettingField { Key = f.Key, Label = f.Label, Type = f.Type, Order = i, DefaultValue = f.Default })
-      .Append(new SettingField { Key = "pair", Label = _stagedConnection != null ? "Cancel pending pairing and pair again" : "Pair with BetterFrame", Type = "pairing", Order = 2 }).ToArray() },
+      .Append(new SettingField { Key = "pair", Label = _stagedConnection != null ? "Restart pairing" : "Pair with BetterFrame", Type = "pairing", Order = 2 }).ToArray() },
     new() { Key = "advanced", Order = 1, Label = "Advanced media and policy", Description = "Listener addresses, certificates and optional recorder policy. Pairing credentials are managed automatically.",
       Fields = Fields.Where(f => f.Key is not ("name" or "betterFrameUrl")).Select((f, i) => new SettingField { Key = f.Key, Label = f.Label, Type = f.Type, Order = i, DefaultValue = f.Default }).ToArray() },
     new() { Key = "displayGroups", Order = 2, Label = "Display groups", Description = "Groups create read-only layouts in BetterFrame. Assign cameras through each camera's BetterFrame settings. Recording policies are independent.",

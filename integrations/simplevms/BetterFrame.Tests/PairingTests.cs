@@ -20,7 +20,9 @@ public sealed partial class IntegrationTests
       Assert.Throws<IOException>(() => BetterFramePlugin.SyncConnectionDirectory(Path.Combine(directory, "missing"))); }
     finally { Directory.Delete(directory, true); }
   }
-  [Test] public async Task AdministratorCanCancelAnUnavailableStageAndPairAgainWithoutChangingTheActiveConnection()
+  [TestCase(false)]
+  [TestCase(true)]
+  public async Task AdministratorCanRestartPairingWithoutLosingAnUncertainCommittedConnection(bool committed)
   {
     using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(20));
     var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
@@ -36,10 +38,27 @@ public sealed partial class IntegrationTests
       activationUrl = root + "/api/simplevms/inactive/pair/activate", integrationToken = new string('s', 43), viewerUsername = "bf-staged", viewerPassword = new string('q', 43) }, CatalogBuilder.Json));
     using var receiver = new HttpListener(); receiver.Prefixes.Add(root + "/"); receiver.Start();
     var attempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var probed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var synced = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); var activationAttempts = 0;
     var serving = Task.Run(async () => {
       while (!stop.IsCancellationRequested) {
         var request = await receiver.GetContextAsync().WaitAsync(stop.Token);
-        request.Response.StatusCode = 404; request.Response.Close(); attempted.TrySetResult();
+        if (request.Request.Url!.AbsolutePath.EndsWith("/pair/activate")) {
+          Interlocked.Increment(ref activationAttempts);
+          // Simulate a server that may already have committed even though its response failed.
+          request.Response.StatusCode = committed ? 503 : 404; request.Response.Close(); attempted.TrySetResult();
+        } else if (request.Request.HttpMethod == "GET") {
+          if (committed) {
+            request.Response.ContentType = "application/json";
+            await request.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes("{\"allowed\":false}"), stop.Token);
+          } else request.Response.StatusCode = 404;
+          request.Response.Close(); probed.TrySetResult();
+        } else {
+          using var json = await JsonDocument.ParseAsync(request.Request.InputStream, cancellationToken: stop.Token);
+          var revision = json.RootElement.GetProperty("revision").GetInt64();
+          await request.Response.OutputStream.WriteAsync(JsonSerializer.SerializeToUtf8Bytes(new { revision, grants = Array.Empty<object>() }), stop.Token);
+          request.Response.Close(); synced.TrySetResult();
+        }
       }
     });
     var config = new Config(); config.Set("betterFrameUrl", "https://frame.test"); config.Set("rtspPort", Port().ToString()); config.Set("httpListenUrl", $"http://127.0.0.1:{Port()}");
@@ -49,11 +68,20 @@ public sealed partial class IntegrationTests
       Assert.That((await plugin.StartAsync(stop.Token)).IsT0, Is.True); await attempted.Task.WaitAsync(stop.Token);
       var values = new Dictionary<string, string> { ["returnUrl"] = "https://recorder.test/betterframe-pairing-return" };
       var fresh = await plugin.BeginPairingAsync(values, stop.Token);
-      Assert.That(fresh.IsT0, Is.True); Assert.That(File.Exists(stagedPath), Is.False); Assert.That(File.ReadAllText(activePath), Is.EqualTo(active));
+      Assert.That(fresh.IsT0, Is.True); Assert.That(File.Exists(stagedPath), Is.False);
+      if (!committed) Assert.That(File.ReadAllText(activePath), Is.EqualTo(active));
+      var cancelledAttempts = Volatile.Read(ref activationAttempts);
       await plugin.StopAsync(CancellationToken.None);
       plugin = new BetterFramePlugin(); plugin.Initialize(context); Assert.That((await plugin.StartAsync(stop.Token)).IsT0, Is.True);
-      Assert.That((await plugin.BeginPairingAsync(values, stop.Token)).IsT0, Is.True, "Cancelled recovery must not reappear after restart");
-      Assert.That(File.Exists(stagedPath), Is.False); Assert.That(File.ReadAllText(activePath), Is.EqualTo(active));
+      await probed.Task.WaitAsync(stop.Token);
+      if (committed) {
+        await synced.Task.WaitAsync(stop.Token);
+        using var restored = JsonDocument.Parse(File.ReadAllText(activePath));
+        Assert.That(restored.RootElement.GetProperty("integrationToken").GetString(), Is.EqualTo(new string('s', 43)), "An abandoned new browser flow must not lose credentials BF already activated");
+      } else Assert.That(File.ReadAllText(activePath), Is.EqualTo(active));
+      Assert.That((await plugin.BeginPairingAsync(values, stop.Token)).IsT0, Is.True, "An abandoned new pairing must not block another attempt");
+      Assert.That(File.Exists(stagedPath), Is.False);
+      Assert.That(Volatile.Read(ref activationAttempts), Is.EqualTo(cancelledAttempts), "Cancelled handoffs may be probed but must never be activated again");
     } finally {
       await plugin.StopAsync(CancellationToken.None); stop.Cancel(); receiver.Stop();
       try { await serving; } catch (OperationCanceledException) { } catch (HttpListenerException) { }
@@ -152,6 +180,13 @@ public sealed partial class IntegrationTests
       Assert.That((await plugin.CompletePairingAsync(values, stop.Token)).IsT1, Is.True);
       Assert.That(claims.Reader.TryPeek(out _), Is.False);
       values["state"] = query["state"];
+      Assert.That((await plugin.CompletePairingAsync(values, stop.Token)).IsT1, Is.True, "A BF redirect alone is not SimpleVMS consent");
+      var preview = await plugin.CompletePairingAsync(new Dictionary<string, string>(values) { ["confirmation"] = "preview" }, stop.Token);
+      Assert.That(preview.IsT0, Is.True); Assert.That(preview.AsT0["frameUrl"], Is.EqualTo(root));
+      Assert.That(claims.Reader.TryPeek(out _), Is.False, "Confirmation preview must not redeem the BF code");
+      Assert.That(File.Exists(Path.Combine(directory, "betterframe", "connection.json")), Is.False);
+      Assert.That(File.Exists(Path.Combine(directory, "betterframe", "pending-connection.json")), Is.False);
+      values["confirmed"] = "true";
       var completed = await plugin.CompletePairingAsync(values, stop.Token);
       if (activationFailure) {
         Assert.That(completed.IsT1, Is.True);

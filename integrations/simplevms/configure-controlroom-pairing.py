@@ -154,6 +154,8 @@ def main():
     if labels.get("com.betterframe.revision") != args.revision:
         raise ConfigurationError("Install the matching BF native image before configuring its proxy")
     uid, gid = map(int, vms["TaskTemplate"]["ContainerSpec"]["User"].split(":"))
+    edge_user = edge["TaskTemplate"]["ContainerSpec"]["User"]
+    edge_uid, edge_gid = map(int, edge_user.split(":"))
     mounts = vms["TaskTemplate"]["ContainerSpec"].get("Mounts", [])
     if not any(m.get("Target") == "/data" and m.get("Source") == "/var/lib/controlroom/data/vms" for m in mounts):
         raise ConfigurationError("Unexpected recorder data mount")
@@ -182,10 +184,12 @@ def main():
     for name, data in (("Caddyfile", original), ("private-ca.stack.json", old_manifest), ("proxy-admin.json", old_proof)):
         if data is not None:
             write_private(backup / name, data, 0, 0)
-    candidate = backup / "Caddyfile.candidate"; write_private(candidate, updated, 0, 0)
+    candidate = backup / "Caddyfile.candidate"; write_private(candidate, updated, edge_uid, edge_gid)
     root = edge_mounts["/etc/caddy/ca/root_ca.crt"]["Source"]
     edge_image = edge["TaskTemplate"]["ContainerSpec"]["Image"]
-    run("docker", "run", "--rm", "--network", "none", "--mount", f"type=bind,src={candidate},dst=/etc/caddy/Caddyfile,readonly",
+    run("docker", "run", "--rm", "--network", "none", "--user", edge_user,
+        "--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges",
+        "--mount", f"type=bind,src={candidate},dst=/etc/caddy/Caddyfile,readonly",
         "--mount", f"type=bind,src={root},dst=/etc/caddy/ca/root_ca.crt,readonly", "--entrypoint", "caddy", edge_image,
         "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
     metadata = caddy.stat(); manifest_metadata = manifest.stat()
@@ -197,7 +201,7 @@ def main():
             raise ConfigurationError("Deployment configuration changed concurrently")
         changed = True
         write_private(proof, (json.dumps({"origin": origin, "token": token}) + "\n").encode(), uid, gid)
-        write_private(caddy, updated, metadata.st_uid, metadata.st_gid)
+        write_private(caddy, updated, edge_uid, edge_gid)
         run("docker", "service", "update", "--detach=true", "--container-label-add", "controlroom.proxy.config.sha256=" + new_hash, "--force", "control-room_edge")
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:

@@ -626,7 +626,8 @@ public sealed partial class IntegrationTests
   }
   private sealed class Config : IConfig {
     public ConcurrentDictionary<string, string> Values { get; } = new();
-    public string Get(string key, string fallback) => Values.GetValueOrDefault(key, fallback);
+    public Action<string>? OnGet;
+    public string Get(string key, string fallback) { OnGet?.Invoke(key); return Values.GetValueOrDefault(key, fallback); }
     public void Set(string key, string value) => Values[key] = value;
   }
   private sealed class Registry : ICameraRegistry {

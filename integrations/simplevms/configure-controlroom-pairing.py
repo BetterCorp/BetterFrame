@@ -68,20 +68,23 @@ def render_caddy(original, origin, token):
     paths = " ".join("/api/v1/plugins/bettercorp-betterframe/pairing/" + action for action in ("begin", "complete"))
     addition = BEGIN + f'''        @betterframePairing path {paths}
         handle @betterframePairing {{
-            @betterframeWrongOrigin not header Origin {json.dumps(origin)}
-            respond @betterframeWrongOrigin "Same-origin administration required" 403
-            reverse_proxy unix//upstreams/ca/vms.sock {{
-                header_up Host {{http.request.host}}
-                header_up X-Forwarded-Host {{http.request.host}}
-                header_up X-Forwarded-Proto {{scheme}}
-                header_up X-Forwarded-For {{remote_host}}
-                header_up X-BetterFrame-Pairing-Admin {json.dumps(token)}
-                header_up -Forwarded
-                header_up -X-Original-Host
-                header_up -Original-Host
-                header_up -CF-Connecting-Host
-                header_up -CF-Original-Host
-                header_up -CF-Connecting-IP
+            route {{
+                respond @outsidePrivateNetworks "Private service" 403
+                @betterframeWrongOrigin not header Origin {json.dumps(origin)}
+                respond @betterframeWrongOrigin "Same-origin administration required" 403
+                reverse_proxy unix//upstreams/ca/vms.sock {{
+                    header_up Host {{http.request.host}}
+                    header_up X-Forwarded-Host {{http.request.host}}
+                    header_up X-Forwarded-Proto {{scheme}}
+                    header_up X-Forwarded-For {{remote_host}}
+                    header_up X-BetterFrame-Pairing-Admin {json.dumps(token)}
+                    header_up -Forwarded
+                    header_up -X-Original-Host
+                    header_up -Original-Host
+                    header_up -CF-Connecting-Host
+                    header_up -CF-Original-Host
+                    header_up -CF-Connecting-IP
+                }}
             }}
         }}
 ''' + END

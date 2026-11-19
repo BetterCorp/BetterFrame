@@ -63,7 +63,7 @@ public sealed partial class BetterFramePlugin
   }
   private string? PairedValue(string key)
   {
-    var paired = _pairedConnection;
+    var paired = Volatile.Read(ref _pairedConnection);
     if (paired == null) return null;
     return key switch { "callbackUrl" => paired.CallbackUrl, "integrationToken" => paired.IntegrationToken,
       "viewerUsername" => paired.ViewerUsername, "viewerPassword" => paired.ViewerPassword, _ => null };
@@ -195,7 +195,7 @@ public sealed partial class BetterFramePlugin
       instanceId = paired.InstanceId, sourceId = paired.SourceId, integrationToken = paired.IntegrationToken }), Encoding.UTF8, "application/json") };
     using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token); response.EnsureSuccessStatusCode();
     SaveConnection(_pairedConnectionPath, paired);
-    _pairedConnection = paired;
+    Volatile.Write(ref _pairedConnection, paired);
     Changed(true);
     // Promotion is durable first: stale archive metadata cannot replace this connection after restart.
     _recoveryConnections = new(ActiveConnectionHash(), []);
@@ -221,7 +221,7 @@ public sealed partial class BetterFramePlugin
     using var json = JsonDocument.Parse(body.ToArray());
     if (!json.RootElement.TryGetProperty("allowed", out var allowed) || allowed.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) throw new IOException("Invalid recovery response");
     // A successful authenticated access response proves BF already uses this token. Never activate an archived handoff.
-    SaveConnection(_pairedConnectionPath, paired); _pairedConnection = paired; Changed(true);
+    SaveConnection(_pairedConnectionPath, paired); Volatile.Write(ref _pairedConnection, paired); Changed(true);
     _recoveryConnections = new(ActiveConnectionHash(), connections.Take(index).ToArray()); _recoveryProbe = 0;
     SaveConnection(_recoveryConnectionPath, _recoveryConnections);
   }

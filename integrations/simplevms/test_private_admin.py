@@ -46,6 +46,14 @@ https://recorder.test:8080 {
         with self.assertRaises(module.ConfigurationError):
             module.render_caddy(self.site, self.origin, 'short')
 
+    def test_pairing_has_its_own_ordered_private_denial_without_an_outer_route(self):
+        original = self.site.replace('    route {\n', '').replace('        }\n    }\n}', '        }\n}')
+        result = module.render_caddy(original, self.origin, self.token)
+        block = result.split(module.BEGIN)[1].split(module.END)[0]
+        self.assertIn('handle @betterframePairing {\n            route {\n', block)
+        self.assertLess(block.index('respond @outsidePrivateNetworks'), block.index('respond @betterframeWrongOrigin'))
+        self.assertLess(block.index('respond @betterframeWrongOrigin'), block.index('reverse_proxy'))
+
     def test_private_writes_are_atomic_restricted_and_do_not_follow_symlinks(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'proxy-admin.json'

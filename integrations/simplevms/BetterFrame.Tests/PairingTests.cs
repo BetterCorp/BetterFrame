@@ -12,6 +12,47 @@ namespace BetterFrame.Tests;
 
 public sealed partial class IntegrationTests
 {
+  [TestCase(false)]
+  [TestCase(true)]
+  public async Task PairingPromotionCannotSendAnotherServersTokenToAnEarlierCallback(bool reader)
+  {
+    using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    static int Port() { var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop(); return port; }
+    var root = $"http://127.0.0.1:{Port()}"; var media = $"http://127.0.0.1:{Port()}";
+    var token = new string('a', 43); var password = new string('p', 43); var camera = Guid.NewGuid(); var kiosk = Guid.NewGuid();
+    var config = new Config(); config.Set("callbackUrl", root + "/events"); config.Set("integrationToken", token);
+    config.Set("viewerUsername", "reader-a"); config.Set("viewerPassword", password); config.Set("rtspPort", Port().ToString()); config.Set("httpListenUrl", media);
+    var plugin = new BetterFramePlugin(); plugin.Initialize(new PluginContext { Config = config, Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = new Registry { Cameras = [Camera(camera, "A")] }, EventBus = new Bus(), StreamTap = new Tap() });
+    // Pause the legacy callback read by publishing a new immutable paired connection.
+    // This reproduces promotion between reading an old URL and reading its bearer token.
+    var field = typeof(BetterFramePlugin).GetField("_pairedConnection", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+    var replacement = JsonSerializer.Deserialize(JsonSerializer.Serialize(new { instanceId = "b", sourceId = "b", callbackUrl = "http://127.0.0.1:1/events", managementUrl = "http://127.0.0.1:1", integrationToken = new string('b', 43), viewerUsername = "reader-b", viewerPassword = new string('q', 43) }), field.FieldType, CatalogBuilder.Json);
+    var promoted = 0;
+    void Promote(string key) { if (key == "callbackUrl" && Interlocked.Exchange(ref promoted, 1) == 0) field.SetValue(plugin, replacement); }
+    using var receiver = new HttpListener(); receiver.Prefixes.Add(root + "/"); receiver.Start();
+    if (!reader) config.OnGet = Promote;
+    try {
+      Assert.That((await plugin.StartAsync(stop.Token)).IsT0, Is.True);
+      var catalogRequest = await receiver.GetContextAsync().WaitAsync(stop.Token);
+      Assert.That(catalogRequest.Request.Headers["Authorization"], Is.EqualTo("Bearer " + token));
+      using var catalog = await JsonDocument.ParseAsync(catalogRequest.Request.InputStream, cancellationToken: stop.Token);
+      await catalogRequest.Response.OutputStream.WriteAsync(JsonSerializer.SerializeToUtf8Bytes(new { revision = catalog.RootElement.GetProperty("revision").GetInt64() }), stop.Token); catalogRequest.Response.Close();
+      if (reader) {
+        config.OnGet = Promote;
+        var scope = kiosk + "/" + camera;
+        var secret = Convert.ToBase64String(HMACSHA256.HashData(Encoding.UTF8.GetBytes(password), Encoding.UTF8.GetBytes(scope))).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        using var client = new HttpClient(); client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("reader-a/" + scope + ":" + secret)));
+        var playback = client.GetAsync(media + "/bf/" + camera + "/High/live", stop.Token);
+        var access = await receiver.GetContextAsync().WaitAsync(stop.Token);
+        Assert.That(access.Request.Url!.AbsolutePath, Is.EqualTo("/access"));
+        Assert.That(access.Request.Headers["Authorization"], Is.EqualTo("Bearer " + token), "A new server's token must never be sent to the old server");
+        await access.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes("{\"allowed\":false}"), stop.Token); access.Response.Close();
+        using var response = await playback; Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.Unauthorized));
+      }
+      Assert.That(promoted, Is.EqualTo(1));
+    } finally { await plugin.StopAsync(CancellationToken.None); receiver.Stop(); Directory.Delete(directory, true); }
+  }
   [Test] public void PrivateProxyAdministrationRequiresItsProtectedSecretAndExactHttpsOrigin()
   {
     var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());

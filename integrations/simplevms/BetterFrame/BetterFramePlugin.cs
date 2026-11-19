@@ -43,6 +43,18 @@ public sealed partial class BetterFramePlugin : IPlugin, IPluginSettings, IPlugi
     return new Success();
   }
   private string Config(string key, string fallback = "") => PairedValue(key) ?? _context.Config.Get(key, fallback);
+  private sealed record ConnectionCredentials(string CallbackUrl, string IntegrationToken, string ViewerUsername, string ViewerPassword);
+  private ConnectionCredentials CaptureConnection()
+  {
+    var paired = Volatile.Read(ref _pairedConnection);
+    return paired is { } p ? new(p.CallbackUrl, p.IntegrationToken, p.ViewerUsername, p.ViewerPassword)
+      : new(_context.Config.Get("callbackUrl", ""), _context.Config.Get("integrationToken", ""),
+        _context.Config.Get("viewerUsername", "betterframe"), _context.Config.Get("viewerPassword", ""));
+  }
+  private (string, string) ViewerCredentials()
+  {
+    var connection = CaptureConnection(); return (connection.ViewerUsername, connection.ViewerPassword);
+  }
   private static Uri Authority(string value)
   {
     var uri = new Uri(value, UriKind.Absolute);
@@ -59,7 +71,7 @@ public sealed partial class BetterFramePlugin : IPlugin, IPluginSettings, IPlugi
   public async Task<OneOf<Success, Error>> StartAsync(CancellationToken ct)
   {
     _stop = CancellationTokenSource.CreateLinkedTokenSource(ct); var token = _stop.Token;
-    _rtsp = new NativeRtspServer(_context.StreamTap!, CanViewAsync, () => (Config("viewerUsername", "betterframe"), Config("viewerPassword")), ValidateViewerAsync, ViewerCameraMatches);
+    _rtsp = new NativeRtspServer(_context.StreamTap!, CanViewAsync, ViewerCredentials, ValidateViewerAsync, ViewerCameraMatches);
     var http = new NativeHttpServer(_context, CanViewAsync, ValidateViewerAsync, ViewerCameraMatches);
     var listeners = _listeners = ListenerConfiguration();
     var rtspRun = _rtsp.RunAsync(listeners.Bind, listeners.Port, listeners.Certificate, listeners.Key, token);
@@ -103,11 +115,11 @@ public sealed partial class BetterFramePlugin : IPlugin, IPluginSettings, IPlugi
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { await Task.Delay(TimeSpan.FromSeconds(5), ct); _changes.Writer.TryWrite(true); continue; }
       }
-      retry = false; var pending = _outbox.Pending;
-      if (pending == null || string.IsNullOrWhiteSpace(Config("callbackUrl"))) continue;
+      retry = false; var pending = _outbox.Pending; var connection = CaptureConnection();
+      if (pending == null || string.IsNullOrWhiteSpace(connection.CallbackUrl)) continue;
       try {
-        var destination = Authority(Config("callbackUrl"));
-        var secret = Config("integrationToken"); if (secret.Length < 32) throw new InvalidOperationException("Configure an integration token");
+        var destination = Authority(connection.CallbackUrl);
+        var secret = connection.IntegrationToken; if (secret.Length < 32) throw new InvalidOperationException("Configure an integration token");
         using var request = new HttpRequestMessage(HttpMethod.Post, destination);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
         request.Content = new StringContent(JsonSerializer.Serialize(pending, CatalogBuilder.Json), Encoding.UTF8, "application/json");
@@ -157,23 +169,24 @@ public sealed partial class BetterFramePlugin : IPlugin, IPluginSettings, IPlugi
   private async Task<bool> ValidateViewerAsync(string authorization, CancellationToken ct)
   {
     try {
+      var connection = CaptureConnection();
       if (!authorization.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase) || authorization.Length > 2048) return false;
       var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(authorization[6..]));
       var split = decoded.IndexOf(':'); if (split < 0) return false;
       var username = decoded[..split]; var password = decoded[(split + 1)..];
-      var prefix = Config("viewerUsername", "betterframe") + "/";
-      if (!username.StartsWith(prefix, StringComparison.Ordinal) || Config("viewerPassword").Length < 16) return false;
+      var prefix = connection.ViewerUsername + "/";
+      if (!username.StartsWith(prefix, StringComparison.Ordinal) || connection.ViewerPassword.Length < 16) return false;
       var scope = username[prefix.Length..]; var parts = scope.Split('/');
       if (parts.Length != 2 || !Guid.TryParse(parts[0], out _) || !Guid.TryParse(parts[1], out _)) return false;
       var kioskId = parts[0]; var cameraId = parts[1];
-      var digest = HMACSHA256.HashData(Encoding.UTF8.GetBytes(Config("viewerPassword")), Encoding.UTF8.GetBytes(scope));
+      var digest = HMACSHA256.HashData(Encoding.UTF8.GetBytes(connection.ViewerPassword), Encoding.UTF8.GetBytes(scope));
       var expected = Convert.ToBase64String(digest).TrimEnd('=').Replace('+', '-').Replace('/', '_');
       if (!NativeRtspServer.ConstantEquals(password, expected)) return false;
-      var destination = Authority(Config("callbackUrl"));
+      var destination = Authority(connection.CallbackUrl);
       if (!destination.AbsolutePath.EndsWith("/events", StringComparison.Ordinal)) return false;
       var address = new UriBuilder(destination) { Path = destination.AbsolutePath[..^6] + "access", Query = "kioskId=" + Uri.EscapeDataString(kioskId) + "&cameraId=" + Uri.EscapeDataString(cameraId) };
       using var request = new HttpRequestMessage(HttpMethod.Get, address.Uri);
-      request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Config("integrationToken"));
+      request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", connection.IntegrationToken);
       var generation = _access.Generation;
       try {
         using var response = await _http.SendAsync(request, ct);

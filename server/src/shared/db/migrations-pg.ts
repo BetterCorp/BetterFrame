@@ -1126,4 +1126,17 @@ export const TENANT_MIGRATIONS: readonly string[] = [
 
   `ALTER TABLE entities ADD COLUMN IF NOT EXISTS web_permissions_json JSONB NOT NULL DEFAULT '{}'`,
 
+  `ALTER TABLE simple_vms_sources ALTER COLUMN owner_kiosk_id DROP NOT NULL`,
+  `ALTER TABLE simple_vms_linked_kiosks ADD COLUMN use_local_address BOOLEAN NOT NULL DEFAULT false`,
+  // Recorders belong to the tenant; kiosk enrollment is an independent association.
+  `INSERT INTO simple_vms_linked_kiosks(source_id, kiosk_id, use_local_address)
+    SELECT id, owner_kiosk_id, true FROM simple_vms_sources WHERE owner_kiosk_id IS NOT NULL
+    ON CONFLICT(source_id, kiosk_id) DO UPDATE SET use_local_address = true`,
+  `UPDATE simple_vms_sources SET owner_kiosk_id = NULL`,
+  `CREATE TABLE simple_vms_pairings (
+    code_hash TEXT PRIMARY KEY, challenge TEXT NOT NULL, instance_id TEXT NOT NULL,
+    grant_encrypted TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL,
+    claimed_at TIMESTAMPTZ
+  )`,
+
 ];

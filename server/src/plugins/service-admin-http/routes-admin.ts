@@ -2,6 +2,7 @@ import { webPermissionsForm } from "../../shared/web-permissions.js";
 import { registerWebActionRoutes } from "./routes-web-actions.js";
 import { parseWebActions, webActionsFormDraft } from "../../shared/web-actions.js";
 import { registerSimpleVmsAdminRoutes, simpleVmsManagedPage } from "./routes-simple-vms.js";
+import { listSimpleVmsSources } from "../../shared/simple-vms.js";
 import { simpleVmsLayoutAllowed } from "../../shared/simple-vms-access.js";
 import { registerTrustedCaRoutes } from "./routes-trusted-cas.js";
 import { registerOverlayRoutes } from "./routes-overlays.js";
@@ -2540,6 +2541,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
       gpioBindings,
       firmwareReleases,
       osReleases,
+      simpleVmsSources: await listSimpleVmsSources(deps.repo, id),
     }));
   });
 

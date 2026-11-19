@@ -8,7 +8,8 @@
     <ProjectReference Include="$(SimpleVmsSource)/src/Shared.Models/Shared.Models.csproj" />
     <ProjectReference Include="$(SimpleVmsSource)/src/plugins/format/Fmp4/Fmp4.csproj" />
   </ItemGroup>
-  <Target Name="RequireSimpleVmsSource" BeforeTargets="PrepareForBuild" Condition="'$(SimpleVmsSource)' == ''">
-    <Error Text="Build with -p:SimpleVmsSource=/absolute/path/to/simple-vms" />
+  <Target Name="RequireSimpleVmsSource" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(SimpleVmsSource)' == ''" Text="Build with -p:SimpleVmsSource=/absolute/path/to/simple-vms" />
+    <Error Condition="'$(SimpleVmsSource)' != '' And !Exists('$(SimpleVmsSource)/src/Shared.Models/IPluginPairing.cs')" Text="Apply integrations/simplevms/host-pairing/browser-pairing.patch to the extended SimpleVMS host before building the plugin." />
   </Target>
 </Project>

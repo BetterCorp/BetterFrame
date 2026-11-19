@@ -164,6 +164,7 @@ function Sidebar(props: { activeNav?: string }) {
           <NavItem href="/admin/ablesign/playlists" label="Playlists" icon=" " active={a === "ablesign-playlists"} />
           <NavItem href="/admin/ablesign/groups" label="Groups" icon=" " active={a === "ablesign-groups"} />
         </NavGroup>
+        <NavItem href="/admin/simplevms" label="SimpleVMS" icon="&#9635;" active={a === "simplevms"} />
         <NavItem href="/admin/trusted-cas" label="Trusted CAs" icon="&#9879;" active={a === "trusted-cas"} />
         <NavItem href="/admin/overlays" label="Overlay templates" icon="&#9633;" active={a === "overlays"} />
         <NavItem href="/admin/labels" label="Labels" icon="&#9670;" active={a === "labels"} />

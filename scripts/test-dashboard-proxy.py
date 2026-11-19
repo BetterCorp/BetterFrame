@@ -38,7 +38,9 @@ class DashboardProxyTests(unittest.TestCase):
                     cookie = self.headers.get("Cookie", "")
                     status, headers = 200, {}
                     if kind == "admin":
-                        if cookie == "admin-denied":
+                        if self.path.startswith("/simplevms/"):
+                            pass  # Read-only landing pages have their own destination validation.
+                        elif cookie == "admin-denied":
                             status = 403
                         elif cookie in ("admin-a", "admin-b"):
                             headers["X-BetterFrame-Tenant"] = cookie[-1]
@@ -59,6 +61,9 @@ class DashboardProxyTests(unittest.TestCase):
                                        "authorization": self.headers.get("Authorization"),
                                        "body": getattr(self, "body_text", None), "path": self.path, "tenant": self.headers.get("X-BetterFrame-Tenant"),
                                        "upgrade": self.headers.get("Upgrade"),
+                                       "host": self.headers.get("Host"),
+                                       "forwarded_host": self.headers.get("X-Forwarded-Host"),
+                                       "forwarded_proto": self.headers.get("X-Forwarded-Proto"),
                                        "scope": self.headers.get("X-BetterFrame-Display-Scope"),
                                        "kiosk": self.headers.get("X-BetterFrame-Kiosk-Id")}).encode()
                     self.send_response(status)
@@ -182,6 +187,29 @@ class DashboardProxyTests(unittest.TestCase):
     def test_desktop_enrollment_check_remains_available_with_credentials(self):
         self.assertEqual(self.request("/api/kiosk/_check")[0], 401)
         self.assertEqual(self.request("/api/kiosk/_check", "kiosk-a")[0], 200)
+
+    def test_pairing_landing_pages_reach_admin_without_dashboard_auth(self):
+        for path in ["/simplevms/pair?instance_id=test", "/simplevms/instance/00000000-0000-0000-0000-000000000000"]:
+            status, _, response = self.request(path, extra={"X-BetterFrame-Tenant": "forged"})
+            data = json.loads(response)
+            self.assertEqual(status, 200)
+            self.assertEqual(data["kind"], "admin")
+            self.assertEqual(data["path"], path)
+            self.assertIsNone(data["tenant"])
+        self.assertEqual(self.request("/admin/simplevms/pair")[0], 401)
+
+    def test_pairing_and_login_preserve_external_origin_and_port(self):
+        for path in ["/admin/simplevms/pair", "/auth/login", "/simplevms/pair"]:
+            status, _, response = self.request(path, "admin-a", {
+                "Host": "frame.property.test:9443", "X-Forwarded-Host": "forged.test", "X-Forwarded-Proto": "https",
+            })
+            data = json.loads(response)
+            self.assertEqual(status, 200)
+            self.assertEqual(data["host"], "frame.property.test:9443")
+            self.assertEqual(data["forwarded_host"], "frame.property.test:9443")
+            self.assertEqual(data["forwarded_proto"], "https")
+        status, _, response = self.request("/api/simplevms/default/pair/claim", method="POST", body="{}")
+        self.assertEqual(json.loads(response)["kind"], "api")
 
     def test_public_webhooks_have_no_trusted_tenant_and_internal_checks_are_private(self):
         status, _, body = self.request("/in/public/a/webhook", extra={"X-BetterFrame-Tenant": "forged"})

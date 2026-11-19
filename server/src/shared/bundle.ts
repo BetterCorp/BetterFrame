@@ -616,7 +616,7 @@ export async function generateBundle(
     const vms = vmsCameras.get(cam.id);
     if (managedCameraIds.has(cam.id) && !vms) continue;
     if (vms) {
-      const address = vms.owner_kiosk_id === kioskId ? vms.local_address : vms.external_address;
+      const address = vms.use_local_address ? vms.local_address : vms.external_address;
       if (!address) continue;
       effectiveStreams = effectiveStreams.map(stream => ({ ...stream,
         rtsp_uri: simpleVmsStreamUri(address, vms.external_id, stream.profile_token ?? "") }));
@@ -650,7 +650,7 @@ export async function generateBundle(
       enabled: cam.enabled,
       last_seen_at: cam.last_seen_at,
       simple_vms_managed: !!vms || operateCameraIds.has(cam.id),
-      simple_vms_http_url: vms ? (vms.owner_kiosk_id === kioskId ? vms.local_http_address : vms.external_http_address) : null,
+      simple_vms_http_url: vms ? (vms.use_local_address ? vms.local_http_address : vms.external_http_address) : null,
       recording_config: viewer ? {} : cam.recording_config_json,
       type: cam.type,
       onvif_host: viewer ? null : cam.onvif_host,
@@ -718,7 +718,7 @@ export async function generateBundle(
       port: kiosk.operator_console_port,
       tools: viewer ? [] : parseOperatorTools(kiosk.operator_tools_json),
       simple_vms: {
-        enabled: !viewer && [...vmsCameras.values()].some(source => source.owner_kiosk_id === kioskId ? !!source.local_http_address : !!source.external_http_address),
+        enabled: !viewer && [...vmsCameras.values()].some(source => source.use_local_address ? !!source.local_http_address : !!source.external_http_address),
         storage_path: viewer ? null : kiosk.simple_vms_storage_path,
         settings: viewer ? {} : parseJsonObject(kiosk.simple_vms_settings_json),
       },

@@ -1,4 +1,6 @@
 import { WebPermissionsEditor } from "./web-permissions-editor.js";
+import { SimpleVmsKioskCard } from "./simple-vms-pages.js";
+import type { SimpleVmsSummary } from "../shared/simple-vms.js";
 import { webPermissionsForm } from "../shared/web-permissions.js";
 import { WebActionsEditor } from "./web-actions-editor.js";
 import type { WebActions } from "../shared/web-actions.js";
@@ -2158,6 +2160,7 @@ interface KioskEditProps {
   gpioBindings?: KioskGpioBinding[];
   firmwareReleases?: FirmwareRelease[];
   osReleases?: OsUpdateRelease[];
+  simpleVmsSources?: SimpleVmsSummary[];
   error?: string;
   success?: string;
 }
@@ -2457,7 +2460,6 @@ function OperatorConsoleCard(props: { kiosk: Kiosk }) {
           <div class="form-group"><label>HTTPS port</label><input name="operator_console_port" type="number" class="form-input" value="18443" readonly /></div>
         </div>
         <div class="form-group"><label>Monitor 2 links</label><textarea name="operator_tools" class="form-input" rows="4" placeholder="Incidents|https://incident.example/">{tools.map((tool) => `${tool.label}|${tool.url}`).join("\n")}</textarea><div class="form-hint">One <code>Label|https://URL</code> entry per line.</div></div>
-        <p><a href={`/admin/kiosks/${k.id}/simple-vms`}>Configure SimpleVMS connection and linked kiosks</a></p>
         <button type="submit" class="btn btn-primary">Save &amp; Push</button>
         {origin ? <a class="btn btn-ghost" style="margin-left:.5rem" href={origin}>Open Console</a> : null}
         {k.operator_console_host ? <a class="btn btn-ghost" style="margin-left:.5rem" href={`http://${k.operator_console_host}:18090/local/operator-certificate.crt`}>Download trust certificate</a> : null}
@@ -2737,6 +2739,7 @@ export function KioskEditPage(props: KioskEditProps) {
 
         {(props.kiosk.local_key && props.kiosk.local_port) && KioskLocalPanel({ kiosk: props.kiosk, layouts: localLayouts, cameras: props.localCameras })}
 
+        {SimpleVmsKioskCard({ kiosk: props.kiosk, sources: props.simpleVmsSources ?? [] })}
         {OperatorConsoleCard({ kiosk: props.kiosk })}
 
         <div class="card" style="margin-bottom:1.5rem">

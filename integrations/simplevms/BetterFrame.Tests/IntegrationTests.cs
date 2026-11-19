@@ -18,7 +18,7 @@ using System.Diagnostics;
 
 namespace BetterFrame.Tests;
 
-public sealed class IntegrationTests
+public sealed partial class IntegrationTests
 {
   [TestCase("callbackUrl")] [TestCase("controlRoomUrl")]
   public void AuthoritySettingsRejectInsecureRemoteUrlsBeforeSaving(string key)

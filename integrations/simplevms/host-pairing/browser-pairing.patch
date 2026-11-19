@@ -1,0 +1,244 @@
+diff --git a/src/Shared.Models/IPluginPairing.cs b/src/Shared.Models/IPluginPairing.cs
+new file mode 100644
+--- /dev/null
++++ b/src/Shared.Models/IPluginPairing.cs
+@@ -0,0 +1,7 @@
++namespace Shared.Models;
++
++public interface IPluginPairing
++{
++  Task<OneOf<IReadOnlyDictionary<string, string>, Error>> BeginPairingAsync(IReadOnlyDictionary<string, string> values, CancellationToken ct);
++  Task<OneOf<IReadOnlyDictionary<string, string>, Error>> CompletePairingAsync(IReadOnlyDictionary<string, string> values, CancellationToken ct);
++}
+diff --git a/src/Server.Api/Endpoints/BetterFramePairingEndpoint.cs b/src/Server.Api/Endpoints/BetterFramePairingEndpoint.cs
+new file mode 100644
+--- /dev/null
++++ b/src/Server.Api/Endpoints/BetterFramePairingEndpoint.cs
+@@ -0,0 +1,56 @@
++using System.Net;
++using System.Text.Json;
++using Server.Core;
++using Server.Core.Routing;
++using Server.Plugins;
++using Shared.Models;
++
++namespace Server.Api.Endpoints;
++
++/// <summary>Only BetterFrame enrollment; no generic plugin-action dispatch.</summary>
++public static class BetterFramePairingEndpoint
++{
++  public const string ConfigOperation = "PUT /api/v1/plugins/bettercorp-betterframe/config";
++  public static void Map(IEndpointRouteBuilder app)
++  {
++    // A public, read-only landing document retains Strict cookies on the next same-origin navigation.
++    app.MapGet("/betterframe-pairing-return", (HttpContext context) => {
++      context.Response.Headers.CacheControl = "no-store"; context.Response.Headers["Referrer-Policy"] = "no-referrer";
++      return Results.Content("<!doctype html><meta charset=\"utf-8\"><title>Continue to SimpleVMS</title><script>window.location.replace('/settings/plugins/bettercorp-betterframe'+window.location.hash)</script>", "text/html");
++    });
++    app.MapPost("/api/v1/plugins/bettercorp-betterframe/pairing/begin", (HttpContext ctx, CancellationToken ct) => Handle(ctx, false, ct));
++    app.MapPost("/api/v1/plugins/bettercorp-betterframe/pairing/complete", (HttpContext ctx, CancellationToken ct) => Handle(ctx, true, ct));
++  }
++  public static bool IsAllowed(HttpContext context, bool configWriter, bool localAdministration)
++  {
++    if (!HttpMethods.IsPost(context.Request.Method) || !context.Request.HasJsonContentType()) return false;
++    if (!Uri.TryCreate(context.Request.Headers.Origin.ToString(), UriKind.Absolute, out var origin)
++      || origin.GetLeftPart(UriPartial.Authority) != $"{context.Request.Scheme}://{context.Request.Host}") return false;
++    return configWriter || (localAdministration && context.Connection.RemoteIpAddress is { } ip && IPAddress.IsLoopback(ip));
++  }
++  private static async Task<IResult> Handle(HttpContext context, bool complete, CancellationToken ct)
++  {
++    var host = context.RequestServices.GetRequiredService<IPluginHost>();
++    var identity = context.Items["Identity"] as string;
++    var writer = host.AuthProviders.Count > 0 && !string.IsNullOrEmpty(identity) && host.AuthzProviders.Count > 0
++      && await host.AuthzProviders[0].AuthorizeAsync(identity, ConfigOperation, null, ct);
++    if (!IsAllowed(context, writer, host.AuthProviders.Count == 0)) return ApiResponse.Err(
++      new Error(Result.Forbidden, new DebugTag(ModuleIds.Api, 0x0020), "Pairing requires same-origin recorder administration. Sign in with configuration-write permission or use the recorder's local browser."));
++    var entry = host.Plugins.FirstOrDefault(p => p.Metadata.Id == "bettercorp-betterframe");
++    if (entry?.Plugin is not IPluginPairing pairing) return Results.NotFound();
++    if (context.Request.ContentLength > 8192) return Results.BadRequest();
++    using var body = new MemoryStream(); var buffer = new byte[4096]; int read;
++    while ((read = await context.Request.Body.ReadAsync(buffer, ct)) > 0) {
++      if (body.Length + read > 8192) return Results.BadRequest();
++      body.Write(buffer, 0, read);
++    }
++    Dictionary<string, string>? values;
++    try { values = JsonSerializer.Deserialize(body.ToArray(), ServerJsonContext.Default.DictionaryStringString); }
++    catch (JsonException) { return Results.BadRequest(); }
++    if (values == null) return Results.BadRequest();
++    var result = complete ? await pairing.CompletePairingAsync(values, ct) : await pairing.BeginPairingAsync(values, ct);
++    var envelope = ApiResult.Ok(result, new DebugTag(ModuleIds.Api, 0x0020), ServerJsonContext.Default.IReadOnlyDictionaryStringString);
++    context.Response.Headers.CacheControl = "no-store";
++    return Results.Json(envelope, ServerJsonContext.Default.ResponseEnvelope, statusCode: envelope.Result.ToHttpStatusCode());
++  }
++}
+diff --git a/src/Server.Api/ApiExtensions.cs b/src/Server.Api/ApiExtensions.cs
+--- a/src/Server.Api/ApiExtensions.cs
++++ b/src/Server.Api/ApiExtensions.cs
+@@ -47,6 +47,7 @@
+ 
+   public static WebApplication MapApiEndpoints(this WebApplication app)
+   {
++    BetterFramePairingEndpoint.Map(app);
+     SnapshotEndpoint.Map(app);
+     StreamEndpoints.Map(app);
+     EventEndpoints.Map(app);
+diff --git a/src/Server.Api/Middleware/AuthMiddleware.cs b/src/Server.Api/Middleware/AuthMiddleware.cs
+--- a/src/Server.Api/Middleware/AuthMiddleware.cs
++++ b/src/Server.Api/Middleware/AuthMiddleware.cs
+@@ -13,6 +13,7 @@
+ 
+   public async Task InvokeAsync(HttpContext context)
+   {
++    if (HttpMethods.IsGet(context.Request.Method) && context.Request.Path == "/betterframe-pairing-return") { await _next(context); return; }
+     var pluginHost = context.RequestServices.GetRequiredService<IPluginHost>();
+     var authProvider = pluginHost.AuthProviders.FirstOrDefault();
+ 
+diff --git a/src/Server.Api/Middleware/AuthzMiddleware.cs b/src/Server.Api/Middleware/AuthzMiddleware.cs
+--- a/src/Server.Api/Middleware/AuthzMiddleware.cs
++++ b/src/Server.Api/Middleware/AuthzMiddleware.cs
+@@ -16,6 +16,7 @@
+ 
+   public async Task InvokeAsync(HttpContext context)
+   {
++    if (HttpMethods.IsGet(context.Request.Method) && context.Request.Path == "/betterframe-pairing-return") { await _next(context); return; }
+     var pluginHost = context.RequestServices.GetRequiredService<IPluginHost>();
+     var authzProvider = pluginHost.AuthzProviders.FirstOrDefault();
+ 
+@@ -27,6 +28,9 @@
+ 
+     var identity = context.Items["Identity"] as string;
+     var operation = $"{context.Request.Method} {context.Request.Path}";
++    if (context.Request.Method == "POST" && context.Request.Path.Value is
++      "/api/v1/plugins/bettercorp-betterframe/pairing/begin" or "/api/v1/plugins/bettercorp-betterframe/pairing/complete")
++      operation = Endpoints.BetterFramePairingEndpoint.ConfigOperation;
+ 
+     var authorized = await authzProvider.AuthorizeAsync(
+       identity, operation, null, context.RequestAborted);
+diff --git a/src/Client.Web/src/api/client.ts b/src/Client.Web/src/api/client.ts
+--- a/src/Client.Web/src/api/client.ts
++++ b/src/Client.Web/src/api/client.ts
+@@ -197,6 +197,8 @@
+   },
+ 
+   plugins: {
++    beginBetterFramePairing: (returnUrl: string) => post<Record<string, string>>('/api/v1/plugins/bettercorp-betterframe/pairing/begin', { returnUrl }),
++    completeBetterFramePairing: (values: Record<string, string>) => post<Record<string, string>>('/api/v1/plugins/bettercorp-betterframe/pairing/complete', values),
+     list: (type?: string) => get<PluginListItem[]>(`/api/v1/plugins${qs({ type })}`),
+     get: (id: string) => get<PluginListItem>(`/api/v1/plugins/${id}`),
+     configSchema: (id: string) => request<SettingGroup[]>('OPTIONS', `/api/v1/plugins/${id}/config`),
+diff --git a/src/Client.Web/src/views/settings/PluginSettingsView.vue b/src/Client.Web/src/views/settings/PluginSettingsView.vue
+--- a/src/Client.Web/src/views/settings/PluginSettingsView.vue
++++ b/src/Client.Web/src/views/settings/PluginSettingsView.vue
+@@ -14,6 +14,7 @@
+ const fieldErrors = ref<Record<string, string>>({})
+ const loading = ref(true)
+ const saving = ref(false)
++const pairing = ref(false)
+ const error = ref('')
+ const success = ref('')
+ 
+@@ -68,7 +69,8 @@
+   success.value = ''
+   try {
+     const coerced: Record<string, string> = {}
+-    for (const [k, v] of Object.entries(values.value)) coerced[k] = String(v)
++    const settings = new Set(schema.value.flatMap(group => group.fields.filter(field => field.type !== 'pairing').map(field => field.key)))
++    for (const [k, v] of Object.entries(values.value)) if (settings.has(k)) coerced[k] = String(v)
+     await api.plugins.updateConfig(pluginId, coerced)
+     success.value = 'Settings saved.'
+   } catch (e) {
+@@ -78,7 +80,39 @@
+   }
+ }
+ 
+-onMounted(load)
++async function pairWithBetterFrame() {
++  pairing.value = true
++  error.value = ''
++  try {
++    const settings: Record<string, string> = {}
++    for (const group of schema.value) for (const field of group.fields) {
++      if (field.type !== 'pairing') settings[field.key] = String(values.value[field.key] ?? '')
++    }
++    await api.plugins.updateConfig(pluginId, settings)
++    const result = await api.plugins.beginBetterFramePairing(`${window.location.origin}/betterframe-pairing-return`)
++    window.location.assign(result.redirectUrl!)
++  } catch (e) {
++    error.value = e instanceof Error ? e.message : 'Pairing could not be started.'
++    pairing.value = false
++  }
++}
++
++onMounted(async () => {
++  const callback = new URLSearchParams(window.location.hash.slice(1))
++  if (callback.has('bf_pair_code')) window.history.replaceState(null, '', window.location.pathname + window.location.search)
++  await load()
++  if (pluginId === 'bettercorp-betterframe' && callback.has('bf_pair_code')) {
++    pairing.value = true
++    try {
++      const result = await api.plugins.completeBetterFramePairing({ code: callback.get('bf_pair_code') ?? '',
++        state: callback.get('bf_pair_state') ?? '', tenantSlug: callback.get('bf_pair_tenant') ?? '' })
++      window.location.replace(result.redirectUrl!)
++    } catch (e) {
++      error.value = e instanceof Error ? e.message : 'Pairing could not be completed. Start pairing again.'
++      pairing.value = false
++    }
++  }
++})
+ </script>
+ 
+ <template>
+@@ -111,8 +145,10 @@
+           <h2 class="section-subheading">{{ group.label }}</h2>
+           <p v-if="group.description" class="text-xs text-text-muted">{{ group.description }}</p>
+           <template v-for="field in group.fields" :key="field.key">
++            <button v-if="field.type === 'pairing' && pluginId === 'bettercorp-betterframe'" type="button" class="btn btn-primary"
++              :disabled="saving || pairing" @click="pairWithBetterFrame">{{ pairing ? 'Pairing…' : field.label }}</button>
+             <div
+-              v-if="field.type === 'bool' || field.type === 'boolean' || field.type === 'boolean-enable-only'"
++              v-else-if="field.type === 'bool' || field.type === 'boolean' || field.type === 'boolean-enable-only'"
+               class="flex items-center justify-between gap-4"
+             >
+               <div class="space-y-1">
+diff --git a/tests/Tests.Unit/Api/BetterFramePairingSecurityTests.cs b/tests/Tests.Unit/Api/BetterFramePairingSecurityTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/Tests.Unit/Api/BetterFramePairingSecurityTests.cs
+@@ -0,0 +1,37 @@
++using System.Net;
++using Microsoft.AspNetCore.Http;
++using NUnit.Framework;
++using Server.Api.Endpoints;
++
++namespace Tests.Unit.Api;
++
++public class BetterFramePairingSecurityTests
++{
++  [TestCase(false, false, "10.0.0.5", false)]
++  [TestCase(false, true, "10.0.0.5", false)]
++  [TestCase(false, true, "127.0.0.1", true)]
++  [TestCase(false, true, "::1", true)]
++  [TestCase(false, false, "127.0.0.1", false)]
++  [TestCase(true, false, "10.0.0.5", true)]
++  public void RequiresConfigurationAuthorityOrUnauthenticatedLoopback(bool writer, bool local, string address, bool allowed)
++  {
++    var context = Context(); context.Connection.RemoteIpAddress = IPAddress.Parse(address);
++    Assert.That(BetterFramePairingEndpoint.IsAllowed(context, writer, local), Is.EqualTo(allowed));
++  }
++  [TestCase("https://evil.test", "application/json", "POST")]
++  [TestCase("", "application/json", "POST")]
++  [TestCase("https://recorder.test", "text/plain", "POST")]
++  [TestCase("https://recorder.test", "application/x-www-form-urlencoded", "POST")]
++  [TestCase("https://recorder.test", "application/json", "GET")]
++  public void RejectsCrossOriginAndFormRequestsEvenForAdministrators(string origin, string contentType, string method)
++  {
++    var context = Context(); context.Request.Headers.Origin = origin; context.Request.ContentType = contentType; context.Request.Method = method;
++    Assert.That(BetterFramePairingEndpoint.IsAllowed(context, true, true), Is.False);
++  }
++  private static DefaultHttpContext Context()
++  {
++    var context = new DefaultHttpContext(); context.Request.Method = "POST"; context.Request.Scheme = "https";
++    context.Request.Host = new HostString("recorder.test"); context.Request.ContentType = "application/json";
++    context.Request.Headers.Origin = "https://recorder.test"; return context;
++  }
++}

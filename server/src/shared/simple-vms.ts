@@ -6,7 +6,7 @@ import { withSimpleVmsSync } from "./simple-vms-access.js";
 import { simpleVmsAddress, simpleVmsStreamUri, validateSimpleVmsSnapshot } from "./simple-vms-schema.js";
 
 export interface SimpleVmsSource {
-  id: string; instance_id: string; device_id: string; owner_kiosk_id: string;
+  id: string; instance_id: string; device_id: string; owner_kiosk_id: string | null;
   enabled: boolean; auto_sync: boolean; local_address: string; external_address: string | null;
   local_http_address: string | null; external_http_address: string | null;
   viewer_username: string; viewer_password_encrypted: string; ingest_key_hash: string;
@@ -21,6 +21,16 @@ export function simpleVmsTokenMatches(source: SimpleVmsSource, token: string): b
 export async function getSimpleVmsSource(repo: Repository, id: string): Promise<SimpleVmsSource | undefined> {
   return repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE id = ?", [id]);
 }
+export interface SimpleVmsSummary extends SimpleVmsSource {
+  name: string; camera_count: number; connected: boolean; use_local_address: boolean;
+}
+export async function listSimpleVmsSources(repo: Repository, kioskId = ""): Promise<SimpleVmsSummary[]> {
+  return repo.adapter.all<SimpleVmsSummary>(`SELECT s.*, d.name,
+    (SELECT count(*)::int FROM simple_vms_cameras c WHERE c.source_id = s.id) AS camera_count,
+    (s.owner_kiosk_id = ? OR EXISTS (SELECT 1 FROM simple_vms_linked_kiosks k WHERE k.source_id = s.id AND k.kiosk_id = ?)) IS TRUE AS connected,
+    (s.owner_kiosk_id = ? OR COALESCE((SELECT k.use_local_address FROM simple_vms_linked_kiosks k WHERE k.source_id = s.id AND k.kiosk_id = ?), false)) IS TRUE AS use_local_address
+    FROM simple_vms_sources s JOIN camera_devices d ON d.id = s.device_id ORDER BY d.name, s.id`, [kioskId, kioskId, kioskId, kioskId]);
+}
 /** Remove BF's imported copies atomically; the native recorder and its recordings remain untouched. */
 export async function removeSimpleVmsSource(repo: Repository, sourceId: string): Promise<string[]> {
   return withSimpleVmsSync(() => repo.transact(async () => {
@@ -33,8 +43,9 @@ export async function removeSimpleVmsSource(repo: Repository, sourceId: string):
     for (const camera of cameras) await repo.deleteCamera(camera.camera_id);
     await repo.adapter.run("DELETE FROM simple_vms_sources WHERE id = ?", [sourceId]);
     await repo.deleteCameraDevice(source.device_id);
-    await repo.updateKiosk(source.owner_kiosk_id, { simple_vms_enabled: false });
-    return [source.owner_kiosk_id, ...linked.map(kiosk => kiosk.kiosk_id)];
+    const affected = [source.owner_kiosk_id, ...linked.map(kiosk => kiosk.kiosk_id)].filter((id): id is string => !!id);
+    for (const id of affected) await refreshSimpleVmsKioskEnabled(repo, id);
+    return affected;
   }));
 }
 export async function saveSimpleVmsSource(repo: Repository, secrets: SecretsApi, ownerId: string, input: {
@@ -99,7 +110,7 @@ export async function reconcileSimpleVmsAssignments(repo: Repository, sourceId?:
       const layouts = await repo.adapter.all<{ layout_id: string }>("SELECT layout_id FROM simple_vms_groups WHERE source_id = ? AND layout_id IS NOT NULL", [source.id]);
       const eligible = new Set<string>();
       if (source.enabled) {
-        eligible.add(source.owner_kiosk_id);
+        if (source.owner_kiosk_id) eligible.add(source.owner_kiosk_id);
         for (const k of await repo.adapter.all<{ kiosk_id: string }>("SELECT kiosk_id FROM simple_vms_linked_kiosks WHERE source_id = ?", [source.id])) eligible.add(k.kiosk_id);
       }
       if (!layouts.length) return;
@@ -232,10 +243,37 @@ export async function applySimpleVmsSnapshot(repo: Repository, sourceId: string,
 /** Catalog presence is independent of whether a camera currently has a tile. */
 export async function simpleVmsCamerasForKiosk(repo: Repository, kioskId: string) {
   return repo.adapter.all<{ camera_id: string; external_id: string; source_id: string; local_address: string; external_address: string | null; local_http_address: string | null; external_http_address: string | null;
-    owner_kiosk_id: string; viewer_username: string; viewer_password_encrypted: string }>(`SELECT c.*, s.local_address, s.external_address, s.local_http_address, s.external_http_address,
+    owner_kiosk_id: string | null; use_local_address: boolean; viewer_username: string; viewer_password_encrypted: string }>(`SELECT c.*, s.local_address, s.external_address, s.local_http_address, s.external_http_address,
+      (s.owner_kiosk_id = ? OR COALESCE((SELECT k.use_local_address FROM simple_vms_linked_kiosks k WHERE k.source_id = s.id AND k.kiosk_id = ?), false)) IS TRUE AS use_local_address,
       s.owner_kiosk_id, s.viewer_username, s.viewer_password_encrypted FROM simple_vms_cameras c JOIN simple_vms_sources s ON s.id = c.source_id
       WHERE s.enabled = true AND (s.owner_kiosk_id = ? OR EXISTS
-        (SELECT 1 FROM simple_vms_linked_kiosks k WHERE k.source_id = s.id AND k.kiosk_id = ?))`, [kioskId, kioskId]);
+        (SELECT 1 FROM simple_vms_linked_kiosks k WHERE k.source_id = s.id AND k.kiosk_id = ?))`, [kioskId, kioskId, kioskId, kioskId]);
+}
+
+export async function refreshSimpleVmsKioskEnabled(repo: Repository, kioskId: string): Promise<void> {
+  const active = await repo.adapter.get(`SELECT 1 FROM simple_vms_sources s WHERE s.enabled = true AND
+    (s.owner_kiosk_id = ? OR EXISTS (SELECT 1 FROM simple_vms_linked_kiosks k WHERE k.source_id = s.id AND k.kiosk_id = ?))`, [kioskId, kioskId]);
+  await repo.updateKiosk(kioskId, { simple_vms_enabled: !!active });
+}
+
+export async function linkSimpleVmsKiosk(repo: Repository, sourceId: string, kioskId: string, linked: boolean, local = false): Promise<void> {
+  await withSimpleVmsSync(() => repo.transact(async () => {
+    const source = await repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE id = ? FOR UPDATE", [sourceId]);
+    const kiosk = await repo.getKioskById(kioskId);
+    if (!source || !kiosk?.enabled) throw new Error("Select an available SimpleVMS instance and enabled kiosk");
+    if (linked) {
+      if (!source.enabled) throw new Error("Enable this SimpleVMS instance before linking a kiosk");
+      if (local && kiosk.capabilities.includes("android-viewer")) throw new Error("Android viewers require a reachable recorder address");
+      if (!local && !source.external_address) throw new Error("This recorder needs a reachable media address; use local access only when SimpleVMS runs on this kiosk");
+      await repo.adapter.run(`INSERT INTO simple_vms_linked_kiosks(source_id, kiosk_id, use_local_address) VALUES (?, ?, ?)
+        ON CONFLICT(source_id, kiosk_id) DO UPDATE SET use_local_address = excluded.use_local_address`, [sourceId, kioskId, local]);
+    } else {
+      await repo.adapter.run("DELETE FROM simple_vms_linked_kiosks WHERE source_id = ? AND kiosk_id = ?", [sourceId, kioskId]);
+      if (source.owner_kiosk_id === kioskId) await repo.adapter.run("UPDATE simple_vms_sources SET owner_kiosk_id = NULL WHERE id = ?", [sourceId]);
+    }
+    await refreshSimpleVmsKioskEnabled(repo, kioskId);
+    await reconcileSimpleVmsAssignments(repo, sourceId);
+  }));
 }
 
 /** Each kiosk gets its own reader credential; SimpleVMS checks current link authorization. */

@@ -10,9 +10,18 @@ import { createRateLimiter } from "../../shared/rate-limit.js";
 import { LoginBody, TotpBody, validateBody } from "../../shared/api-schemas.js";
 import { csrfRequestIsValid, requestOriginIsValid } from "../../shared/csrf.js";
 import type { User } from "../../shared/types.js";
+import { unpackSimpleVmsPairReturn } from "../../shared/simple-vms-pairing.js";
 
 
 export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
+  const finishAuth = (event: import("h3").H3Event, response: Response) => {
+    const target = unpackSimpleVmsPairReturn(getCookie(event, "bf_simplevms_pair_return"));
+    if (target) {
+      response.headers.set("location", target);
+      response.headers.append("set-cookie", "bf_simplevms_pair_return=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax");
+    }
+    return response;
+  };
   // 8 attempts per 60s per IP. Paired with the user-account lockout already
   // wired via deps.auth.config.loginLockoutThreshold. In-function so the BSB
   // schema extractor doesn't evaluate at module load.
@@ -118,7 +127,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
     if (totpPending) {
       return redirectWithCookie("/auth/totp", cookies);
     }
-    return redirectWithCookie("/admin/", cookies);
+    return finishAuth(event, redirectWithCookie("/admin/", cookies));
   });
 
   // ---- TOTP -----------------------------------------------------------------
@@ -179,7 +188,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
 
     await deps.repo.adapter.withSearchPath(resolved.tenant.schema_name, () =>
       deps.repo.setSessionTotpPending(session.id, false));
-    return new Response(null, { status: 302, headers: { location: "/admin/" } });
+    return finishAuth(event, new Response(null, { status: 302, headers: { location: "/admin/" } }));
   });
 
   // ---- Recovery code --------------------------------------------------------
@@ -236,7 +245,7 @@ export function registerAuthRoutes(app: H3, deps: AdminDeps): void {
       });
       await deps.repo.setSessionTotpPending(session.id, false);
     });
-    return new Response(null, { status: 302, headers: { location: "/admin/" } });
+    return finishAuth(event, new Response(null, { status: 302, headers: { location: "/admin/" } }));
   });
 
   // ---- Logout ---------------------------------------------------------------

@@ -42,7 +42,9 @@ Linux supports ONVIF camera integration, PTZ controls, multiple display windows,
 and local hardware integration where the device provides it. The native
 [SimpleVMS plugin](integrations/simplevms/README.md) supplies recorder camera
 sync, generated group layouts, live streams, browser preview and recording
-export. MediaMTX is no longer installed or used.
+export. Pair each recorder from its native plugin with automatic credentials,
+then select its kiosks in BF settings. Multiple regional recorders can coexist.
+MediaMTX is no longer installed or used.
 
 Run the server separately from displays for a multi-device installation. A
 combined server/client host is possible, but restarting or losing that host

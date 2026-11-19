@@ -1,0 +1,84 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Threading.Channels;
+using BetterCorp.BetterFrame;
+using NUnit.Framework;
+using Shared.Models;
+
+namespace BetterFrame.Tests;
+
+public sealed partial class IntegrationTests
+{
+  [Test] public async Task PairingKeepsCredentialsOffRedirectsPersistsThemAndImmediatelySyncsAcrossRestart()
+  {
+    using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    static int Port() { var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop(); return port; }
+    var root = $"http://127.0.0.1:{Port()}"; var source = Guid.NewGuid().ToString(); var camera = Guid.NewGuid();
+    var token = new string('t', 43); var password = new string('p', 43); var username = "bf-generated-viewer";
+    using var receiver = new HttpListener(); receiver.Prefixes.Add(root + "/"); receiver.Start();
+    var events = Channel.CreateUnbounded<Catalog>(); var claims = Channel.CreateUnbounded<JsonElement>(); var authorizations = Channel.CreateUnbounded<string>();
+    var serving = Task.Run(async () => {
+      while (!stop.IsCancellationRequested) {
+        var request = await receiver.GetContextAsync().WaitAsync(stop.Token);
+        using var body = await JsonDocument.ParseAsync(request.Request.InputStream, cancellationToken: stop.Token);
+        object response;
+        if (request.Request.Url!.AbsolutePath.EndsWith("/pair/claim")) {
+          claims.Writer.TryWrite(body.RootElement.Clone());
+          response = new { instanceId = body.RootElement.GetProperty("instanceId").GetString(), sourceId = source,
+            callbackUrl = $"{root}/api/simplevms/default/{source}/events", managementUrl = $"{root}/simplevms/instance/{source}",
+            integrationToken = token, viewerUsername = username, viewerPassword = password };
+        } else {
+          var catalog = body.RootElement.Deserialize<Catalog>(CatalogBuilder.Json)!;
+          events.Writer.TryWrite(catalog); authorizations.Writer.TryWrite(request.Request.Headers["Authorization"] ?? "");
+          response = new { revision = catalog.Revision, grants = Array.Empty<object>() };
+        }
+        request.Response.ContentType = "application/json";
+        await request.Response.OutputStream.WriteAsync(JsonSerializer.SerializeToUtf8Bytes(response, CatalogBuilder.Json), stop.Token); request.Response.Close();
+      }
+    });
+    var config = new Config(); config.Set("betterFrameUrl", root); config.Set("rtspPort", Port().ToString()); config.Set("httpListenUrl", $"http://127.0.0.1:{Port()}");
+    var context = new PluginContext { Config = config, Environment = new Environment(directory), LoggerFactory = new Logs(),
+      CameraRegistry = new Registry { Cameras = [Camera(camera, "Paired camera")] }, EventBus = new Bus(), StreamTap = new Tap() };
+    var plugin = new BetterFramePlugin(); plugin.Initialize(context);
+    try {
+      Assert.That((await plugin.StartAsync(stop.Token)).IsT0, Is.True);
+      var started = await plugin.BeginPairingAsync(new Dictionary<string, string> { ["returnUrl"] = "https://recorder.test/betterframe-pairing-return" }, stop.Token);
+      Assert.That(started.IsT0, Is.True);
+      var redirect = new Uri(started.AsT0["redirectUrl"]);
+      var query = redirect.Query.TrimStart('?').Split('&').Select(pair => pair.Split('=', 2)).ToDictionary(pair => Uri.UnescapeDataString(pair[0]), pair => Uri.UnescapeDataString(pair[1]));
+      Assert.That(query.Keys, Does.Not.Contain("verifier")); Assert.That(query.Keys, Does.Not.Contain("integrationToken"));
+      Assert.That(query.Keys, Does.Not.Contain("viewerPassword")); Assert.That(query["state"], Has.Length.EqualTo(43));
+      var values = new Dictionary<string, string> { ["code"] = new string('c', 43), ["state"] = "wrong-state", ["tenantSlug"] = "default" };
+      Assert.That((await plugin.CompletePairingAsync(values, stop.Token)).IsT1, Is.True);
+      Assert.That(claims.Reader.TryPeek(out _), Is.False);
+      values["state"] = query["state"];
+      var completed = await plugin.CompletePairingAsync(values, stop.Token);
+      Assert.That(completed.IsT0, Is.True); Assert.That(completed.AsT0["redirectUrl"], Is.EqualTo($"{root}/simplevms/instance/{source}"));
+      var claimed = await claims.Reader.ReadAsync(stop.Token);
+      var verifier = claimed.GetProperty("verifier").GetString()!;
+      var digest = Convert.ToBase64String(SHA256.HashData(Encoding.ASCII.GetBytes(verifier))).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+      Assert.That(digest, Is.EqualTo(query["challenge"])); Assert.That(claimed.GetProperty("instanceId").GetString(), Is.EqualTo(query["instance_id"]));
+      var catalog = await events.Reader.ReadAsync(stop.Token);
+      Assert.That(catalog.Cameras.Single().Id, Is.EqualTo(camera.ToString()));
+      Assert.That(await authorizations.Reader.ReadAsync(stop.Token), Is.EqualTo("Bearer " + token));
+      Assert.That(config.Values.Keys, Does.Not.Contain("integrationToken")); Assert.That(plugin.GetValues().Keys, Does.Not.Contain("viewerPassword"));
+      Assert.That(plugin.GetSchema().SelectMany(group => group.Fields).Select(field => field.Key), Does.Not.Contain("integrationToken"));
+      Assert.That((await plugin.CompletePairingAsync(values, stop.Token)).IsT1, Is.True, "A completed native pairing cannot be replayed");
+      var saved = Path.Combine(directory, "betterframe", "connection.json"); Assert.That(File.Exists(saved), Is.True);
+      if (!OperatingSystem.IsWindows()) Assert.That(File.GetUnixFileMode(saved), Is.EqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite));
+      await plugin.StopAsync(stop.Token);
+      plugin = new BetterFramePlugin(); plugin.Initialize(context); Assert.That((await plugin.StartAsync(stop.Token)).IsT0, Is.True);
+      var restored = await events.Reader.ReadAsync(stop.Token); Assert.That(restored.Revision, Is.GreaterThan(catalog.Revision));
+      Assert.That(await authorizations.Reader.ReadAsync(stop.Token), Is.EqualTo("Bearer " + token));
+      Assert.That(claims.Reader.TryPeek(out _), Is.False, "Restart must use the durable connection without another browser pairing");
+    } finally {
+      await plugin.StopAsync(CancellationToken.None); stop.Cancel(); receiver.Stop();
+      try { await serving; } catch (OperationCanceledException) { } catch (HttpListenerException) { }
+      Directory.Delete(directory, true);
+    }
+  }
+}

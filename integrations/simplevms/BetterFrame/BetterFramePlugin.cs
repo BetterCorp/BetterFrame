@@ -10,7 +10,7 @@ using Microsoft.Extensions.Logging;
 
 namespace BetterCorp.BetterFrame;
 
-public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraSettings
+public sealed partial class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraSettings, IPluginPairing
 {
   private PluginContext _context = null!;
   private CatalogOutbox _outbox = null!;
@@ -22,15 +22,20 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
   private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(15) };
   private readonly object _gate = new();
   private bool _force;
-  public PluginMetadata Metadata { get; } = new() { Id = "bettercorp-betterframe", Name = "BetterFrame", Version = "1.0.0", Description = "Event-driven NVR and display-group synchronization with native RTSP output" };
+  public PluginMetadata Metadata { get; } = new() { Id = "bettercorp-betterframe", Name = "BetterFrame", Version = "1.1.0", Description = "Browser pairing, event-driven NVR and display-group synchronization with native RTSP output" };
   public OneOf<Success, Error> Initialize(PluginContext context)
   {
     if (context.CameraRegistry == null || context.EventBus == null || context.StreamTap == null) throw new InvalidOperationException("BetterFrame requires native camera registry, events and stream taps");
     _context = context;
     var directory = Path.Combine(context.Environment.DataPath, "betterframe");
-    _outbox = new CatalogOutbox(directory); _access = new ReaderAccessCache(directory); return new Success();
+    Directory.CreateDirectory(directory);
+    if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+    _outbox = new CatalogOutbox(directory); _access = new ReaderAccessCache(directory);
+    _pairedConnectionPath = Path.Combine(directory, "connection.json");
+    if (File.Exists(_pairedConnectionPath)) _pairedConnection = JsonSerializer.Deserialize<PairedConnection>(File.ReadAllText(_pairedConnectionPath), CatalogBuilder.Json);
+    return new Success();
   }
-  private string Config(string key, string fallback = "") => _context.Config.Get(key, fallback);
+  private string Config(string key, string fallback = "") => PairedValue(key) ?? _context.Config.Get(key, fallback);
   private static Uri Authority(string value)
   {
     var uri = new Uri(value, UriKind.Absolute);
@@ -190,18 +195,19 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
     _stop?.Dispose(); _stop = null; return new Success();
   }
   private static readonly (string Key, string Label, string Type, string Default)[] Fields = [
-    ("name", "NVR name", "string", "SimpleVMS"), ("callbackUrl", "BetterFrame callback URL", "string", ""),
-    ("integrationToken", "Integration token", "password", ""), ("viewerUsername", "Viewer username", "string", "betterframe"),
-    ("viewerPassword", "Viewer password", "password", ""),
+    ("name", "NVR name", "string", "SimpleVMS"), ("betterFrameUrl", "BetterFrame URL", "string", ""),
     ("listenAddress", "RTSP bind address (restart required)", "string", "127.0.0.1"), ("rtspPort", "RTSP port (restart required)", "int", "8554"),
     ("tlsCertificate", "TLS certificate PEM (restart required)", "string", ""), ("tlsKey", "TLS key PEM (restart required)", "string", ""),
     ("httpListenUrl", "Browser media listener (restart required)", "string", "http://127.0.0.1:8555"),
     ("controlRoomUrl", "ControlRoom policy URL", "string", ""), ("controlRoomKey", "ControlRoom service key", "password", "")
   ];
   public IReadOnlyList<SettingGroup> GetSchema() => [new() { Key = "betterframe", Order = 0, Label = "BetterFrame",
-    Description = $"Instance ID: {_outbox.InstanceId}. Configure the same viewer credentials and integration token in BetterFrame.",
-    Fields = Fields.Select((f, i) => new SettingField { Key = f.Key, Label = f.Label, Type = f.Type, Order = i, DefaultValue = f.Default }).ToArray() },
-    new() { Key = "displayGroups", Order = 1, Label = "Display groups", Description = "Groups create read-only layouts in BetterFrame. Assign cameras through each camera's BetterFrame settings. Recording policies are independent.",
+    Description = _pairedConnection == null ? "Enter your BetterFrame URL and pair. Credentials are generated automatically." : "Paired with BetterFrame. Pair again to reconnect; existing BF cameras and layouts are preserved.",
+    Fields = Fields.Where(f => f.Key is "name" or "betterFrameUrl").Select((f, i) => new SettingField { Key = f.Key, Label = f.Label, Type = f.Type, Order = i, DefaultValue = f.Default })
+      .Append(new SettingField { Key = "pair", Label = "Pair with BetterFrame", Type = "pairing", Order = 2 }).ToArray() },
+    new() { Key = "advanced", Order = 1, Label = "Advanced media and policy", Description = "Listener addresses, certificates and optional recorder policy. Pairing credentials are managed automatically.",
+      Fields = Fields.Where(f => f.Key is not ("name" or "betterFrameUrl")).Select((f, i) => new SettingField { Key = f.Key, Label = f.Label, Type = f.Type, Order = i, DefaultValue = f.Default }).ToArray() },
+    new() { Key = "displayGroups", Order = 2, Label = "Display groups", Description = "Groups create read-only layouts in BetterFrame. Assign cameras through each camera's BetterFrame settings. Recording policies are independent.",
       Fields = new[] { new SettingField { Key = "newGroupName", Label = "New group name", Type = "string", Order = 0 } }
         .Concat(Groups().SelectMany((g, i) => new[] {
           new SettingField { Key = "groupName_" + g.Id, Label = g.Name, Type = "string", Order = i * 2 + 1 },
@@ -221,13 +227,13 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
       return new Success();
     }
     if (key.StartsWith("deleteGroup_")) { if (value is not ("true" or "false")) throw new ArgumentException("Invalid deletion flag"); return new Success(); }
-    if (!Fields.Any(f => f.Key == key)) throw new ArgumentException("Unknown setting");
+    if (!Fields.Any(f => f.Key == key) && key is not ("integrationToken" or "viewerPassword" or "viewerUsername" or "callbackUrl")) throw new ArgumentException("Unknown setting");
     if (key == "integrationToken" && value.Length != 0 && value.Length is < 32 or > 256) throw new ArgumentException("Use an integration token of 32–256 characters");
     if (key == "viewerPassword" && value.Length != 0 && value.Length is < 16 or > 512) throw new ArgumentException("Use a viewer password of 16–512 characters");
     if (key == "viewerUsername" && !System.Text.RegularExpressions.Regex.IsMatch(value, "^[a-zA-Z0-9_.-]{1,128}$")) throw new ArgumentException("Use a viewer username containing letters, digits, dots, underscores or hyphens");
     if (key == "name" && (string.IsNullOrWhiteSpace(value) || value.Length > 255)) throw new ArgumentException("Use an NVR name of 1–255 characters");
     if (key == "rtspPort" && (!int.TryParse(value, out var port) || port is < 1 or > 65535)) throw new ArgumentException("Invalid RTSP port");
-    if (key is "callbackUrl" or "controlRoomUrl" && value != "") Authority(value);
+    if (key is "callbackUrl" or "controlRoomUrl" or "betterFrameUrl" && value != "") Authority(value);
     return new Success();
     } catch (Exception error) when (error is ArgumentException or FormatException) {
       return Error.Create(0x10bf, 2, Result.BadRequest, error.Message);
@@ -245,7 +251,7 @@ public sealed class BetterFramePlugin : IPlugin, IPluginSettings, IPluginCameraS
       if (!string.IsNullOrWhiteSpace(values.GetValueOrDefault("newGroupName"))) groups.Add(new(Guid.NewGuid(), values["newGroupName"].Trim(), []));
       try { SaveGroups(groups.ToArray()); }
       catch (ArgumentException error) { return Error.Create(0x10bf, 2, Result.BadRequest, error.Message); }
-      foreach (var item in values.Where(v => Fields.Any(f => f.Key == v.Key))) _context.Config.Set(item.Key, item.Value);
+      foreach (var item in values.Where(v => Fields.Any(f => f.Key == v.Key) || v.Key is "integrationToken" or "viewerPassword" or "viewerUsername" or "callbackUrl")) _context.Config.Set(item.Key, item.Value);
     }
     Changed(true); return new Success();
   }

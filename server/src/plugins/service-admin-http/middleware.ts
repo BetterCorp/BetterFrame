@@ -1,4 +1,5 @@
 import { demoTenantHidden } from "../../shared/demo.js";
+import { simpleVmsPairReturn, packSimpleVmsPairReturn } from "../../shared/simple-vms-pairing.js";
 /**
  * Auth & setup gate middleware for admin-http.
  *
@@ -15,7 +16,7 @@ import { type H3, getCookie, getRequestPath } from "h3";
 import type { AdminDeps } from "./index.js";
 import type { User, Session, Tenant } from "../../shared/types.js";
 import { csrfRequestIsValid } from "../../shared/csrf.js";
-import { redirectClearCookie } from "./html-response.js";
+import { redirectClearCookie, redirectWithCookie } from "./html-response.js";
 
 declare module "h3" {
   interface H3EventContext {
@@ -85,6 +86,16 @@ export function operatorMayAccess(path: string, method: string): boolean {
 }
 
 export function registerMiddleware(app: H3, deps: AdminDeps): void {
+  const loginRedirect = (event: import("h3").H3Event, location = "/auth/login") => {
+    const url = new URL(event.req.url);
+    const target = simpleVmsPairReturn(url.pathname + url.search);
+    let saved: string;
+    try { saved = target ? packSimpleVmsPairReturn(target) : ""; }
+    catch { return new Response("Pairing link is too long. Start pairing again with a shorter recorder name.", { status: 400 }); }
+    return saved ? redirectWithCookie(location, { name: "bf_simplevms_pair_return", value: saved, maxAge: 600,
+      secure: url.protocol === "https:" || event.req.headers.get("x-forwarded-proto") === "https", httpOnly: true })
+      : new Response(null, { status: 302, headers: { location } });
+  };
   // Tenant resolution middleware — sets search_path for PG multi-tenant.
   // Runs before auth so that DB queries in auth resolution use the right schema.
   app.use(async (event, next) => {
@@ -182,12 +193,12 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
 
       const cookie = getCookie(event, deps.cookieName);
       if (!cookie) {
-        return authCheck ? new Response(null, { status: 401 }) : new Response(null, { status: 302, headers: { location: "/auth/login" } });
+        return authCheck ? new Response(null, { status: 401 }) : loginRedirect(event);
       }
       const requestedTenant = event.context.tenant;
       const resolved = await deps.auth.resolveSession(cookie);
       if (!resolved) {
-        return authCheck ? new Response(null, { status: 401 }) : new Response(null, { status: 302, headers: { location: "/auth/login" } });
+        return authCheck ? new Response(null, { status: 401 }) : loginRedirect(event);
       }
       if (resolved.user.role === "admin" && resolved.tenant.slug !== "default") {
         await deps.repo.adapter.withSearchPath(resolved.tenant.schema_name, () =>
@@ -196,7 +207,7 @@ export function registerMiddleware(app: H3, deps: AdminDeps): void {
         return redirectClearCookie("/auth/login", [deps.cookieName, "betterframe_csrf", "bf_tenant"]);
       }
       if (resolved.session.totp_pending) {
-        return authCheck ? new Response(null, { status: 401 }) : new Response(null, { status: 302, headers: { location: "/auth/totp" } });
+        return authCheck ? new Response(null, { status: 401 }) : loginRedirect(event, "/auth/totp");
       }
       const platformAdmin = resolved.user.role === "admin" && resolved.tenant.slug === "default";
       const targetTenant = requestedTenant ?? resolved.tenant;

@@ -237,7 +237,7 @@ export class Plugin extends BSBService<InstanceType<typeof Config>, typeof Event
     });
 
     registerViewerDeviceAuth(app, repo, auth, secrets, nodered);
-    registerSimpleVmsIngress(app, repo);
+    registerSimpleVmsIngress(app, repo, secrets);
     app.use(async (event, next) => {
       const path = new URL(event.req.url).pathname;
       if (path.startsWith("/api/kiosk/")) return next();

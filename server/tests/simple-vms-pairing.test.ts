@@ -125,7 +125,7 @@ test("SimpleVMS browser approval requires an administrator; PKCE redemption is b
 }));
 
 test("Paired regional recorders sync before kiosk selection; kiosk linking, bundles and reconnection preserve identities", { skip: !pgUrl }, () => database(async (repo, secrets) => {
-  async function pair(instance: string) { const { input, verifier } = request(instance); const code = codeFrom(await approveSimpleVmsPairing(repo, secrets, input, "default", "http://127.0.0.1")); return claimSimpleVmsPairing(repo, secrets, { code, verifier, instanceId: instance }); }
+  async function pair(instance: string, patch: Partial<SimpleVmsPairRequest> = {}) { const { input, verifier } = request(instance); const code = codeFrom(await approveSimpleVmsPairing(repo, secrets, { ...input, ...patch } as SimpleVmsPairRequest, "default", "http://127.0.0.1")); return claimSimpleVmsPairing(repo, secrets, { code, verifier, instanceId: instance }); }
   const first = await pair("north"); const second = await pair("south"); assert.notEqual(first.sourceId, second.sourceId);
   const cameraSnapshot = { version: 1 as const, instanceId: "north", revision: 1, name: "North", cameras: [{ id: "camera-one", name: "Entrance", enabled: true,
     profiles: [{ id: "High", name: "Main", role: "main" as const, codec: "h264", width: 1920, height: 1080, fps: 25 }] }], groups: [{ id: "outside", name: "Outside", cameraIds: ["camera-one"] }] };
@@ -157,9 +157,19 @@ test("Paired regional recorders sync before kiosk selection; kiosk linking, bund
   await linkSimpleVmsKiosk(repo, first.sourceId, kiosk.id, true, true);
   const localBundle = (await generateBundle(repo, secrets, kiosk.id, secrets.generateClusterKey()))!;
   assert.equal(localBundle.cameras[0]!.streams[0]!.rtsp_uri, "rtsp://127.0.0.1:8554/bf/camera-one/High");
-  const reconnect = await pair("north"); assert.equal(reconnect.sourceId, first.sourceId); assert.notEqual(reconnect.integrationToken, first.integrationToken);
+  await linkSimpleVmsKiosk(repo, first.sourceId, kiosk.id, true, false);
+  const beforeFailedClaim = (await getSimpleVmsSource(repo, first.sourceId))!;
+  await repo.adapter.run("UPDATE simple_vms_sources SET external_address = NULL WHERE id = ?", [first.sourceId]);
+  await assert.rejects(pair("north", { external_address: "" }), /network kiosk/);
+  assert.equal((await getSimpleVmsSource(repo, first.sourceId))!.ingest_key_hash, beforeFailedClaim.ingest_key_hash, "Rejected claims must not rotate active credentials");
+  await repo.adapter.run("UPDATE simple_vms_sources SET external_address = ? WHERE id = ?", [beforeFailedClaim.external_address, first.sourceId]);
+  const reconnect = await pair("north", { external_address: "", external_http_address: "" });
+  assert.equal(reconnect.sourceId, first.sourceId); assert.notEqual(reconnect.integrationToken, first.integrationToken);
+  assert.equal(reconnect.externalAddress, "rtsp://recorder.test:8554"); assert.equal(reconnect.externalHttpAddress, "https://recorder.test:8555");
   assert.ok(await repo.getCameraById(camera.id)); assert.ok(await repo.getLayoutById(layout.id));
   assert.equal((await listSimpleVmsSources(repo, kiosk.id)).filter(s => s.connected).length, 2);
+  await repo.updateKiosk(kiosk.id, { enabled: false });
+  await assert.rejects(linkSimpleVmsKiosk(repo, first.sourceId, kiosk.id, true));
   await linkSimpleVmsKiosk(repo, first.sourceId, kiosk.id, false);
   const remaining = await simpleVmsCamerasForKiosk(repo, kiosk.id);
   assert.equal(remaining.length, 1); assert.equal(remaining[0]!.source_id, second.sourceId);

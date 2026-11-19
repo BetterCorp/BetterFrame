@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Net;
 using OneOf;
 using Shared.Models;
 
@@ -17,6 +18,13 @@ public sealed partial class BetterFramePlugin
   private readonly SemaphoreSlim _pairingGate = new(1);
   private static string NewProof() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
   private static string Challenge(string verifier) => Convert.ToBase64String(SHA256.HashData(Encoding.ASCII.GetBytes(verifier))).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+  private static string LocalListenerHost(string host)
+  {
+    host = host.Trim('[', ']');
+    if (host is "*" or "+" || host == IPAddress.Any.ToString()) return IPAddress.Loopback.ToString();
+    if (host == IPAddress.IPv6Any.ToString()) return IPAddress.IPv6Loopback.ToString();
+    return host;
+  }
   private string? PairedValue(string key)
   {
     var paired = _pairedConnection;
@@ -47,10 +55,12 @@ public sealed partial class BetterFramePlugin
       || returnUri.AbsolutePath != "/betterframe-pairing-return") throw new ArgumentException("Invalid SimpleVMS return URL");
     var pending = new PendingPairing(frame, NewProof(), NewProof(), DateTimeOffset.UtcNow.AddMinutes(10));
     var port = int.Parse(Config("rtspPort", "8554")); var scheme = Config("tlsCertificate") == "" ? "rtsp" : "rtsps";
-    var local = new UriBuilder(scheme, "127.0.0.1", port).Uri.AbsoluteUri.TrimEnd('/');
+    var local = new UriBuilder(scheme, LocalListenerHost(Config("listenAddress", "127.0.0.1")), port).Uri.AbsoluteUri.TrimEnd('/');
     var external = returnUri.IsLoopback || Config("listenAddress", "127.0.0.1") is "127.0.0.1" or "::1" ? "" : new UriBuilder(scheme, returnUri.Host, port).Uri.AbsoluteUri.TrimEnd('/');
     var http = new Uri(Config("httpListenUrl", "http://127.0.0.1:8555"));
-    var localHttp = new UriBuilder(http) { Host = "127.0.0.1" }.Uri.GetLeftPart(UriPartial.Authority);
+    var localHttpUri = new UriBuilder(http) { Host = LocalListenerHost(http.Host) }.Uri;
+    // BF permits cleartext browser media only on loopback; camera pairing can still work without preview.
+    var localHttp = localHttpUri.Scheme == "http" && !localHttpUri.IsLoopback ? "" : localHttpUri.GetLeftPart(UriPartial.Authority);
     var externalHttp = http.Scheme != "https" || returnUri.IsLoopback || http.IsLoopback ? "" : new UriBuilder(http) { Host = returnUri.Host }.Uri.GetLeftPart(UriPartial.Authority);
     var parameters = new Dictionary<string, string> { ["instance_id"] = _outbox.InstanceId, ["name"] = Config("name", "SimpleVMS"),
       ["redirect_uri"] = returnUri.AbsoluteUri, ["state"] = pending.State, ["challenge"] = Challenge(pending.Verifier),

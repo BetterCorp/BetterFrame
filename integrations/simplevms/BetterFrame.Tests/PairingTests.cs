@@ -12,6 +12,31 @@ namespace BetterFrame.Tests;
 
 public sealed partial class IntegrationTests
 {
+  [TestCase("127.0.0.1", "http://127.0.0.1:8555", "127.0.0.1", "127.0.0.1")]
+  [TestCase("0.0.0.0", "http://0.0.0.0:8555", "127.0.0.1", "127.0.0.1")]
+  [TestCase("::", "http://[::]:8555", "::1", "::1")]
+  [TestCase("192.168.10.20", "https://192.168.10.20:8555", "192.168.10.20", "192.168.10.20")]
+  [TestCase("2001:db8::20", "https://[2001:db8::20]:8555", "2001:db8::20", "2001:db8::20")]
+  [TestCase("192.168.10.20", "http://192.168.10.20:8555", "192.168.10.20", "")]
+  public async Task PairingAdvertisesConfiguredLocalBindHosts(string bind, string http, string expectedRtspHost, string expectedHttpHost)
+  {
+    using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+    var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+    static int Port() { var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop(); return port; }
+    var config = new Config(); var port = Port(); config.Set("rtspPort", port.ToString()); config.Set("httpListenUrl", $"http://127.0.0.1:{Port()}"); config.Set("betterFrameUrl", "https://frame.test");
+    var plugin = new BetterFramePlugin(); plugin.Initialize(new PluginContext { Config = config, Environment = new Environment(directory), LoggerFactory = new Logs(), CameraRegistry = new Registry(), EventBus = new Bus(), StreamTap = new Tap() });
+    try {
+      Assert.That((await plugin.StartAsync(stop.Token)).IsT0, Is.True);
+      // These settings require a listener restart; this test exercises the advertised configuration only.
+      config.Set("listenAddress", bind); config.Set("httpListenUrl", http);
+      var result = await plugin.BeginPairingAsync(new Dictionary<string, string> { ["returnUrl"] = "https://recorder.test/betterframe-pairing-return" }, stop.Token);
+      Assert.That(result.IsT0, Is.True);
+      var query = new Uri(result.AsT0["redirectUrl"]).Query.TrimStart('?').Split('&').Select(pair => pair.Split('=', 2)).ToDictionary(pair => Uri.UnescapeDataString(pair[0]), pair => Uri.UnescapeDataString(pair[1]));
+      var local = new Uri(query["local_address"]); Assert.That(local.Host.Trim('[', ']'), Is.EqualTo(expectedRtspHost)); Assert.That(local.Port, Is.EqualTo(port));
+      if (expectedHttpHost == "") Assert.That(query["local_http_address"], Is.Empty);
+      else { var browser = new Uri(query["local_http_address"]); Assert.That(browser.Host.Trim('[', ']'), Is.EqualTo(expectedHttpHost)); Assert.That(browser.Port, Is.EqualTo(8555)); }
+    } finally { await plugin.StopAsync(CancellationToken.None); Directory.Delete(directory, true); }
+  }
   [Test] public async Task PairingKeepsCredentialsOffRedirectsPersistsThemAndImmediatelySyncsAcrossRestart()
   {
     using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(25));

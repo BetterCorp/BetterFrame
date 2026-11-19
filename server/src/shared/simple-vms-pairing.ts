@@ -92,6 +92,10 @@ export async function claimSimpleVmsPairing(repo: Repository, secrets: SecretsAp
     await repo.adapter.get("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", [`simplevms-pair:${input.instanceId}`]);
     const previous = await repo.adapter.get<SimpleVmsSource>("SELECT * FROM simple_vms_sources WHERE instance_id = ? FOR UPDATE", [input.instanceId]);
     if (previous && previous.id !== grant.sourceId) throw new Error("This recorder was paired by another request; pair again");
+    // Local administration cannot always advertise a property address; retain qualified routes on reconnect.
+    grant.externalAddress ||= previous?.external_address ?? "";
+    grant.externalHttpAddress ||= previous?.external_http_address ?? "";
+    if (!grant.externalAddress && await repo.adapter.get("SELECT 1 FROM simple_vms_linked_kiosks WHERE source_id = ? AND use_local_address = false", [grant.sourceId])) throw new Error("A network kiosk is using this media address");
     const deviceId = previous?.device_id ?? uuidv7();
     if (!previous) await repo.adapter.run(`INSERT INTO camera_devices(id, name, type, host, port, discovery_runner)
       VALUES (?, ?, 'simplevms', ?, ?, 'server')`, [deviceId, grant.name, new URL(grant.externalAddress || grant.localAddress).hostname,

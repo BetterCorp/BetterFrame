@@ -277,7 +277,7 @@ export async function linkSimpleVmsKiosk(repo: Repository, sourceId: string, kio
     if (!source) throw new Error("SimpleVMS instance not found");
     await lockSimpleVmsKiosks(repo, sourceId, [kioskId]);
     const kiosk = await repo.getKioskById(kioskId);
-    if (!source || !kiosk?.enabled) throw new Error("Select an available SimpleVMS instance and enabled kiosk");
+    if (!kiosk || (linked && !kiosk.enabled)) throw new Error("Select an available SimpleVMS instance and enabled kiosk");
     if (linked) {
       if (!source.enabled) throw new Error("Enable this SimpleVMS instance before linking a kiosk");
       if (local && kiosk.capabilities.includes("android-viewer")) throw new Error("Android viewers require a reachable recorder address");

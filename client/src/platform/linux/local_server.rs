@@ -9,8 +9,8 @@
 //! 1. **GET-only layout API** — `/local/layout/:id?key=<kiosk_local_key>`
 //!    Lets anyone on the LAN with the kiosk's local key trigger a layout
 //!    switch on THIS kiosk via a plain browser URL. Bookmark-friendly. No
-//!    body, no admin credentials needed — auth is the local key generated
-//!    on first use and surfaced to admin via heartbeat. Only `GET` accepted.
+//!    body, no admin credentials needed — startup loads the saved local key
+//!    or creates it if absent. Heartbeat surfaces it to admin. Only `GET` accepted.
 //!
 //! 2. **Admin proxy** — `/proxy/*` forwards to the BF server with the
 //!    request's `Authorization: Bearer <admin_api_key>` header preserved.

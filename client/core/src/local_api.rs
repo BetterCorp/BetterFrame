@@ -99,13 +99,16 @@ impl Command {
     /// Reject unsupported actions, missing IDs and irrelevant or unbounded parameters.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.request_id.is_empty()
+            || matches!(self.request_id.as_str(), "." | "..")
             || self.request_id.len() > 128
             || !self
                 .request_id
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
         {
-            return Err("request_id must be 1-128 ASCII letters, digits, '-', '_', '.' or ':'");
+            return Err(
+                "request_id must be 1-128 ASCII letters, digits, '-', '_', '.' or ':', excluding the complete IDs . and ..",
+            );
         }
         if self.display_id.is_empty() || self.display_id.len() > 128 {
             return Err("display_id is required");
@@ -192,6 +195,10 @@ mod tests {
         c.stream = Some("invalid".into());
         assert!(c.validate().is_err());
         c.stream = None;
+        for id in [".", ".."] {
+            c.request_id = id.into();
+            assert!(c.validate().is_err());
+        }
         c.request_id = "bad id".into();
         assert!(c.validate().is_err());
     }

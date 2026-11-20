@@ -24,6 +24,7 @@ static BOOT_AUDIO_DEFAULT_APPLIED: AtomicBool = AtomicBool::new(false);
 /// read from heartbeat thread. CURRENT_BUNDLE is thread-local so background
 /// threads can't see it.
 static BUNDLE_VERSION: Mutex<Option<String>> = Mutex::new(None);
+static NEXT_FOCUS_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 fn set_reported_bundle_version(version: &str) {
     if let Ok(mut v) = BUNDLE_VERSION.lock() {
@@ -721,18 +722,12 @@ pub enum WorkerMsg {
     UpdateProgress(Option<(String, u8)>),
 }
 
+/// Resolve the live connector; editable display names are not hardware targets.
 fn output_name_for_display(display_id: &str) -> Option<String> {
-    CURRENT_BUNDLE.with(|b| {
-        b.borrow()
-            .as_ref()
-            .and_then(|bundle| {
-                bundle
-                    .normalized_displays()
-                    .into_iter()
-                    .find(|d| d.id == display_id)
-            })
-            .map(|d| d.name)
-    })
+    DISPLAYS.with(|states| states.borrow().get(display_id)
+        .and_then(|st| st.window.surface().and_then(|surface|
+            gtk::prelude::WidgetExt::display(&st.window).monitor_at_surface(&surface)))
+        .and_then(|monitor| monitor.connector()).map(|s| s.to_string()))
 }
 
 fn standby_display(display_id: Option<&str>) {
@@ -745,10 +740,9 @@ fn standby_display(display_id: Option<&str>) {
         }
     });
     recompute_global_state();
-    if let Some(output) = display_id.and_then(output_name_for_display) {
-        cec::standby_output(&output);
-    } else {
-        cec::standby();
+    match display_id {
+        Some(id) => { if let Some(output) = output_name_for_display(id) { cec::standby_output(&output); } }
+        None => cec::standby(),
     }
 }
 
@@ -799,8 +793,6 @@ fn wake_display(display_id: Option<&str>) {
     if let Some(display_id) = display_id {
         if let Some(output_name) = output_name_for_display(display_id) {
             cec::wake_output(&output_name);
-        } else {
-            cec::wake();
         }
         DISPLAYS.with(|ds| {
             if let Some(st) = ds.borrow_mut().get_mut(display_id) {
@@ -845,21 +837,23 @@ fn render_current_layouts(display_id: Option<&str>) {
 
 /// Reset activity timer for one display. If asleep, wake it.
 fn mark_activity(display_id: &str) {
-    DISPLAYS.with(|ds| {
+    let awakened = DISPLAYS.with(|ds| {
         if let Some(st) = ds.borrow_mut().get_mut(display_id) {
             st.last_activity = Instant::now();
             if st.is_asleep {
                 info!("activity while asleep → waking display {display_id}");
-                if let Some(output_name) = output_name_for_display(display_id) {
-                    cec::wake_output(&output_name);
-                } else {
-                    cec::wake();
-                }
                 st.is_asleep = false;
                 st.window.set_child(Some(&st.content_overlay));
+                return true;
             }
         }
+        false
     });
+    if awakened {
+        if let Some(output_name) = output_name_for_display(display_id) {
+            cec::wake_output(&output_name);
+        }
+    }
 }
 
 fn delayed_heartbeat(server_url: &str, kiosk_key: &str) {
@@ -1960,6 +1954,9 @@ fn render_layout(display_id: &str, layout_id: &str) {
 
 fn render_layout_inner(display_id: &str, layout_id: &str, preserve_override: bool) {
     if is_terminal_overlay_active() {
+        if DISPLAYS.with(|states| states.borrow().contains_key(display_id)) {
+            TERMINAL_RENDER_DEFERRED.with(|pending| { pending.borrow_mut().insert(display_id.to_string()); });
+        }
         info!("render_layout: deferred — terminal auth overlay active");
         return;
     }
@@ -2561,7 +2558,9 @@ fn focus_camera(request: OperatorFocusRequest, operator_scope: bool) -> Result<s
         let state = states
             .get_mut(&request.display_id)
             .ok_or_else(|| "display is not active".to_string())?;
-        state.override_generation += 1;
+        // Timers survive bundle/display replacement; never reuse a generation
+        // when a display with the same ID is rebuilt or removed and re-added.
+        state.override_generation = NEXT_FOCUS_GENERATION.fetch_add(1, Ordering::Relaxed);
         let generation = state.override_generation;
         state.display_cleared = false;
         let focus = FocusOverride {
@@ -2617,14 +2616,13 @@ fn operator_clear(display_id: &str) -> Result<serde_json::Value, String> {
         let state = states
             .get_mut(display_id)
             .ok_or_else(|| "display is not active".to_string())?;
+        let layout_id = state.current_layout_id.clone()
+            .ok_or_else(|| "display has no active layout".to_string())?;
         state.override_generation += 1;
         state.focus_overrides.clear();
         state.fullscreen_override = None;
         state.display_cleared = true;
-        state
-            .current_layout_id
-            .clone()
-            .ok_or_else(|| "display has no active layout".to_string())
+        Ok::<_, String>(layout_id)
     })?;
     mark_activity(display_id);
     render_layout_inner(display_id, &layout_id, true);
@@ -2637,14 +2635,13 @@ fn operator_restore(display_id: &str) -> Result<serde_json::Value, String> {
         let state = states
             .get_mut(display_id)
             .ok_or_else(|| "display is not active".to_string())?;
+        let layout_id = state.current_layout_id.clone()
+            .ok_or_else(|| "display has no active layout".to_string())?;
         state.override_generation += 1;
         state.focus_overrides.clear();
         state.fullscreen_override = None;
         state.display_cleared = false;
-        state
-            .current_layout_id
-            .clone()
-            .ok_or_else(|| "display has no active layout".to_string())
+        Ok::<_, String>(layout_id)
     })?;
     mark_activity(display_id);
     render_layout_inner(display_id, &layout_id, true);
@@ -4652,6 +4649,7 @@ thread_local! {
     static TERMINAL_CODE_SAVED_CHILD: RefCell<Option<(String, gtk::Widget)>> = const { RefCell::new(None) };
     static TERMINAL_OVERLAY_ACTIVE: Cell<bool> = const { Cell::new(false) };
     static TERMINAL_CODE_DISPLAY: RefCell<Option<String>> = const { RefCell::new(None) };
+    static TERMINAL_RENDER_DEFERRED: RefCell<std::collections::HashSet<String>> = RefCell::new(Default::default());
 }
 
 fn is_terminal_overlay_active() -> bool {
@@ -4668,6 +4666,7 @@ fn show_terminal_code_overlay(code: &str) {
     let display_id = DISPLAYS.with(|ds| ds.borrow().keys().next().cloned());
     let Some(display_id) = display_id else { return };
 
+    local_api_end_identify(&display_id);
     // Physical-presence authorization must be visible even from standby.
     wake_display(Some(&display_id));
     TERMINAL_CODE_DISPLAY.with(|id| *id.borrow_mut() = Some(display_id.clone()));
@@ -4736,6 +4735,7 @@ fn show_terminal_code_overlay(code: &str) {
             gtk::glib::ControlFlow::Continue
         });
     });
+    local_api_publish(true);
 }
 
 fn dismiss_terminal_code_overlay() {
@@ -4759,6 +4759,15 @@ fn dismiss_terminal_code_overlay() {
             });
         }
     });
+    // Expiry may have changed an override while the prompt prevented redraw.
+    // Release all state borrows before entering the renderer again.
+    let deferred = TERMINAL_RENDER_DEFERRED.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
+    for display_id in deferred {
+        let layout_id = DISPLAYS.with(|states| states.borrow().get(&display_id)
+            .and_then(|state| state.current_layout_id.clone()));
+        if let Some(layout_id) = layout_id { render_layout_inner(&display_id, &layout_id, true); }
+    }
+    local_api_publish(true);
 }
 
 // ---- Update progress banner -------------------------------------------------
@@ -4814,6 +4823,7 @@ thread_local! {
     static API_LAST_PUBLISH: RefCell<Option<Instant>> = const { RefCell::new(None) };
     static API_CATALOG: RefCell<Option<(String, serde_json::Value)>> = const { RefCell::new(None) };
     static API_IDENTIFY: RefCell<HashMap<String, gtk::Label>> = RefCell::new(HashMap::new());
+    static API_IDENTIFY_STYLES: RefCell<Vec<gtk::glib::WeakRef<gtk::gdk::Display>>> = RefCell::new(Vec::new());
 }
 
 /// Sample the renderer, including timer, keyboard and server-driven changes.
@@ -4886,6 +4896,16 @@ fn local_api_publish(force: bool) {
         Some(catalog),
         serde_json::json!({"ready":true,"catalog_version":bundle.version,"displays":displays}),
     );
+}
+
+/// Remove identification before a physical-presence authorization prompt is shown.
+fn local_api_end_identify(display_id: &str) {
+    let label = API_IDENTIFY.with(|labels| labels.borrow_mut().remove(display_id));
+    if let Some(label) = label {
+        if let Some(parent) = label.parent().and_downcast::<gtk::Overlay>() {
+            parent.remove_overlay(&label);
+        }
+    }
 }
 
 /// Validate against current assignments, execute on GTK, then publish the actual result.
@@ -4980,10 +5000,15 @@ fn local_api_command(request: crate::local_server::api::UiCommand) {
                 label.set_valign(gtk::Align::Center);
                 label.set_can_target(false);
                 label.add_css_class("bf-api-identify");
-                add_css(
-                    &label,
-                    ".bf-api-identify { color: white; background: #172554; padding: 36px; border: 4px solid white; border-radius: 12px; font-size: 32px; }",
-                );
+                API_IDENTIFY_STYLES.with(|styles| {
+                    let display = gtk::prelude::WidgetExt::display(&label);
+                    let mut styles = styles.borrow_mut();
+                    styles.retain(|weak| weak.upgrade().is_some());
+                    if !styles.iter().any(|weak| weak.upgrade().as_ref() == Some(&display)) {
+                        add_css(&label, ".bf-api-identify { color: white; background: #172554; padding: 36px; border: 4px solid white; border-radius: 12px; font-size: 32px; }");
+                        styles.push(display.downgrade());
+                    }
+                });
                 DISPLAYS.with(|states| {
                     let states = states.borrow();
                     let st = states.get(&command.display_id).unwrap();
@@ -5076,8 +5101,13 @@ pub fn test_local_api() {
         )["status"],
         "failed"
     );
-    assert_eq!(run(json!({"request_id":"gtk-fullscreen","action":"focus_camera","display_id":"d","camera_id":"camera"}))["status"],"applied");
-    assert_eq!(state()["displays"][0]["fullscreen_override"],true);
+    assert_eq!(
+        run(
+            json!({"request_id":"gtk-fullscreen","action":"focus_camera","display_id":"d","camera_id":"camera"})
+        )["status"],
+        "applied"
+    );
+    assert_eq!(state()["displays"][0]["fullscreen_override"], true);
     assert_eq!(
         run(
             json!({"request_id":"gtk-focus","action":"focus_camera","display_id":"d","camera_id":"camera","cell_id":"tile","duration_seconds":1})
@@ -5085,7 +5115,11 @@ pub fn test_local_api() {
         "applied"
     );
     assert_eq!(state()["displays"][0]["cells"][0]["camera_id"], "camera");
-    assert_eq!(state()["displays"][0]["fullscreen_override"],false,"cell focus must replace fullscreen focus");
+    assert_eq!(
+        state()["displays"][0]["fullscreen_override"],
+        false,
+        "cell focus must replace fullscreen focus"
+    );
     let until = Instant::now() + Duration::from_millis(1200);
     let context = gtk::glib::MainContext::default();
     while Instant::now() < until {
@@ -5100,6 +5134,40 @@ pub fn test_local_api() {
         state()["displays"][0]["cells"][0]["content_type"],
         "none",
         "timed focus must restore and publish live selection"
+    );
+    let mut reset = CURRENT_BUNDLE.with(|b| b.borrow().clone()).unwrap();
+    reset.version = "fixture-pre-rebuild".into();
+    reset.displays[0].layouts[1].grid_cols = 3;
+    render_bundle(&app, &pairing, reset, "http://127.0.0.1:1", "fixture");
+    assert_eq!(
+        run(
+            json!({"request_id":"gtk-before-rebuild","action":"focus_camera","display_id":"d","camera_id":"camera","cell_id":"tile","duration_seconds":1})
+        )["status"],
+        "applied"
+    );
+    let mut replacement = CURRENT_BUNDLE.with(|b| b.borrow().clone()).unwrap();
+    replacement.version = "fixture-v2".into();
+    replacement.displays[0].layouts[1].grid_cols = 2;
+    render_bundle(&app, &pairing, replacement, "http://127.0.0.1:1", "fixture");
+    assert_eq!(
+        run(
+            json!({"request_id":"gtk-after-rebuild","action":"focus_camera","display_id":"d","camera_id":"camera","cell_id":"tile"})
+        )["status"],
+        "applied"
+    );
+    let until = Instant::now() + Duration::from_millis(1200);
+    while Instant::now() < until {
+        if context.pending() {
+            context.iteration(false);
+        } else {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    local_api_publish(true);
+    assert_eq!(
+        state()["displays"][0]["cells"][0]["camera_id"],
+        "camera",
+        "a timer from the previous display must not clear a new override"
     );
     assert_eq!(
         run(json!({"request_id":"gtk-clear","action":"clear_display","display_id":"d"}))["status"],
@@ -5142,6 +5210,67 @@ pub fn test_local_api() {
         }
     }
     assert_eq!(state()["displays"][0]["identifying"], false);
+    assert_eq!(
+        run(
+            json!({"request_id":"gtk-identify-terminal","action":"identify_display","display_id":"d","duration_seconds":30})
+        )["status"],
+        "applied"
+    );
+    assert_eq!(
+        API_IDENTIFY_STYLES.with(|styles| styles.borrow().len()),
+        1,
+        "identify styles must be registered once"
+    );
+    let identifying = API_IDENTIFY.with(|labels| labels.borrow()["d"].clone());
+    assert_eq!(
+        run(
+            json!({"request_id":"gtk-expire-during-terminal","action":"focus_camera","display_id":"d","camera_id":"camera","cell_id":"tile","duration_seconds":1})
+        )["status"],
+        "applied"
+    );
+    show_terminal_code_overlay("123456");
+    assert!(identifying.parent().is_none());
+    assert_eq!(state()["displays"][0]["identifying"], false);
+    assert_eq!(state()["displays"][0]["terminal_overlay"], true);
+    let saved_child =
+        TERMINAL_CODE_SAVED_CHILD.with(|saved| saved.borrow().as_ref().unwrap().1.clone());
+    let until = Instant::now() + Duration::from_millis(1200);
+    while Instant::now() < until {
+        if context.pending() {
+            context.iteration(false);
+        } else {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    assert!(TERMINAL_RENDER_DEFERRED.with(|pending| pending.borrow().contains("d")));
+    dismiss_terminal_code_overlay();
+    assert_eq!(state()["displays"][0]["cells"][0]["content_type"], "none");
+    DISPLAYS.with(|states| {
+        assert_ne!(
+            states.borrow()["d"].content_overlay.child().unwrap(),
+            saved_child,
+            "an expired focus grid must not be restored after terminal authorization"
+        )
+    });
+    let mut empty = CURRENT_BUNDLE.with(|b| b.borrow().clone()).unwrap();
+    empty.version = "fixture-empty".into();
+    empty.displays[0].layouts.clear();
+    render_bundle(&app, &pairing, empty, "http://127.0.0.1:1", "fixture");
+    assert_eq!(
+        run(json!({"request_id":"gtk-empty-clear","action":"clear_display","display_id":"d"}))["status"],
+        "failed"
+    );
+    assert_eq!(
+        state()["displays"][0]["cleared"],
+        false,
+        "failed clear must not mutate display state"
+    );
+    assert_eq!(
+        run(
+            json!({"request_id":"gtk-empty-focus","action":"focus_camera","display_id":"d","camera_id":"camera"})
+        )["status"],
+        "failed"
+    );
     DISPLAYS.with(|states| {
         for (_, st) in states.borrow_mut().drain() {
             st.window.close();

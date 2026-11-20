@@ -363,12 +363,21 @@ fn authenticate(
     }
     let key = params.remove("key");
     let token = params.remove("token");
+    if request.headers().get_all("authorization").iter().count() > 1 {
+        return Err(error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "repeated Authorization headers are not supported",
+        ));
+    }
     let bearer = match request.headers().get("authorization") {
         Some(value) => Some(
             value
                 .to_str()
                 .ok()
-                .and_then(|v| v.strip_prefix("Bearer "))
+                .and_then(|v| v.split_once(' '))
+                .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+                .map(|(_, token)| token.trim_start_matches(' '))
                 .ok_or_else(|| {
                     error(
                         StatusCode::UNAUTHORIZED,
@@ -756,6 +765,25 @@ mod http_tests {
         assert_eq!(identity.headers()["access-control-allow-origin"], "*");
         let body = to_bytes(identity.into_body(), 10000).await.unwrap();
         assert!(!String::from_utf8_lossy(&body).contains("not-exported"));
+        let duplicate = Request::builder()
+            .uri("/api/v1/identity")
+            .header("authorization", "Bearer fixture-key")
+            .header("authorization", "Bearer bad")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(duplicate).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let lowercase = Request::builder()
+            .uri("/api/v1/identity")
+            .header("authorization", "bEaReR fixture-key")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(lowercase).await.unwrap().status(),
+            StatusCode::OK
+        );
         let conflict = Request::builder()
             .uri("/api/v1/identity?token=bad")
             .header("authorization", "Bearer fixture-key")

@@ -9,7 +9,7 @@ Connect directly to the kiosk, using its **existing local API token** from Bette
 - HTTP: `http://KIOSK:18090/api/v1` (port can be overridden by kiosk configuration).
 - HTTPS: `https://KIOSK-HOST:18443/api/v1` when the kiosk's existing HTTPS operator listener is enabled. Trust the kiosk certificate using the existing certificate setup.
 - Initial implementation: Linux/Pi kiosks with the local server enabled.
-- Authentication: `Authorization: Bearer TOKEN`, `?key=TOKEN`, or `?token=TOKEN`. Use URL encoding for query values. If multiple credentials are supplied, every credential must be valid.
+- Authentication: `Authorization: Bearer TOKEN`, `?key=TOKEN`, or `?token=TOKEN`. Use URL encoding for query values. If multiple credentials are supplied, every credential must be valid. Repeated Authorization headers and duplicate query parameters are rejected.
 - Every route below accepts **GET and POST**. GET operation parameters go in the query; POST command parameters go in a JSON body with `Content-Type: application/json`. Authentication stays in the header or query.
 - Responses use JSON except the event stream. Responses are not cacheable. New routes do not require browser cookies and do not offer anonymous access.
 - Browser clients are supported with token-based CORS, including authorization/JSON preflight and SSE. No cookie credentials are allowed (`credentials: "omit"`); use the HTTPS kiosk listener from an HTTPS web application and trust its certificate. Browser mixed-content and local-network permissions still apply.
@@ -179,9 +179,9 @@ Equivalent GET:
 | `wake_display` | None | Wake the specified display. |
 | `identify_display` | `duration_seconds` optional | Show kiosk/display name and display ID on that display; 1–30 seconds, default 10. |
 
-Every command requires `request_id`, `action`, and `display_id`. `expected_catalog_version` is optional; supply it to reject actions based on stale catalogue data. Unknown or inapplicable parameters are rejected. Focus, clear, restore and identify require an awake display; use `wake_display` first when necessary. Controls are rejected while terminal authentication is active.
+Every command requires `request_id`, `action`, and `display_id`. `expected_catalog_version` is optional; supply it to reject actions based on stale catalogue data. Unknown or inapplicable parameters are rejected. Focus, clear and restore also require an active assigned layout (`active_layout_id` must be non-null), including fullscreen focus. Focus, clear, restore and identify require an awake display; use `wake_display` first when necessary. Controls are rejected while terminal authentication is active; opening a terminal prompt ends identification on that display. Per-display power requests use the live monitor connector where available and never fall back to changing all outputs. Renderer standby/wake still applies when physical output control is unavailable.
 
-`request_id` is 1–128 ASCII letters/digits or `-_.:`. Generate a new ID for each intended action. Retrying the identical command with the same ID returns its receipt without executing it again. Reusing an ID for a different command returns 409. Completed receipts are retained for at least ten minutes in the current application process. A restart clears receipts: clients must not assume idempotency across a changed `api_instance_id`.
+`request_id` is 1–128 ASCII letters/digits or `-_.:`; the complete IDs `.` and `..` are rejected because browsers normalize them as path segments. Generate a new ID for each intended action. Retrying the identical command with the same ID returns its receipt without executing it again. Reusing an ID for a different command returns 409. Completed receipts are retained for at least ten minutes in the current application process. A restart clears receipts: clients must not assume idempotency across a changed `api_instance_id`.
 
 A completed command returns HTTP 200:
 
@@ -231,7 +231,7 @@ data: {"state_revision":43}
 - The most recent 256 events are retained in memory. Restarts or older cursors result in `reset`; do not rely on receiving every historical event.
 - SSE keepalive runs approximately every 15 seconds. Token rotation terminates streams authenticated with the previous token; obtain the new token before reconnecting.
 
-Recommended client sequence: fetch identity, open the event stream, fetch catalogue and state, and refresh on invalidation/reset events. Re-fetch identity after reconnect to detect application restarts. Coalesce concurrent refreshes; revisions and catalogue versions allow duplicate notifications to be ignored. Polling reads remain available to clients without SSE support.
+Recommended client sequence: fetch identity, open the event stream, fetch catalogue and state, and refresh on invalidation/reset events. Re-fetch identity after reconnect to detect application restarts. After `reset` or reconnect, read `/commands/REQUEST_ID` for each unresolved command receipt; completion events may have left the replay window. A missing receipt means the outcome is unknown, so do not automatically resubmit that action. Coalesce concurrent refreshes; revisions and catalogue versions allow duplicate notifications to be ignored. Polling reads remain available to clients without SSE support.
 
 ## Errors and scope
 

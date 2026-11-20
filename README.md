@@ -429,6 +429,7 @@ and deployment checks through the workflows in `.github/workflows/`.
 - [ioBOX firmware](iobox-firmware/README.md)
 - [ioBOX hardware](docs/iobox-hardware-lcsc-easyeda.md)
 - [Local LAN smart keys](docs/local-smart-keys.md)
+- [Kiosk local API v1](docs/kiosk-local-api-v1.md)
 - [Pairing and recovery](docs/pairing-recovery.md)
 - [Kiosk diagnostic logging](docs/kiosk-diagnostic-logging.md)
 - [PostgreSQL backup and recovery](docs/backup-recovery.md)

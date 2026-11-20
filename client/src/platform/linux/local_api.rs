@@ -277,6 +277,59 @@ pub fn router() -> Router<LocalServerState> {
             get(receipt_handler).post(receipt_handler),
         )
         .route("/api/v1/:resource", get(handler).post(handler))
+        .layer(axum::middleware::from_fn(cors))
+}
+/// This API uses explicit tokens, never ambient browser credentials. Allow generic
+/// clients from any origin without granting cookie or operator-session access.
+async fn cors(request: Request, next: axum::middleware::Next) -> Response {
+    use axum::http::Method;
+    let preflight = request.method() == Method::OPTIONS;
+    let private_network = request
+        .headers()
+        .get("access-control-request-private-network")
+        .is_some_and(|v| v == "true");
+    let mut result = if preflight {
+        match request
+            .headers()
+            .get("access-control-request-method")
+            .and_then(|v| v.to_str().ok())
+        {
+            Some("GET" | "POST") => StatusCode::NO_CONTENT.into_response(),
+            _ => error(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "method_not_allowed",
+                "only GET and POST are supported",
+            ),
+        }
+    } else if request.method() != Method::GET && request.method() != Method::POST {
+        error(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method_not_allowed",
+            "only GET and POST are supported",
+        )
+    } else {
+        next.run(request).await
+    };
+    let headers = result.headers_mut();
+    headers.insert("access-control-allow-origin", "*".parse().unwrap());
+    if preflight {
+        headers.insert("access-control-allow-methods", "GET, POST".parse().unwrap());
+        headers.insert(
+            "access-control-allow-headers",
+            "authorization, content-type, last-event-id"
+                .parse()
+                .unwrap(),
+        );
+        headers.insert("access-control-max-age", "600".parse().unwrap());
+        if private_network {
+            headers.insert(
+                "access-control-allow-private-network",
+                "true".parse().unwrap(),
+            );
+        }
+        headers.insert("vary","Access-Control-Request-Method, Access-Control-Request-Headers, Access-Control-Request-Private-Network".parse().unwrap());
+    }
+    result
 }
 fn response(status: StatusCode, value: Value) -> Response {
     (
@@ -638,6 +691,36 @@ mod http_tests {
         };
         let app = router().with_state(state);
         let request = |url: &str| Request::builder().uri(url).body(Body::empty()).unwrap();
+        let preflight = Request::builder()
+            .method("OPTIONS")
+            .uri("/api/v1/commands")
+            .header("origin", "https://client.test")
+            .header("access-control-request-method", "POST")
+            .header(
+                "access-control-request-headers",
+                "authorization,content-type",
+            )
+            .header("access-control-request-private-network", "true")
+            .body(Body::empty())
+            .unwrap();
+        let allowed = app.clone().oneshot(preflight).await.unwrap();
+        assert_eq!(allowed.status(), StatusCode::NO_CONTENT);
+        assert_eq!(allowed.headers()["access-control-allow-origin"], "*");
+        assert_eq!(
+            allowed.headers()["access-control-allow-private-network"],
+            "true"
+        );
+        assert!(
+            allowed
+                .headers()
+                .get("access-control-allow-credentials")
+                .is_none()
+        );
+        let head=Request::builder().method("HEAD").uri("/api/v1/commands?key=fixture-key&request_id=no-head&action=wake_display&display_id=d").body(Body::empty()).unwrap();
+        assert_eq!(
+            app.clone().oneshot(head).await.unwrap().status(),
+            StatusCode::METHOD_NOT_ALLOWED
+        );
         assert_eq!(
             app.clone()
                 .oneshot(request("/api/v1/identity"))
@@ -670,6 +753,7 @@ mod http_tests {
         let identity = app.clone().oneshot(header).await.unwrap();
         assert_eq!(identity.status(), StatusCode::OK);
         assert_eq!(identity.headers()["cache-control"], "no-store");
+        assert_eq!(identity.headers()["access-control-allow-origin"], "*");
         let body = to_bytes(identity.into_body(), 10000).await.unwrap();
         assert!(!String::from_utf8_lossy(&body).contains("not-exported"));
         let conflict = Request::builder()
@@ -768,6 +852,7 @@ mod http_tests {
             .oneshot(request("/api/v1/events?key=fixture-key"))
             .await
             .unwrap();
+        assert_eq!(events.headers()["access-control-allow-origin"], "*");
         let mut stream = events.into_body().into_data_stream();
         let first = stream.next().await.unwrap().unwrap();
         assert!(String::from_utf8_lossy(&first).contains("event: reset"));

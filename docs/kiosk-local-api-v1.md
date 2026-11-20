@@ -1,6 +1,6 @@
 # Kiosk local API v1
 
-Status: implementation contract, 20 November 2026. These `/api/v1` routes are being implemented and are not yet released. Intended for any local API client. Existing `/local/*`, `/lsh/*` and `/operator/*` routes remain available.
+Status: v1 integration contract, 20 November 2026, introduced in [PR #51](https://github.com/BetterCorp/BetterFrame/pull/51). Verify runtime availability with `/identity`; older kiosk client releases do not expose these routes. Intended for any local API client. Existing `/local/*`, `/lsh/*` and `/operator/*` routes remain available.
 
 ## Connection and authentication
 
@@ -12,6 +12,7 @@ Connect directly to the kiosk, using its **existing local API token** from Bette
 - Authentication: `Authorization: Bearer TOKEN`, `?key=TOKEN`, or `?token=TOKEN`. Use URL encoding for query values. If multiple credentials are supplied, every credential must be valid.
 - Every route below accepts **GET and POST**. GET operation parameters go in the query; POST command parameters go in a JSON body with `Content-Type: application/json`. Authentication stays in the header or query.
 - Responses use JSON except the event stream. Responses are not cacheable. New routes do not require browser cookies and do not offer anonymous access.
+- Browser clients are supported with token-based CORS, including authorization/JSON preflight and SSE. No cookie credentials are allowed (`credentials: "omit"`); use the HTTPS kiosk listener from an HTTPS web application and trust its certificate. Browser mixed-content and local-network permissions still apply.
 - IDs are opaque strings. Store IDs; do not match records by names. Names may change.
 
 ## Discovery and reads

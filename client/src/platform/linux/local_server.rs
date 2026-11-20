@@ -1,12 +1,16 @@
 //! Kiosk-local HTTP server (LAN-side, on the kiosk Pi itself).
 //!
-//! Two surfaces:
+//! Versioned generic API: `/api/v1/*` supports GET/query and POST/JSON
+//! with the existing local token in the query or Bearer header. See
+//! `docs/kiosk-local-api-v1.md`.
+//!
+//! Legacy surfaces:
 //!
 //! 1. **GET-only layout API** — `/local/layout/:id?key=<kiosk_local_key>`
 //!    Lets anyone on the LAN with the kiosk's local key trigger a layout
 //!    switch on THIS kiosk via a plain browser URL. Bookmark-friendly. No
 //!    body, no admin credentials needed — auth is the local key generated
-//!    at boot and surfaced to admin via heartbeat. Only `GET` accepted.
+//!    on first use and surfaced to admin via heartbeat. Only `GET` accepted.
 //!
 //! 2. **Admin proxy** — `/proxy/*` forwards to the BF server with the
 //!    request's `Authorization: Bearer <admin_api_key>` header preserved.
@@ -34,6 +38,9 @@ use serde_json::json;
 use tracing::{info, warn};
 
 use crate::WorkerMsg;
+
+#[path = "local_api.rs"]
+pub mod api;
 
 static ACTIVE_LOCAL_KEY: OnceLock<Arc<Mutex<String>>> = OnceLock::new();
 const OPERATOR_COOKIE: &str = "betterframe_operator";
@@ -204,6 +211,7 @@ pub fn start(state: LocalServerState) {
                     get(local_onvif_ptz_preset_handler),
                 )
                 .route("/proxy/*path", any(proxy_handler))
+                .merge(api::router())
                 .with_state(state);
 
             let addr: SocketAddr = ([0, 0, 0, 0], port).into();
@@ -214,7 +222,7 @@ pub fn start(state: LocalServerState) {
                     return;
                 }
             };
-            info!("local-server: listening on {addr} (GET-only layout API + /proxy/*)");
+            info!("local-server: listening on {addr} (generic /api/v1 + legacy layout API + /proxy/*)");
             if let Err(e) = axum::serve(listener, app).await {
                 warn!("local-server: serve error: {e}");
             }
@@ -281,6 +289,7 @@ fn operator_router(state: LocalServerState) -> Router {
         .route("/operator/api/displays/:display_id/overrides", delete(operator_restore_handler))
         .route("/operator/media/:media_path/*tail", any(operator_media_proxy_handler))
         .route("/operator/playback/:endpoint", get(operator_playback_proxy_handler))
+        .merge(api::router())
         .with_state(state)
 }
 

@@ -64,6 +64,8 @@ pub struct KioskBundle {
     pub operator_console: OperatorConsoleConfig,
     #[serde(default)]
     pub trusted_cas: Vec<TrustedCa>,
+    #[serde(default)]
+    pub catalog_metadata: crate::local_api::CatalogMetadata,
     pub version: String,
 }
 

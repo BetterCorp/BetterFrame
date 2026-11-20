@@ -93,6 +93,8 @@ jobs:
           WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
           GTK_A11Y: none
         run: xvfb-run -a dbus-run-session -- cargo run --manifest-path client/Cargo.toml -- --test-overlays
+      - name: Generic local API renderer controls and state
+        run: xvfb-run -a dbus-run-session -- cargo run --manifest-path client/Cargo.toml -- --test-local-api
       - name: WebKit permissions and audible autoplay
         env:
           GDK_BACKEND: x11

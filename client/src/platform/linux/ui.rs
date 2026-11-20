@@ -641,6 +641,7 @@ fn activate(app: &Application) {
     gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         while let Ok(msg) = rx.try_recv() {
             match msg {
+                WorkerMsg::LocalApi(request) => local_api_command(request),
                 WorkerMsg::WebAction(request) => invoke_web_action(request),
                 WorkerMsg::StartupStatus(action) => {
                     show_startup_status(&pairing_window_clone, &action)
@@ -687,11 +688,13 @@ fn activate(app: &Application) {
                 WorkerMsg::UpdateProgress(progress) => show_update_banner(progress),
             }
         }
+        local_api_publish(false);
         gtk::glib::ControlFlow::Continue
     });
 }
 
 pub enum WorkerMsg {
+    LocalApi(crate::local_server::api::UiCommand),
     WebAction(crate::core::commands::WebActionRequest),
     StartupStatus(String),
     ReadyStartupStatus(String),
@@ -2500,13 +2503,18 @@ fn apply_operator_overrides(display_id: &str, layout: &mut crate::bundle::Bundle
 }
 
 fn operator_focus(request: OperatorFocusRequest) -> Result<serde_json::Value, String> {
+    focus_camera(request, true)
+}
+
+/// Apply a camera override while preserving the narrower operator-station camera scope.
+fn focus_camera(request: OperatorFocusRequest, operator_scope: bool) -> Result<serde_json::Value, String> {
     let bundle = CURRENT_BUNDLE
         .with(|current| current.borrow().clone())
         .ok_or_else(|| "no bundle cached yet".to_string())?;
     if !bundle
         .cameras
         .iter()
-        .any(|camera| camera.id == request.camera_id && camera.enabled && camera.simple_vms_managed)
+        .any(|camera| camera.id == request.camera_id && camera.enabled && (!operator_scope || camera.simple_vms_managed))
     {
         return Err("camera is not available to this kiosk".to_string());
     }
@@ -2564,6 +2572,7 @@ fn operator_focus(request: OperatorFocusRequest) -> Result<serde_json::Value, St
         if request.fullscreen {
             state.fullscreen_override = Some(focus);
         } else if let Some(cell) = selected_cell.as_ref() {
+            state.fullscreen_override = None;
             state.focus_overrides.insert(cell.clone(), focus);
         }
         Ok::<u64, String>(generation)
@@ -4799,4 +4808,345 @@ fn show_update_banner(progress: Option<(String, u8)>) {
             });
         }
     }
+}
+
+thread_local! {
+    static API_LAST_PUBLISH: RefCell<Option<Instant>> = const { RefCell::new(None) };
+    static API_CATALOG: RefCell<Option<(String, serde_json::Value)>> = const { RefCell::new(None) };
+    static API_IDENTIFY: RefCell<HashMap<String, gtk::Label>> = RefCell::new(HashMap::new());
+}
+
+/// Sample the renderer, including timer, keyboard and server-driven changes.
+/// Never derive the active layout from the bundle default.
+fn local_api_publish(force: bool) {
+    let due = API_LAST_PUBLISH.with(|last| {
+        let mut last = last.borrow_mut();
+        if !force && last.is_some_and(|time| time.elapsed() < Duration::from_secs(1)) {
+            return false;
+        }
+        *last = Some(Instant::now());
+        true
+    });
+    if !due {
+        return;
+    }
+    let bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
+    let Some(bundle) = bundle else {
+        crate::local_server::api::hub()
+            .publish(None, serde_json::json!({"ready":false,"displays":[]}));
+        return;
+    };
+    let catalog = API_CATALOG.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache
+            .as_ref()
+            .is_none_or(|(version, _)| *version != bundle.version)
+        {
+            *cache = Some((
+                bundle.version.clone(),
+                crate::core::local_api::catalog(&bundle),
+            ));
+        }
+        cache.as_ref().unwrap().1.clone()
+    });
+    let display_configs = bundle.normalized_displays();
+    let snapshots:Vec<_>=DISPLAYS.with(|states|states.borrow().iter().map(|(id,st)| {
+        let output=st.window.surface().and_then(|surface|gtk::prelude::WidgetExt::display(&st.window).monitor_at_surface(&surface)).map(|monitor|{
+            let geometry=monitor.geometry();
+            serde_json::json!({"connector":monitor.connector().map(|s|s.to_string()),"model":monitor.model().map(|s|s.to_string()),"manufacturer":monitor.manufacturer().map(|s|s.to_string()),
+                "x":geometry.x(),"y":geometry.y(),"width":geometry.width(),"height":geometry.height(),"scale_factor":monitor.scale_factor()})
+        });
+        (id.clone(),st.current_layout_id.clone(),st.is_asleep,st.display_cleared,st.fullscreen_override.is_some(),st.focus_overrides.keys().cloned().collect::<Vec<_>>(),output)
+    }).collect());
+    let mut displays = Vec::new();
+    for (id, layout_id, asleep, cleared, fullscreen, mut overrides, output) in snapshots {
+        overrides.sort();
+        let config = display_configs.iter().find(|d| d.id == id);
+        let mut layout = config
+            .and_then(|d| d.layouts.iter().find(|l| Some(&l.id) == layout_id.as_ref()))
+            .cloned();
+        if let Some(layout) = layout.as_mut() {
+            apply_operator_overrides(&id, layout);
+        }
+        let cells = if asleep || terminal_prompt_on_display(&id) {
+            Vec::new()
+        } else {
+            layout
+                .as_ref()
+                .map(|l| l.cells.iter().map(crate::core::local_api::cell).collect())
+                .unwrap_or_default()
+        };
+        displays.push(serde_json::json!({"id":id,"name":config.map(|d|&d.name),"active_layout_id":layout_id,
+            "standby":asleep,"cleared":cleared,"fullscreen_override":fullscreen,"overridden_cell_ids":overrides,
+            "terminal_overlay":terminal_prompt_on_display(&id),"output":output,"cells":cells,
+            "identifying":API_IDENTIFY.with(|labels|labels.borrow().contains_key(&id))}));
+    }
+    displays.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    crate::local_server::api::hub().publish(
+        Some(catalog),
+        serde_json::json!({"ready":true,"catalog_version":bundle.version,"displays":displays}),
+    );
+}
+
+/// Validate against current assignments, execute on GTK, then publish the actual result.
+fn local_api_command(request: crate::local_server::api::UiCommand) {
+    let id = request.command.request_id.clone();
+    let result = (|| -> Result<serde_json::Value, String> {
+        if !request.authorized() {
+            return Err("API token changed before command execution".into());
+        }
+        let command = &request.command;
+        command.validate().map_err(str::to_string)?;
+        if is_terminal_overlay_active() {
+            return Err("display controls are unavailable during terminal authentication".into());
+        }
+        let bundle = CURRENT_BUNDLE
+            .with(|b| b.borrow().clone())
+            .ok_or("kiosk has no applied bundle")?;
+        if command
+            .expected_catalog_version
+            .as_ref()
+            .is_some_and(|v| v != &bundle.version)
+        {
+            return Err("catalog version changed; refresh catalog".into());
+        }
+        let displays = bundle.normalized_displays();
+        let display = displays
+            .iter()
+            .find(|d| d.id == command.display_id)
+            .ok_or("display is not assigned to this kiosk")?;
+        let asleep = DISPLAYS
+            .with(|states| {
+                states
+                    .borrow()
+                    .get(&command.display_id)
+                    .map(|st| st.is_asleep)
+            })
+            .ok_or("display renderer is unavailable")?;
+        match command.action.as_str() {
+            "select_layout" => {
+                let layout = command.layout_id.as_ref().ok_or("layout_id is required")?;
+                if !display.layouts.iter().any(|l| l.id == *layout) {
+                    return Err("layout is not assigned to this display".into());
+                }
+                render_layout(&command.display_id, layout);
+                Ok(serde_json::json!({"display_id":command.display_id,"layout_id":layout}))
+            }
+            "focus_camera" => {
+                if asleep {
+                    return Err("display is in standby; wake it first".into());
+                }
+                focus_camera(
+                    OperatorFocusRequest {
+                        display_id: command.display_id.clone(),
+                        camera_id: command.camera_id.clone().ok_or("camera_id is required")?,
+                        stream: command.stream.clone().unwrap_or_else(|| "auto".into()),
+                        cell_id: command.cell_id.clone(),
+                        fullscreen: command.cell_id.is_none(),
+                        duration_seconds: command.duration_seconds,
+                    },
+                    false,
+                )
+            }
+            "clear_display" => {
+                if asleep {
+                    return Err("display is in standby; wake it first".into());
+                }
+                operator_clear(&command.display_id)
+            }
+            "restore_display" => {
+                if asleep {
+                    return Err("display is in standby; wake it first".into());
+                }
+                operator_restore(&command.display_id)
+            }
+            "standby_display" => {
+                standby_display(Some(&command.display_id));
+                Ok(serde_json::json!({"standby":true}))
+            }
+            "wake_display" => {
+                wake_display(Some(&command.display_id));
+                Ok(serde_json::json!({"standby":false}))
+            }
+            "identify_display" => {
+                if asleep {
+                    return Err("display is in standby; wake it first".into());
+                }
+                let label = gtk::Label::new(Some(&format!(
+                    "{}\n{}\n{}",
+                    bundle.kiosk_name, display.name, display.id
+                )));
+                label.set_halign(gtk::Align::Center);
+                label.set_valign(gtk::Align::Center);
+                label.set_can_target(false);
+                label.add_css_class("bf-api-identify");
+                add_css(
+                    &label,
+                    ".bf-api-identify { color: white; background: #172554; padding: 36px; border: 4px solid white; border-radius: 12px; font-size: 32px; }",
+                );
+                DISPLAYS.with(|states| {
+                    let states = states.borrow();
+                    let st = states.get(&command.display_id).unwrap();
+                    API_IDENTIFY.with(|labels| {
+                        if let Some(old) = labels
+                            .borrow_mut()
+                            .insert(command.display_id.clone(), label.clone())
+                        {
+                            if old.parent().is_some() {
+                                st.content_overlay.remove_overlay(&old);
+                            }
+                        }
+                    });
+                    st.content_overlay.add_overlay(&label);
+                });
+                let display_id = command.display_id.clone();
+                let seconds = command.duration_seconds.unwrap_or(10);
+                gtk::glib::timeout_add_local_once(Duration::from_secs(seconds), move || {
+                    API_IDENTIFY.with(|labels| {
+                        let mut labels = labels.borrow_mut();
+                        if labels.get(&display_id) == Some(&label) {
+                            labels.remove(&display_id);
+                        }
+                    });
+                    if let Some(parent) = label.parent().and_downcast::<gtk::Overlay>() {
+                        parent.remove_overlay(&label);
+                    }
+                    local_api_publish(true);
+                });
+                Ok(serde_json::json!({"duration_seconds":seconds}))
+            }
+            _ => Err("unsupported action".into()),
+        }
+    })();
+    local_api_publish(true);
+    crate::local_server::api::hub().complete(&id, result);
+}
+
+/// Exercises the renderer and generic API contract together on a real GTK thread.
+#[cfg(debug_assertions)]
+pub fn test_local_api() {
+    use crate::local_server::api::{UiCommand, hub};
+    use serde_json::json;
+    gtk::init().unwrap();
+    gstreamer::init().unwrap();
+    let app = Application::builder()
+        .application_id("cloud.betterframe.LocalApiTest")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>).unwrap();
+    let pairing = ApplicationWindow::builder().application(&app).build();
+    let layout = |id: &str| {
+        json!({"id":id,"name":id,"grid_cols":1,"grid_rows":1,"priority":"normal","is_default":id=="l1","resets_idle_timer":false,
+        "cells":[{"view_id":"tile","row":0,"col":0,"row_span":1,"col_span":1,"content_type":"none"}]})
+    };
+    let bundle:KioskBundle=serde_json::from_value(json!({"kiosk_id":"fixture","kiosk_name":"Fixture","version":"fixture-v1",
+        "cameras":[{"id":"camera","name":"Camera","type":"rtsp","stream_policy":"auto","streams":[]}],
+        "displays":[{"id":"d","name":"Fixture display","width_px":640,"height_px":360,"idle_timeout_seconds":0,"sleep_timeout_seconds":0,
+            "default_layout_id":"l1","layouts":[layout("l1"),layout("l2")]}]})).unwrap();
+    render_bundle(&app, &pairing, bundle, "http://127.0.0.1:1", "fixture");
+    let key = Arc::new(Mutex::new("fixture".to_string()));
+    let run = |input: serde_json::Value| {
+        let command: crate::core::local_api::Command = serde_json::from_value(input).unwrap();
+        let id = command.request_id.clone();
+        hub().admit(&command).unwrap();
+        local_api_command(UiCommand::new(command, key.clone(), "fixture"));
+        hub().receipt(&id).unwrap()
+    };
+    let state = || hub().snapshot("state", "").unwrap();
+    assert_eq!(
+        run(
+            json!({"request_id":"gtk-select","action":"select_layout","display_id":"d","layout_id":"l2"})
+        )["status"],
+        "applied"
+    );
+    assert_eq!(
+        state()["displays"][0]["active_layout_id"],
+        "l2",
+        "live state must not use default l1"
+    );
+    assert_eq!(
+        run(
+            json!({"request_id":"gtk-invalid","action":"select_layout","display_id":"d","layout_id":"foreign"})
+        )["status"],
+        "failed"
+    );
+    assert_eq!(state()["displays"][0]["active_layout_id"], "l2");
+    assert_eq!(
+        run(
+            json!({"request_id":"gtk-stale","action":"select_layout","display_id":"d","layout_id":"l1","expected_catalog_version":"old"})
+        )["status"],
+        "failed"
+    );
+    assert_eq!(run(json!({"request_id":"gtk-fullscreen","action":"focus_camera","display_id":"d","camera_id":"camera"}))["status"],"applied");
+    assert_eq!(state()["displays"][0]["fullscreen_override"],true);
+    assert_eq!(
+        run(
+            json!({"request_id":"gtk-focus","action":"focus_camera","display_id":"d","camera_id":"camera","cell_id":"tile","duration_seconds":1})
+        )["status"],
+        "applied"
+    );
+    assert_eq!(state()["displays"][0]["cells"][0]["camera_id"], "camera");
+    assert_eq!(state()["displays"][0]["fullscreen_override"],false,"cell focus must replace fullscreen focus");
+    let until = Instant::now() + Duration::from_millis(1200);
+    let context = gtk::glib::MainContext::default();
+    while Instant::now() < until {
+        if context.pending() {
+            context.iteration(false);
+        } else {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    local_api_publish(true);
+    assert_eq!(
+        state()["displays"][0]["cells"][0]["content_type"],
+        "none",
+        "timed focus must restore and publish live selection"
+    );
+    assert_eq!(
+        run(json!({"request_id":"gtk-clear","action":"clear_display","display_id":"d"}))["status"],
+        "applied"
+    );
+    assert_eq!(state()["displays"][0]["cleared"], true);
+    assert_eq!(
+        run(json!({"request_id":"gtk-restore","action":"restore_display","display_id":"d"}))["status"],
+        "applied"
+    );
+    assert_eq!(state()["displays"][0]["cleared"], false);
+    assert_eq!(
+        run(json!({"request_id":"gtk-sleep","action":"standby_display","display_id":"d"}))["status"],
+        "applied"
+    );
+    assert_eq!(state()["displays"][0]["standby"], true);
+    assert_eq!(state()["displays"][0]["cells"], json!([]));
+    assert_eq!(
+        run(json!({"request_id":"gtk-asleep","action":"identify_display","display_id":"d"}))["status"],
+        "failed"
+    );
+    assert_eq!(
+        run(json!({"request_id":"gtk-wake","action":"wake_display","display_id":"d"}))["status"],
+        "applied"
+    );
+    assert_eq!(state()["displays"][0]["standby"], false);
+    assert_eq!(
+        run(
+            json!({"request_id":"gtk-identify","action":"identify_display","display_id":"d","duration_seconds":1})
+        )["status"],
+        "applied"
+    );
+    assert_eq!(state()["displays"][0]["identifying"], true);
+    let until = Instant::now() + Duration::from_millis(1200);
+    while Instant::now() < until {
+        if context.pending() {
+            context.iteration(false);
+        } else {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    assert_eq!(state()["displays"][0]["identifying"], false);
+    DISPLAYS.with(|states| {
+        for (_, st) in states.borrow_mut().drain() {
+            st.window.close();
+        }
+    });
+    pairing.close();
+    println!("Generic local API renderer controls, live state and timed restoration passed");
 }

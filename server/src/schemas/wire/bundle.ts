@@ -180,9 +180,19 @@ const operatorConsole = av.object(
   { unknownKeys: "reject" },
 );
 
+const catalogOrigin = av.object({
+  provider: av.string(), source_id: id, instance_id: av.string(), external_id: av.string(),
+}, { unknownKeys: "reject" });
+const catalogMetadata = av.object({
+  camera_origins: av.record(catalogOrigin),
+  groups: av.array(av.object({ id: av.string(), name: av.string(), layout_id: id,
+    camera_ids: av.array(id), origin: catalogOrigin }, { unknownKeys: "reject" })),
+}, { unknownKeys: "reject" });
+
 export const kioskBundle = av.object(
   {
     trusted_cas: av.optional(av.array(av.object({ pem: av.string().maxLength(16384), fingerprint_sha256: av.string().minLength(64).maxLength(64) }, { unknownKeys: "reject" })).maxItems(32)),
+    catalog_metadata: av.optional(catalogMetadata),
     kiosk_id: id,
     kiosk_name: av.string().minLength(1).maxLength(512),
     display: bundleDisplay,

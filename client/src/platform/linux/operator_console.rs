@@ -75,6 +75,8 @@ pub fn shared_auth() -> OperatorAuth {
 }
 
 impl OperatorAuth {
+    #[cfg(test)]
+    pub(crate) fn ephemeral() -> Self { Self { store: Arc::new(Mutex::new(StationStore::default())) } }
     pub fn load() -> Self {
         let path = crate::server::state_file("operator-stations.json");
         let store = crate::at_rest::read_maybe_encrypted(&path)

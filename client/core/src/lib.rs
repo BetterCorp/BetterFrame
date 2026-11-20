@@ -9,3 +9,5 @@ pub mod version;
 
 pub mod update_policy;
 pub mod smart_url;
+
+pub mod local_api;

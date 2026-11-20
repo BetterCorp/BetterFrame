@@ -16,7 +16,7 @@ Connect directly to the kiosk, using its **existing local API token** from Bette
 
 ## Discovery and reads
 
-All paths are relative to `/api/v1`. POST is also accepted for these reads; no body is needed.
+All paths are relative to `/api/v1`. POST is also accepted for these reads; no body is needed. For POST `/events`, an optional resume cursor goes in a JSON body: `{"since":"EVENT_ID"}`.
 
 | Path | Result |
 | --- | --- |

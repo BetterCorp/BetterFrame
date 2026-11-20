@@ -688,6 +688,7 @@ fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
         gpio_bindings: Vec::new(),
         operator_console: crate::bundle::OperatorConsoleConfig::default(),
         trusted_cas: Vec::new(),
+        catalog_metadata: Default::default(),
         version: legacy.version,
     }
 }

@@ -78,6 +78,12 @@ test("SimpleVMS sync: idempotency, ownership, deletions, kiosk routing, rollback
     assert.deepEqual(await (await app.request(`${callback}/access?kioskId=${owner.id}&cameraId=yard`, { headers })).json(), { allowed: true });
     const viewerBundle = await generateBundle(repo, secrets, android.id, undefined);
     assert.equal(viewerBundle!.cameras.length, 1);
+    assert.equal(viewerBundle!.catalog_metadata!.groups.length, 1);
+    assert.equal(viewerBundle!.catalog_metadata!.groups[0]!.origin.instance_id, "recorder-one");
+    assert.equal(viewerBundle!.catalog_metadata!.groups[0]!.camera_ids.length, 1);
+    assert.equal(viewerBundle!.catalog_metadata!.camera_origins[viewerBundle!.cameras[0]!.id]!.external_id, "entrance");
+    assert.ok(!JSON.stringify(viewerBundle!.catalog_metadata).includes(config.viewerPassword));
+    assert.ok(!JSON.stringify(viewerBundle!.catalog_metadata).includes(config.ingestToken));
     assert.equal(viewerBundle!.cameras[0]!.name, "Entrance");
     assert.deepEqual(viewerBundle!.layouts[0]!.cells.map(cell => cell.fit), ["contain"]);
     assert.ok(viewerBundle!.cameras[0]!.playback_username?.endsWith(`${android.id}/entrance`));

@@ -1,3 +1,4 @@
+import { kioskCatalogMetadata, type CatalogMetadata } from "./kiosk-catalog.js";
 import { resolveWebPermissions, type WebPermissions } from "./web-permissions.js";
 import { bundleWebActions, type BundleWebActions } from "./web-actions.js";
 import { simpleVmsViewerCredentials, reconcileSimpleVmsAssignments, simpleVmsCamerasForKiosk } from "./simple-vms.js";
@@ -167,6 +168,7 @@ export interface BundleGpioBinding {
 
 export interface KioskBundle {
   trusted_cas?: BundleTrustedCa[];
+  catalog_metadata?: CatalogMetadata;
   kiosk_id: string;
   kiosk_name: string;
   tenant_slug: string;
@@ -694,7 +696,9 @@ export async function generateBundle(
   // older kiosk builds keep working unchanged. New builds should read
   // `displays`.
   const primary = bundleDisplays[0]!;
+  const catalogMetadata = await kioskCatalogMetadata(repo, bundleCameras, bundleDisplays, [...vmsCameras.values()].map(c => c.source_id));
   const bundle: KioskBundle = {
+    catalog_metadata: catalogMetadata,
     trusted_cas: (await repo.trustedCasForKiosk(kioskId)).map(({ pem, fingerprint_sha256 }) => ({ pem, fingerprint_sha256 })),
     kiosk_id: kioskId,
     kiosk_name: kiosk.name,

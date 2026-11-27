@@ -3772,6 +3772,42 @@ pub fn test_overlay_refresh() {
 
 #[cfg(test)]
 mod display_tests {
+    #[test]
+    #[ignore = "requires a graphical session; CI runs with xvfb-run"]
+    fn desktop_disabled_windows_close_and_restore() {
+        use super::*;
+        gtk::init().unwrap();
+        gstreamer::init().unwrap();
+        let app = Application::builder().application_id("cloud.betterframe.DesktopVisibilityTest").build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+        let pairing = ApplicationWindow::builder().application(&app).build();
+        let mut bundle: KioskBundle = serde_json::from_value(serde_json::json!({
+            "kiosk_id":"desktop", "kiosk_name":"Desktop", "version":"1", "cameras":[],
+            "displays":[{"id":"first","physical_index":0,"name":"First","width_px":800,"height_px":600,
+                "idle_timeout_seconds":0,"sleep_timeout_seconds":0,"layouts":[]}]
+        })).unwrap();
+        let mut second = bundle.displays[0].clone();
+        second.id = "second".into(); second.name = "Second".into(); second.physical_index = Some(1);
+        bundle.displays.push(second.clone());
+        render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "fixture");
+        let first = DISPLAYS.with(|d| d.borrow()["first"].window.clone());
+        assert!(first.is_visible());
+        bundle.displays.remove(0);
+        render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "fixture");
+        assert!(!first.is_visible());
+        DISPLAYS.with(|d| { assert_eq!(d.borrow().len(), 1); assert!(d.borrow()["second"].window.is_visible()); });
+        bundle.displays.clear();
+        render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "fixture");
+        assert!(DISPLAYS.with(|d| d.borrow().is_empty()));
+        assert!(!pairing.is_visible(), "standalone desktops have no empty-assignment window");
+        bundle.displays.push(second);
+        render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "fixture");
+        DISPLAYS.with(|d| assert!(d.borrow()["second"].window.is_visible()));
+        bundle.displays.clear();
+        render_bundle(&app, &pairing, bundle, "http://127.0.0.1:1", "fixture");
+        pairing.close();
+    }
+
     fn camera_bundle_for_refresh(ciphertext: &str) -> super::KioskBundle {
         serde_json::from_value(serde_json::json!({
             "kiosk_id":"k", "kiosk_name":"Kiosk", "version":"v",

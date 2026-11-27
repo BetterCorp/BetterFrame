@@ -111,3 +111,17 @@ disabled state, background heartbeats and the independent updater. Disabling a s
 display closes only that window. Re-enabling restores windows on their original
 physical displays. Heartbeats report hardware without changing admin enable settings.
 The hidden message-only controller is never shown on the desktop or taskbar.
+
+## Web authentication and block actions
+
+Entity authentication is conditional on its configured login prefix. A prefix that
+starts with `/`, such as `/auth`, matches the beginning of the current path (including
+its query and fragment), independently of the origin. An absolute prefix such as
+`https://home.example/auth` matches the beginning of the full URL, including scheme,
+host and port. Matching is literal and case-sensitive: `/auth` also matches
+`/authentication`; `*` is not a wildcard. Windows and Linux share this matcher.
+
+Authentication is rechecked on navigation, when a cached block becomes visible, and
+every five seconds by default, including SPA redirects that produce no load event.
+Login attempts have the same retry cooldown as Linux. Per-block on-load and named
+actions wait for authentication to settle and do not overlap entity login steps.

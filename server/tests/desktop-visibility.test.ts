@@ -43,6 +43,8 @@ test("desktop disable removes assignments, preserves enrollment and updates, and
   assert.equal(disabled.status,200);assert.deepEqual((await disabled.json() as {displays:unknown[]}).displays,[]);
   const policy=await heartbeat();assert.equal(policy.status,200);
   assert.ok("update_schedule" in await policy.json() as object,"background updates retain their schedule");
+  app.get("/api/kiosk/os/check",()=>({status:"up_to_date"}));
+  assert.equal((await app.request("https://bf.test/api/kiosk/os/check",{headers})).status,200);
   app.get("/api/kiosk/private-content",()=>({secret:true}));
   assert.equal((await app.request("https://bf.test/api/kiosk/private-content",{headers})).status,401);
   assert.equal((await app.request("https://bf.test/api/kiosk/bundle",{headers:{cookie:"betterframe_kiosk_key=device-key"}})).status,401);

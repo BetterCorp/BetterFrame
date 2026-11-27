@@ -384,7 +384,7 @@ pub(super) fn sync_webviews(
         let exists = WEBVIEWS.with(|views| {
             let mut views = views.borrow_mut();
             if let Some(view) = views.get_mut(&spec.key) {
-                let _ = view.set_bounds(spec.bounds);
+                view.resize(spec.bounds);
                 view.show(true);
                 if spec.overlay { raise_overlay(view); }
                 true
@@ -531,7 +531,7 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
             view.load_url_with_headers(url, headers)
                 .map_err(|error| error.to_string())?;
         }
-        Ok(super::web_runtime::Entry::new(view, events, spec.cell.as_ref(), &spec.layout, &spec.display, state))
+        Ok(super::web_runtime::Entry::new(view, events, spec.cell.as_ref(), &spec.layout, &spec.display, state, spec.bounds))
     })
 }
 

@@ -95,6 +95,7 @@ export function registerViewerDeviceAuth(app: H3, repo: Repository, auth: AuthAp
         (path === "/api/kiosk/bundle" && event.req.method === "GET")
         || (path === "/api/kiosk/heartbeat" && event.req.method === "POST")
         || path.startsWith("/api/kiosk/firmware/")
+        || path.startsWith("/api/kiosk/os/")
         || (path === "/api/kiosk/web-actions/result" && event.req.method === "POST")
       );
       if (!kiosk.enabled && !maintenance) return new Response(null, { status: 401 });

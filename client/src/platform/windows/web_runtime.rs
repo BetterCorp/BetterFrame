@@ -52,6 +52,7 @@ pub(super) struct Entry {
     server: String,
     key: String,
     visible: bool,
+    bounds: WebRect,
     pending_load: bool,
     loaded: bool,
     failed: bool,
@@ -87,6 +88,7 @@ impl Entry {
         layout: &str,
         display: &str,
         state: &ClientState,
+        bounds: WebRect,
     ) -> Self {
         let config = cell.and_then(|c| c.smart_url.clone());
         Self {
@@ -102,6 +104,7 @@ impl Entry {
             server: state.server_url.clone(),
             key: state.kiosk_key.clone().unwrap_or_default(),
             visible: true,
+            bounds,
             pending_load: true,
             loaded: false,
             failed: false,
@@ -117,8 +120,16 @@ impl Entry {
             self.pending_load = true;
             self.last_check = None;
         }
-        self.visible = visible;
-        let _ = self.view.set_visible(visible);
+        if self.visible != visible {
+            self.visible = visible;
+            let _ = self.view.set_visible(visible);
+        }
+    }
+    pub fn resize(&mut self, bounds: WebRect) {
+        if self.bounds != bounds {
+            self.bounds = bounds;
+            let _ = self.view.set_bounds(bounds);
+        }
     }
     fn ready(&self, url: &str) -> bool {
         self.loaded

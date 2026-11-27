@@ -75,6 +75,9 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("Fixture HTTP hits: {:?}", self.hits.lock().unwrap());
+        }
         self.stop.store(true, Ordering::Relaxed);
         self.thread.take().unwrap().join().unwrap();
     }
@@ -90,12 +93,20 @@ fn pump() {
     tick();
     std::thread::sleep(Duration::from_millis(20));
 }
+#[track_caller]
 fn wait(mut ready: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(40);
     while !ready() && Instant::now() < deadline {
         pump();
     }
-    assert!(ready(), "Windows native regression timed out");
+    if !ready() {
+        WEBVIEWS.with(|views| for (key, entry) in views.borrow().iter() {
+            eprintln!("Fixture view {key}: url={:?}, loaded={}, failed={}, visible={}, pending={}, epoch={}, auth={:?}, manual={:?}, events={:?}",
+                entry.url(), entry.loaded, entry.failed, entry.visible, entry.pending_load, entry.epoch,
+                entry.auth.as_ref().map(|s| &s.progress), entry.manual.as_ref().map(|s| &s.progress), entry.events.lock().unwrap());
+        });
+        panic!("Windows native regression timed out");
+    }
 }
 fn windows() -> usize {
     WINDOWS.get().unwrap().lock().unwrap().len()
@@ -126,6 +137,10 @@ fn script(cell: &str, js: &str) {
 #[ignore = "requires an interactive Windows desktop and WebView2"]
 fn windows_browser_and_visibility_regression() {
     gstreamer::init().unwrap();
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .try_init();
+    fs::create_dir_all(webview_data_dir()).unwrap();
     let fixture = Fixture::new();
     let directory = std::env::temp_dir().join(format!("bf-web-regression-{}", std::process::id()));
     // This test runs alone, in its own process, against an isolated enrollment.

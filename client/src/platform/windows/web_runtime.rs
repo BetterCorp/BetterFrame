@@ -229,6 +229,9 @@ impl Entry {
                             && s.flight
                                 .is_some_and(|(g, _, i)| g == generation && i == index)
                         {
+                            let _ = self.view.evaluate_script(&format!(
+                                "delete window.__bfSteps?.['{id}:{generation}:{index}']"
+                            ));
                             s.progress.finish_step(generation, success, now);
                             s.flight = None;
                             // Click/script navigation can emit Started after its
@@ -254,7 +257,10 @@ impl Entry {
         } else if self.settled.as_ref().is_none_or(|(u, _)| u != &url) {
             self.settled = Some((url.clone(), Instant::now()));
         }
-        if self.manual.is_none() && self.loaded && !self.failed {
+        // Named groups own the page until completion. On-load actions instead
+        // wait for entity auth, including a login redirect during their run.
+        let auth_paused = self.manual.as_ref().is_some_and(|s| s.request.is_some());
+        if !auth_paused && self.loaded && !self.failed {
             let interval_ms = self
                 .config
                 .as_ref()
@@ -286,7 +292,7 @@ impl Entry {
                     s.progress.confirm_authenticated();
                 }
             }
-            if self.visible && self.pending_load && self.ready(&url) {
+            if self.manual.is_none() && self.visible && self.pending_load && self.ready(&url) {
                 self.pending_load = false;
                 if let Some(steps) = self
                     .actions
@@ -298,8 +304,9 @@ impl Entry {
                 }
             }
         }
+        let auth_ready = self.ready(&url);
         if let Some(s) = self.manual.as_mut() {
-            if self.loaded && !self.failed {
+            if self.loaded && !self.failed && (s.request.is_some() || auth_ready) {
                 drive(&self.view, &self.events, s, &self.server, &self.key, now);
             }
             if s.progress.is_complete() || s.progress.has_failed() {
@@ -336,9 +343,7 @@ fn drive(
         let events = events.clone();
         // The async body reports a plain boolean when complete. WebView2's
         // ExecuteScript does not await a returned Promise.
-        let script = format!(
-            "window.__bfStep?.id === '{id}:{generation}:{index}' ? window.__bfStep.result : null"
-        );
+        let script = format!("window.__bfSteps?.['{id}:{generation}:{index}']?.result ?? null");
         let _ = view.evaluate_script_with_callback(&script, move |json| {
             if let Ok(success) = serde_json::from_str::<bool>(&json) {
                 events
@@ -412,7 +417,7 @@ fn drive(
     };
     let id = sequence.id;
     let script = format!(
-        "(()=>{{ const state={{id:'{id}:{generation}:{index}',result:null}}; window.__bfStep=state; (async()=>{{ {} }})().then(result=>state.result=!!result,()=>state.result=false); }})()",
+        "(()=>{{ const state={{result:null}}; window.__bfSteps ||= Object.create(null); window.__bfSteps['{id}:{generation}:{index}']=state; (async()=>{{ {} }})().then(result=>state.result=!!result,()=>state.result=false); }})()",
         body
     );
     let timeout = if step.step_type == "wait" {

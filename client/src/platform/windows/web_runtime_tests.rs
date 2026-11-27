@@ -217,7 +217,10 @@ fn windows_browser_and_visibility_regression() {
             {"type":"navigate","url":"#ready"}
         ]);
         let smart_url = serde_json::json!({"login_detect_url": if i == 0 { "/auth".to_string() } else { format!("{}/auth",fixture.root) }, "session_check_interval_ms":200,"steps":steps});
-        let web_actions = serde_json::json!({"revision":"r1","on_load":[{"type":"javascript","script":format!("fetch('/loaded-{i}')")}],"groups":{
+        let web_actions = serde_json::json!({"revision":"r1","on_load":[
+            {"type":"javascript","script":format!("const key='renew-{i}'; if(!sessionStorage.getItem(key)){{sessionStorage.setItem(key,'1'); history.pushState({{}},'', '/auth/renew');}}")},
+            {"type":"wait_for","selector":"#done"},
+            {"type":"javascript","script":format!("fetch('/loaded-{i}')")}],"groups":{
             "action":[{"type":"javascript","script":"history.pushState({},'', '/auth/action');"},{"type":"wait","delay_ms":400},{"type":"navigate","url":"/done"}],
             "interrupted":[{"type":"wait_for","selector":"#never","timeout_ms":10000}]
         }});
@@ -246,8 +249,8 @@ fn windows_browser_and_visibility_regression() {
     });
     assert_eq!(
         fixture.count("/auth/form"),
-        2,
-        "both blocks authenticate independently"
+        4,
+        "both blocks authenticate independently and on-load actions re-authenticate before continuing"
     );
     let request = |group: &str| WebActionRequest {
         request_id: "native-test".into(),
@@ -292,7 +295,7 @@ fn windows_browser_and_visibility_regression() {
     );
     assert_eq!(
         fixture.count("/auth/form"),
-        2,
+        4,
         "manual actions pause entity authentication on login paths"
     );
     wait(|| entries(|e| e.ready(&e.url().unwrap_or_default())));
@@ -318,7 +321,7 @@ fn windows_browser_and_visibility_regression() {
         "block0",
         "history.pushState({},'', '/auth/authorize?expired=1')",
     );
-    wait(|| fixture.count("/auth/form") == 3 && entries(|e| e.ready(&e.url().unwrap_or_default())));
+    wait(|| fixture.count("/auth/form") == 5 && entries(|e| e.ready(&e.url().unwrap_or_default())));
     let mut alternate = bundle.displays[0].layouts[0].clone();
     alternate.id = "alternate".into();
     alternate.cells.truncate(1);
@@ -349,7 +352,7 @@ fn windows_browser_and_visibility_regression() {
     .unwrap();
     renderer::reconcile_windows().unwrap();
     wait(|| {
-        fixture.count("/auth/form") == 4
+        fixture.count("/auth/form") == 6
             && entries(|e| e.visible && e.ready(&e.url().unwrap_or_default()))
             && fixture.count("/loaded-0") == 2
             && fixture.count("/loaded-1") == 2
@@ -383,7 +386,7 @@ fn windows_browser_and_visibility_regression() {
     }
     assert_eq!(
         fixture.count("/auth/form"),
-        4,
+        6,
         "zero disables periodic auth observation"
     );
     WEBVIEWS.with(|views| {
@@ -392,7 +395,7 @@ fn windows_browser_and_visibility_regression() {
         entry.show(false);
         entry.show(true);
     });
-    wait(|| fixture.count("/auth/form") == 5 && entries(|e| e.ready(&e.url().unwrap_or_default())));
+    wait(|| fixture.count("/auth/form") == 7 && entries(|e| e.ready(&e.url().unwrap_or_default())));
     let before = WEBVIEWS.with(|views| views.borrow().keys().cloned().collect::<HashSet<_>>());
     bundle.displays[0].layouts[0].cells[0].local_storage =
         Some(HashMap::from([("changed".into(), "yes".into())]));

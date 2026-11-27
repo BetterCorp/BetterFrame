@@ -599,11 +599,16 @@ pub(super) fn report(
 ) {
     let server = server.to_owned();
     let key = key.to_owned();
+    #[cfg(test)]
+    eprintln!("Reporting action {}: {result:?}", request.group);
     std::thread::spawn(move || {
-        let _ = crate::network::blocking_client().post(format!("{server}/api/kiosk/web-actions/result"))
+        let response = crate::network::blocking_client().post(format!("{server}/api/kiosk/web-actions/result"))
             .bearer_auth(key).json(&serde_json::json!({"request_id":request.request_id,"display_id":request.display_id,
                 "cell_id":request.cell_id,"group":request.group,"ok":result.is_ok(),"error":result.err()}))
-            .timeout(Duration::from_secs(10)).send();
+            .timeout(Duration::from_secs(10)).send().and_then(|response| response.error_for_status());
+        if let Err(error) = response {
+            warn!("Web action result delivery failed: {}", error.without_url());
+        }
     });
 }
 pub(super) fn tick() {

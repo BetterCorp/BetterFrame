@@ -43,14 +43,20 @@ pub fn resolve_display<'a>(
     native_name: &str,
     native_index: usize,
 ) -> Option<&'a BundleDisplayWithLayouts> {
+    resolve_physical_display(&bundle.displays, native_name, native_index)
+}
+
+/// Resolve sparse enabled-display assignments without shifting physical monitors.
+pub fn resolve_physical_display<'a>(
+    displays: &'a [BundleDisplayWithLayouts], native_name: &str, native_index: usize,
+) -> Option<&'a BundleDisplayWithLayouts> {
     let suffix = format!(": {native_name}");
-    bundle
-        .displays
+    displays
         .iter()
         .find(|display| display.name == native_name || display.name.ends_with(&suffix))
-        .or_else(|| bundle.displays.iter().find(|display| display.physical_index == Some(native_index)))
-        .or_else(|| bundle.displays.iter().all(|display| display.physical_index.is_none())
-            .then(|| bundle.displays.get(native_index)).flatten())
+        .or_else(|| displays.iter().find(|display| display.physical_index == Some(native_index)))
+        .or_else(|| displays.iter().all(|display| display.physical_index.is_none())
+            .then(|| displays.get(native_index)).flatten())
 }
 
 /// Only fields consumed by stream selection and pipeline construction.
@@ -160,6 +166,18 @@ pub fn same_origin(url: &str, server_url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sparse_physical_assignments_do_not_alias_disabled_monitors() {
+        let mut displays: Vec<crate::bundle::BundleDisplayWithLayouts> = serde_json::from_value(serde_json::json!([
+            {"id":"second","physical_index":1,"name":"Second","width_px":800,"height_px":600,
+                "idle_timeout_seconds":0,"sleep_timeout_seconds":0,"layouts":[]}
+        ])).unwrap();
+        assert!(super::resolve_physical_display(&displays,"First",0).is_none());
+        assert_eq!(super::resolve_physical_display(&displays,"Renamed",1).unwrap().id,"second");
+        displays[0].physical_index=None;
+        assert_eq!(super::resolve_physical_display(&displays,"Legacy",0).unwrap().id,"second");
+    }
+
     use super::*;
     use crate::bundle::BundleDisplayWithLayouts;
 

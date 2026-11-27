@@ -877,15 +877,8 @@ fn send_heartbeat_now(server_url: &str, kiosk_key: &str) -> bool {
         .into_iter()
         .enumerate()
         .map(|(index, (name, width_px, height_px))| {
-            let bundle_id = bundle_displays
-                .get(index)
-                .map(|d| d.id.clone())
-                .or_else(|| {
-                    bundle_displays
-                        .iter()
-                        .find(|d| d.name == name)
-                        .map(|d| d.id.clone())
-                });
+            let bundle_id = crate::core::layout::resolve_physical_display(&bundle_displays, &name, index)
+                .map(|display| display.id.clone());
             let power_state = bundle_id
                 .as_deref()
                 .and_then(|id| DISPLAYS.with(|ds| ds.borrow().get(id).map(|st| st.is_asleep)))

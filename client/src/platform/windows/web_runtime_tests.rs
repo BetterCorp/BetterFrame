@@ -170,7 +170,8 @@ fn windows_browser_and_visibility_regression() {
         let steps = serde_json::json!([
             {"type":"navigate","url":"/auth/form"},{"type":"wait_for","selector":"#username"},
             {"type":"fill","selector":"#username","value":"person@example.test"},
-            {"type":"click","selector":"#login"},{"type":"wait_for","selector":"#done"}
+            {"type":"click","selector":"#login"},{"type":"wait_for","selector":"#done"},
+            {"type":"navigate","url":"#ready"}
         ]);
         let smart_url = serde_json::json!({"login_detect_url": if i == 0 { "/auth".to_string() } else { format!("{}/auth",fixture.root) }, "session_check_interval_ms":200,"steps":steps});
         let web_actions = serde_json::json!({"revision":"r1","on_load":[{"type":"javascript","script":format!("fetch('/loaded-{i}')")}],"groups":{
@@ -216,8 +217,27 @@ fn windows_browser_and_visibility_regression() {
         let mut stale = request("action");
         stale.revision = "old".into();
         assert!(entry.invoke(stale).is_err());
-        entry.invoke(request("action")).unwrap();
     });
+    let inbox = state_dir().join("web-action-inbox");
+    fs::create_dir_all(&inbox).unwrap();
+    let temporary = inbox.join("native-test.json.tmp");
+    fs::write(&temporary, b"{unfinished").unwrap();
+    let envelope = PendingAction {
+        request: request("action"),
+        renderer_id: std::process::id(),
+        created_at: timestamp(),
+    };
+    write_protected(
+        &inbox.join("native-test.json"),
+        &serde_json::to_vec(&envelope).unwrap(),
+    )
+    .unwrap();
+    tick();
+    assert!(
+        temporary.exists(),
+        "an in-progress producer write is never consumed"
+    );
+    fs::remove_file(temporary).unwrap();
     wait(|| fixture.count("/api/kiosk/web-actions/result") == 1 && entries(|e| e.manual.is_none()));
     assert_eq!(
         fixture.count("/auth/form"),

@@ -638,8 +638,7 @@ pub(super) fn active_layout_for_display<'a>(
     let display = bundle
         .displays
         .iter()
-        .find(|d| d.id == display_id)
-        .or_else(|| bundle.displays.first())?;
+        .find(|d| d.id == display_id)?;
     let layout = crate::core::layout::active_layout(display, &state.active_layouts)?;
     Some((display, layout))
 }

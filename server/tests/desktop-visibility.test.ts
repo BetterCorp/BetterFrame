@@ -8,12 +8,13 @@ import { registerKioskRoutes } from "../src/plugins/service-api-http/index.js";
 
 test("desktop disable removes assignments, preserves enrollment and updates, and re-enable restores content", async () => {
   const f = fixture();
-  const kiosk = {id:"kiosk",name:"Desktop",enabled:true,capabilities:["windows"],managed_image:false};
+  const kiosk = {id:"kiosk",name:"Desktop",enabled:true,capabilities:["windows"],managed_image:false,os_update_compatibility:"betterframe-x86_64"};
   const displays = [
     {id:"first",name:"Desktop: DISPLAY1",index:0,is_enabled:true,default_layout_id:"layout",width_px:1280,height_px:720},
     {id:"second",name:"Desktop: DISPLAY2",index:1,is_enabled:true,default_layout_id:"layout",width_px:1280,height_px:720},
   ];
-  const repo = {...f.repo, getKioskById:async()=>kiosk, listDisplaysForKiosk:async()=>displays,
+  const repo = {...f.repo, adapter:{...f.repo.adapter,dialect:()=>"sqlite"}, getKioskById:async()=>kiosk, listDisplaysForKiosk:async()=>displays,
+    listActiveOsUpdateRolloutsForKiosk:async()=>[],getLatestOsUpdateRelease:async()=>null,
     touchKiosk:async()=>{},getSetupExtra:async()=>null,deleteDisplayIfUnused:async()=>false,
     updateDisplay:async(id:string,patch:object)=>Object.assign(displays.find(d=>d.id===id)!,patch),
   };
@@ -43,8 +44,8 @@ test("desktop disable removes assignments, preserves enrollment and updates, and
   assert.equal(disabled.status,200);assert.deepEqual((await disabled.json() as {displays:unknown[]}).displays,[]);
   const policy=await heartbeat();assert.equal(policy.status,200);
   assert.ok("update_schedule" in await policy.json() as object,"background updates retain their schedule");
-  app.get("/api/kiosk/os/check",()=>({status:"up_to_date"}));
-  assert.equal((await app.request("https://bf.test/api/kiosk/os/check",{headers})).status,200);
+  const osCheck=await app.request("https://bf.test/api/kiosk/os/check?compatibility=betterframe-x86_64",{headers});
+  assert.equal(osCheck.status,200);assert.deepEqual(await osCheck.json(),{up_to_date:true});
   app.get("/api/kiosk/private-content",()=>({secret:true}));
   assert.equal((await app.request("https://bf.test/api/kiosk/private-content",{headers})).status,401);
   assert.equal((await app.request("https://bf.test/api/kiosk/bundle",{headers:{cookie:"betterframe_kiosk_key=device-key"}})).status,401);

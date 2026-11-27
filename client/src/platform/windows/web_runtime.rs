@@ -22,6 +22,7 @@ struct Sequence {
     progress: SmartUrlProgress,
     flight: Option<(u64, Instant, usize)>,
     request: Option<WebActionRequest>,
+    resume_after: Option<Instant>,
 }
 impl Sequence {
     fn new(id: u64, steps: Vec<SmartUrlStep>) -> Self {
@@ -31,11 +32,13 @@ impl Sequence {
             progress: SmartUrlProgress::default(),
             flight: None,
             request: None,
+            resume_after: None,
         }
     }
     fn navigation(&mut self, elapsed: Duration) {
         self.progress.load_started_for_steps(&self.steps, elapsed);
         self.flight = None;
+        self.resume_after = None;
     }
 }
 
@@ -228,6 +231,9 @@ impl Entry {
                         {
                             s.progress.finish_step(generation, success, now);
                             s.flight = None;
+                            // Click/script navigation can emit Started after its
+                            // JS completion. Match Linux's deferred continuation.
+                            s.resume_after = Some(Instant::now() + Duration::from_millis(50));
                         }
                     }
                 }
@@ -339,46 +345,71 @@ fn drive(
         });
         return;
     }
+    if sequence
+        .resume_after
+        .is_some_and(|deadline| Instant::now() < deadline)
+    {
+        return;
+    }
     let Some((index, generation)) = sequence.progress.take_step(sequence.steps.len(), now) else {
         return;
     };
     let step = &sequence.steps[index];
-    if step.step_type == "navigate" {
-        let target = view
-            .url()
-            .ok()
-            .and_then(|u| url::Url::parse(&u).ok())
+    let body = if step.step_type == "navigate" {
+        let source = view.url().ok().and_then(|u| url::Url::parse(&u).ok());
+        let target = source
+            .as_ref()
             .and_then(|u| u.join(step.url.as_deref()?).ok());
-        let result = target
-            .ok_or_else(|| "Invalid navigation".to_string())
-            .and_then(|target| {
-                if same_origin(target.as_str(), server) && !key.is_empty() {
-                    let mut headers = wry::http::HeaderMap::new();
-                    headers.insert(
-                        wry::http::header::AUTHORIZATION,
-                        wry::http::HeaderValue::from_str(&format!("Bearer {key}"))
-                            .map_err(|e| e.to_string())?,
-                    );
-                    view.load_url_with_headers(target.as_str(), headers)
-                        .map_err(|e| e.to_string())
-                } else {
-                    view.load_url(target.as_str()).map_err(|e| e.to_string())
-                }
+        let fragment_only = source
+            .as_ref()
+            .zip(target.as_ref())
+            .is_some_and(|(source, target)| {
+                let mut from = source.clone();
+                let mut to = target.clone();
+                from.set_fragment(None);
+                to.set_fragment(None);
+                from == to && source.fragment() != target.fragment()
             });
-        // Load-start invalidates this acknowledgment and resumes on its destination.
-        events.lock().unwrap().push(Event::Result(
-            sequence.id,
-            generation,
-            index,
-            result.is_ok(),
-        ));
-        sequence.flight = Some((generation, Instant::now() + Duration::from_secs(30), index));
-        return;
-    }
+        if fragment_only {
+            format!(
+                "location.hash = {}; return true;",
+                serde_json::to_string(target.unwrap().fragment().unwrap_or("")).unwrap()
+            )
+        } else {
+            let result = target
+                .ok_or_else(|| "Invalid navigation".to_string())
+                .and_then(|target| {
+                    if same_origin(target.as_str(), server) && !key.is_empty() {
+                        let mut headers = wry::http::HeaderMap::new();
+                        headers.insert(
+                            wry::http::header::AUTHORIZATION,
+                            wry::http::HeaderValue::from_str(&format!("Bearer {key}"))
+                                .map_err(|e| e.to_string())?,
+                        );
+                        view.load_url_with_headers(target.as_str(), headers)
+                            .map_err(|e| e.to_string())
+                    } else {
+                        view.load_url(target.as_str()).map_err(|e| e.to_string())
+                    }
+                });
+            // Keep the step busy until Started invalidates its generation.
+            // Submission of Navigate is not completion: WebView2 may emit its
+            // load events well after this call returns. Resume on Finished.
+            if result.is_ok() {
+                sequence.flight =
+                    Some((generation, Instant::now() + Duration::from_secs(30), index));
+            } else {
+                sequence.progress.finish_step(generation, false, now);
+            }
+            return;
+        }
+    } else {
+        crate::core::web_steps::step_javascript(step)
+    };
     let id = sequence.id;
     let script = format!(
         "(()=>{{ const state={{id:'{id}:{generation}:{index}',result:null}}; window.__bfStep=state; (async()=>{{ {} }})().then(result=>state.result=!!result,()=>state.result=false); }})()",
-        crate::core::web_steps::step_javascript(step)
+        body
     );
     let timeout = if step.step_type == "wait" {
         step.delay_ms.unwrap_or(1000)
@@ -470,7 +501,11 @@ pub(super) fn tick() {
     let Ok(files) = fs::read_dir(directory) else {
         return;
     };
-    for file in files.flatten().take(32) {
+    for file in files
+        .flatten()
+        .filter(|file| file.path().extension().is_some_and(|ext| ext == "json"))
+        .take(32)
+    {
         let path = file.path();
         let request = read_protected_or_plain(&path)
             .ok()

@@ -607,7 +607,7 @@ pub(super) fn report(
                 "cell_id":request.cell_id,"group":request.group,"ok":result.is_ok(),"error":result.err()}))
             .timeout(Duration::from_secs(10)).send().and_then(|response| response.error_for_status());
         if let Err(error) = response {
-            warn!("Web action result delivery failed: {}", error.without_url());
+            warn!(error = ?error.without_url(), "Web action result delivery failed");
         }
     });
 }

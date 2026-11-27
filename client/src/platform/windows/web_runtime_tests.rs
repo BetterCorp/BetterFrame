@@ -36,6 +36,9 @@ impl Fixture {
                     let reported = &reported;
                     let suspended = &suspended;
                     scope.spawn(move || {
+                        // Windows accepts inherit the listener's nonblocking mode.
+                        // Use blocking reads with a deadline for each HTTP connection.
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();

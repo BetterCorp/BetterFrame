@@ -1680,6 +1680,18 @@ fn render_bundle(
     server_url: &str,
     kiosk_key: &str,
 ) {
+    let native_names: Vec<_> = query_displays().into_iter().map(|(name, _, _)| name).collect();
+    render_bundle_with_monitors(app, pairing_window, bundle, server_url, kiosk_key, &native_names);
+}
+
+fn render_bundle_with_monitors(
+    app: &Application,
+    pairing_window: &ApplicationWindow,
+    bundle: KioskBundle,
+    server_url: &str,
+    kiosk_key: &str,
+    native_names: &[String],
+) {
     set_reported_bundle_version(&bundle.version);
     let previous_bundle = CURRENT_BUNDLE.with(|b| b.borrow().clone());
     let decrypt_key = server::load_encrypt_key().or_else(|| server::load_cluster_key());
@@ -1706,9 +1718,8 @@ fn render_bundle(
     // Collect camera IDs actually referenced in layout cells.
     let gdk_monitors: Vec<gtk::gdk::Monitor> = WidgetExt::display(pairing_window)
         .monitors().iter::<gtk::gdk::Monitor>().flatten().collect();
-    let native_names: Vec<_> = query_displays().into_iter().map(|(name, _, _)| name).collect();
     let displays: Vec<_> = bundle.normalized_displays().into_iter().enumerate()
-        .filter(|(index, display)| native_names.is_empty() || assigned_monitor(display, &gdk_monitors, &native_names, *index).is_some())
+        .filter(|(index, display)| native_names.is_empty() || assigned_monitor(display, &gdk_monitors, native_names, *index).is_some())
         .map(|(_, display)| display).collect();
     let mut valid_webs = std::collections::HashSet::new();
     for display in &displays {
@@ -1791,7 +1802,7 @@ fn render_bundle(
         let existing = DISPLAYS.with(|ds| ds.borrow_mut().remove(&bd.id));
         if unchanged_displays.contains(&bd.id) {
             if let Some(state) = existing {
-                reconcile_display_monitor(&state.window, assigned_monitor(bd, &gdk_monitors, &native_names, i));
+                reconcile_display_monitor(&state.window, assigned_monitor(bd, &gdk_monitors, native_names, i));
                 if let Some(content) = state.content_overlay.child() {
                     refresh_empty_display_reference(&content, &bundle, Some(bd));
                 }
@@ -1856,7 +1867,7 @@ fn render_bundle(
                 (w, false, Instant::now(), None, None, None)
             }
         };
-        reconcile_display_monitor(&window, assigned_monitor(bd, &gdk_monitors, &native_names, i));
+        reconcile_display_monitor(&window, assigned_monitor(bd, &gdk_monitors, native_names, i));
         let content_overlay = existing_overlay.unwrap_or_else(|| {
             let ov = gtk::Overlay::new();
             ov.set_vexpand(true);
@@ -3696,7 +3707,7 @@ pub fn test_overlay_refresh() {
             "idle_timeout_seconds":0, "sleep_timeout_seconds":0, "default_layout_id":"layout",
             "layouts":[layout.clone()]}]
     })).unwrap();
-    render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "test");
+    render_bundle_with_monitors(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "test", &[]);
     let base_key = web_cell_key("overlay-test", "layout", &layout.cells[0]);
     let base = WARM_WEBVIEWS.with(|pool| pool.borrow()[&base_key].webview.clone());
     let overlay_key = "overlay:overlay-test:layout:block";
@@ -3733,7 +3744,7 @@ pub fn test_overlay_refresh() {
     layout.cells[0].overlay_html = Some("<p>64%</p>".into());
     bundle.displays[0].layouts[0] = layout.clone();
     bundle.version = "2".into();
-    render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "test");
+    render_bundle_with_monitors(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "test", &[]);
     assert!(apply_webview_positions("overlay-test"));
     WARM_WEBVIEWS.with(|pool| {
         assert_eq!(pool.borrow()[overlay_key].webview, overlay);
@@ -3744,12 +3755,12 @@ pub fn test_overlay_refresh() {
     let mut removed = bundle.clone();
     removed.version = "3".into();
     removed.displays[0].layouts[0].cells[0].overlay_html = None;
-    render_bundle(&app, &pairing, removed, "http://127.0.0.1:1", "test");
+    render_bundle_with_monitors(&app, &pairing, removed, "http://127.0.0.1:1", "test", &[]);
     WARM_WEBVIEWS.with(|pool| {
         assert!(!pool.borrow().contains_key(overlay_key), "full refresh removes obsolete overlays");
         assert_eq!(pool.borrow()[&base_key].webview, base);
     });
-    render_bundle(&app, &pairing, bundle, "http://127.0.0.1:1", "test");
+    render_bundle_with_monitors(&app, &pairing, bundle, "http://127.0.0.1:1", "test", &[]);
     DISPLAYS.with(|ds| ds.borrow_mut().get_mut("overlay-test").unwrap().display_cleared = true);
     let mut cleared = layout.clone();
     apply_operator_overrides("overlay-test", &mut cleared);
@@ -3805,22 +3816,22 @@ mod display_tests {
         let mut second = bundle.displays[0].clone();
         second.id = "second".into(); second.name = "Second".into(); second.physical_index = Some(1);
         bundle.displays.push(second.clone());
-        render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "fixture");
+        render_bundle_with_monitors(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "fixture", &[]);
         let first = DISPLAYS.with(|d| d.borrow()["first"].window.clone());
         assert!(first.is_visible());
         bundle.displays.remove(0);
-        render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "fixture");
+        render_bundle_with_monitors(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "fixture", &[]);
         assert!(!first.is_visible());
         DISPLAYS.with(|d| { assert_eq!(d.borrow().len(), 1); assert!(d.borrow()["second"].window.is_visible()); });
         bundle.displays.clear();
-        render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "fixture");
+        render_bundle_with_monitors(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "fixture", &[]);
         assert!(DISPLAYS.with(|d| d.borrow().is_empty()));
         assert!(!pairing.is_visible(), "standalone desktops have no empty-assignment window");
         bundle.displays.push(second);
-        render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "fixture");
+        render_bundle_with_monitors(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "fixture", &[]);
         DISPLAYS.with(|d| assert!(d.borrow()["second"].window.is_visible()));
         bundle.displays.clear();
-        render_bundle(&app, &pairing, bundle, "http://127.0.0.1:1", "fixture");
+        render_bundle_with_monitors(&app, &pairing, bundle, "http://127.0.0.1:1", "fixture", &[]);
         pairing.close();
     }
 
@@ -4022,7 +4033,7 @@ mod display_tests {
             "displays":[display("one"),display("two")]
         }))
         .unwrap();
-        render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "test");
+        render_bundle_with_monitors(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "test", &[]);
         // Xvfb has no window manager to apply the fullscreen request.
         DISPLAYS.with(|ds| {
             for state in ds.borrow().values() {
@@ -4032,7 +4043,7 @@ mod display_tests {
         let deadline_origin = Instant::now() - Duration::from_secs(61);
         DISPLAYS.with(|ds| ds.borrow_mut().get_mut("one").unwrap().last_activity = deadline_origin);
         render_layout_inner("one", "layout", true);
-        render_bundle(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "test");
+        render_bundle_with_monitors(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "test", &[]);
         DISPLAYS.with(|ds| assert_eq!(ds.borrow()["one"].last_activity, deadline_origin));
         install_idle_watchdog();
         let context = gtk::glib::MainContext::default();
@@ -4076,7 +4087,7 @@ mod display_tests {
             assert!(bounds.x() + bounds.width() <= fixed.width() as f32);
             assert!(bounds.y() + bounds.height() <= fixed.height() as f32);
         });
-        render_bundle(&app, &pairing, bundle, "http://127.0.0.1:1", "test");
+        render_bundle_with_monitors(&app, &pairing, bundle, "http://127.0.0.1:1", "test", &[]);
         render_layout_inner("one", "layout", true);
         DISPLAYS.with(|ds| {
             let ds = ds.borrow();
@@ -5126,7 +5137,7 @@ pub fn test_local_api() {
         "cameras":[{"id":"camera","name":"Camera","type":"rtsp","stream_policy":"auto","streams":[]}],
         "displays":[{"id":"d","name":"Fixture display","width_px":640,"height_px":360,"idle_timeout_seconds":0,"sleep_timeout_seconds":0,
             "default_layout_id":"l1","layouts":[layout("l1"),layout("l2")]}]})).unwrap();
-    render_bundle(&app, &pairing, bundle, "http://127.0.0.1:1", "fixture");
+    render_bundle_with_monitors(&app, &pairing, bundle, "http://127.0.0.1:1", "fixture", &[]);
     let key = Arc::new(Mutex::new("fixture".to_string()));
     let run = |input: serde_json::Value| {
         let command: crate::core::local_api::Command = serde_json::from_value(input).unwrap();
@@ -5197,7 +5208,7 @@ pub fn test_local_api() {
     let mut reset = CURRENT_BUNDLE.with(|b| b.borrow().clone()).unwrap();
     reset.version = "fixture-pre-rebuild".into();
     reset.displays[0].layouts[1].grid_cols = 3;
-    render_bundle(&app, &pairing, reset, "http://127.0.0.1:1", "fixture");
+    render_bundle_with_monitors(&app, &pairing, reset, "http://127.0.0.1:1", "fixture", &[]);
     assert_eq!(
         run(
             json!({"request_id":"gtk-before-rebuild","action":"focus_camera","display_id":"d","camera_id":"camera","cell_id":"tile","duration_seconds":1})
@@ -5207,7 +5218,7 @@ pub fn test_local_api() {
     let mut replacement = CURRENT_BUNDLE.with(|b| b.borrow().clone()).unwrap();
     replacement.version = "fixture-v2".into();
     replacement.displays[0].layouts[1].grid_cols = 2;
-    render_bundle(&app, &pairing, replacement, "http://127.0.0.1:1", "fixture");
+    render_bundle_with_monitors(&app, &pairing, replacement, "http://127.0.0.1:1", "fixture", &[]);
     assert_eq!(
         run(
             json!({"request_id":"gtk-after-rebuild","action":"focus_camera","display_id":"d","camera_id":"camera","cell_id":"tile"})
@@ -5314,7 +5325,7 @@ pub fn test_local_api() {
     let mut empty = CURRENT_BUNDLE.with(|b| b.borrow().clone()).unwrap();
     empty.version = "fixture-empty".into();
     empty.displays[0].layouts.clear();
-    render_bundle(&app, &pairing, empty, "http://127.0.0.1:1", "fixture");
+    render_bundle_with_monitors(&app, &pairing, empty, "http://127.0.0.1:1", "fixture", &[]);
     assert_eq!(
         run(json!({"request_id":"gtk-empty-clear","action":"clear_display","display_id":"d"}))["status"],
         "failed"

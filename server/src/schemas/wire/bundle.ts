@@ -95,6 +95,7 @@ const bundleCell = av.object(
     web_permissions: av.optional(webPermissionsSchema),
     web_actions: av.optional(av.object({ revision: av.string(), on_load: av.array(smartUrlStep), groups: av.record(av.array(smartUrlStep)) }, { unknownKeys: "reject" })),
     local_storage: av.optional(av.record(av.string())),
+    input_options: av.optional(av.record(av.any())),
   },
   { unknownKeys: "reject" },
 );
@@ -113,6 +114,7 @@ const bundleLayout = av.object(
     resets_idle_timer: av.bool(),
     is_default: av.bool(),
     cells: av.array(bundleCell),
+    input_options: av.optional(av.record(av.any())),
   },
   { unknownKeys: "reject" },
 );
@@ -133,6 +135,8 @@ const bundleDisplay = av.object(
 const bundleDisplayWithLayouts = av.object(
   {
     id,
+    physical_index: av.optional(av.int().min(0)),
+    native_name: av.optional(av.string().minLength(1).maxLength(512)),
     name: av.string().minLength(1).maxLength(512),
     width_px: av.int().min(1),
     height_px: av.int().min(1),
@@ -169,7 +173,8 @@ const operatorConsole = av.object(
   {
     enabled: av.bool(),
     host: av.nullable(av.string().maxLength(255)),
-    port: av.int().min(1).max(65535),
+    // Zero represents the disabled console in an empty desktop assignment.
+    port: av.int().min(0).max(65535),
     tools: av.array(operatorTool),
     simple_vms: av.object({
       enabled: av.bool(),
@@ -195,7 +200,8 @@ export const kioskBundle = av.object(
     catalog_metadata: av.optional(catalogMetadata),
     kiosk_id: id,
     kiosk_name: av.string().minLength(1).maxLength(512),
-    display: bundleDisplay,
+    tenant_slug: av.optional(id),
+    display: av.nullable(bundleDisplay),
     layouts: av.array(bundleLayout),
     displays: av.array(bundleDisplayWithLayouts),
     cameras: av.array(bundleCamera),

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as av from "anyvali";
+import { kioskBundle } from "../src/schemas/wire/bundle.js";
 import { H3 } from "h3";
 import { fixture } from "./smart-url.test.js";
 import { generateBundle } from "../src/shared/bundle.js";
@@ -72,4 +74,45 @@ test("kiosk enable changes notify the enrolled client from both admin routes", a
   const enabled=await app.request("https://bf.test/admin/kiosks/kiosk",{
     method:"POST",body:new URLSearchParams({name:"Desktop",enabled:"1"})});
   assert.equal(enabled.status,302);assert.equal(kiosk.enabled,true);assert.deepEqual(reloads,["kiosk","kiosk"]);
+});
+
+
+test("wire bundle contract accepts physical display identity and disabled desktop assignments", async () => {
+  const f = fixture();
+  const kiosk = {id:"kiosk",name:"Desktop",enabled:true,capabilities:[],operator_console_enabled:false,
+    operator_console_host:null,operator_console_port:8080,simple_vms_storage_path:null};
+  const display = {id:"display",name:"Desktop: Living room",native_name:"HDMI-A-1",index:1,is_enabled:true,
+    width_px:1920,height_px:1080,idle_timeout_seconds:0,sleep_timeout_seconds:0,default_layout_id:"layout"};
+  const repo = {...f.repo,getKioskById:async()=>kiosk,listDisplaysForKiosk:async()=>[display],
+    layoutsForDisplayId:async()=>[{id:"layout",name:"Layout",grid_cols:2,grid_rows:1,priority:"normal",
+      cooling_timeout_seconds:null,idle_timeout_seconds:null,preload_camera_ids:[],resets_idle_timer:false,
+      input_options_json:{gesture:"default"}}],
+    layoutCells:async()=>f.cells.map(cell=>({...cell,stream_selector:null,cooling_timeout_seconds:null,fit:"contain"})),
+  };
+  const make = async () => JSON.parse(JSON.stringify(await generateBundle(repo as never,f.secrets as never,"kiosk","cluster")));
+  const exported = av.importSchema(kioskBundle.export("portable"));
+  const valid = (bundle:unknown) => {
+    for (const schema of [kioskBundle,exported]) {
+      const result = av.safeParse(schema,bundle);
+      assert.ok(result.success,result.success ? "" : JSON.stringify(result.issues));
+    }
+  };
+  const enabled = await make();
+  valid(enabled);
+  assert.equal(enabled.displays[0].native_name,"HDMI-A-1");
+  assert.equal(enabled.displays[0].physical_index,1);
+  const legacy = structuredClone(enabled);
+  delete legacy.displays[0].native_name;
+  delete legacy.displays[0].physical_index;
+  valid(legacy);
+  enabled.displays[0].physical_index=-1;
+  assert.equal(av.safeParse(kioskBundle,enabled).success,false);
+  kiosk.enabled=false;
+  const disabled = await make();
+  valid(disabled);
+  assert.equal(disabled.display,null);
+  assert.equal(disabled.operator_console.port,0);
+  kiosk.enabled=true;
+  display.is_enabled=false;
+  valid(await make());
 });

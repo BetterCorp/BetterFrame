@@ -59,8 +59,9 @@ itself. It stops only processes whose executable path matches the installed clie
 installs silently without rebooting, and restarts the client in its users' desktop
 sessions with their existing Windows tokens.
 
-The new package must pass an installation probe. A painted native display window
-then records local health, including its build version and timestamp. This does not
+The new package must pass an installation probe. A painted native display window,
+or a successfully reconciled background renderer when all windows are intentionally
+disabled, records local health including its build version and timestamp. This does not
 require pairing or a working network; the renderer starts before server discovery.
 A candidate that does not confirm within five minutes of an active desktop session
 is rolled back to the retained verified MSI. With no signed-in session, display
@@ -97,3 +98,16 @@ it saves policy, loses enrollment and authentication, installs a signed upgrade,
 rejects a broken candidate and restores the previously working MSI and client. It
 also restarts with an unfinished transaction journal and a stopped desktop to verify
 recovery before any further update checks.
+
+Windows native browser CI also runs the production WebView2 auth/action runner against
+local redirect and shadow-DOM fixtures. It verifies separate blocks, path and full-URL
+prefixes, periodic SPA auth checks, stale action revisions, interrupted waits, block
+config refresh, disabled/re-enabled windows and fresh update health with no visible UI.
+
+## Desktop visibility
+
+Disabling a kiosk closes its display windows while preserving enrollment, cached
+disabled state, background heartbeats and the independent updater. Disabling a single
+display closes only that window. Re-enabling restores windows on their original
+physical displays. Heartbeats report hardware without changing admin enable settings.
+The hidden message-only controller is never shown on the desktop or taskbar.

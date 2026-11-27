@@ -88,7 +88,16 @@ export function registerViewerDeviceAuth(app: H3, repo: Repository, auth: AuthAp
     }
     return repo.adapter.withSearchPath(verified.schema_name, async () => {
       const kiosk = await repo.getKioskById(verified.id);
-      if (!kiosk?.enabled) return new Response(null, { status: 401 });
+      if (!kiosk) return new Response(null, { status: 401 });
+      // Disabled native clients keep enrollment and maintenance alive. Content
+      // delivery returns an empty bundle; browser sessions remain revoked.
+      const maintenance = bearer && !isAndroidViewer(kiosk) && (
+        (path === "/api/kiosk/bundle" && event.req.method === "GET")
+        || (path === "/api/kiosk/heartbeat" && event.req.method === "POST")
+        || path.startsWith("/api/kiosk/firmware/")
+        || (path === "/api/kiosk/web-actions/result" && event.req.method === "POST")
+      );
+      if (!kiosk.enabled && !maintenance) return new Response(null, { status: 401 });
       if (isAndroidViewer(kiosk)) {
         // Browser cookies never authorize the native device API. Dashboard
         // sessions cannot fetch bundles, credentials, or invoke device actions.

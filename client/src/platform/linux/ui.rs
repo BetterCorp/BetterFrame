@@ -229,7 +229,9 @@ fn activate(app: &Application) {
 
     hide_cursor_on(&pairing_window);
     show_logo(&pairing_window);
-    pairing_window.present();
+    let background = !std::path::Path::new("/etc/betterframe/os-version").exists()
+        && server::load_cached_bundle().is_some_and(|bundle| bundle.normalized_displays().is_empty());
+    if !background { pairing_window.present(); }
 
     let (tx, rx) = mpsc::channel::<WorkerMsg>();
 
@@ -1757,10 +1759,15 @@ fn render_bundle(
         overlay.set_child(Some(&build_empty_display_reference(&bundle, None)));
         add_demo_control(&overlay);
         pairing_window.set_child(Some(&overlay));
-        pairing_window.present();
+        if std::path::Path::new("/etc/betterframe/os-version").exists() {
+            pairing_window.present();
+        } else {
+            pairing_window.set_visible(false);
+        }
         recompute_global_state();
         mark_kiosk_healthy();
-        confirm_rendered_app(pairing_window);
+        if pairing_window.is_visible() { confirm_rendered_app(pairing_window); }
+        else { firmware::mark_firmware_applied(); }
         return;
     }
 
@@ -1836,7 +1843,7 @@ fn render_bundle(
                 });
                 w.add_controller(input);
                 w.present();
-                if let Some(monitor) = gdk_monitors.get(i) {
+                if let Some(monitor) = gdk_monitors.get(bd.physical_index.unwrap_or(i)) {
                     w.fullscreen_on_monitor(monitor);
                 }
                 (w, false, Instant::now(), None, None, None)

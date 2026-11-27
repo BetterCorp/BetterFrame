@@ -11,3 +11,5 @@ pub mod update_policy;
 pub mod smart_url;
 
 pub mod local_api;
+
+pub mod web_steps;

@@ -1155,7 +1155,7 @@ function SmartUrlEditor({ config }: { config?: import("../schemas/wire/smart-url
             onclick={`var d=document.createElement('div');d.style='display:grid;grid-template-columns:100px 1fr auto;gap:4px;margin-bottom:4px;align-items:center';var n=Array.from(document.querySelectorAll('#steps-entity select')).reduce(function(m,s){return Math.max(m,Number(s.name.split('_')[1])+1)},0);d.innerHTML='<select name=\"step_'+n+'_type\" class=\"form-input\" style=\"font-size:0.75rem\"><option value=\"navigate\">navigate</option><option value=\"fill\">fill</option><option value=\"click\">click</option><option value=\"wait\">wait</option><option value=\"wait_for\">wait_for</option><option value=\"javascript\">javascript</option></select><input name=\"step_'+n+'_value\" type=\"text\" class=\"form-input\" style=\"font-size:0.75rem\" placeholder=\"value\"><button type=\"button\" class=\"btn btn-sm btn-danger\" style=\"padding:2px 6px\" onclick=\"this.closest(\\'div\\').remove()\">x</button>';document.getElementById('steps-entity').appendChild(d)`}
           >+ Add Step</button>
           <div style="margin-top:0.5rem">
-            <label style="font-size:0.7rem">Login URL prefix (run authentication steps when the path starts with this)</label>
+            <label style="font-size:0.7rem">Login path or full URL prefix (run authentication steps when it starts with this)</label>
             <input name="smart_url_login_detect" type="text" class="form-input" style="font-size:0.75rem"
               value={config?.login_detect_url ?? ""} placeholder="e.g. /auth or https://example.com/login" />
           </div>

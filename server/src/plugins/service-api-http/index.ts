@@ -1235,7 +1235,6 @@ export function registerKioskRoutes(
             || match.index !== reportedIndex
             || match.width_px !== reported.width_px
             || match.height_px !== reported.height_px
-            || (!viewer && !match.is_enabled)
             || (powerState != null && match.actual_power_state !== powerState)
           ) {
             await repo.updateDisplay(match.id, {
@@ -1243,7 +1242,6 @@ export function registerKioskRoutes(
               index: reportedIndex,
               width_px: reported.width_px,
               height_px: reported.height_px,
-              is_enabled: viewer ? match.is_enabled : true,
               ...(powerState != null ? {
                 actual_power_state: powerState,
                 actual_power_state_at: new Date().toISOString(),

@@ -168,6 +168,10 @@ jobs:
       - name: Build and test Windows client
         working-directory: client
         run: cargo test --workspace --locked
+      - name: Windows WebView2 auth, actions and disabled desktop windows
+        working-directory: client
+        timeout-minutes: 5
+        run: cargo test --locked --bin betterframe-client windows_browser_and_visibility_regression -- --ignored --test-threads=1
       - name: Build and verify MSI startup lifecycle
         working-directory: client
         env:

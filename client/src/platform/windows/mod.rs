@@ -25,7 +25,7 @@ use windows_sys::Win32::Graphics::Gdi::{
     DISPLAY_DEVICE_MIRRORING_DRIVER, DISPLAY_DEVICEW, DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_TOP,
     DT_VCENTER, DeleteObject, DrawTextW, ENUM_CURRENT_SETTINGS, EndPaint, EnumDisplayDevicesW,
     EnumDisplaySettingsExW, FillRect, HBRUSH, HDC, InvalidateRect, LineTo, MoveToEx, PAINTSTRUCT,
-    PS_SOLID, SelectObject, SetBkMode, SetTextColor, UpdateWindow,
+    PS_SOLID, SelectObject, SetBkMode, SetTextColor,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -44,10 +44,11 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, OpenProcessToken};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
+    DestroyWindow, SetTimer, WM_TIMER, HWND_MESSAGE,
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     GetClientRect, GetMessageW, GetSystemMetrics, HMENU, HWND_BROADCAST, LoadIconW, MSG,
     PostQuitMessage, RegisterClassW, SC_MONITORPOWER, SM_CXSCREEN, SM_CYSCREEN, SMTO_ABORTIFHUNG,
-    SW_SHOWMAXIMIZED, SendMessageTimeoutW, ShowWindow, TranslateMessage, WM_DESTROY,
+    SendMessageTimeoutW, ShowWindow, TranslateMessage, WM_DESTROY,
     WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_SYSCOMMAND, WNDCLASSW,
     WS_EX_TOPMOST, WS_POPUP,
 };
@@ -73,6 +74,7 @@ mod host;
 mod renderer;
 mod storage;
 mod trusted_cas;
+mod web_runtime;
 
 use host::*;
 use renderer::*;
@@ -176,7 +178,7 @@ struct CameraPipeline {
 static CAMERA_PIPELINES: OnceLock<Mutex<HashMap<String, CameraPipeline>>> = OnceLock::new();
 
 thread_local! {
-    static WEBVIEWS: RefCell<HashMap<String, WebView>> = RefCell::new(HashMap::new());
+    static WEBVIEWS: RefCell<HashMap<String, web_runtime::Entry>> = RefCell::new(HashMap::new());
     static WEBVIEW_FAILURES: RefCell<HashMap<String, Instant>> = RefCell::new(HashMap::new());
     static WEB_CONTEXT: RefCell<WebContext> = RefCell::new(WebContext::new(Some(webview_data_dir())));
 }
@@ -587,7 +589,7 @@ async fn pair(server_url: &str) -> Result<ClientState, String> {
                 .json(&serde_json::json!({
                     "proposed_name": hostname::get().ok().and_then(|h| h.into_string().ok()).unwrap_or_else(|| "Windows Kiosk".to_string()),
                     "hardware_model": "Windows Desktop", "firmware_target": "windows-x64",
-                    "capabilities": ["windows", "desktop_app", "rtsp", "d3d11", "mouse", "keyboard", "app_restart", "display_select"],
+                    "capabilities": ["windows", "desktop_app", "rtsp", "d3d11", "mouse", "keyboard", "app_restart", "display_select", "web-action-groups-v1"],
                     "managed_image": false, "secure_claim": true
                 })).send().await.and_then(|response| response.error_for_status());
             let init = match response {
@@ -794,6 +796,12 @@ async fn handle_agent_command(
 ) -> Result<(), String> {
     let current_policy = load_policy();
     match cmd {
+        AgentCommand::WebAction(request) => {
+            if let Err(error) = web_runtime::enqueue(request.clone(), app) {
+                let snapshot = state.lock().unwrap().clone();
+                web_runtime::report(&snapshot.server_url, snapshot.kiosk_key.as_deref().unwrap_or(""), request, Err(error));
+            }
+        }
         AgentCommand::ReloadBundle => {
             let snapshot = state.lock().unwrap().clone();
             if let Some(key) = snapshot.kiosk_key.as_deref() {
@@ -935,6 +943,7 @@ async fn heartbeat(
             "bundle_version": state.bundle_version.as_deref(),
             "kiosk_app_version": kiosk_app_version(),
             "firmware_target": "windows-x64",
+            "capabilities": ["windows", "desktop_app", "rtsp", "d3d11", "mouse", "keyboard", "app_restart", "display_select", "web-action-groups-v1"],
             "os_version": std::env::consts::OS,
             "os_update_compatibility": "windows-desktop",
             "displays": displays,

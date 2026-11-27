@@ -48,7 +48,9 @@ pub fn resolve_display<'a>(
         .displays
         .iter()
         .find(|display| display.name == native_name || display.name.ends_with(&suffix))
-        .or_else(|| bundle.displays.get(native_index))
+        .or_else(|| bundle.displays.iter().find(|display| display.physical_index == Some(native_index)))
+        .or_else(|| bundle.displays.iter().all(|display| display.physical_index.is_none())
+            .then(|| bundle.displays.get(native_index)).flatten())
 }
 
 /// Only fields consumed by stream selection and pipeline construction.

@@ -616,6 +616,7 @@ fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
                 })
                 .collect();
             crate::bundle::BundleDisplayWithLayouts {
+                physical_index: None,
                 id: display.id,
                 name: display.name,
                 width_px: 0,

@@ -153,6 +153,7 @@ export interface BundleDisplay {
 }
 
 export interface BundleDisplayWithLayouts extends BundleDisplay {
+  physical_index?: number;
   layouts: BundleLayout[];
 }
 
@@ -176,7 +177,7 @@ export interface KioskBundle {
    * @deprecated Use `displays` (array). Kept for backward compat with older
    * kiosk builds that consume a single display. Mirrors `displays[0]`.
    */
-  display: BundleDisplay;
+  display: BundleDisplay | null;
   /**
    * @deprecated Use `displays[N].layouts`. Mirrors `displays[0].layouts` for
    * older kiosk builds.
@@ -252,12 +253,20 @@ export async function generateBundle(
     : (kiosk.display_id ? [await repo.getDisplayById(kiosk.display_id)].filter((d): d is NonNullable<typeof d> => d != null) : []);
 
   // Admin can disable a display — kiosk must never open a window on it.
-  const enabledDisplays = allDisplays.filter((d) => d.is_enabled);
+  const enabledDisplays = kiosk.enabled !== false ? allDisplays.filter((d) => d.is_enabled) : [];
   const displays = viewer ? enabledDisplays.slice(0, 1) : enabledDisplays;
   if (displays.length === 0) {
     span?.log.info("bundle: kiosk {id} has no enabled displays", { id: String(kioskId) });
     span?.end();
-    return null;
+    const empty: KioskBundle = {
+      kiosk_id: kioskId, kiosk_name: kiosk.name, tenant_slug: "default",
+      display: null, layouts: [], displays: [], cameras: [], gpio_bindings: [],
+      operator_console: { enabled: false, host: null, port: 0, tools: [],
+        simple_vms: { enabled: false, storage_path: null, settings: {} } },
+      version: "",
+    };
+    empty.version = createHash("sha256").update(JSON.stringify(empty)).digest("hex");
+    return empty;
   }
 
   if (viewer && !kioskEncryptKey) {
@@ -548,6 +557,7 @@ export async function generateBundle(
   const bundleDisplays: BundleDisplayWithLayouts[] = [];
   for (const display of displays) {
     bundleDisplays.push({
+      physical_index: display.index,
       id: display.id,
       name: stripDisplayKioskPrefix(display.name, kiosk.name),
       width_px: display.width_px,

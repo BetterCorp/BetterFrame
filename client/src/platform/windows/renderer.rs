@@ -17,23 +17,6 @@ pub(super) fn run_app() -> Result<(), String> {
     fs::create_dir_all(webview_data_dir())
         .map_err(|error| format!("create WebView2 data directory: {error}"))?;
     gstreamer::init().map_err(|error| format!("GStreamer initialization failed: {error}"))?;
-    let policy = load_policy();
-    let displays = query_native_displays();
-    let _ = save_renderer_displays(
-        &displays
-            .iter()
-            .map(|display| display.report.clone())
-            .collect::<Vec<_>>(),
-    );
-    let targets: Vec<NativeDisplay> = displays
-        .into_iter()
-        .filter(|d| display_allowed(&policy, &d.report.name))
-        .collect();
-    let targets = if targets.is_empty() {
-        vec![primary_native_display()]
-    } else {
-        targets
-    };
 
     unsafe {
         let class_name = wide("BetterFrameWindowsKiosk");
@@ -51,68 +34,13 @@ pub(super) fn run_app() -> Result<(), String> {
             return Err("RegisterClassW failed".to_string());
         }
 
-        let mut hwnds = Vec::new();
-        let bundle = load_bundle();
-        for display in &targets {
-            let title = wide(&format!("BetterFrame - {}", display.report.name));
-            let r = display.rect;
-            let hwnd = CreateWindowExW(
-                WS_EX_TOPMOST,
-                class_name.as_ptr(),
-                title.as_ptr(),
-                WS_POPUP,
-                r.left,
-                r.top,
-                (r.right - r.left).max(1),
-                (r.bottom - r.top).max(1),
-                0,
-                0 as HMENU,
-                hinstance,
-                null_mut(),
-            );
-            if hwnd == 0 {
-                return Err("CreateWindowExW failed".to_string());
-            }
-            let display_id =
-                resolve_bundle_display(bundle.as_ref(), &display.report.name, display.report.index)
-                    .map(|display| display.id.clone())
-                    .unwrap_or_else(|| display.report.name.clone());
-            WINDOWS
-                .get_or_init(|| Mutex::new(HashMap::new()))
-                .lock()
-                .unwrap()
-                .insert(
-                    hwnd,
-                    WindowState {
-                        display_id,
-                        display_name: display.report.name.clone(),
-                        display_index: display.report.index,
-                        mouse_down: None,
-                    },
-                );
-            ShowWindow(hwnd, SW_SHOWMAXIMIZED);
-            UpdateWindow(hwnd);
-            hwnds.push(hwnd);
-        }
-
-        std::thread::spawn(move || {
-            let mut ticks = 0u8;
-            loop {
-                std::thread::sleep(Duration::from_secs(1));
-                for hwnd in &hwnds {
-                    InvalidateRect(*hwnd, null(), 1);
-                }
-                ticks = ticks.wrapping_add(1);
-                if ticks % 5 == 0 {
-                    let _ = save_renderer_displays(
-                        &query_native_displays()
-                            .into_iter()
-                            .map(|display| display.report)
-                            .collect::<Vec<_>>(),
-                    );
-                }
-            }
-        });
+        // A message-only controller keeps polling and updating with zero UI.
+        // It is never shown, listed on the taskbar, or used as a display window.
+        let controller = CreateWindowExW(0, class_name.as_ptr(), wide("BetterFrame controller").as_ptr(),
+            0, 0, 0, 0, 0, HWND_MESSAGE, 0, hinstance, null_mut());
+        if controller == 0 { return Err("CreateWindowExW controller failed".into()); }
+        if SetTimer(controller, 1, 200, None) == 0 { return Err("SetTimer failed".into()); }
+        reconcile_windows()?;
 
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, 0, 0, 0) > 0 {
@@ -123,13 +51,73 @@ pub(super) fn run_app() -> Result<(), String> {
     Ok(())
 }
 
-unsafe extern "system" fn window_proc(
+fn display_wanted(bundle: Option<&KioskBundle>, policy: &WindowsPolicy, display: &DisplayReport) -> bool {
+    display_allowed(policy, &display.name) && bundle.is_none_or(|bundle| {
+        resolve_bundle_display(Some(bundle), &display.name, display.index).is_some()
+    })
+}
+
+pub(super) fn reconcile_windows() -> Result<(), String> {
+    let bundle = load_bundle();
+    let policy = load_policy();
+    let displays = query_native_displays();
+    save_renderer_displays(&displays.iter().map(|d| d.report.clone()).collect::<Vec<_>>())?;
+    let wanted: Vec<_> = displays.iter().filter(|d| display_wanted(bundle.as_ref(), &policy, &d.report)).collect();
+    let registry = WINDOWS.get_or_init(|| Mutex::new(HashMap::new()));
+    let obsolete: Vec<_> = registry.lock().unwrap().iter()
+        .filter(|(_, window)| !wanted.iter().any(|d| d.report.name == window.display_name))
+        .map(|(hwnd, _)| *hwnd).collect();
+    for hwnd in obsolete { unsafe { DestroyWindow(hwnd); } }
+    for display in wanted {
+        let existing = registry.lock().unwrap().iter()
+            .find(|(_, w)| w.display_name == display.report.name).map(|(hwnd, _)| *hwnd);
+        let r = display.rect;
+        let hwnd = if let Some(hwnd) = existing {
+            hwnd
+        } else {
+            let hwnd = unsafe { CreateWindowExW(WS_EX_TOPMOST, wide("BetterFrameWindowsKiosk").as_ptr(),
+                wide(&format!("BetterFrame - {}", display.report.name)).as_ptr(), WS_POPUP,
+                r.left, r.top, (r.right-r.left).max(1), (r.bottom-r.top).max(1), 0, 0,
+                GetModuleHandleW(null()), null_mut()) };
+            if hwnd == 0 { return Err("CreateWindowExW display failed".into()); }
+            registry.lock().unwrap().insert(hwnd, WindowState {
+                display_id: resolve_bundle_display(bundle.as_ref(), &display.report.name, display.report.index)
+                    .map(|d| d.id.clone()).unwrap_or_else(|| display.report.name.clone()),
+                display_name: display.report.name.clone(), display_index: display.report.index, mouse_down: None,
+            });
+            unsafe { ShowWindow(hwnd, SW_SHOW); }
+            hwnd
+        };
+        unsafe {
+            SetWindowPos(hwnd, 0, r.left, r.top, (r.right-r.left).max(1), (r.bottom-r.top).max(1),
+                SWP_NOACTIVATE | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOZORDER);
+            InvalidateRect(hwnd, null(), 1);
+        }
+    }
+    // An intentionally background-only renderer is healthy without a paint.
+    // Reconciliation and native browser work must run before confirming it.
+    if registry.lock().unwrap().is_empty() { confirm_runtime_health(); }
+    Ok(())
+}
+
+pub(super) unsafe extern "system" fn window_proc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        WM_TIMER => {
+            thread_local! { static TICKS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) }; }
+            TICKS.with(|ticks| {
+                let next = ticks.get().wrapping_add(1); ticks.set(next);
+                if next % 5 == 0 {
+                    if let Err(error) = reconcile_windows() { warn!("reconcile windows: {error}"); }
+                }
+            });
+            super::web_runtime::tick();
+            0
+        }
         WM_COMMAND if (wparam & 0xffff) == 1601 => {
             let state = load_state();
             if state.demo {
@@ -200,7 +188,7 @@ unsafe extern "system" fn window_proc(
         WM_DESTROY => {
             remove_camera_pipelines(hwnd);
             remove_webviews(hwnd);
-            unsafe { PostQuitMessage(0) };
+            if let Some(windows) = WINDOWS.get() { windows.lock().unwrap().remove(&hwnd); }
             0
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
@@ -333,6 +321,9 @@ struct WebCellSpec {
     url: Option<String>,
     html: Option<String>,
     local_storage: Option<HashMap<String, String>>,
+    cell: Option<BundleCell>,
+    layout: String,
+    display: String,
 }
 
 fn web_cell_key(hwnd: HWND, layout: &str, bundle: &str, view: &str, content: &str, server: &str) -> String {
@@ -359,7 +350,10 @@ pub(super) fn sync_webviews(
         let view_id = cell.view_id.clone().unwrap_or_else(|| index.to_string());
         if cell.content_type == "web" || cell.content_type == "html" {
             // Overlay/bundle changes must not reload an unrelated web page.
-            let content = crate::core::layout::web_content_key(cell);
+            let mut resolved = cell.clone();
+            resolve_web_secrets(&mut resolved, state.encrypt_key.as_deref());
+            let display = resolved_display_id(hwnd).unwrap_or_default();
+            let content = crate::core::smart_url::web_cell_key(&display, &layout.id, &resolved);
             specs.push(WebCellSpec {
                 overlay: false,
                 key: web_cell_key(hwnd, &layout.id, &content, &view_id, &cell.content_type, &state.server_url),
@@ -367,6 +361,7 @@ pub(super) fn sync_webviews(
                 url: cell.web_url.as_deref().and_then(|url| resolve_web_url(url, &state.server_url)),
                 html: cell.html_content.clone(),
                 local_storage: cell.local_storage.clone(),
+                cell: Some(resolved), layout: layout.id.clone(), display,
             });
         }
     }
@@ -379,6 +374,7 @@ pub(super) fn sync_webviews(
                 key: web_cell_key(hwnd, &layout.id, html, &view_id, "overlay", &state.server_url),
                 bounds: web_rect(cell_rect(canvas, cols, rows, cell)),
                 url: None, html: Some(html.clone()), local_storage: None,
+                cell: None, layout: layout.id.clone(), display: resolved_display_id(hwnd).unwrap_or_default(),
             });
         }
     }
@@ -386,10 +382,10 @@ pub(super) fn sync_webviews(
 
     for spec in specs {
         let exists = WEBVIEWS.with(|views| {
-            let views = views.borrow();
-            if let Some(view) = views.get(&spec.key) {
+            let mut views = views.borrow_mut();
+            if let Some(view) = views.get_mut(&spec.key) {
                 let _ = view.set_bounds(spec.bounds);
-                let _ = view.set_visible(true);
+                view.show(true);
                 if spec.overlay { raise_overlay(view); }
                 true
             } else {
@@ -430,10 +426,33 @@ pub(super) fn sync_webviews(
     }
 
     let prefix = format!("{hwnd}:");
+    let mut valid = HashSet::new();
+    if let Some(bundle) = load_bundle() {
+        let display = resolved_display_id(hwnd).unwrap_or_default();
+        if let Some(assigned) = bundle.displays.iter().find(|d| d.id == display) {
+            for cached_layout in &assigned.layouts {
+                for (index, cell) in cached_layout.cells.iter().enumerate() {
+                    let view_id = cell.view_id.clone().unwrap_or_else(|| index.to_string());
+                    if matches!(cell.content_type.as_str(), "web" | "html") {
+                        let mut resolved = cell.clone();
+                        resolve_web_secrets(&mut resolved, state.encrypt_key.as_deref());
+                        let content = crate::core::smart_url::web_cell_key(&display, &cached_layout.id, &resolved);
+                        valid.insert(web_cell_key(hwnd, &cached_layout.id, &content, &view_id, &cell.content_type, &state.server_url));
+                    }
+                    if let Some(html) = &cell.overlay_html {
+                        valid.insert(web_cell_key(hwnd, &cached_layout.id, html, &view_id, "overlay", &state.server_url));
+                    }
+                }
+            }
+        }
+    }
     WEBVIEWS.with(|views| {
-        views
-            .borrow_mut()
-            .retain(|key, _| !key.starts_with(&prefix) || wanted.contains(key));
+        views.borrow_mut().retain(|key, entry| {
+            if !key.starts_with(&prefix) { return true; }
+            let active = wanted.contains(key);
+            entry.show(active);
+            active || valid.contains(key)
+        });
     });
     WEBVIEW_FAILURES.with(|failures| {
         failures
@@ -452,14 +471,22 @@ fn raise_overlay(view: &WebView) {
     }
 }
 
-fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result<WebView, String> {
+fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result<super::web_runtime::Entry, String> {
     let script = initialization_script(spec.local_storage.as_ref());
 
     WEB_CONTEXT.with(|context| {
         let mut context = context
             .try_borrow_mut()
             .map_err(|_| "WebView2 initialization already in progress".to_string())?;
+        let events: super::web_runtime::Events = Arc::new(Mutex::new(Vec::new()));
+        let page_events = events.clone();
         let mut builder = WebViewBuilder::new_with_web_context(&mut context)
+            .with_on_page_load_handler(move |event, _| {
+                page_events.lock().unwrap().push(match event {
+                    wry::PageLoadEvent::Started => super::web_runtime::Event::Loading,
+                    wry::PageLoadEvent::Finished => super::web_runtime::Event::Loaded,
+                });
+            })
             .with_bounds(spec.bounds)
             .with_transparent(spec.overlay)
             .with_initialization_script(script)
@@ -504,8 +531,19 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
             view.load_url_with_headers(url, headers)
                 .map_err(|error| error.to_string())?;
         }
-        Ok(view)
+        Ok(super::web_runtime::Entry::new(view, events, spec.cell.as_ref(), &spec.layout, &spec.display, state))
     })
+}
+
+fn resolve_web_secrets(cell: &mut BundleCell, key: Option<&str>) {
+    let auth_steps = cell.smart_url.iter_mut().flat_map(|config| &mut config.steps);
+    let action_steps = cell.web_actions.iter_mut().flat_map(|config| config.on_load.iter_mut().chain(config.groups.values_mut().flatten()));
+    for step in auth_steps.chain(action_steps) {
+        if step.value.is_none() {
+            step.value = step.value_encrypted.as_deref().and_then(|value| key.and_then(|key| decrypt_camera_password(value, key)));
+        }
+        step.value_encrypted = None;
+    }
 }
 
 pub(super) fn initialization_script(local_storage: Option<&HashMap<String, String>>) -> String {
@@ -1160,6 +1198,21 @@ mod origin_cache_tests {
     }
 
     #[test]
+    fn disabled_first_display_does_not_steal_the_remaining_window() {
+        let bundle: KioskBundle = serde_json::from_value(serde_json::json!({
+            "kiosk_id":"desktop", "kiosk_name":"Desktop", "version":"1", "cameras":[],
+            "displays":[{"id":"second", "physical_index":1, "name":"Renamed monitor",
+                "width_px":1920,"height_px":1080,"idle_timeout_seconds":0,"sleep_timeout_seconds":0,"layouts":[]}]
+        })).unwrap();
+        let mut report = DisplayReport {index:0,name:"DISPLAY1".into(),width_px:1920,height_px:1080,power_state:"awake".into()};
+        assert!(!display_wanted(Some(&bundle), &WindowsPolicy::default(), &report));
+        report.index = 1; report.name = "DISPLAY2".into();
+        assert!(display_wanted(Some(&bundle), &WindowsPolicy::default(), &report));
+        let mut policy = WindowsPolicy::default(); policy.displays.mode = "selected".into();
+        assert!(!display_wanted(Some(&bundle), &policy, &report));
+    }
+
+    #[test]
     fn migration_invalidates_existing_web_and_html_views_without_a_bundle_change() {
         for content in ["web", "html"] {
             let old = web_cell_key(7, "layout", "cached-v1", "view", content, "https://frame.betterportal.net");
@@ -1176,7 +1229,7 @@ mod origin_cache_tests {
     }
 }
 
-// Confirmation depends on a painted local window, never network or enrollment.
+// Confirm either a painted window or a successfully reconciled background renderer.
 fn confirm_runtime_health() {
     static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();

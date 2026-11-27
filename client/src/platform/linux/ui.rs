@@ -1650,6 +1650,19 @@ fn can_preserve_display(state: &DisplayState, previous: &KioskBundle, next: &Kio
     )
 }
 
+fn current_output_index(name: &str, names: &[String]) -> Option<usize> {
+    let normalize = |name: &str| name.rsplit(": ").next().unwrap_or(name).replace("HDMI-A-", "HDMI-");
+    names.iter().position(|native| normalize(native) == normalize(name))
+}
+
+fn assigned_monitor<'a>(display: &crate::bundle::BundleDisplayWithLayouts, monitors: &'a [gtk::gdk::Monitor], native: &[String], legacy_index: usize) -> Option<&'a gtk::gdk::Monitor> {
+    let current = current_output_index(&display.name, native);
+    if !native.is_empty() && current.is_none() { return None; }
+    let names: Vec<_> = monitors.iter().map(|monitor| monitor.connector().map(|name| name.to_string()).unwrap_or_default()).collect();
+    current_output_index(&display.name, &names).and_then(|index| monitors.get(index))
+        .or_else(|| monitors.get(current.unwrap_or_else(|| display.physical_index.unwrap_or(legacy_index))))
+}
+
 fn reconcile_display_monitor(window: &ApplicationWindow, monitor: Option<&gtk::gdk::Monitor>) {
     let Some(monitor) = monitor else { return; };
     let current = window.surface().and_then(|surface| WidgetExt::display(window).monitor_at_surface(&surface));
@@ -1691,7 +1704,12 @@ fn render_bundle(
     gpio::start_workers(&bundle.gpio_bindings, server_url, kiosk_key);
 
     // Collect camera IDs actually referenced in layout cells.
-    let displays = bundle.normalized_displays();
+    let gdk_monitors: Vec<gtk::gdk::Monitor> = WidgetExt::display(pairing_window)
+        .monitors().iter::<gtk::gdk::Monitor>().flatten().collect();
+    let native_names: Vec<_> = query_displays().into_iter().map(|(name, _, _)| name).collect();
+    let displays: Vec<_> = bundle.normalized_displays().into_iter().enumerate()
+        .filter(|(index, display)| native_names.is_empty() || assigned_monitor(display, &gdk_monitors, &native_names, *index).is_some())
+        .map(|(_, display)| display).collect();
     let mut valid_webs = std::collections::HashSet::new();
     for display in &displays {
         for layout in &display.layouts {
@@ -1726,17 +1744,7 @@ fn render_bundle(
     // current. Invalidate changed cameras before ensure_warm can reuse them.
     let reusable_cameras = crate::core::layout::unchanged_camera_ids(previous_comparable.as_ref(), &comparable);
     purge_obsolete_cameras(&reusable_cameras);
-    // Match GDK monitors to bundle displays by index. Bundle display 0 → GDK
-    // monitor 0, etc. v1 simple ordering — re-binding will land if/when the
-    // admin UI exposes a mapping. Falls back to overlapping windows on a
-    // single physical screen if the kiosk has fewer monitors than bundle
-    // displays (rare on Pi5).
-    let gdk_monitors: Vec<gtk::gdk::Monitor> = WidgetExt::display(pairing_window)
-        .monitors()
-        .iter::<gtk::gdk::Monitor>()
-        .flatten()
-        .collect();
-
+    // Resolve current connector identity before using legacy inventory indexes.
     // Tear down any previous per-display windows we no longer need.
     let keep_ids: std::collections::HashSet<&str> =
         displays.iter().map(|d| d.id.as_str()).collect();
@@ -1768,7 +1776,7 @@ fn render_bundle(
         recompute_global_state();
         mark_kiosk_healthy();
         if pairing_window.is_visible() { confirm_rendered_app(pairing_window); }
-        else { firmware::mark_firmware_applied(); }
+        else if bundle.normalized_displays().is_empty() { firmware::mark_firmware_applied(); }
         return;
     }
 
@@ -1783,7 +1791,7 @@ fn render_bundle(
         let existing = DISPLAYS.with(|ds| ds.borrow_mut().remove(&bd.id));
         if unchanged_displays.contains(&bd.id) {
             if let Some(state) = existing {
-                reconcile_display_monitor(&state.window, gdk_monitors.get(bd.physical_index.unwrap_or(i)));
+                reconcile_display_monitor(&state.window, assigned_monitor(bd, &gdk_monitors, &native_names, i));
                 if let Some(content) = state.content_overlay.child() {
                     refresh_empty_display_reference(&content, &bundle, Some(bd));
                 }
@@ -1848,7 +1856,7 @@ fn render_bundle(
                 (w, false, Instant::now(), None, None, None)
             }
         };
-        reconcile_display_monitor(&window, gdk_monitors.get(bd.physical_index.unwrap_or(i)));
+        reconcile_display_monitor(&window, assigned_monitor(bd, &gdk_monitors, &native_names, i));
         let content_overlay = existing_overlay.unwrap_or_else(|| {
             let ov = gtk::Overlay::new();
             ov.set_vexpand(true);
@@ -3772,6 +3780,14 @@ pub fn test_overlay_refresh() {
 
 #[cfg(test)]
 mod display_tests {
+    #[test]
+    fn connector_identity_survives_a_removed_lower_monitor() {
+        let connected = vec!["DP-2".to_string()];
+        assert_eq!(super::current_output_index("Kiosk: DP-2", &connected), Some(0));
+        assert_eq!(super::current_output_index("HDMI-A-1", &connected), None);
+        assert_eq!(super::current_output_index("HDMI-A-1", &["HDMI-1".into()]), Some(0));
+    }
+
     #[test]
     #[ignore = "requires a graphical session; CI runs with xvfb-run"]
     fn desktop_disabled_windows_close_and_restore() {

@@ -57,6 +57,11 @@ fn display_wanted(bundle: Option<&KioskBundle>, policy: &WindowsPolicy, display:
     })
 }
 
+fn background_health_allowed(bundle: Option<&KioskBundle>, policy: &WindowsPolicy) -> bool {
+    bundle.is_some_and(|bundle| bundle.normalized_displays().is_empty())
+        || (policy.displays.mode == "selected" && policy.displays.selected_display_names.is_empty())
+}
+
 pub(super) fn reconcile_windows() -> Result<(), String> {
     let bundle = load_bundle();
     let policy = load_policy();
@@ -96,7 +101,9 @@ pub(super) fn reconcile_windows() -> Result<(), String> {
     }
     // An intentionally background-only renderer is healthy without a paint.
     // Reconciliation and native browser work must run before confirming it.
-    if registry.lock().unwrap().is_empty() { confirm_runtime_health(); }
+    if registry.lock().unwrap().is_empty() && background_health_allowed(bundle.as_ref(), &policy) {
+        confirm_runtime_health();
+    }
     Ok(())
 }
 
@@ -1208,6 +1215,13 @@ mod origin_cache_tests {
         })).unwrap();
         let mut report = DisplayReport {index:0,name:"DISPLAY1".into(),width_px:1920,height_px:1080,power_state:"awake".into()};
         assert!(!display_wanted(Some(&bundle), &WindowsPolicy::default(), &report));
+        assert!(!background_health_allowed(Some(&bundle), &WindowsPolicy::default()), "a missing assigned display cannot confirm update health");
+        let mut empty = bundle.clone(); empty.displays.clear();
+        assert!(background_health_allowed(Some(&empty), &WindowsPolicy::default()));
+        let mut excluded = WindowsPolicy::default(); excluded.displays.mode = "selected".into();
+        assert!(background_health_allowed(Some(&bundle), &excluded));
+        excluded.displays.selected_display_names.push("Disconnected monitor".into());
+        assert!(!background_health_allowed(Some(&bundle), &excluded));
         report.index = 1; report.name = "DISPLAY2".into();
         assert!(display_wanted(Some(&bundle), &WindowsPolicy::default(), &report));
         let mut policy = WindowsPolicy::default(); policy.displays.mode = "selected".into();

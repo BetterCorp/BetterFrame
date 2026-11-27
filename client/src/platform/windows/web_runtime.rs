@@ -323,7 +323,13 @@ impl Entry {
                 });
             // Loading, remapping and action completion explicitly clear the
             // last check, even when periodic observation is disabled.
-            if self.last_check.is_none() || periodic_due {
+            let action_login = self.manual.as_ref().is_some_and(|s| s.request.is_none())
+                && self
+                    .config
+                    .as_ref()
+                    .and_then(|c| c.login_detect_url.as_deref())
+                    .is_some_and(|prefix| login_url_matches(&url, prefix));
+            if self.last_check.is_none() || periodic_due || action_login {
                 self.last_check = Some(Instant::now());
                 if let Some(s) = self.auth.as_mut() {
                     s.progress.observe_url(
@@ -357,7 +363,10 @@ impl Entry {
         }
         let auth_ready = self.ready(&url);
         if let Some(s) = self.manual.as_mut() {
-            if self.loaded && !self.failed && (s.request.is_some() || auth_ready) {
+            if self.loaded
+                && !self.failed
+                && (s.request.is_some() || auth_ready || s.flight.is_some())
+            {
                 drive(&self.view, &self.events, s, &self.server, &self.key, now);
             }
             if s.progress.is_complete() || s.progress.has_failed() {

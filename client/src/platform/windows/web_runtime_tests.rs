@@ -229,7 +229,7 @@ fn windows_browser_and_visibility_regression() {
             {"type":"click","selector":"#login"},{"type":"wait_for","selector":"#done"},
             {"type":"navigate","url":"#ready"}
         ]);
-        let smart_url = serde_json::json!({"login_detect_url": if i == 0 { "/auth".to_string() } else { format!("{}/auth",fixture.root) }, "session_check_interval_ms":200,"steps":steps});
+        let smart_url = serde_json::json!({"login_detect_url": if i == 0 { "/auth".to_string() } else { format!("{}/auth",fixture.root) }, "session_check_interval_ms":if i==0{200}else{0},"steps":steps});
         let web_actions = serde_json::json!({"revision":"r1","on_load":[
             {"type":"javascript","script":format!("const key='renew-{i}'; if(!sessionStorage.getItem(key)){{sessionStorage.setItem(key,'1'); history.pushState({{}},'', '/auth/renew');}}")},
             {"type":"wait_for","selector":"#done"},

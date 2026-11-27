@@ -53,9 +53,12 @@ pub fn resolve_physical_display<'a>(
     let suffix = format!(": {native_name}");
     displays
         .iter()
-        .find(|display| display.name == native_name || display.name.ends_with(&suffix))
-        .or_else(|| displays.iter().find(|display| display.physical_index == Some(native_index)))
-        .or_else(|| displays.iter().all(|display| display.physical_index.is_none())
+        .find(|display| {
+            let name=display.native_name.as_deref().unwrap_or(&display.name);
+            name == native_name || name.ends_with(&suffix)
+        })
+        .or_else(|| displays.iter().find(|display| display.native_name.is_none() && display.physical_index == Some(native_index)))
+        .or_else(|| displays.iter().all(|display| display.native_name.is_none() && display.physical_index.is_none())
             .then(|| displays.get(native_index)).flatten())
 }
 
@@ -174,6 +177,10 @@ mod tests {
         ])).unwrap();
         assert!(super::resolve_physical_display(&displays,"First",0).is_none());
         assert_eq!(super::resolve_physical_display(&displays,"Renamed",1).unwrap().id,"second");
+        displays[0].native_name=Some("DP-2".into());
+        assert!(super::resolve_physical_display(&displays,"Other",1).is_none());
+        assert_eq!(super::resolve_physical_display(&displays,"DP-2",0).unwrap().id,"second");
+        displays[0].native_name=None;
         displays[0].physical_index=None;
         assert_eq!(super::resolve_physical_display(&displays,"Legacy",0).unwrap().id,"second");
     }

@@ -668,16 +668,16 @@ function displayBaseName(displayName: string): string {
   return idx >= 0 ? displayName.slice(idx + 2) : displayName;
 }
 
-export function findReportedDisplayMatch<T extends { id: string; name: string; index: number }>(
+export function findReportedDisplayMatch<T extends { id: string; name: string; index: number; native_name?: string | null }>(
   existing: T[],
   seenDisplayIds: ReadonlySet<string>,
   reportedName: string,
   reportedIndex: number,
 ): T | undefined {
   return existing.find((display) =>
-    !seenDisplayIds.has(display.id) && displayBaseName(display.name) === reportedName
+    !seenDisplayIds.has(display.id) && (display.native_name ?? displayBaseName(display.name)) === reportedName
   ) ?? existing.find((display) =>
-    !seenDisplayIds.has(display.id) && display.index === reportedIndex
+    !seenDisplayIds.has(display.id) && !display.native_name && display.index === reportedIndex
   );
 }
 
@@ -1197,6 +1197,7 @@ export function registerKioskRoutes(
     }
 
     // Sync displays reported by the kiosk
+    let displayBundleChanged = false;
     if (Array.isArray(body.displays)) {
       const displaySpan = event.context.obs?.startSpan("heartbeat-display-sync", {
         "kiosk.id": String(kiosk.id),
@@ -1224,6 +1225,8 @@ export function registerKioskRoutes(
         const acceptsPower = !enforcePowerOrder || (validPowerState && heartbeatPowerSampleAllowed(kiosk.id, sample));
         const match = findReportedDisplayMatch(existing, seenDisplayIds, reported.name, reportedIndex);
         if (match) {
+          const nextName = displayBaseName(match.name) === (match.native_name ?? reported.name) ? displayName : match.name;
+          if (match.native_name !== reported.name || match.index !== reportedIndex || match.name !== nextName) displayBundleChanged = true;
           seenDisplayIds.add(match.id);
           const powerState = !acceptsPower ? null : reported.power_state === "awake" || reported.power_state === "standby"
             ? reported.power_state
@@ -1231,14 +1234,16 @@ export function registerKioskRoutes(
               ? "unknown"
               : null;
           if (
-            match.name !== displayName
+            match.name !== nextName
+            || match.native_name !== reported.name
             || match.index !== reportedIndex
             || match.width_px !== reported.width_px
             || match.height_px !== reported.height_px
             || (powerState != null && match.actual_power_state !== powerState)
           ) {
             await repo.updateDisplay(match.id, {
-              name: displayName,
+              name: nextName,
+              native_name: reported.name,
               index: reportedIndex,
               width_px: reported.width_px,
               height_px: reported.height_px,
@@ -1267,12 +1272,11 @@ export function registerKioskRoutes(
             : reported.power_state === "unknown"
               ? "unknown"
               : null;
-          if (powerState != null) {
-            await repo.updateDisplay(created.id, {
-              actual_power_state: powerState,
-              actual_power_state_at: new Date().toISOString(),
-            } as any);
-          }
+          await repo.updateDisplay(created.id, {
+            native_name: reported.name,
+            ...(powerState != null ? { actual_power_state: powerState, actual_power_state_at: new Date().toISOString() } : {}),
+          } as any);
+          displayBundleChanged = true;
           seenDisplayIds.add(created.id);
           createdCount += 1;
           displaySpan?.log.info("created display {id} {name} at index {index}", {
@@ -1287,6 +1291,7 @@ export function registerKioskRoutes(
         if (seenDisplayIds.has(display.id)) continue;
         if (await repo.deleteDisplayIfUnused(display.id)) {
           removedCount += 1;
+          displayBundleChanged = true;
           displaySpan?.log.info("removed stale display {id} {name}", {
             id: display.id,
             name: display.name,
@@ -1311,6 +1316,8 @@ export function registerKioskRoutes(
         throw cause;
       }
     }
+
+    if (!viewer && displayBundleChanged) getCoordinator().notifyKioskBundleChanged(kiosk.id);
 
     // Re-read kiosk so we see the freshly-persisted applied_version above when
     // computing whether the server still has a newer config to deliver.

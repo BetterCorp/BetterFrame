@@ -136,6 +136,7 @@ export function rowToSetupState(r: Row): SetupState {
 
 export function rowToDisplay(r: Row): Display {
   return {
+    native_name: sn(r["native_name"]),
     id: s(r["id"]),
     name: s(r["name"]),
     index: n(r["index"]),

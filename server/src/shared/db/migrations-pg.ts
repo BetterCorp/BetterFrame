@@ -1146,4 +1146,7 @@ export const TENANT_MIGRATIONS: readonly string[] = [
   `UPDATE layout_cells SET fit = 'contain'
     WHERE fit <> 'contain' AND layout_id IN (SELECT layout_id FROM simple_vms_groups)`,
 
+  // Device connector identity is independent of user-editable display titles.
+  `ALTER TABLE displays ADD COLUMN IF NOT EXISTS native_name TEXT`,
+
 ];

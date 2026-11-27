@@ -216,6 +216,7 @@ export interface SetupState {
 }
 
 export interface Display {
+  native_name?: string | null;
   id: string;
   name: string;
   index: number; // unique

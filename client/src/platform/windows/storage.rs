@@ -559,11 +559,13 @@ fn trusted_cas_from_bundle(bytes: &[u8]) -> Result<Vec<crate::bundle::TrustedCa>
 }
 
 fn deserialize_cached_bundle(bytes: &[u8]) -> Option<KioskBundle> {
-    serde_json::from_slice(bytes).ok().or_else(|| {
-        serde_json::from_slice::<LegacyWindowsBundle>(bytes)
-            .ok()
-            .map(migrate_legacy_bundle)
-    })
+    let mut bundle = serde_json::from_slice::<KioskBundle>(bytes).ok().or_else(|| {
+        serde_json::from_slice::<LegacyWindowsBundle>(bytes).ok().map(migrate_legacy_bundle)
+    })?;
+    if bundle.displays.is_empty() && bundle.display.is_some() {
+        bundle.displays = bundle.normalized_displays();
+    }
+    Some(bundle)
 }
 
 fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
@@ -616,6 +618,7 @@ fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
                 })
                 .collect();
             crate::bundle::BundleDisplayWithLayouts {
+                native_name: None,
                 physical_index: None,
                 id: display.id,
                 name: display.name,
@@ -696,6 +699,16 @@ fn migrate_legacy_bundle(legacy: LegacyWindowsBundle) -> KioskBundle {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn single_display_core_cache_is_normalized_but_empty_assignments_stay_empty() {
+        let mut raw=serde_json::json!({"kiosk_id":"desktop","kiosk_name":"Desktop","version":"1","cameras":[],
+            "display":{"id":"display","name":"Screen","width_px":800,"height_px":600,"idle_timeout_seconds":0,"sleep_timeout_seconds":0},"layouts":[]});
+        let legacy=super::deserialize_cached_bundle(&serde_json::to_vec(&raw).unwrap()).unwrap();
+        assert_eq!(legacy.displays.len(),1);
+        raw["display"]=serde_json::Value::Null;
+        assert!(super::deserialize_cached_bundle(&serde_json::to_vec(&raw).unwrap()).unwrap().displays.is_empty());
+    }
+
     use super::*;
 
     // Invoked in a separate test process by the race regression below. Normal

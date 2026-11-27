@@ -100,6 +100,7 @@ impl KioskBundle {
         }
         if let Some(d) = &self.display {
             return vec![BundleDisplayWithLayouts {
+                native_name: None,
                 physical_index: None,
                 id: d.id.clone(),
                 name: d.name.clone(),
@@ -134,6 +135,8 @@ pub struct BundleDisplay {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleDisplayWithLayouts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_name: Option<String>,
     #[serde(default)]
     pub physical_index: Option<usize>,
     #[serde(deserialize_with = "de_flexible_id")]

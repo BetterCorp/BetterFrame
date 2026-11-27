@@ -154,6 +154,7 @@ export interface BundleDisplay {
 
 export interface BundleDisplayWithLayouts extends BundleDisplay {
   physical_index?: number;
+  native_name?: string;
   layouts: BundleLayout[];
 }
 
@@ -559,6 +560,7 @@ export async function generateBundle(
   for (const display of displays) {
     bundleDisplays.push({
       physical_index: display.index,
+      native_name: display.native_name ?? undefined,
       id: display.id,
       name: stripDisplayKioskPrefix(display.name, kiosk.name),
       width_px: display.width_px,

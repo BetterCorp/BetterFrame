@@ -109,7 +109,9 @@ config refresh, disabled/re-enabled windows and fresh update health with no visi
 Disabling a kiosk closes its display windows while preserving enrollment, cached
 disabled state, background heartbeats and the independent updater. Disabling a single
 display closes only that window. Re-enabling restores windows on their original
-physical displays. Heartbeats report hardware without changing admin enable settings.
+physical displays. Hardware connector identity is stored separately from editable display
+titles, and Linux reconciles cached assignments when monitors reconnect. Heartbeats
+report hardware without changing admin enable settings.
 The hidden message-only controller is never shown on the desktop or taskbar.
 
 ## Web authentication and block actions

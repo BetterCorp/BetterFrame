@@ -234,6 +234,10 @@ fn activate(app: &Application) {
     if !background { pairing_window.present(); }
 
     let (tx, rx) = mpsc::channel::<WorkerMsg>();
+    let topology_tx=tx.clone();
+    WidgetExt::display(&pairing_window).monitors().connect_items_changed(move |_,_,_,_| {
+        let _=topology_tx.send(WorkerMsg::ReconcileDisplays);
+    });
 
     let recovery_tx = tx.clone();
     std::thread::spawn(move || loop {
@@ -652,6 +656,13 @@ fn activate(app: &Application) {
     gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         while let Ok(msg) = rx.try_recv() {
             match msg {
+                WorkerMsg::ReconcileDisplays => {
+                    let bundle=CURRENT_BUNDLE.with(|bundle|bundle.borrow().clone());
+                    let auth=CURRENT_AUTH.with(|auth|auth.borrow().clone());
+                    if let (Some(bundle),Some((server,key)))=(bundle,auth) {
+                        render_bundle(&app_clone,&pairing_window_clone,bundle,&server,&key);
+                    }
+                }
                 WorkerMsg::LocalApi(request) => local_api_command(request),
                 WorkerMsg::WebAction(request) => invoke_web_action(request),
                 WorkerMsg::StartupStatus(action) => {
@@ -705,6 +716,7 @@ fn activate(app: &Application) {
 }
 
 pub enum WorkerMsg {
+    ReconcileDisplays,
     LocalApi(crate::local_server::api::UiCommand),
     WebAction(crate::core::commands::WebActionRequest),
     StartupStatus(String),
@@ -1663,12 +1675,24 @@ fn current_output_index(name: &str, names: &[String]) -> Option<usize> {
     names.iter().position(|native| normalize(native) == normalize(name))
 }
 
+fn assigned_output(display: &crate::bundle::BundleDisplayWithLayouts, native: &[String], legacy_index: usize) -> Option<String> {
+    let name=display.native_name.as_deref().unwrap_or(&display.name);
+    if let Some(index)=current_output_index(name,native) { return native.get(index).cloned(); }
+    let connector_suffix=name.rsplit('-').next().is_some_and(|part|!part.is_empty() && part.bytes().all(|byte|byte.is_ascii_digit()));
+    let old_connector=display.native_name.is_some() || (connector_suffix && ["HDMI-","DP-","eDP-","DVI-","VGA-","LVDS-","DSI-","Virtual-"].iter().any(|prefix| name.starts_with(prefix)));
+    if old_connector { return None; }
+    native.get(display.physical_index.unwrap_or(legacy_index)).cloned()
+}
+
 fn assigned_monitor<'a>(display: &crate::bundle::BundleDisplayWithLayouts, monitors: &'a [gtk::gdk::Monitor], native: &[String], legacy_index: usize) -> Option<&'a gtk::gdk::Monitor> {
-    let current = current_output_index(&display.name, native);
-    if !native.is_empty() && current.is_none() { return None; }
     let names: Vec<_> = monitors.iter().map(|monitor| monitor.connector().map(|name| name.to_string()).unwrap_or_default()).collect();
-    current_output_index(&display.name, &names).and_then(|index| monitors.get(index))
-        .or_else(|| monitors.get(current.unwrap_or_else(|| display.physical_index.unwrap_or(legacy_index))))
+    if native.is_empty() {
+        return current_output_index(display.native_name.as_deref().unwrap_or(&display.name), &names).and_then(|index| monitors.get(index))
+            .or_else(||monitors.get(display.physical_index.unwrap_or(legacy_index)));
+    }
+    let target=assigned_output(display,native,legacy_index)?;
+    current_output_index(&target,&names).and_then(|index|monitors.get(index))
+        .or_else(||names.iter().all(String::is_empty).then(||monitors.get(display.physical_index.unwrap_or(legacy_index))).flatten())
 }
 
 fn reconcile_display_monitor(window: &ApplicationWindow, monitor: Option<&gtk::gdk::Monitor>) {
@@ -3808,6 +3832,22 @@ mod display_tests {
     }
 
     #[test]
+    fn display_titles_and_gdk_order_do_not_override_hardware_identity() {
+        let mut display: crate::bundle::BundleDisplayWithLayouts=serde_json::from_value(serde_json::json!({
+            "id":"d","name":"Office display","physical_index":1,"width_px":800,"height_px":600,
+            "idle_timeout_seconds":0,"sleep_timeout_seconds":0,"layouts":[]})).unwrap();
+        let native=vec!["HDMI-A-1".into(),"DP-2".into()];
+        let target=super::assigned_output(&display,&native,0).unwrap();
+        assert_eq!(target,"DP-2");
+        assert_eq!(super::current_output_index(&target,&["DP-2".into(),"HDMI-1".into()]),Some(0));
+        display.native_name=Some("DP-2".into());display.physical_index=Some(0);
+        assert_eq!(super::assigned_output(&display,&native,0).as_deref(),Some("DP-2"));
+        assert_eq!(super::assigned_output(&display,&["HDMI-A-1".into()],0),None);
+        display.native_name=None;display.name="HDMI-A-1".into();
+        assert_eq!(super::assigned_output(&display,&["DP-2".into()],0),None);
+    }
+
+    #[test]
     #[ignore = "requires a graphical session; CI runs with xvfb-run"]
     fn desktop_disabled_windows_close_and_restore() {
         use super::*;
@@ -3838,6 +3878,14 @@ mod display_tests {
         bundle.displays.push(second);
         render_bundle_with_monitors(&app, &pairing, bundle.clone(), "http://127.0.0.1:1", "fixture", &[]);
         DISPLAYS.with(|d| assert!(d.borrow()["second"].window.is_visible()));
+        let connector=WidgetExt::display(&pairing).monitors().item(0).and_downcast::<gtk::gdk::Monitor>()
+            .and_then(|monitor|monitor.connector()).map(|name|name.to_string()).unwrap_or("fixture-output".into());
+        bundle.displays[0].native_name=Some(connector.clone());bundle.displays[0].physical_index=Some(0);
+        let missing=vec!["disconnected-output".into()];
+        render_bundle_with_monitors(&app,&pairing,bundle.clone(),"http://127.0.0.1:1","fixture",&missing);
+        assert!(DISPLAYS.with(|d|d.borrow().is_empty()));
+        render_bundle_with_monitors(&app,&pairing,bundle.clone(),"http://127.0.0.1:1","fixture",&[connector]);
+        DISPLAYS.with(|d|assert!(d.borrow()["second"].window.is_visible(), "reconnecting restores the cached assignment without a bundle edit"));
         bundle.displays.clear();
         render_bundle_with_monitors(&app, &pairing, bundle, "http://127.0.0.1:1", "fixture", &[]);
         pairing.close();

@@ -227,6 +227,10 @@ impl Entry {
         let now = self.started.elapsed();
         let events = std::mem::take(&mut *self.events.lock().unwrap());
         for event in events {
+            #[cfg(test)]
+            if self.cell == "block0" {
+                eprintln!("Browser event {event:?}; loaded={}, failed={}, document={:?}, awaiting={}, navigation_deadline={:?}, manual_flight={:?}", self.loaded, self.failed, self.document_id, self.awaiting_document, self.navigation_deadline.map(|d| d.saturating_duration_since(Instant::now())), self.manual.as_ref().and_then(|s| s.flight));
+            }
             match event {
                 Event::Navigating(target) => {
                     let fragment = self

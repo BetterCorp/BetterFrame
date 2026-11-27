@@ -480,7 +480,15 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
             .map_err(|_| "WebView2 initialization already in progress".to_string())?;
         let events: super::web_runtime::Events = Arc::new(Mutex::new(Vec::new()));
         let page_events = events.clone();
+        let navigation_events = events.clone();
+        let trusted_origin = spec.url.as_deref().filter(|url| same_origin(url, &state.server_url))
+            .filter(|_| state.kiosk_key.is_some()).map(|_| state.server_url.clone());
         let mut builder = WebViewBuilder::new_with_web_context(&mut context)
+            .with_navigation_handler(move |next| {
+                let allowed = trusted_origin.as_deref().is_none_or(|origin| same_origin(&next, origin));
+                if allowed { navigation_events.lock().unwrap().push(super::web_runtime::Event::Navigating(next)); }
+                allowed
+            })
             .with_on_page_load_handler(move |event, _| {
                 page_events.lock().unwrap().push(match event {
                     wry::PageLoadEvent::Started => super::web_runtime::Event::Loading,
@@ -500,17 +508,12 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
         if let Some(url) = &spec.url {
             if same_origin(url, &state.server_url) {
                 if let Some(key) = &state.kiosk_key {
-                    let server = reqwest::Url::parse(&state.server_url)
-                        .map_err(|error| error.to_string())?;
-                    let trusted_origin = server.origin().ascii_serialization();
                     let mut headers = wry::http::HeaderMap::new();
                     headers.insert(
                         wry::http::header::AUTHORIZATION,
                         wry::http::HeaderValue::from_str(&format!("Bearer {key}"))
                             .map_err(|error| error.to_string())?,
                     );
-                    builder = builder
-                        .with_navigation_handler(move |next| same_origin(&next, &trusted_origin));
                     authenticated_load = Some((url, headers));
                 } else {
                     builder = builder.with_url(url);

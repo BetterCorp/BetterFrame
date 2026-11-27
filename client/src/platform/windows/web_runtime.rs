@@ -10,10 +10,17 @@ use std::ops::Deref;
 #[derive(Debug)]
 pub(super) enum Event {
     Loading,
+    Navigating(String),
     Loaded,
-    Document(u64, Option<String>),
+    Document(u64, Option<Document>),
     Result(u64, u64, usize, bool),
 }
+#[derive(Debug, Deserialize)]
+pub(super) struct Document {
+    uri: String,
+    ready: String,
+}
+
 pub(super) type Events = Arc<Mutex<Vec<Event>>>;
 
 struct Sequence {
@@ -60,6 +67,7 @@ pub(super) struct Entry {
     loaded: bool,
     failed: bool,
     epoch: u64,
+    navigation_deadline: Option<Instant>,
     next_id: u64,
     started: Instant,
     last_check: Option<Instant>,
@@ -112,6 +120,7 @@ impl Entry {
             loaded: false,
             failed: false,
             epoch: 0,
+            navigation_deadline: None,
             next_id: 1,
             started: Instant::now(),
             last_check: None,
@@ -180,30 +189,57 @@ impl Entry {
         self.start(steps, Some(request));
         Ok(())
     }
+    fn load_started(&mut self, now: Duration) {
+        // Redirects invalidate document callbacks, but must not
+        // discard the accepted action's bounded navigation wait.
+        self.navigation_deadline = self
+            .navigation_deadline
+            .into_iter()
+            .chain(
+                self.auth
+                    .as_ref()
+                    .and_then(|s| s.flight.map(|(_, deadline, _)| deadline)),
+            )
+            .chain(
+                self.manual
+                    .as_ref()
+                    .and_then(|s| s.flight.map(|(_, deadline, _)| deadline)),
+            )
+            .min();
+        self.loaded = false;
+        self.failed = false;
+        self.epoch += 1;
+        self.settled = None;
+        if let Some(s) = self.auth.as_mut() {
+            s.navigation(now);
+        }
+        if let Some(s) = self.manual.as_mut() {
+            s.navigation(now);
+        }
+    }
     fn tick(&mut self) {
         let now = self.started.elapsed();
         let events = std::mem::take(&mut *self.events.lock().unwrap());
         for event in events {
             match event {
-                Event::Loading => {
-                    self.loaded = false;
-                    self.failed = false;
-                    self.epoch += 1;
-                    self.settled = None;
-                    if let Some(s) = self.auth.as_mut() {
-                        s.navigation(now);
-                    }
-                    if let Some(s) = self.manual.as_mut() {
-                        s.navigation(now);
+                Event::Loading => self.load_started(now),
+                Event::Navigating(target) => {
+                    let fragment = self
+                        .settled
+                        .as_ref()
+                        .is_some_and(|(source, _)| fragment_navigation(source, &target));
+                    if !fragment {
+                        self.load_started(now);
                     }
                 }
                 Event::Loaded => {
+                    self.epoch += 1; // Ignore probes from an earlier completed/canceled navigation.
                     let events = self.events.clone();
                     let epoch = self.epoch;
                     let result = self.view.evaluate_script_with_callback(
-                        "document.documentURI",
+                        "({uri:document.documentURI,ready:document.readyState})",
                         move |json| {
-                            let uri = serde_json::from_str::<String>(&json).ok();
+                            let uri = serde_json::from_str::<Document>(&json).ok();
                             events.lock().unwrap().push(Event::Document(epoch, uri));
                         },
                     );
@@ -211,11 +247,17 @@ impl Entry {
                         self.failed = true;
                     }
                 }
-                Event::Document(epoch, uri) if epoch == self.epoch => {
-                    self.failed = uri.is_none_or(|u| {
-                        u.starts_with("chrome-error:") || u.starts_with("edge-error:")
+                Event::Document(epoch, document) if epoch == self.epoch => {
+                    self.failed = document.as_ref().is_none_or(|d| {
+                        d.uri.starts_with("chrome-error:") || d.uri.starts_with("edge-error:")
                     });
-                    self.loaded = !self.failed;
+                    self.loaded = !self.failed
+                        && document.as_ref().is_some_and(|d| {
+                            d.ready == "complete" && self.view.url().is_ok_and(|url| url == d.uri)
+                        });
+                    if self.loaded || self.failed {
+                        self.navigation_deadline = None;
+                    }
                     self.last_check = None;
                 }
                 Event::Result(id, generation, index, success) => {
@@ -242,6 +284,15 @@ impl Entry {
                 }
                 _ => {}
             }
+        }
+        if self
+            .navigation_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.navigation_deadline = None;
+            self.loaded = false;
+            self.failed = true;
+            warn!(block = %self.cell, "web automation navigation timed out");
         }
         if self.failed {
             if let Some(s) = self.auth.as_mut() {
@@ -323,6 +374,19 @@ impl Entry {
             }
         }
     }
+}
+
+fn fragment_navigation(source: &str, target: &str) -> bool {
+    url::Url::parse(source)
+        .ok()
+        .zip(url::Url::parse(target).ok())
+        .is_some_and(|(source, target)| {
+            let mut from = source.clone();
+            let mut to = target.clone();
+            from.set_fragment(None);
+            to.set_fragment(None);
+            from == to && source.fragment() != target.fragment()
+        })
 }
 
 fn drive(

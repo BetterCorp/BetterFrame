@@ -23,6 +23,7 @@ impl Fixture {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let thread = std::thread::spawn(move || {
+            let mut suspended = Vec::new();
             while !stopped.load(Ordering::Relaxed) {
                 let Ok((mut stream, _)) = listener.accept() else {
                     std::thread::sleep(Duration::from_millis(5));
@@ -83,7 +84,15 @@ impl Fixture {
                         .push(serde_json::from_slice(&request[header_end..]).unwrap());
                 }
                 *received.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
+                if path == "/slow-done" {
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                if path == "/never" {
+                    suspended.push(stream);
+                    continue;
+                }
                 let (status, header, body) = match path.as_str() {
+                    "/hanging" => ("200 OK", "", "<img src='/never'>"),
                     "/start" => (
                         "302 Found",
                         "Location: /auth/authorize?state=unknown\r\n",
@@ -94,7 +103,7 @@ impl Fixture {
                         "",
                         r#"<div id=host></div><script>const root=document.querySelector('#host').attachShadow({mode:'open'}); root.innerHTML='<input id=username><button id=login>Login</button>';root.querySelector('#login').onclick=()=>{if(root.querySelector('#username').value==='person@example.test')location='/done';};</script>"#,
                     ),
-                    "/done" => ("200 OK", "", "<div id=done>Dashboard</div>"),
+                    "/done" | "/slow-done" => ("200 OK", "", "<div id=done>Dashboard</div>"),
                     _ => ("200 OK", "", "<div>Page</div>"),
                 };
                 let _ = write!(
@@ -222,7 +231,9 @@ fn windows_browser_and_visibility_regression() {
             {"type":"wait_for","selector":"#done"},
             {"type":"javascript","script":format!("fetch('/loaded-{i}')")}],"groups":{
             "action":[{"type":"javascript","script":"history.pushState({},'', '/auth/action');"},{"type":"wait","delay_ms":400},{"type":"navigate","url":"/done"}],
-            "interrupted":[{"type":"wait_for","selector":"#never","timeout_ms":10000}]
+            "interrupted":[{"type":"wait_for","selector":"#never","timeout_ms":10000}],
+            "hang":[{"type":"navigate","url":"/hanging"}],
+            "slow":[{"type":"javascript","script":"location='/slow-done'"},{"type":"wait_for","selector":"#done"}]
         }});
         serde_json::json!({"view_id":format!("block{i}"),"entity_id":"same-entity","row":0,"col":i,
             "row_span":1,"col_span":1,"content_type":"web","web_url":format!("{}/start",fixture.root),
@@ -316,6 +327,63 @@ fn windows_browser_and_visibility_regression() {
         false,
         "navigation cannot complete a document-owned wait"
     );
+    wait(|| entries(|e| e.ready(&e.url().unwrap_or_default()) && e.manual.is_none()));
+    WEBVIEWS.with(|views| {
+        views
+            .borrow_mut()
+            .values_mut()
+            .find(|e| e.cell == "block0")
+            .unwrap()
+            .invoke(request("hang"))
+            .unwrap()
+    });
+    wait(|| {
+        fixture.count("/never") == 1
+            && WEBVIEWS.with(|views| {
+                views
+                    .borrow()
+                    .values()
+                    .any(|e| e.cell == "block0" && !e.loaded && e.navigation_deadline.is_some())
+            })
+    });
+    WEBVIEWS.with(|views| {
+        let mut views = views.borrow_mut();
+        let entry = views.values_mut().find(|e| e.cell == "block0").unwrap();
+        assert!(
+            entry.manual.as_ref().unwrap().flight.is_none(),
+            "Started invalidates the old document callback"
+        );
+        assert!(
+            entry.navigation_deadline.unwrap() > Instant::now() + Duration::from_secs(20),
+            "the navigation deadline survives Started"
+        );
+        // Expire the retained native deadline while the actual resource is still pending.
+        entry.navigation_deadline = Some(Instant::now() - Duration::from_millis(1));
+    });
+    wait(|| fixture.count("/api/kiosk/web-actions/result") == 3);
+    assert_eq!(
+        fixture.results.lock().unwrap()[2]["ok"],
+        false,
+        "a hanging document reports failure instead of blocking every later action"
+    );
+    script("block0", "location='/done?recovered'");
+    wait(|| entries(|e| e.ready(&e.url().unwrap_or_default()) && e.manual.is_none()));
+    WEBVIEWS.with(|views| {
+        views
+            .borrow_mut()
+            .values_mut()
+            .find(|e| e.cell == "block0")
+            .unwrap()
+            .invoke(request("slow"))
+            .unwrap()
+    });
+    wait(|| fixture.count("/api/kiosk/web-actions/result") == 4);
+    assert_eq!(
+        fixture.results.lock().unwrap()[3]["ok"],
+        true,
+        "script navigation waits for slow response headers before continuing"
+    );
+    wait(|| entries(|e| e.ready(&e.url().unwrap_or_default()) && e.manual.is_none()));
     // A cached view sees an SPA auth redirect without a page-load event.
     script(
         "block0",

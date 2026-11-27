@@ -1198,7 +1198,8 @@ mod tests {
         ]);
         let script = initialization_script(Some(&values));
 
-        assert!(script.starts_with("try{document.documentElement"));
+        assert!(script.starts_with("window.__betterframe_document_id="));
+        assert!(script.contains("try{document.documentElement.style.cursor='none';}catch(_e){}"));
         assert!(script.contains("localStorage.setItem(\"screenId\",\"101\")"));
         assert!(script.contains("localStorage.setItem(\"screenToken\",\"token\")"));
     }

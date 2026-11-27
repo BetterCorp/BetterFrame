@@ -259,8 +259,13 @@ fn handoff() -> Result<(), String> {
 pub fn apply() -> Result<(), String> {
     os::require_system()?;
     let result = apply_inner();
-    if let Err(error) = os::start_service() {
-        os::log(&error);
+    // Failure recovery may need to restore the service even before MSI ran.
+    // Successful paths restart it before removing the transaction journal, so
+    // an operator stop after completion cannot race a late helper restart.
+    if result.is_err() {
+        if let Err(error) = os::start_service() {
+            os::log(&error);
+        }
     }
     result
 }
@@ -288,11 +293,6 @@ fn apply_inner() -> Result<(), String> {
             rollback(&mut pending, &previous)
         })
     };
-    // MSI stops and recreates the service. Also restart it after a failed or
-    // rolled-back transaction so future published fixes remain reachable.
-    if let Err(error) = os::start_service() {
-        os::log(&error);
-    }
     outcome
 }
 
@@ -331,6 +331,7 @@ fn install(pending: &mut Pending, key: &str) -> Result<(), String> {
     write("pending.json", pending)?;
     for _ in 0..150 {
         if healthy(pending) {
+            os::start_service()?;
             fs::remove_file(os::root().join("pending.json")).map_err(|e| e.to_string())?;
             report(&pending.candidate.version, None);
             os::log("update installed and display confirmed healthy");
@@ -357,6 +358,7 @@ fn rollback(pending: &mut Pending, previous: &Path) -> Result<(), String> {
     for session in pending.sessions.iter().chain(running.iter()) {
         let _ = os::launch_client(*session);
     }
+    os::start_service()?;
     fs::remove_file(os::root().join("pending.json")).map_err(|e| e.to_string())?;
     os::log("previous release restored; failed version remains subject to retry limit");
     Ok(())

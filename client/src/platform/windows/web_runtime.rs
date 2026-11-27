@@ -9,7 +9,6 @@ use std::ops::Deref;
 
 #[derive(Debug)]
 pub(super) enum Event {
-    Loading,
     Navigating(String),
     Loaded,
     Document(u64, Option<Document>),
@@ -17,6 +16,8 @@ pub(super) enum Event {
 }
 #[derive(Debug, Deserialize)]
 pub(super) struct Document {
+    #[serde(default)]
+    id: Option<String>,
     uri: String,
     ready: String,
 }
@@ -67,6 +68,8 @@ pub(super) struct Entry {
     loaded: bool,
     failed: bool,
     epoch: u64,
+    document_id: Option<String>,
+    awaiting_document: bool,
     navigation_deadline: Option<Instant>,
     next_id: u64,
     started: Instant,
@@ -120,6 +123,8 @@ impl Entry {
             loaded: false,
             failed: false,
             epoch: 0,
+            document_id: None,
+            awaiting_document: true,
             navigation_deadline: None,
             next_id: 1,
             started: Instant::now(),
@@ -207,6 +212,7 @@ impl Entry {
             )
             .min();
         self.loaded = false;
+        self.awaiting_document = true;
         self.failed = false;
         self.epoch += 1;
         self.settled = None;
@@ -222,7 +228,6 @@ impl Entry {
         let events = std::mem::take(&mut *self.events.lock().unwrap());
         for event in events {
             match event {
-                Event::Loading => self.load_started(now),
                 Event::Navigating(target) => {
                     let fragment = self
                         .settled
@@ -237,7 +242,7 @@ impl Entry {
                     let events = self.events.clone();
                     let epoch = self.epoch;
                     let result = self.view.evaluate_script_with_callback(
-                        "({uri:document.documentURI,ready:document.readyState})",
+                        "({id:window.__betterframe_document_id,uri:document.documentURI,ready:document.readyState})",
                         move |json| {
                             let uri = serde_json::from_str::<Document>(&json).ok();
                             events.lock().unwrap().push(Event::Document(epoch, uri));
@@ -247,18 +252,33 @@ impl Entry {
                         self.failed = true;
                     }
                 }
-                Event::Document(epoch, document) if epoch == self.epoch => {
-                    self.failed = document.as_ref().is_none_or(|d| {
-                        d.uri.starts_with("chrome-error:") || d.uri.starts_with("edge-error:")
-                    });
-                    self.loaded = !self.failed
-                        && document.as_ref().is_some_and(|d| {
-                            d.ready == "complete" && self.view.url().is_ok_and(|url| url == d.uri)
-                        });
-                    if self.loaded || self.failed {
+                Event::Document(epoch, Some(document)) if epoch == self.epoch => {
+                    if document.uri.starts_with("chrome-error:")
+                        || document.uri.starts_with("edge-error:")
+                    {
+                        self.failed = true;
+                        self.loaded = false;
                         self.navigation_deadline = None;
+                    } else {
+                        let new_document = document.id.is_some() && document.id != self.document_id;
+                        if document.ready == "complete"
+                            && document.id.is_some()
+                            && (!self.awaiting_document || new_document)
+                        {
+                            let changed = new_document || !self.loaded;
+                            self.document_id = document.id;
+                            self.loaded = true;
+                            self.failed = false;
+                            self.awaiting_document = false;
+                            self.navigation_deadline = None;
+                            if changed {
+                                self.last_check = None;
+                            }
+                        }
                     }
-                    self.last_check = None;
+                    // Canceled script probes and an old completed document can
+                    // arrive during a new load. Same-document SPA URL changes
+                    // must never downgrade a healthy page to "loading".
                 }
                 Event::Result(id, generation, index, success) => {
                     let sequence = if id == 0 {

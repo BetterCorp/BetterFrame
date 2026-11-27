@@ -114,6 +114,8 @@ class Client {
     } 'Signed update did not recover after authentication and enrollment failure' 240
     Write-Host 'Recovery upgrade passed with enrollment missing and BF authentication rejected.'
     Stop-Service BetterFrameUpdater
+    Start-Sleep -Seconds 3
+    if ((Get-Service BetterFrameUpdater).Status -ne 'Stopped') { throw 'A completed install worker restarted the administratively stopped updater' }
     Write-Json "$fixture/control.json" @{version='1.0.2';reject_auth=$true}
     Start-Service BetterFrameUpdater
     Wait-For {

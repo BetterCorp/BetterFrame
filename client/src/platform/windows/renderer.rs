@@ -497,10 +497,11 @@ fn create_webview(hwnd: HWND, spec: &WebCellSpec, state: &ClientState) -> Result
                 allowed
             })
             .with_on_page_load_handler(move |event, _| {
-                page_events.lock().unwrap().push(match event {
-                    wry::PageLoadEvent::Started => super::web_runtime::Event::Loading,
-                    wry::PageLoadEvent::Finished => super::web_runtime::Event::Loaded,
-                });
+                // Wry's Started is ContentLoading, later than navigation.
+                // The NavigationStarting handler above owns invalidation.
+                if matches!(event, wry::PageLoadEvent::Finished) {
+                    page_events.lock().unwrap().push(super::web_runtime::Event::Loaded);
+                }
             })
             .with_bounds(spec.bounds)
             .with_transparent(spec.overlay)
@@ -557,7 +558,7 @@ fn resolve_web_secrets(cell: &mut BundleCell, key: Option<&str>) {
 }
 
 pub(super) fn initialization_script(local_storage: Option<&HashMap<String, String>>) -> String {
-    let mut script = "try{document.documentElement.style.cursor='none';}catch(_e){}".to_string();
+    let mut script = "window.__betterframe_document_id=Date.now().toString(36)+Math.random().toString(36).slice(2);try{document.documentElement.style.cursor='none';}catch(_e){}".to_string();
     if let Some(values) = local_storage {
         for (key, value) in values {
             script.push_str(&format!(

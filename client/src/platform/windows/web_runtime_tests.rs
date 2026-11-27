@@ -124,6 +124,9 @@ impl Fixture {
     fn count(&self, path: &str) -> usize {
         *self.hits.lock().unwrap().get(path).unwrap_or(&0)
     }
+    fn logins(&self) -> usize {
+        self.count("/auth-run-0") + self.count("/auth-run-1")
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -220,6 +223,7 @@ fn windows_browser_and_visibility_regression() {
     }
     let cells = (0..2).map(|i| {
         let steps = serde_json::json!([
+            {"type":"javascript","script":format!("await fetch('/auth-run-{i}')")},
             {"type":"navigate","url":"/auth/form"},{"type":"wait_for","selector":"#username"},
             {"type":"fill","selector":"#username","value":"person@example.test"},
             {"type":"click","selector":"#login"},{"type":"wait_for","selector":"#done"},
@@ -259,7 +263,7 @@ fn windows_browser_and_visibility_regression() {
             && fixture.count("/loaded-1") == 1
     });
     assert_eq!(
-        fixture.count("/auth/form"),
+        fixture.logins(),
         4,
         "both blocks authenticate independently and on-load actions re-authenticate before continuing"
     );
@@ -305,7 +309,7 @@ fn windows_browser_and_visibility_regression() {
         "normal action reports success"
     );
     assert_eq!(
-        fixture.count("/auth/form"),
+        fixture.logins(),
         4,
         "manual actions pause entity authentication on login paths"
     );
@@ -389,7 +393,7 @@ fn windows_browser_and_visibility_regression() {
         "block0",
         "history.pushState({},'', '/auth/authorize?expired=1')",
     );
-    wait(|| fixture.count("/auth/form") == 5 && entries(|e| e.ready(&e.url().unwrap_or_default())));
+    wait(|| fixture.logins() == 5 && entries(|e| e.ready(&e.url().unwrap_or_default())));
     let mut alternate = bundle.displays[0].layouts[0].clone();
     alternate.id = "alternate".into();
     alternate.cells.truncate(1);
@@ -420,7 +424,7 @@ fn windows_browser_and_visibility_regression() {
     .unwrap();
     renderer::reconcile_windows().unwrap();
     wait(|| {
-        fixture.count("/auth/form") == 6
+        fixture.logins() == 6
             && entries(|e| e.visible && e.ready(&e.url().unwrap_or_default()))
             && fixture.count("/loaded-0") == 2
             && fixture.count("/loaded-1") == 2
@@ -453,7 +457,7 @@ fn windows_browser_and_visibility_regression() {
         pump();
     }
     assert_eq!(
-        fixture.count("/auth/form"),
+        fixture.logins(),
         6,
         "zero disables periodic auth observation"
     );
@@ -463,7 +467,7 @@ fn windows_browser_and_visibility_regression() {
         entry.show(false);
         entry.show(true);
     });
-    wait(|| fixture.count("/auth/form") == 7 && entries(|e| e.ready(&e.url().unwrap_or_default())));
+    wait(|| fixture.logins() == 7 && entries(|e| e.ready(&e.url().unwrap_or_default())));
     let before = WEBVIEWS.with(|views| views.borrow().keys().cloned().collect::<HashSet<_>>());
     bundle.displays[0].layouts[0].cells[0].local_storage =
         Some(HashMap::from([("changed".into(), "yes".into())]));

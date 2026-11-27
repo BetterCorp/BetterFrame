@@ -4,6 +4,8 @@ import { H3 } from "h3";
 import { fixture } from "./smart-url.test.js";
 import { generateBundle } from "../src/shared/bundle.js";
 import { registerViewerDeviceAuth } from "../src/shared/display-session.js";
+import { registerAdminRoutes } from "../src/plugins/service-admin-http/routes-admin.js";
+import { getCoordinator, setCoordinator } from "../src/shared/coordinator-registry.js";
 import { registerKioskRoutes } from "../src/plugins/service-api-http/index.js";
 
 test("desktop disable removes assignments, preserves enrollment and updates, and re-enable restores content", async () => {
@@ -53,4 +55,21 @@ test("desktop disable removes assignments, preserves enrollment and updates, and
   assert.equal((await app.request("https://bf.test/api/kiosk/bundle",{headers:{cookie:"betterframe_kiosk_key=device-key"}})).status,401);
   kiosk.enabled=true;
   assert.deepEqual((await make())!.displays.map(d=>d.id),["second"]);
+});
+
+
+test("kiosk enable changes notify the enrolled client from both admin routes", async t => {
+  const f=fixture();
+  const kiosk={id:"kiosk",name:"Desktop",enabled:true,managed_image:false};
+  const original=getCoordinator();t.after(()=>setCoordinator(original));
+  const reloads:string[]=[];
+  setCoordinator({...original,notifyKioskBundleChanged:id=>{reloads.push(id);}});
+  const app=new H3();app.use(event=>{event.context.user={username:"admin"} as never;});
+  registerAdminRoutes(app,{repo:{...f.repo,getKioskById:async()=>kiosk,updateKiosk:async(_id:string,patch:object)=>Object.assign(kiosk,patch)}} as never);
+  const disabled=await app.request("https://bf.test/api/admin/kiosks/kiosk/enabled",{
+    method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({value:false})});
+  assert.equal(disabled.status,200);assert.equal(kiosk.enabled,false);assert.deepEqual(reloads,["kiosk"]);
+  const enabled=await app.request("https://bf.test/admin/kiosks/kiosk",{
+    method:"POST",body:new URLSearchParams({name:"Desktop",enabled:"1"})});
+  assert.equal(enabled.status,302);assert.equal(kiosk.enabled,true);assert.deepEqual(reloads,["kiosk","kiosk"]);
 });

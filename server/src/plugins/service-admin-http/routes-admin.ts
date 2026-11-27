@@ -2604,6 +2604,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
         } as any);
       }
     }
+    getCoordinator().notifyKioskBundleChanged(id);
     return new Response(null, { status: 302, headers: { location: `/admin/kiosks/${id}` } });
   });
 
@@ -3554,6 +3555,7 @@ export function registerAdminRoutes(app: H3, deps: AdminDeps): void {
     await deps.repo.updateKiosk(id, { enabled } as any);
     const kiosk = await deps.repo.getKioskById(id);
     if (!kiosk) return jsonResponse({ error: "not_found" }, 404);
+    getCoordinator().notifyKioskBundleChanged(id);
     return jsonResponse({ kiosk });
   });
 

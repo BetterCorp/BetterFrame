@@ -52,6 +52,13 @@ struct IoBoxControlRequest {
     params: serde_json::Value,
 }
 
+static CONNECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn connected() -> bool { CONNECTED.load(std::sync::atomic::Ordering::Relaxed) }
+struct ConnectionGuard;
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) { CONNECTED.store(false, std::sync::atomic::Ordering::Relaxed); }
+}
+
 /// Run the WebSocket client in a tokio runtime. Blocks the calling thread.
 /// Reconnects on disconnect with exponential backoff.
 pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
@@ -91,6 +98,11 @@ pub fn run(server_url: &str, kiosk_key: &str, tx: Sender<ServerMsg>) {
             match connection {
                 Ok((ws_stream, _resp)) => {
                     info!("ws: connected");
+                    CONNECTED.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let _connected = ConnectionGuard;
+                    // Reconcile edits made while disconnected, including a
+                    // re-enable after the coordinator rejected a disabled key.
+                    let _ = tx.send(ServerMsg::ReloadBundle);
                     backoff = 1;
 
                     let (mut writer, mut reader) = ws_stream.split();

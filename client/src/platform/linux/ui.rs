@@ -454,24 +454,32 @@ fn activate(app: &Application) {
             ws_client::run(&server_ws, &key_ws, ws_tx);
         });
 
-        // Background retry thread: if we couldn't fetch a live bundle on boot,
-        // retry with capped exponential backoff while keeping the saved identity.
+        // Disabled keys cannot reconnect to WS, but still receive empty bundles
+        // over HTTP. Connected sessions use pushes plus a five-minute check for
+        // missed/failed reloads; disconnected sessions check every 20 seconds.
         let retry_tx = tx.clone();
         let retry_server = server.clone();
         let retry_key = key.clone();
         std::thread::spawn(move || {
             let mut backoff_secs: u64 = 10;
+            let mut last_fetch: Option<Instant> = None;
             loop {
                 std::thread::sleep(Duration::from_secs(backoff_secs));
+                if ws_client::connected() && last_fetch.is_some_and(|at| at.elapsed() < Duration::from_secs(300)) {
+                    backoff_secs = 20; continue;
+                }
+                last_fetch = Some(Instant::now());
                 if let Some(b) = server::fetch_bundle(&retry_server, &retry_key) {
-                    info!("offline-retry: fresh bundle fetched, rendering");
-                    set_reported_bundle_version(&b.version);
-                    let _ = retry_tx.send(WorkerMsg::RenderBundle(
-                        b,
-                        retry_server.clone(),
-                        retry_key.clone(),
-                    ));
-                    return;
+                    let changed = BUNDLE_VERSION.lock().map(|mut version| {
+                        if version.as_deref() == Some(&b.version) { false }
+                        else { *version = Some(b.version.clone()); true }
+                    }).unwrap_or(true);
+                    if changed {
+                        info!("offline-retry: changed bundle fetched, rendering");
+                        let _ = retry_tx.send(WorkerMsg::RenderBundle(b, retry_server.clone(), retry_key.clone()));
+                    }
+                    backoff_secs = 20;
+                    continue;
                 }
                 backoff_secs = (backoff_secs * 2).min(300);
             }

@@ -792,6 +792,8 @@ pub fn poll_claim_until_expiry(
 static BUNDLE_ETAG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 pub fn fetch_bundle(server: &str, key: &str) -> Option<KioskBundle> {
+    static FETCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _fetch = FETCH_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     acknowledge_identity(server);
     let client = crate::network::blocking_client();
     let mut req = client

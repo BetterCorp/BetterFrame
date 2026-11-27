@@ -7,6 +7,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{PM_REMOVE, PeekMessageW};
 struct Fixture {
     root: String,
     hits: Arc<Mutex<HashMap<String, usize>>>,
+    results: Arc<Mutex<Vec<serde_json::Value>>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -17,6 +18,8 @@ impl Fixture {
         listener.set_nonblocking(true).unwrap();
         let hits = Arc::new(Mutex::new(HashMap::new()));
         let received = hits.clone();
+        let results = Arc::new(Mutex::new(Vec::new()));
+        let reported = results.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let thread = std::thread::spawn(move || {
@@ -32,16 +35,55 @@ impl Fixture {
                 let Ok(count) = stream.read(&mut bytes) else {
                     continue;
                 };
-                let request = String::from_utf8_lossy(&bytes[..count]);
-                let path = request
+                if count == 0 {
+                    continue;
+                }
+                let mut request = bytes[..count].to_vec();
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let Ok(count) = stream.read(&mut bytes) else {
+                        break;
+                    };
+                    if count == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&bytes[..count]);
+                }
+                let header_end = request.windows(4).position(|b| b == b"\r\n\r\n").unwrap() + 4;
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                let path = headers
                     .split_whitespace()
                     .nth(1)
                     .unwrap_or("/")
                     .split('?')
                     .next()
-                    .unwrap_or("/");
-                *received.lock().unwrap().entry(path.to_owned()).or_insert(0) += 1;
-                let (status, header, body) = match path {
+                    .unwrap_or("/")
+                    .to_owned();
+                while request.len() < header_end + length {
+                    let Ok(count) = stream.read(&mut bytes) else {
+                        break;
+                    };
+                    if count == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&bytes[..count]);
+                }
+                if path == "/api/kiosk/web-actions/result" {
+                    reported
+                        .lock()
+                        .unwrap()
+                        .push(serde_json::from_slice(&request[header_end..]).unwrap());
+                }
+                *received.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
+                let (status, header, body) = match path.as_str() {
                     "/start" => (
                         "302 Found",
                         "Location: /auth/authorize?state=unknown\r\n",
@@ -65,6 +107,7 @@ impl Fixture {
         Self {
             root,
             hits,
+            results,
             stop,
             thread: Some(thread),
         }
@@ -194,8 +237,11 @@ fn windows_browser_and_visibility_regression() {
     renderer::reconcile_windows().unwrap();
     assert_eq!(windows(), 1);
     wait(|| {
-        entries(|entry| entry.ready(&entry.url().unwrap_or_default()))
-            && fixture.count("/loaded-0") == 1
+        entries(|entry| {
+            entry.ready(&entry.url().unwrap_or_default())
+                && entry.manual.is_none()
+                && !entry.pending_load
+        }) && fixture.count("/loaded-0") == 1
             && fixture.count("/loaded-1") == 1
     });
     assert_eq!(
@@ -240,6 +286,11 @@ fn windows_browser_and_visibility_regression() {
     fs::remove_file(temporary).unwrap();
     wait(|| fixture.count("/api/kiosk/web-actions/result") == 1 && entries(|e| e.manual.is_none()));
     assert_eq!(
+        fixture.results.lock().unwrap()[0]["ok"],
+        true,
+        "normal action reports success"
+    );
+    assert_eq!(
         fixture.count("/auth/form"),
         2,
         "manual actions pause entity authentication on login paths"
@@ -257,6 +308,11 @@ fn windows_browser_and_visibility_regression() {
     pump();
     script("block0", "location='/done?interrupted'");
     wait(|| fixture.count("/api/kiosk/web-actions/result") == 2 && entries(|e| e.manual.is_none()));
+    assert_eq!(
+        fixture.results.lock().unwrap()[1]["ok"],
+        false,
+        "navigation cannot complete a document-owned wait"
+    );
     // A cached view sees an SPA auth redirect without a page-load event.
     script(
         "block0",
@@ -298,6 +354,45 @@ fn windows_browser_and_visibility_regression() {
             && fixture.count("/loaded-0") == 2
             && fixture.count("/loaded-1") == 2
     });
+    wait(|| {
+        entries(|e| {
+            e.ready(&e.url().unwrap_or_default())
+                && e.manual.is_none()
+                && !e.pending_load
+                && e.last_check.is_some()
+        })
+    });
+    WEBVIEWS.with(|views| {
+        views
+            .borrow_mut()
+            .values_mut()
+            .find(|e| e.cell == "block1")
+            .unwrap()
+            .config
+            .as_mut()
+            .unwrap()
+            .session_check_interval_ms = Some(0)
+    });
+    script(
+        "block1",
+        "history.pushState({},'', '/auth/authorize?periodic-disabled=1')",
+    );
+    let until = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < until {
+        pump();
+    }
+    assert_eq!(
+        fixture.count("/auth/form"),
+        4,
+        "zero disables periodic auth observation"
+    );
+    WEBVIEWS.with(|views| {
+        let mut views = views.borrow_mut();
+        let entry = views.values_mut().find(|e| e.cell == "block1").unwrap();
+        entry.show(false);
+        entry.show(true);
+    });
+    wait(|| fixture.count("/auth/form") == 5 && entries(|e| e.ready(&e.url().unwrap_or_default())));
     let before = WEBVIEWS.with(|views| views.borrow().keys().cloned().collect::<HashSet<_>>());
     bundle.displays[0].layouts[0].cells[0].local_storage =
         Some(HashMap::from([("changed".into(), "yes".into())]));

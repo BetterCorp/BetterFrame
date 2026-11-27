@@ -255,14 +255,18 @@ impl Entry {
             self.settled = Some((url.clone(), Instant::now()));
         }
         if self.manual.is_none() && self.loaded && !self.failed {
-            let interval = Duration::from_millis(
-                self.config
-                    .as_ref()
-                    .and_then(|c| c.session_check_interval_ms)
-                    .unwrap_or(5000)
-                    .max(200) as u64,
-            );
-            if self.last_check.is_none_or(|at| at.elapsed() >= interval) {
+            let interval_ms = self
+                .config
+                .as_ref()
+                .and_then(|c| c.session_check_interval_ms)
+                .unwrap_or(5000);
+            let periodic_due = interval_ms > 0
+                && self.last_check.is_some_and(|at| {
+                    at.elapsed() >= Duration::from_millis(interval_ms.max(200) as u64)
+                });
+            // Loading, remapping and action completion explicitly clear the
+            // last check, even when periodic observation is disabled.
+            if self.last_check.is_none() || periodic_due {
                 self.last_check = Some(Instant::now());
                 if let Some(s) = self.auth.as_mut() {
                     s.progress.observe_url(

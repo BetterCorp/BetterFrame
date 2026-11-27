@@ -1657,6 +1657,14 @@ fn can_preserve_display(state: &DisplayState, previous: &KioskBundle, next: &Kio
     )
 }
 
+fn reconcile_display_monitor(window: &ApplicationWindow, monitor: Option<&gtk::gdk::Monitor>) {
+    let Some(monitor) = monitor else { return; };
+    let current = window.surface().and_then(|surface| WidgetExt::display(window).monitor_at_surface(&surface));
+    if current.as_ref() != Some(monitor) || !window.is_fullscreen() {
+        window.fullscreen_on_monitor(monitor);
+    }
+}
+
 /// Render a fresh bundle: rebuild the per-display window set, restart GPIO
 /// workers, recompute warm-camera needs across all displays.
 fn render_bundle(
@@ -1782,6 +1790,7 @@ fn render_bundle(
         let existing = DISPLAYS.with(|ds| ds.borrow_mut().remove(&bd.id));
         if unchanged_displays.contains(&bd.id) {
             if let Some(state) = existing {
+                reconcile_display_monitor(&state.window, gdk_monitors.get(bd.physical_index.unwrap_or(i)));
                 if let Some(content) = state.content_overlay.child() {
                     refresh_empty_display_reference(&content, &bundle, Some(bd));
                 }
@@ -1843,12 +1852,10 @@ fn render_bundle(
                 });
                 w.add_controller(input);
                 w.present();
-                if let Some(monitor) = gdk_monitors.get(bd.physical_index.unwrap_or(i)) {
-                    w.fullscreen_on_monitor(monitor);
-                }
                 (w, false, Instant::now(), None, None, None)
             }
         };
+        reconcile_display_monitor(&window, gdk_monitors.get(bd.physical_index.unwrap_or(i)));
         let content_overlay = existing_overlay.unwrap_or_else(|| {
             let ov = gtk::Overlay::new();
             ov.set_vexpand(true);

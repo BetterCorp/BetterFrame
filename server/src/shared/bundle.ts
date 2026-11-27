@@ -259,6 +259,7 @@ export async function generateBundle(
     span?.log.info("bundle: kiosk {id} has no enabled displays", { id: String(kioskId) });
     span?.end();
     const empty: KioskBundle = {
+      trusted_cas: (await repo.trustedCasForKiosk(kioskId)).map(({ pem, fingerprint_sha256 }) => ({ pem, fingerprint_sha256 })),
       kiosk_id: kioskId, kiosk_name: kiosk.name, tenant_slug: "default",
       display: null, layouts: [], displays: [], cameras: [], gpio_bindings: [],
       operator_console: { enabled: false, host: null, port: 0, tools: [],

@@ -14,6 +14,7 @@ test("desktop disable removes assignments, preserves enrollment and updates, and
     {id:"second",name:"Desktop: DISPLAY2",index:1,is_enabled:true,default_layout_id:"layout",width_px:1280,height_px:720},
   ];
   const repo = {...f.repo, adapter:{...f.repo.adapter,dialect:()=>"sqlite"}, getKioskById:async()=>kiosk, listDisplaysForKiosk:async()=>displays,
+    trustedCasForKiosk:async()=>[{pem:"fixture-public-ca",fingerprint_sha256:"a".repeat(64)}],
     listActiveOsUpdateRolloutsForKiosk:async()=>[],getLatestOsUpdateRelease:async()=>null,
     touchKiosk:async()=>{},getSetupExtra:async()=>null,deleteDisplayIfUnused:async()=>false,
     updateDisplay:async(id:string,patch:object)=>Object.assign(displays.find(d=>d.id===id)!,patch),
@@ -25,6 +26,7 @@ test("desktop disable removes assignments, preserves enrollment and updates, and
   assert.deepEqual(one.displays.map(d=>[d.id,d.physical_index]),[["second",1]],"filtering cannot move DISPLAY2 onto DISPLAY1");
   displays[1]!.is_enabled=false;
   const none=(await make())!;
+  assert.deepEqual(none.trusted_cas,[{pem:"fixture-public-ca",fingerprint_sha256:"a".repeat(64)}],"background connectivity retains assigned trust");
   assert.deepEqual(none.displays,[]); assert.equal(none.display,null); assert.deepEqual(none.layouts,[]);
   assert.equal((await make())!.version,none.version);
   const app=new H3();

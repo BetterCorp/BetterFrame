@@ -123,5 +123,6 @@ host and port. Matching is literal and case-sensitive: `/auth` also matches
 
 Authentication is rechecked on navigation, when a cached block becomes visible, and
 every five seconds by default, including SPA redirects that produce no load event.
+An interval of zero disables periodic checks; load and visibility checks still run.
 Login attempts have the same retry cooldown as Linux. Per-block on-load and named
 actions wait for authentication to settle and do not overlap entity login steps.

@@ -23,95 +23,104 @@ impl Fixture {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let thread = std::thread::spawn(move || {
-            let mut suspended = Vec::new();
-            while !stopped.load(Ordering::Relaxed) {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    std::thread::sleep(Duration::from_millis(5));
-                    continue;
-                };
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                let mut bytes = [0; 8192];
-                let Ok(count) = stream.read(&mut bytes) else {
-                    continue;
-                };
-                if count == 0 {
-                    continue;
-                }
-                let mut request = bytes[..count].to_vec();
-                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-                    let Ok(count) = stream.read(&mut bytes) else {
-                        break;
+            let suspended = Mutex::new(Vec::new());
+            // WebView2 opens idle preconnections. Handle requests independently
+            // so those sockets cannot delay the deliberately stalled resource.
+            std::thread::scope(|scope| {
+                while !stopped.load(Ordering::Relaxed) {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
                     };
-                    if count == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&bytes[..count]);
+                    let received = &received;
+                    let reported = &reported;
+                    let suspended = &suspended;
+                    scope.spawn(move || {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                        let mut bytes = [0; 8192];
+                        let Ok(count) = stream.read(&mut bytes) else {
+                            return;
+                        };
+                        if count == 0 {
+                            return;
+                        }
+                        let mut request = bytes[..count].to_vec();
+                        while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                            let Ok(count) = stream.read(&mut bytes) else {
+                                break;
+                            };
+                            if count == 0 {
+                                break;
+                            }
+                            request.extend_from_slice(&bytes[..count]);
+                        }
+                        let header_end = request.windows(4).position(|b| b == b"\r\n\r\n").unwrap() + 4;
+                        let headers = String::from_utf8_lossy(&request[..header_end]);
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (key, value) = line.split_once(':')?;
+                                key.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        let path = headers
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap_or("/")
+                            .split('?')
+                            .next()
+                            .unwrap_or("/")
+                            .to_owned();
+                        while request.len() < header_end + length {
+                            let Ok(count) = stream.read(&mut bytes) else {
+                                break;
+                            };
+                            if count == 0 {
+                                break;
+                            }
+                            request.extend_from_slice(&bytes[..count]);
+                        }
+                        if path == "/api/kiosk/web-actions/result" {
+                            reported
+                                .lock()
+                                .unwrap()
+                                .push(serde_json::from_slice(&request[header_end..]).unwrap());
+                        }
+                        *received.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
+                        if path == "/slow-done" {
+                            std::thread::sleep(Duration::from_millis(250));
+                        }
+                        if path == "/never" {
+                            suspended.lock().unwrap().push(stream);
+                            return;
+                        }
+                        let (status, header, body) = match path.as_str() {
+                            "/hanging" => ("200 OK", "", "<img src='/never'>"),
+                            "/start" => (
+                                "302 Found",
+                                "Location: /auth/authorize?state=unknown\r\n",
+                                "",
+                            ),
+                            "/auth/form" => (
+                                "200 OK",
+                                "",
+                                r#"<div id=host></div><script>const root=document.querySelector('#host').attachShadow({mode:'open'}); root.innerHTML='<input id=username><button id=login>Login</button>';root.querySelector('#login').onclick=()=>{if(root.querySelector('#username').value==='person@example.test')location='/done';};</script>"#,
+                            ),
+                            "/done" | "/slow-done" => ("200 OK", "", "<div id=done>Dashboard</div>"),
+                            _ => ("200 OK", "", "<div>Page</div>"),
+                        };
+                        let _ = write!(
+                            stream,
+                            "HTTP/1.1 {status}\r\n{header}Content-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                    });
                 }
-                let header_end = request.windows(4).position(|b| b == b"\r\n\r\n").unwrap() + 4;
-                let headers = String::from_utf8_lossy(&request[..header_end]);
-                let length = headers
-                    .lines()
-                    .find_map(|line| {
-                        let (key, value) = line.split_once(':')?;
-                        key.eq_ignore_ascii_case("content-length")
-                            .then(|| value.trim().parse::<usize>().ok())
-                            .flatten()
-                    })
-                    .unwrap_or(0);
-                let path = headers
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("/")
-                    .split('?')
-                    .next()
-                    .unwrap_or("/")
-                    .to_owned();
-                while request.len() < header_end + length {
-                    let Ok(count) = stream.read(&mut bytes) else {
-                        break;
-                    };
-                    if count == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&bytes[..count]);
-                }
-                if path == "/api/kiosk/web-actions/result" {
-                    reported
-                        .lock()
-                        .unwrap()
-                        .push(serde_json::from_slice(&request[header_end..]).unwrap());
-                }
-                *received.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
-                if path == "/slow-done" {
-                    std::thread::sleep(Duration::from_millis(250));
-                }
-                if path == "/never" {
-                    suspended.push(stream);
-                    continue;
-                }
-                let (status, header, body) = match path.as_str() {
-                    "/hanging" => ("200 OK", "", "<img src='/never'>"),
-                    "/start" => (
-                        "302 Found",
-                        "Location: /auth/authorize?state=unknown\r\n",
-                        "",
-                    ),
-                    "/auth/form" => (
-                        "200 OK",
-                        "",
-                        r#"<div id=host></div><script>const root=document.querySelector('#host').attachShadow({mode:'open'}); root.innerHTML='<input id=username><button id=login>Login</button>';root.querySelector('#login').onclick=()=>{if(root.querySelector('#username').value==='person@example.test')location='/done';};</script>"#,
-                    ),
-                    "/done" | "/slow-done" => ("200 OK", "", "<div id=done>Dashboard</div>"),
-                    _ => ("200 OK", "", "<div>Page</div>"),
-                };
-                let _ = write!(
-                    stream,
-                    "HTTP/1.1 {status}\r\n{header}Content-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-            }
+            });
         });
         Self {
             root,
